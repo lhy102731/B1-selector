@@ -16,367 +16,199 @@ except ImportError:
 
 class PatternMatcher:
     """完美图形匹配器 - 支持从配置文件读取参数"""
-    
-    def __init__(self, weights=None, tolerances=None):
+
+    def __init__(self, weights=None, tolerances=None, exclude_limit_state=False):
         from strategy.pattern_config import SIMILARITY_WEIGHTS, MATCH_TOLERANCES
-        self.weights = weights or SIMILARITY_WEIGHTS
+        self.weights = dict(weights or SIMILARITY_WEIGHTS)
         self.tolerances = tolerances or MATCH_TOLERANCES
-    
+        self.exclude_limit_state = exclude_limit_state
+        if self.exclude_limit_state and 'limit_state' in self.weights:
+            del self.weights['limit_state']
+            # 将limit_state的权重按比例分配给其余维度
+            total = sum(self.weights.values())
+            for k in self.weights:
+                self.weights[k] = round(self.weights[k] / total, 4)
+
     def match(self, candidate_features: dict, case_features: dict) -> dict:
-        """
-        计算候选股与案例的相似度
-        返回0-1之间的分数
-        """
+        """新评分体系：volume/price_shape/move_power/trend/divergence/[limit_state]"""
         if not candidate_features or not case_features:
             return {"total_score": 0.0, "breakdown": {}}
-        
+
         scores = {}
-        
-        # 1. 知行趋势线结构相似度
-        if candidate_features.get("trend_structure") and case_features.get("trend_structure"):
-            scores["trend_structure"] = self._calc_trend_similarity(
-                candidate_features["trend_structure"],
-                case_features["trend_structure"]
-            )
-        else:
-            scores["trend_structure"] = 0.5
-        
-        # 2. KDJ状态相似度
-        if candidate_features.get("kdj_state") and case_features.get("kdj_state"):
-            scores["kdj_state"] = self._calc_kdj_similarity(
-                candidate_features["kdj_state"],
-                case_features["kdj_state"]
-            )
-        else:
-            scores["kdj_state"] = 0.5
-        
-        # 3. 量能模式相似度
-        if candidate_features.get("volume_pattern") and case_features.get("volume_pattern"):
-            scores["volume_pattern"] = self._calc_volume_similarity(
-                candidate_features["volume_pattern"],
-                case_features["volume_pattern"]
-            )
-        else:
-            scores["volume_pattern"] = 0.5
-        
-        # 4. 价格形态相似度（DTW）
-        if candidate_features.get("price_shape") and case_features.get("price_shape"):
-            scores["price_shape"] = self._calc_shape_similarity(
-                candidate_features["price_shape"],
-                case_features["price_shape"]
-            )
-        else:
-            scores["price_shape"] = 0.5
 
-        # 5. 异动期涨幅特征（新增）
-        if candidate_features.get("move_strength") and case_features.get("move_strength"):
-            scores["move_strength"] = self._calc_move_similarity(
-                candidate_features["move_strength"],
-                case_features["move_strength"]
-            )
-        else:
-            scores["move_strength"] = 0.5
+        # 1. volume — Effort：量是根基
+        v_cand = candidate_features.get("volume_pattern") or {}
+        v_case = case_features.get("volume_pattern") or {}
+        scores["volume"] = self._calc_volume_similarity(v_cand, v_case)
 
-        # 6. 建仓健康度相似度
-        if candidate_features.get("build_health") and case_features.get("build_health"):
-            scores["build_health"] = self._calc_build_health_similarity(
-                candidate_features["build_health"],
-                case_features["build_health"]
-            )
-        else:
-            scores["build_health"] = 0.5
+        # 2. price_shape — Structure：DTW曲线匹配
+        p_cand = candidate_features.get("price_shape") or {}
+        p_case = case_features.get("price_shape") or {}
+        scores["price_shape"] = self._calc_shape_similarity(p_cand, p_case)
 
-        # 加权总分
-        total_score = sum(
-            scores[k] * self.weights.get(k, 0.2) for k in scores
-        )
-        
+        # 3. move_power — Cause→Effect：攻击力(吸收原move+build_gain)
+        m_cand = candidate_features.get("move_strength") or {}
+        m_case = case_features.get("move_strength") or {}
+        b_cand = candidate_features.get("build_health") or {}
+        b_case = case_features.get("build_health") or {}
+        scores["move_power"] = self._calc_move_power(m_cand, m_case, b_cand, b_case)
+
+        # 4. trend — Context：趋势环境(吸收ma_score)
+        t_cand = candidate_features.get("trend_structure") or {}
+        t_case = case_features.get("trend_structure") or {}
+        scores["trend"] = self._calc_trend_similarity(t_cand, t_case, b_cand, b_case)
+
+        # 5. divergence — Hidden：背离信号(原kdj精简)
+        k_cand = candidate_features.get("kdj_state") or {}
+        k_case = case_features.get("kdj_state") or {}
+        scores["divergence"] = self._calc_divergence_similarity(k_cand, k_case)
+
+        # 6. limit_state — Confirmation：涨停状态(可选)
+        if not self.exclude_limit_state:
+            scores["limit_state"] = self._calc_limit_similarity(b_cand, b_case)
+
+        total_score = sum(scores[k] * self.weights.get(k, 0.1) for k in scores)
         return {
-            "total_score": round(total_score * 100, 2),  # 转换为百分制
+            "total_score": round(total_score * 100, 2),
             "breakdown": {k: round(v * 100, 2) for k, v in scores.items()},
         }
 
-    def _calc_move_similarity(self, cand: dict, case: dict) -> float:
-        """异动期涨幅相似度"""
-        similarities = []
+    def _calc_move_power(self, move_cand: dict, move_case: dict,
+                          build_cand: dict, build_case: dict) -> float:
+        """攻击力：异动涨幅(原move_strength) + 建仓涨幅(原build_gain)"""
+        sims = []
 
-        # 从配置读取容差
-        avg_gain_tol = self.tolerances.get("move_avg_gain", 5)
-        total_gain_tol = self.tolerances.get("move_total_gain", 10)
+        # 3.1 total_gain — 异动总涨幅 (容差10%, >60%衰减)
+        tg = move_cand.get("move_total_gain", 0)
+        tc = move_case.get("move_total_gain", 0)
+        # 超过60%的涨幅惩罚
+        t_eff = 1.0 if tg <= 60 else 0.5
+        diff = abs(tg - tc) * t_eff
+        sims.append(max(0, 1 - diff / 20))
 
-        # 平均异动涨幅相似
-        if "move_avg_gain" in cand and "move_avg_gain" in case:
-            gain_diff = abs(cand["move_avg_gain"] - case["move_avg_gain"])
-            sim = max(0, 1 - gain_diff / avg_gain_tol)
-            similarities.append(sim)
+        # 3.2 gain_quality — 涨幅/换手效率(吸收build_gain, 新增turnover效率)
+        bg_cand = build_cand.get("build_gain", 0)
+        bg_case = build_case.get("build_gain", 0)
+        st_cand = build_cand.get("surge_turnover_sum", 0.01)
+        st_case = build_case.get("surge_turnover_sum", 0.01)
+        eff_cand = bg_cand / max(st_cand, 0.01)
+        eff_case = bg_case / max(st_case, 0.01)
+        eff_diff = abs(eff_cand - eff_case) / 5
+        sims.append(max(0, 1 - eff_diff))
 
-        # 最大异动涨幅相似
-        if "move_max_gain" in cand and "move_max_gain" in case:
-            max_diff = abs(cand["move_max_gain"] - case["move_max_gain"])
-            sim = max(0, 1 - max_diff / avg_gain_tol)  # 可使用同一容差
-            similarities.append(sim)
+        # 3.3 move_rhythm — 节奏稳定性
+        if "move_first_last_ratio" in move_cand and "move_first_last_ratio" in move_case:
+            r_diff = abs(move_cand["move_first_last_ratio"] - move_case["move_first_last_ratio"])
+            sims.append(max(0, 1 - r_diff / 1.5))
+        if "move_days" in move_cand and "move_days" in move_case:
+            d_diff = abs(move_cand["move_days"] - move_case["move_days"])
+            sims.append(max(0, 1 - d_diff / 5))
 
-        # 异动总涨幅相似
-        if "move_total_gain" in cand and "move_total_gain" in case:
-            total_diff = abs(cand["move_total_gain"] - case["move_total_gain"])
-            sim = max(0, 1 - total_diff / total_gain_tol)
-            similarities.append(sim)
+        # 3.4 avg_gain
+        if "move_avg_gain" in move_cand and "move_avg_gain" in move_case:
+            a_diff = abs(move_cand["move_avg_gain"] - move_case["move_avg_gain"])
+            sims.append(max(0, 1 - a_diff / 8))
 
-        # 异动天数相似
-        if "move_days" in cand and "move_days" in case:
-            days_diff = abs(cand["move_days"] - case["move_days"])
-            sim = max(0, 1 - days_diff / 3)  # 容差3天
-            similarities.append(sim)
+        return np.mean(sims) if sims else 0.5
 
-        # 首次/末次涨幅比相似
-        if "move_first_last_ratio" in cand and "move_first_last_ratio" in case:
-            ratio_diff = abs(cand["move_first_last_ratio"] - case["move_first_last_ratio"])
-            sim = max(0, 1 - ratio_diff / 1)  # 容差1（即100%差异）
-            similarities.append(sim)
+    def _calc_divergence_similarity(self, kdj_cand: dict, kdj_case: dict) -> float:
+        """背离信号：J底背离 + 量价背离 + 金叉"""
+        sims = []
 
-        return np.mean(similarities) if similarities else 0.5
+        # 5.1 j_divergence (50%)
+        if "j_divergence" in kdj_cand and "j_divergence" in kdj_case:
+            sims.append(1.0 if kdj_cand["j_divergence"] == kdj_case["j_divergence"] else 0.5)
 
-    def _calc_build_health_similarity(self, cand: dict, case: dict) -> float:
-        """建仓波健康度相似度"""
-        similarities = []
+        # 5.2 j_value 匹配 (30% — 从原kdj继承，权重降低)
+        if "j_value" in kdj_cand and "j_value" in kdj_case:
+            j_diff = abs(kdj_cand["j_value"] - kdj_case["j_value"])
+            sims.append(max(0, 1 - j_diff / 30))
 
-        # 综合健康分相似
-        if "build_health_score" in cand and "build_health_score" in case:
-            score_diff = abs(cand["build_health_score"] - case["build_health_score"])
-            sim = max(0, 1 - score_diff / 40)  # 容差40分
-            similarities.append(sim)
+        # 5.3 kdj_golden_cross (20%)
+        if "k_cross_d" in kdj_cand and "k_cross_d" in kdj_case:
+            sims.append(1.0 if kdj_cand["k_cross_d"] == kdj_case["k_cross_d"] else 0.6)
 
-        # 建仓涨幅相似（容差15%）
-        if "build_gain" in cand and "build_gain" in case:
-            gain_diff = abs(cand["build_gain"] - case["build_gain"])
-            sim = max(0, 1 - gain_diff / 15)
-            similarities.append(sim)
+        return np.mean(sims) if sims else 0.5
 
-        # 异动换手累加相似（容差20%）
-        if "surge_turnover_sum" in cand and "surge_turnover_sum" in case:
-            turnover_diff = abs(cand["surge_turnover_sum"] - case["surge_turnover_sum"])
-            sim = max(0, 1 - turnover_diff / 20)
-            similarities.append(sim)
+    def _calc_limit_similarity(self, build_cand: dict, build_case: dict) -> float:
+        """涨停状态匹配（从原build_health独立）"""
+        sims = []
 
-        # 均线多头评分相似（容差30分）
-        if "ma_score" in cand and "ma_score" in case:
-            ma_diff = abs(cand["ma_score"] - case["ma_score"])
-            sim = max(0, 1 - ma_diff / 30)
-            similarities.append(sim)
+        # 6.1 has_limit_up (60%)
+        if "has_limit_up" in build_cand and "has_limit_up" in build_case:
+            sims.append(1.0 if build_cand["has_limit_up"] == build_case["has_limit_up"] else 0.3)
 
-        # 涨停状态（有涨停扣分，与案例匹配给高分）
-        if "has_limit_up" in cand and "has_limit_up" in case:
-            if cand["has_limit_up"] == case["has_limit_up"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.3)  # 案例有涨停但候选没有，或不一致，大幅扣分
+        # 6.2 has_one_word_limit (40%)
+        if "has_one_word_limit" in build_cand and "has_one_word_limit" in build_case:
+            sims.append(1.0 if build_cand["has_one_word_limit"] == build_case["has_one_word_limit"] else 0.2)
 
-        # 一字涨停（更严格的扣分）
-        if "has_one_word_limit" in cand and "has_one_word_limit" in case:
-            if cand["has_one_word_limit"] == case["has_one_word_limit"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.2)
+        return np.mean(sims) if sims else 0.5
 
-        return np.mean(similarities) if similarities else 0.5
+    def _calc_trend_similarity(self, cand: dict, case: dict,
+                                build_cand: dict = None, build_case: dict = None) -> float:
+        """趋势环境4维：斜率方向+价格位置+均线共振(吸收ma_score)+趋势发散"""
+        sims = []
 
-    def _calc_trend_similarity(self, cand: dict, case: dict) -> float:
-        """知行趋势线相似度 - 基于相对百分比偏离"""
-        similarities = []
-        
-        # 从配置读取容差参数
-        trend_ratio_tol = self.tolerances.get("trend_ratio", 0.10)
-        price_bias_tol = self.tolerances.get("price_bias", 10)
-        trend_spread_tol = self.tolerances.get("trend_spread", 10)
-        
-        # 1. short_vs_bullbear 比值相似
-        if "short_vs_bullbear" in cand and "short_vs_bullbear" in case:
-            ratio_diff = abs(cand["short_vs_bullbear"] - case["short_vs_bullbear"])
-            sim = max(0, 1 - ratio_diff / trend_ratio_tol)
-            similarities.append(sim)
-        
-        # 2. 斜率方向一致性（最重要）
+        # 4.1 slope_direction (35%) — 方向一致性开关
         if "short_slope" in cand and "short_slope" in case:
-            short_slope_same = (cand["short_slope"] > 0) == (case["short_slope"] > 0)
-            if short_slope_same:
+            same_dir = (cand["short_slope"] > 0) == (case["short_slope"] > 0)
+            if same_dir:
                 slope_diff = abs(cand["short_slope"] - case["short_slope"])
-                sim = max(0.7, 1 - slope_diff / 10)
+                sims.append(max(0.7, 1 - slope_diff / 10))
             else:
-                sim = max(0, 0.3 - abs(cand["short_slope"] - case["short_slope"]) / 20)
-            similarities.append(sim)
-        
-        # 3. 是否在碗中（形态位置）
-        if "is_in_bowl" in cand and "is_in_bowl" in case:
-            if cand["is_in_bowl"] == case["is_in_bowl"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.2)
-        
-        # 4. 价格相对于短期趋势的偏离（百分比）
-        cand_price_bias = cand.get("price_vs_short_pct", cand.get("price_vs_short", 0) * 100 - 100)
-        case_price_bias = case.get("price_vs_short_pct", case.get("price_vs_short", 0) * 100 - 100)
-        price_bias_diff = abs(cand_price_bias - case_price_bias)
-        sim = max(0, 1 - price_bias_diff / price_bias_tol)
-        similarities.append(sim)
-        
-        # 5. 趋势发散程度相似（百分比）
+                sims.append(max(0, 0.3 - abs(cand["short_slope"] - case["short_slope"]) / 20))
+
+        # 4.2 price_position (30%) — 价格偏离趋势线幅度
+        cand_bias = cand.get("price_vs_short_pct", cand.get("price_vs_short", 0) * 100 - 100)
+        case_bias = case.get("price_vs_short_pct", case.get("price_vs_short", 0) * 100 - 100)
+        bias_diff = abs(cand_bias - case_bias)
+        sims.append(max(0, 1 - bias_diff / 10))
+
+        # 4.3 ma_resonance (20%) — 均线多头共振（从build_health迁入）
+        if build_cand and build_case:
+            if "ma_score" in build_cand and "ma_score" in build_case:
+                ma_diff = abs(build_cand["ma_score"] - build_case["ma_score"])
+                sims.append(max(0, 1 - ma_diff / 30))
+
+        # 4.4 trend_spread (15%) — 双线发散度
         cand_spread = cand.get("trend_spread_pct", cand.get("trend_spread", 0))
         case_spread = case.get("trend_spread_pct", case.get("trend_spread", 0))
         spread_diff = abs(cand_spread - case_spread)
-        sim = max(0, 1 - spread_diff / trend_spread_tol)
-        similarities.append(sim)
-        
-        # 6. 双线乖离率相似
-        if "price_bias_pct" in cand and "price_bias_pct" in case:
-            bias_diff = abs(cand["price_bias_pct"] - case["price_bias_pct"])
-            sim = max(0, 1 - bias_diff / price_bias_tol)
-            similarities.append(sim)
-        
-        return np.mean(similarities) if similarities else 0.5
+        sims.append(max(0, 1 - spread_diff / 10))
+
+        return np.mean(sims) if sims else 0.5
     
-    def _calc_kdj_similarity(self, cand: dict, case: dict) -> float:
-        """KDJ状态相似度"""
-        similarities = []
-        
-        # 从配置读取J值容差
-        j_value_tol = self.tolerances.get("j_value", 30)
-        
-        # J值具体数值相似（使用配置的容差）
-        if "j_value" in cand and "j_value" in case:
-            j_diff = abs(cand["j_value"] - case["j_value"])
-            sim = max(0, 1 - j_diff / j_value_tol)
-            similarities.append(sim)
-        
-        # 金叉状态一致性
-        if "k_cross_d" in cand and "k_cross_d" in case:
-            if cand["k_cross_d"] == case["k_cross_d"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.6)
-        
-        # J值趋势方向
-        if "j_rebound" in cand and "j_rebound" in case:
-            if cand["j_rebound"] == case["j_rebound"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.7)
-
-        # 新增：J值绝对低位（<10）给予额外奖励
-        if cand.get("j_value", 100) < -5 and case.get("j_value", 100) < -5:
-            similarities.append(1.3)  # 奖励20%
-        elif cand.get("j_value", 100) < 13 and case.get("j_value", 100) < 13:
-            similarities.append(1.1)
-        else:
-            j_position_map = {"低位": 0.9, "中位": 0.5, "高位": 0.1}
-            cand_score = j_position_map.get(cand.get("j_position", ""), 0.3)
-            case_score = j_position_map.get(case.get("j_position", ""), 0.3)
-            sim = 1 - abs(cand_score - case_score)
-            similarities.append(sim)
-
-        # 新增：底背离特征（价格新低但J值未新低）
-        if "j_divergence" in cand and "j_divergence" in case:
-            if cand["j_divergence"] == case["j_divergence"]:
-                similarities.append(1.0)
-            else:
-                similarities.append(0.5)
-
-        return np.mean(similarities) if similarities else 0.5
-
     def _calc_volume_similarity(self, cand: dict, case: dict) -> float:
-        """
-        量能模式相似度计算
-        包含：成交量特征 + 换手率特征
-        """
-        similarities = []
-        weights = []  # 用于加权平均
+        """量能4维：缩量质量(40%) + 放量确认(25%) + Spring检测(20%) + 换手健康(15%)"""
+        sims = []
 
-        # ========== 成交量相关特征（原有） ==========
-        # 均量比
-        if "avg_volume_ratio" in cand and "avg_volume_ratio" in case:
-            ratio_diff = abs(cand["avg_volume_ratio"] - case["avg_volume_ratio"])
-            sim = max(0, 1 - ratio_diff / 1.5)
-            similarities.append(sim)
-            weights.append(0.15)  # 权重15%
+        # 1.1 shrink_quality (40%) — vol_ratio越小越缩量，黄线附近增强
+        vr_c = cand.get("volume_compress", 0.5)
+        vr_e = case.get("volume_compress", 0.5)
+        shrink_c = 1 - min(vr_c, 1.5) / 1.5
+        shrink_e = 1 - min(vr_e, 1.5) / 1.5
+        shrink_diff = abs(shrink_c - shrink_e)
+        sims.append(max(0, 1 - shrink_diff))
 
-        # 缩量后放量模式
+        # 1.2 expand_confirm (25%) — 缩量后是否放量回升
         if "shrink_then_expand" in cand and "shrink_then_expand" in case:
-            if cand["shrink_then_expand"] == case["shrink_then_expand"]:
-                sim = 1.0
-            else:
-                sim = 0.5
-            similarities.append(sim)
-            weights.append(0.15)
+            sims.append(1.0 if cand["shrink_then_expand"] == case["shrink_then_expand"] else 0.3)
 
-        # 关键K线数量
-        if "key_candles_count" in cand and "key_candles_count" in case:
-            count_diff = abs(cand["key_candles_count"] - case["key_candles_count"])
-            sim = max(0, 1 - count_diff / 3)
-            similarities.append(sim)
-            weights.append(0.15)
+        # 1.3 spring_detect (20%)
+        spring_c = cand.get("spring_detect", False)
+        spring_e = case.get("spring_detect", False)
+        sims.append(1.0 if spring_c == spring_e else 0.5)
 
-        # 量能趋势分类
-        if "volume_trend" in cand and "volume_trend" in case:
-            if cand["volume_trend"] == case["volume_trend"]:
-                sim = 1.0
-            else:
-                sim = 0.6
-            similarities.append(sim)
-            weights.append(0.15)
-
-        # 最大量比
-        if "max_volume_ratio" in cand and "max_volume_ratio" in case:
-            max_vol_diff = abs(cand["max_volume_ratio"] - case["max_volume_ratio"])
-            sim = max(0, 1 - max_vol_diff / 3)
-            similarities.append(sim)
-            weights.append(0.15)
-
-        # 量能压缩度
-        if "volume_compress" in cand and "volume_compress" in case:
-            compress_diff = abs(cand["volume_compress"] - case["volume_compress"])
-            sim = max(0, 1 - compress_diff / 0.3)
-            similarities.append(sim)
-            weights.append(0.15)
-
-        # ========== 新增：换手率相关特征 ==========
-        # 换手率比值
-        if "turnover_ratio" in cand and "turnover_ratio" in case:
-            turn_ratio_diff = abs(cand["turnover_ratio"] - case["turnover_ratio"])
-            # 容差设为 0.5（可配置）
-            sim = max(0, 1 - turn_ratio_diff / 0.5)
-            similarities.append(sim)
-            weights.append(0.10)  # 权重15%
-
-        # 最大换手率
-        if "max_turnover" in cand and "max_turnover" in case:
-            max_turn_diff = abs(cand["max_turnover"] - case["max_turnover"])
-            sim = max(0, 1 - max_turn_diff / 5.0)  # 容差5%
-            similarities.append(sim)
-            weights.append(0.02)
-
-        # 换手率趋势斜率
-        if "turnover_slope" in cand and "turnover_slope" in case:
-            slope_diff = abs(cand["turnover_slope"] - case["turnover_slope"])
-            sim = max(0, 1 - slope_diff / 2.0)  # 容差2
-            similarities.append(sim)
-            weights.append(0.03)
-
-        # ★ 重点关注：涨幅≥4%日的平均换手率
+        # 1.4 turnover_health (15%) — 大阳换手在2%~15%满分
         if "big_gain_turnover_avg" in cand and "big_gain_turnover_avg" in case:
-            big_gain_diff = abs(cand["big_gain_turnover_avg"] - case["big_gain_turnover_avg"])
-            # 容差建议设为 2.0（即±2%换手率），可根据实际调整
-            sim = max(0, 1 - big_gain_diff / 2.0)
-            similarities.append(sim)
-            weights.append(0.20)  # 给予最高权重20%
+            t_c = cand["big_gain_turnover_avg"]
+            t_e = case["big_gain_turnover_avg"]
+            # 样板合理区间得分
+            t_ok_c = 1.0 if 2 <= t_c <= 15 else max(0, 1 - abs(t_c - 8.5) / 10)
+            t_ok_e = 1.0 if 2 <= t_e <= 15 else max(0, 1 - abs(t_e - 8.5) / 10)
+            sims.append(1 - abs(t_ok_c - t_ok_e))
 
-        if not similarities:
-            return 0.5
-
-        # 加权平均
-        total_weight = sum(weights)
-        if total_weight == 0:
-            return 0.5
-        weighted_sum = sum(s * w for s, w in zip(similarities, weights))
-        return weighted_sum / total_weight
+        return np.mean(sims) if sims else 0.5
 
     def _calc_shape_similarity(self, cand: dict, case: dict) -> float:
         """价格形态相似度 - 使用平均距离 DTW，且序列已统一长度"""
@@ -385,6 +217,7 @@ class PatternMatcher:
         # 从配置读取回撤容差
         drawdown_tol = self.tolerances.get("drawdown", 15)
 
+        dtw_appended = False
         # 使用平均距离 DTW
         if "normalized_curve" in cand and "normalized_curve" in case:
             cand_curve = np.array(cand["normalized_curve"])
@@ -403,6 +236,7 @@ class PatternMatcher:
                 else:
                     curve_sim = self._simple_dtw(cand_curve, case_curve)
                 similarities.append(curve_sim)
+                dtw_appended = True
 
         # 回撤幅度相似（使用配置容差）
         if "max_drawdown" in cand and "max_drawdown" in case:
@@ -442,7 +276,14 @@ class PatternMatcher:
             sim = max(0, 1 - shrink_diff / 0.5)
             similarities.append(sim)
 
-        return np.mean(similarities) if similarities else 0.5
+        # DTW权重3x, 其余各1x
+        if not similarities:
+            return 0.5
+        if dtw_appended and len(similarities) > 1:
+            weights = [3.0] + [1.0] * (len(similarities) - 1)
+        else:
+            weights = [1.0] * len(similarities)
+        return float(np.average(similarities, weights=weights))
     
     def _simple_dtw(self, seq1: np.ndarray, seq2: np.ndarray) -> float:
         """简化版DTW（当fastdtw不可用时使用）"""

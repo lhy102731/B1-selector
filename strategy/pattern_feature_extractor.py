@@ -29,21 +29,22 @@ class PatternFeatureExtractor:
         """
         if df.empty or len(df) < 10:
             return self._empty_features()
-        
+
         days = lookback_days if lookback_days is not None else self.lookback_days
-        window_df = df.head(days).copy()
-        window_df = window_df.sort_values('date').reset_index(drop=True)
 
-        # 计算知行指标
-        trend_df = calculate_zhixing_trend(window_df)
-        window_df['short_term_trend'] = trend_df['short_term_trend']
-        window_df['bull_bear_line'] = trend_df['bull_bear_line']
+        # ★ 指标计算用降序全量数据（MA/EMA函数专为降序设计）
+        full_df = df.copy().reset_index(drop=True)
 
-        # 计算KDJ
-        kdj_df = KDJ(window_df, n=9, m1=3, m2=3)
-        window_df['K'] = kdj_df['K']
-        window_df['D'] = kdj_df['D']
-        window_df['J'] = kdj_df['J']
+        trend_df = calculate_zhixing_trend(full_df)
+        full_df['short_term_trend'] = trend_df['short_term_trend']
+        full_df['bull_bear_line'] = trend_df['bull_bear_line']
+
+        kdj_df = KDJ(full_df, n=9, m1=3, m2=3)
+        full_df['K'] = kdj_df['K']
+        full_df['D'] = kdj_df['D']
+        full_df['J'] = kdj_df['J']
+
+        window_df = full_df.head(days).sort_values('date').reset_index(drop=True)
 
         features = {
             "trend_structure": self._extract_trend_features(window_df),
@@ -316,13 +317,7 @@ class PatternFeatureExtractor:
         key_mask = (df['volume'] > df['volume'].shift(1) * 2) & (df['close'] > df['open'])
         key_indices = df.index[key_mask].tolist()
         if not key_indices:
-            return {
-                "move_avg_gain": 0,
-                "move_max_gain": 0,
-                "move_total_gain": 0,
-                "move_days": 0,
-                "move_first_last_ratio": 0,
-            }
+            return {}  # 无关键K线时返回空，匹配器用0.5中性分
         moves = []
         current_move = []
         for idx in key_indices:
@@ -360,7 +355,7 @@ class PatternFeatureExtractor:
     def _extract_build_health(self, df: pd.DataFrame) -> dict:
         """建仓波健康度（涨幅、换手累加、均线多头、涨停减分）"""
         if len(df) < 20:
-            return {'build_health_score': 0}
+            return {}  # 数据不足时返回空
 
         df_asc = df.sort_values('date').reset_index(drop=True)
         close = df_asc['close']
@@ -391,7 +386,7 @@ class PatternFeatureExtractor:
             periods.append(curr)
 
         if not periods:
-            return {'build_health_score': 0}
+            return {}  # 无攻击波时返回空，匹配器用0.5中性分
 
         last_period = periods[-1]
         period_df = df_asc.loc[last_period]

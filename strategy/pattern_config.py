@@ -49,7 +49,7 @@ B1_PERFECT_CASES = [
         "name": "宁波韵升",
         "code": "600366",
         "breakout_date": "2025-08-06",
-        "lookback_days": 15,
+        "lookback_days": 28,
         "tags": ["主板", "稀土永磁"],
         "description": "回落短期趋势线+量能平稳+J值中位"
     },
@@ -58,7 +58,7 @@ B1_PERFECT_CASES = [
         "name": "微芯生物",
         "code": "688321",
         "breakout_date": "2025-06-20",
-        "lookback_days": 20,
+        "lookback_days": 17,
         "tags": ["科创板", "医药"],
         "description": "平台整理+缩量后放量+J值低位"
     },
@@ -67,7 +67,7 @@ B1_PERFECT_CASES = [
         "name": "方正科技",
         "code": "600601",
         "breakout_date": "2025-07-23",
-        "lookback_days": 20,
+        "lookback_days": 35,
         "tags": ["主板", "科技"],
         "description": "靠近多空线+量能平稳+J值中位"
     },
@@ -76,7 +76,7 @@ B1_PERFECT_CASES = [
         "name": "圣阳股份",
         "code": "002580",
         "breakout_date": "2026-04-08",
-        "lookback_days": 15,
+        "lookback_days": 14,
         "tags": ["创业板", "科技"],
         "description": "靠近多空线+价格震荡+J值低位"
     },
@@ -85,7 +85,7 @@ B1_PERFECT_CASES = [
         "name": "国轩高科",
         "code": "002074",
         "breakout_date": "2025-08-04",
-        "lookback_days": 35,
+        "lookback_days": 12,
         "tags": ["中小板", "新能源"],
         "description": "靠近短期趋势线+量能平稳+J值低位"
     },
@@ -94,7 +94,7 @@ B1_PERFECT_CASES = [
         "name": "野马电池",
         "code": "605378",
         "breakout_date": "2025-08-01",
-        "lookback_days": 30,
+        "lookback_days": 29,
         "tags": ["主板", "电池"],
         "description": "持续缩量+J值深度低位+趋势下行"
     },
@@ -103,7 +103,7 @@ B1_PERFECT_CASES = [
         "name": "光电股份",
         "code": "600184",
         "breakout_date": "2025-07-10",
-        "lookback_days": 20,
+        "lookback_days": 17,
         "tags": ["主板", "军工"],
         "description": "缩量后放量+J值低位+趋势上行"
     },
@@ -112,7 +112,7 @@ B1_PERFECT_CASES = [
         "name": "新瀚新材",
         "code": "301076",
         "breakout_date": "2025-08-01",
-        "lookback_days": 20,
+        "lookback_days": 29,
         "tags": ["创业板", "化工"],
         "description": "缩量后放量+价格接近短期趋势线+J值中位"
     },
@@ -121,7 +121,7 @@ B1_PERFECT_CASES = [
         "name": "航天发展",
         "code": "000547",
         "breakout_date": "2025-11-12",
-        "lookback_days": 15,
+        "lookback_days": 12,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -130,7 +130,7 @@ B1_PERFECT_CASES = [
         "name": "欧林生物",
         "code": "688319",
         "breakout_date": "2025-08-08",
-        "lookback_days": 30,
+        "lookback_days": 27,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -139,7 +139,7 @@ B1_PERFECT_CASES = [
         "name": "东吴证券",
         "code": "601555",
         "breakout_date": "2025-08-08",
-        "lookback_days": 15,
+        "lookback_days": 12,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -148,7 +148,7 @@ B1_PERFECT_CASES = [
         "name": "中富电路",
         "code": "300814",
         "breakout_date": "2025-08-08",
-        "lookback_days": 20,
+        "lookback_days": 40,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -157,7 +157,7 @@ B1_PERFECT_CASES = [
         "name": "众辰科技",
         "code": "603275",
         "breakout_date": "2025-07-11",
-        "lookback_days": 15,
+        "lookback_days": 37,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -166,7 +166,7 @@ B1_PERFECT_CASES = [
         "name": "国城矿业",
         "code": "000688",
         "breakout_date": "2025-07-10",
-        "lookback_days": 30,
+        "lookback_days": 38,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -175,7 +175,7 @@ B1_PERFECT_CASES = [
         "name": "桐昆股份",
         "code": "601233",
         "breakout_date": "2025-08-05",
-        "lookback_days": 15,
+        "lookback_days": 11,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -184,7 +184,7 @@ B1_PERFECT_CASES = [
         "name": "康平科技",
         "code": "300907",
         "breakout_date": "2025-08-12",
-        "lookback_days": 15,
+        "lookback_days": 12,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -193,7 +193,7 @@ B1_PERFECT_CASES = [
         "name": "国盛证券",
         "code": "002670",
         "breakout_date": "2025-07-18",
-        "lookback_days": 20,
+        "lookback_days": 19,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -202,7 +202,7 @@ B1_PERFECT_CASES = [
         "name": "中科金财",
         "code": "002657",
         "breakout_date": "2025-08-05",
-        "lookback_days": 25,
+        "lookback_days": 37,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -211,7 +211,7 @@ B1_PERFECT_CASES = [
         "name": "信达证券",
         "code": "601059",
         "breakout_date": "2025-08-21",
-        "lookback_days": 15,
+        "lookback_days": 13,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -229,7 +229,7 @@ B1_PERFECT_CASES = [
         "name": "阿莱德",
         "code": "301419",
         "breakout_date": "2025-07-24",
-        "lookback_days": 15,
+        "lookback_days": 12,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -238,7 +238,7 @@ B1_PERFECT_CASES = [
         "name": "新力金融",
         "code": "600318",
         "breakout_date": "2025-08-04",
-        "lookback_days": 20,
+        "lookback_days": 29,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },
@@ -247,7 +247,34 @@ B1_PERFECT_CASES = [
         "name": "中信证券",
         "code": "600030",
         "breakout_date": "2024-09-13",
-        "lookback_days": 35,
+        "lookback_days": 40,
+        "tags": ["主板", "军工"],
+        "description": "航天军工+量能异动+趋势突破"
+    },
+    {
+        "id": "case_025",
+        "name": "润建股份",
+        "code": "002929",
+        "breakout_date": "2026-04-29",
+        "lookback_days": 16,
+        "tags": ["主板", "军工"],
+        "description": "航天军工+量能异动+趋势突破"
+    },
+    {
+        "id": "case_026",
+        "name": "云南锗业",
+        "code": "002428",
+        "breakout_date": "2026-04-30",
+        "lookback_days": 27,
+        "tags": ["主板", "军工"],
+        "description": "航天军工+量能异动+趋势突破"
+    },
+    {
+        "id": "case_027",
+        "name": "大业股份",
+        "code": "603278",
+        "breakout_date": "2026-05-06",
+        "lookback_days": 11,
         "tags": ["主板", "军工"],
         "description": "航天军工+量能异动+趋势突破"
     },

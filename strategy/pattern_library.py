@@ -25,10 +25,11 @@ class B1PatternLibrary:
     
     CACHE_FILE = Path("data/b1_pattern_library_cache.json")
     
-    def __init__(self, csv_manager):
+    def __init__(self, csv_manager, exclude_limit_state=False):
         self.csv_manager = csv_manager
         self.extractor = PatternFeatureExtractor()
-        self.matcher = PatternMatcher(SIMILARITY_WEIGHTS)
+        self.matcher = PatternMatcher(SIMILARITY_WEIGHTS, exclude_limit_state=exclude_limit_state)
+        self.exclude_limit_state = exclude_limit_state
         self.cases = {}  # {case_id: {meta, features}}
         
         # 尝试从缓存加载，否则重新计算
@@ -105,7 +106,7 @@ class B1PatternLibrary:
 
         mask = df['date'] < breakout_dt
         filtered = df[mask]
-        return filtered.head(lookback_days)
+        return filtered.head(max(lookback_days, 120))  # 至少120行保证MA114计算正确
 
     def find_best_match(self, stock_code: str, stock_df: pd.DataFrame, lookback_days: int = None) -> dict:
         """

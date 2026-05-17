@@ -8,8 +8,10 @@ from functools import partial
 
 def build_one(code, data_dir, cache_dir):
     cache_file = cache_dir / f"{code}.parquet"
-    if cache_file.exists():
-        return f"SKIP {code}"
+    csv_file = Path(data_dir) / code[:2] / f"{code}.csv"
+    if cache_file.exists() and csv_file.exists():
+        if cache_file.stat().st_mtime >= csv_file.stat().st_mtime:
+            return f"SKIP {code}"
     try:
         csv_manager = CSVManager(data_dir)
         df_raw = csv_manager.read_stock(code)

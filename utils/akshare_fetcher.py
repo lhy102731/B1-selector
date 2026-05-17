@@ -1,7 +1,6 @@
 """
-A股数据抓取模块 - 使用 baostock / 腾讯 / akshare
-优先级: baostock (前复权) > 腾讯 > akshare
-失败不模拟数据，采用多轮重试机制。
+A股数据抓取模块 - 后复权 K线 + 历史流通市值
+优先级: baostock (后复权) > 东方财富 (后复权+市值+换手率) > akshare (后复权)
 """
 import akshare as ak
 import pandas as pd
@@ -96,8 +95,8 @@ def _update_one_stock_mp(code, days_to_fetch, market_cap_map, data_dir):
         old_count = len(existing_df)
         df = fetcher.fetch_stock_update(code, days=days_to_fetch, skip_baostock_login=False, verbose=False)
         if df is not None and not df.empty:
-            if code in market_cap_map:
-                df['market_cap'] = market_cap_map[code]
+            if 'market_cap' not in df.columns or df['market_cap'].isna().all():
+                df['market_cap'] = market_cap_map.get(code, 0)
             fetcher.csv_manager.update_stock(code, df)
             new_df = fetcher.csv_manager.read_stock(code)
             new_count = len(new_df)
@@ -117,7 +116,7 @@ def _init_one_stock_mp(code, market_cap_map, data_dir):
     try:
         from utils.akshare_fetcher import AKShareFetcher
         fetcher = AKShareFetcher(data_dir)
-        df = fetcher.fetch_stock_history(code, years=6, market_cap=market_cap_map.get(code))
+        df = fetcher.fetch_stock_history(code, years=30, market_cap=market_cap_map.get(code))
         if df is not None and not df.empty:
             if len(df) < 10 or df['close'].mean() <= 0:
                 return (code, False, "数据无效")
@@ -193,25 +192,7 @@ class AKShareFetcher:
 
     def get_all_stock_codes(self, max_retries=3):
         print("正在获取A股股票列表...")
-        for attempt in range(max_retries):
-            try:
-                print(f"  尝试akshare (第{attempt+1}/{max_retries}次)...")
-                sh_df = ak.stock_sh_a_spot_em()
-                sz_df = ak.stock_sz_a_spot_em()
-                all_stocks = pd.concat([sh_df[['代码', '名称']], sz_df[['代码', '名称']]])
-                all_stocks = all_stocks.drop_duplicates(subset=['代码'])
-                code_pattern = r'^(00|30|60|68|88)\d{4}$'
-                all_stocks = all_stocks[all_stocks['代码'].str.match(code_pattern)]
-                exclude_keywords = ['债', '基', 'ETF', 'LOF', '基金', '理财', '信托', 'B股', '指数', '国债', '企债', '转债', '回购', 'R-', 'GC']
-                for keyword in exclude_keywords:
-                    all_stocks = all_stocks[~all_stocks['名称'].str.contains(keyword, na=False)]
-                stock_dict = dict(zip(all_stocks['代码'], all_stocks['名称']))
-                print(f"✓ akshare获取成功: {len(stock_dict)} 只A股股票")
-                self._save_stock_names(stock_dict)
-                return stock_dict
-            except Exception as e:
-                print(f"  akshare失败: {e}")
-                time.sleep(2 ** attempt)
+        # 优先腾讯 (速度快), akshare 备用
         for attempt in range(max_retries):
             try:
                 print(f"  尝试腾讯接口 (第{attempt+1}/{max_retries}次)...")
@@ -227,19 +208,38 @@ class AKShareFetcher:
                             continue
                         filtered[code] = name
                     if filtered:
-                        print(f"✓ 腾讯获取成功: {len(filtered)} 只A股股票")
+                        print(f"[OK] 腾讯获取成功: {len(filtered)} 只A股股票")
                         self._save_stock_names(filtered)
                         return filtered
             except Exception as e:
                 print(f"  腾讯失败: {e}")
                 time.sleep(1)
+        for attempt in range(max_retries):
+            try:
+                print(f"  尝试akshare (第{attempt+1}/{max_retries}次)...")
+                sh_df = ak.stock_sh_a_spot_em()
+                sz_df = ak.stock_sz_a_spot_em()
+                all_stocks = pd.concat([sh_df[['代码', '名称']], sz_df[['代码', '名称']]])
+                all_stocks = all_stocks.drop_duplicates(subset=['代码'])
+                code_pattern = r'^(00|30|60|68|88)\d{4}$'
+                all_stocks = all_stocks[all_stocks['代码'].str.match(code_pattern)]
+                exclude_keywords = ['债', '基', 'ETF', 'LOF', '基金', '理财', '信托', 'B股', '指数', '国债', '企债', '转债', '回购', 'R-', 'GC']
+                for keyword in exclude_keywords:
+                    all_stocks = all_stocks[~all_stocks['名称'].str.contains(keyword, na=False)]
+                stock_dict = dict(zip(all_stocks['代码'], all_stocks['名称']))
+                print(f"[OK] akshare获取成功: {len(stock_dict)} 只A股股票")
+                self._save_stock_names(stock_dict)
+                return stock_dict
+            except Exception as e:
+                print(f"  akshare失败: {e}")
+                time.sleep(2 ** attempt)
         print("\n网络连接失败，尝试加载本地缓存...")
         local_stocks = self._load_local_stock_names()
         if local_stocks:
-            print(f"✓ 从本地缓存加载: {len(local_stocks)} 只股票")
+            print(f"[OK] 从本地缓存加载: {len(local_stocks)} 只股票")
             return local_stocks
         print("\n使用内置默认股票列表...")
-        print(f"✓ 加载默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
+        print(f"[OK] 加载默认列表: {len(DEFAULT_STOCK_LIST)} 只股票")
         return DEFAULT_STOCK_LIST.copy()
 
     def _fetch_stock_list_http(self):
@@ -319,57 +319,29 @@ class AKShareFetcher:
                 except Exception as e:
                     continue
             if stocks:
-                print(f"  ✓ 通过腾讯接口获取: {len(stocks)} 只股票")
+                print(f"  [OK]通过腾讯接口获取: {len(stocks)} 只股票")
                 return stocks
             return DEFAULT_STOCK_LIST.copy()
         except Exception as e:
             print(f"  HTTP获取失败: {e}")
             return DEFAULT_STOCK_LIST.copy()
 
-    def _get_realtime_market_cap(self, stock_code):
+    # CSV输出列（baostock提供，不含振幅/涨跌额/量比/静态PE）
+    _OUTPUT_COLUMNS = [
+        'date', 'open', 'high', 'low', 'close', 'volume', 'amount',
+        'turnover', 'change_pct', 'pe_dynamic', 'pb', 'ps', 'pcf', 'market_cap',
+    ]
+    def _fetch_stock_history_baostock(self, stock_code, years=30):
+        """baostock: 后复权K线 + 换手率 + PE/PB/PS/PCF (不含市值)"""
         import baostock as bs
         from contextlib import redirect_stdout
         import os
-        if stock_code.startswith('6'):
-            bs_code = f'sh.{stock_code}'
-        else:
-            bs_code = f'sz.{stock_code}'
-        try:
-            with redirect_stdout(open(os.devnull, 'w')):
-                lg = bs.login()
-            if lg.error_code != '0':
-                return None
-            rs = bs.query_stock_basic(code=bs_code)
-            if rs.error_code != '0':
-                return None
-            data = rs.get_data()
-            if data.empty or 'circulating_market_value' not in data.columns:
-                return None
-            cap = data['circulating_market_value'].iloc[0]
-            if pd.notna(cap) and cap > 0:
-                return int(cap)
-            else:
-                return None
-        except Exception:
-            return None
-        finally:
-            with redirect_stdout(open(os.devnull, 'w')):
-                bs.logout()
-
-    def fetch_stock_history(self, stock_code, years=6, market_cap=None):
-        import baostock as bs
-        from contextlib import redirect_stdout
-        import os
-        def safe_float(val):
-            try:
-                return float(val) if val != '' else 0.0
-            except:
-                return 0.0
-        def safe_int(val):
-            try:
-                return int(float(val)) if val != '' else 0
-            except:
-                return 0
+        def sf(val):
+            try: return float(val) if val not in ('', None) else None
+            except: return None
+        def si(val):
+            try: return int(float(val)) if val not in ('', None) else 0
+            except: return 0
         end_date = datetime.now()
         start_date = end_date - timedelta(days=365 * years)
         start_str = start_date.strftime('%Y-%m-%d')
@@ -378,353 +350,96 @@ class AKShareFetcher:
             bs_code = f'sh.{stock_code}'
         else:
             bs_code = f'sz.{stock_code}'
-        max_retries = 3
-        for attempt in range(max_retries):
+
+        # baostock 字段: date,code,open,high,low,close,preclose,volume,amount,
+        #               adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST
+        fields = "date,code,open,high,low,close,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
+
+        for attempt in range(2):
             try:
                 with redirect_stdout(open(os.devnull, 'w')):
                     lg = bs.login()
                 if lg.error_code != '0':
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        print(f"  baostock 登录失败: {lg.error_msg}")
-                        break
+                    if attempt < 1: time.sleep(2); continue
+                    return None
                 rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,code,open,high,low,close,volume,turn",
-                    start_date=start_str,
-                    end_date=end_str,
-                    frequency="d",
-                    adjustflag="2"
+                    bs_code, fields,
+                    start_date=start_str, end_date=end_str,
+                    frequency="d", adjustflag="1"
                 )
                 if rs.error_code != '0':
-                    if '未登录' in rs.error_msg and attempt < max_retries - 1:
-                        with redirect_stdout(open(os.devnull, 'w')):
-                            bs.logout()
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        print(f"  baostock 查询失败: {rs.error_msg}")
-                        break
+                    if attempt < 1:
+                        with redirect_stdout(open(os.devnull, 'w')): bs.logout()
+                        time.sleep(2); continue
+                    return None
                 data_list = []
                 while (rs.error_code == '0') & rs.next():
                     row = rs.get_row_data()
-                    turn = row[7] if len(row) > 7 else ''
-                    if turn == '':
-                        turn = 0.0
-                    else:
-                        turn = float(turn)
+                    # 0:date  1:code  2:open  3:high  4:low  5:close
+                    # 6:volume  7:amount  8:turn  9:pctChg
+                    # 10:peTTM  11:pbMRQ  12:psTTM  13:pcfNcfTTM
                     data_list.append({
                         'date': row[0],
-                        'open': safe_float(row[2]),
-                        'high': safe_float(row[3]),
-                        'low': safe_float(row[4]),
-                        'close': safe_float(row[5]),
-                        'volume': safe_int(row[6]),
-                        'turnover': turn,
+                        'open': sf(row[2]) or 0.0,
+                        'high': sf(row[3]) or 0.0,
+                        'low': sf(row[4]) or 0.0,
+                        'close': sf(row[5]) or 0.0,
+                        'volume': si(row[6]),
+                        'amount': sf(row[7]) or 0.0,
+                        'turnover': sf(row[8]) or 0.0,
+                        'change_pct': sf(row[9]) or 0.0,
+                        'pe_dynamic': sf(row[10]),       # peTTM
+                        'pb': sf(row[11]),                # pbMRQ
+                        'ps': sf(row[12]),                # psTTM
+                        'pcf': sf(row[13]),               # pcfNcfTTM
+                        # 以下 baostock 不提供, 填占位
+                        'amplitude': 0.0,
+                        'change': 0.0,
+                        'volume_ratio': None,
+                        'pe_static': None,
+                        'total_cap': 0,
+                        'circ_cap': 0,
                     })
                 if data_list:
                     df = pd.DataFrame(data_list)
                     df['date'] = pd.to_datetime(df['date'])
-                    if market_cap is not None:
-                        df['market_cap'] = market_cap
-                    else:
-                        mc = self._get_realtime_market_cap(stock_code)
-                        if mc:
-                            df['market_cap'] = mc
-                        else:
-                            # 市值获取失败时使用占位，不生成模拟数据
-                            df['market_cap'] = 0
+                    df['market_cap'] = 0  # baostock 无市值
                     df = df.sort_values('date', ascending=False)
                     return df
-                else:
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        print(f"  baostock 返回空数据")
-                        break
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                else:
-                    print(f"  baostock 异常: {e}")
-                    break
+                return None
+            except Exception:
+                if attempt < 1: time.sleep(2); continue
+                return None
             finally:
                 with redirect_stdout(open(os.devnull, 'w')):
                     bs.logout()
-        # 备用接口：腾讯
-        print("  baostock 失败，尝试腾讯接口...")
-        try:
-            df = self._fetch_stock_history_http(stock_code, years)
-            if df is not None and not df.empty:
-                if market_cap is not None:
-                    df['market_cap'] = market_cap
-                else:
-                    mc = self._get_realtime_market_cap(stock_code)
-                    if mc:
-                        df['market_cap'] = mc
-                    else:
-                        df['market_cap'] = 0
-                if 'turnover' in df.columns and df['turnover'].isna().all():
-                    try:
-                        start_str_ak = (datetime.now() - timedelta(days=365 * years)).strftime("%Y%m%d")
-                        end_str_ak = datetime.now().strftime("%Y%m%d")
-                        ak_df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_str_ak, end_date=end_str_ak, adjust="")
-                        if ak_df is not None and not ak_df.empty:
-                            ak_df = ak_df.rename(columns={'日期': 'date', '换手率': 'turnover'})
-                            ak_df['date'] = pd.to_datetime(ak_df['date'])
-                            turnover_dict = ak_df.set_index('date')['turnover'].to_dict()
-                            df['turnover'] = df['date'].map(turnover_dict)
-                    except Exception as e:
-                        print(f"  补获取换手率失败: {e}")
-                print(f"✓ (腾讯获取 {len(df)}条)")
-                return df
-        except Exception as e:
-            print(f"  腾讯接口失败: {e}")
-        # 最后 akshare
-        print("  尝试 akshare 更新...")
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                start_str_ak = (datetime.now() - timedelta(days=365 * years)).strftime("%Y%m%d")
-                end_str_ak = datetime.now().strftime("%Y%m%d")
-                df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_str_ak, end_date=end_str_ak, adjust="")
-                if df is not None and not df.empty:
-                    df = df.rename(columns={
-                        '日期': 'date', '开盘': 'open', '最高': 'high', '最低': 'low',
-                        '收盘': 'close', '成交量': 'volume', '成交额': 'amount', '换手率': 'turnover'
-                    })
-                    df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'turnover']]
-                    if market_cap is not None:
-                        df['market_cap'] = market_cap
-                    else:
-                        mc = self._get_realtime_market_cap(stock_code)
-                        if mc:
-                            df['market_cap'] = mc
-                        else:
-                            df['market_cap'] = 0
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.sort_values('date', ascending=False)
-                    print(f"✓ (akshare获取 {len(df)}条)")
-                    return df
-                else:
-                    print(f"  akshare返回空数据，重试 {attempt + 1}/{max_retries}")
-                    time.sleep(2 ** attempt)
-            except Exception as e:
-                print(f"  akshare获取失败 (尝试{attempt + 1}/{max_retries}): {e}")
-                time.sleep(2 ** attempt)
-        return None  # 彻底失败
+        return None
 
-    def _fetch_stock_history_http(self, stock_code, years=6):
-        try:
-            if stock_code.startswith('6') or stock_code.startswith('88'):
-                market_code = 'sh' + stock_code
-            else:
-                market_code = 'sz' + stock_code
-            max_days = min(years * 365, 1000)
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_code},day,,,{max_days}"
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://stock.finance.qq.com/'
-            })
-            data = resp.json()
-            data_level = data.get('data', {})
-            klines = []
-            if isinstance(data_level, dict):
-                stock_data = data_level.get(market_code, {})
-                if isinstance(stock_data, dict):
-                    klines = stock_data.get('day', [])
-            elif isinstance(data_level, list) and len(data_level) > 0:
-                for item in data_level:
-                    if isinstance(item, list) and len(item) >= 2 and item[0] == market_code:
-                        if isinstance(item[1], list):
-                            klines = item[1]
-                        break
-            if not klines:
-                return None
-            def safe_float(val):
-                try:
-                    return float(val) if val != '' else 0.0
-                except:
-                    return 0.0
-            def safe_int(val):
-                try:
-                    return int(float(val)) if val != '' else 0
-                except:
-                    return 0
-            records = []
-            for item in klines:
-                if len(item) >= 6 and isinstance(item, list):
-                    records.append({
-                        'date': str(item[0]),
-                        'open': safe_float(item[1]),
-                        'close': safe_float(item[2]),
-                        'high': safe_float(item[3]),
-                        'low': safe_float(item[4]),
-                        'volume': safe_int(item[5]),
-                    })
-            if not records:
-                return None
-            df = pd.DataFrame(records)
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.sort_values('date', ascending=False)
+    def fetch_stock_history(self, stock_code, years=30, market_cap=None):
+        """获取股票历史K线: baostock(后复权) → 东方财富(后复权+全量字段)"""
+        # 主力: baostock 后复权
+        df = self._fetch_stock_history_baostock(stock_code, years)
+        if df is not None and not df.empty:
+            if market_cap is not None:
+                df['market_cap'] = market_cap
+            print(f"[OK] baostock {len(df)}条")
             return df
-        except Exception as e:
-            print(f"  HTTP获取历史数据失败: {e}")
-            return None
+        print(f"  [ERR] baostock {stock_code} 历史数据失败")
+        return None
+
 
     def fetch_stock_update(self, stock_code, days=10, skip_baostock_login=False, verbose=False):
+        """增量更新: baostock 后复权全字段 (唯一数据源)"""
         import baostock as bs
         from contextlib import redirect_stdout
         import os
-        def safe_float(val):
-            try:
-                return float(val) if val != '' else 0.0
-            except:
-                return 0.0
-        def safe_int(val):
-            try:
-                return int(float(val)) if val != '' else 0
-            except:
-                return 0
-        if verbose:
-            print("  尝试腾讯接口...")
-        try:
-            fetch_days = min(days + 10, 1000)
-            if stock_code.startswith('6') or stock_code.startswith('88'):
-                market_code = 'sh' + stock_code
-            else:
-                market_code = 'sz' + stock_code
-            url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={market_code},day,,,{fetch_days}"
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': 'https://stock.finance.qq.com/'
-            })
-            data = resp.json()
-            data_level = data.get('data', {})
-            klines = []
-            if isinstance(data_level, dict):
-                stock_data = data_level.get(market_code, {})
-                if isinstance(stock_data, dict):
-                    klines = stock_data.get('day', [])
-            elif isinstance(data_level, list) and len(data_level) > 0:
-                for item in data_level:
-                    if isinstance(item, list) and len(item) >= 2 and item[0] == market_code:
-                        if isinstance(item[1], list):
-                            klines = item[1]
-                        break
-            if klines:
-                records = []
-                for item in klines:
-                    if len(item) >= 6 and isinstance(item, list):
-                        records.append({
-                            'date': str(item[0]),
-                            'open': safe_float(item[1]),
-                            'close': safe_float(item[2]),
-                            'high': safe_float(item[3]),
-                            'low': safe_float(item[4]),
-                            'volume': safe_int(item[5]),
-                        })
-                if records:
-                    df = pd.DataFrame(records)
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.sort_values('date', ascending=False)
-                    df = df.head(days)
-                    if verbose:
-                        print("  ✓ 腾讯K线获取成功，尝试补充换手率...")
-                    start_date = df['date'].min() - timedelta(days=5)
-                    end_date = df['date'].max() + timedelta(days=5)
-                    start_str = start_date.strftime('%Y-%m-%d')
-                    end_str = end_date.strftime('%Y-%m-%d')
-                    if stock_code.startswith('6'):
-                        bs_code = f'sh.{stock_code}'
-                    else:
-                        bs_code = f'sz.{stock_code}'
-                    turnover_success = False
-                    for attempt in range(3):
-                        try:
-                            with redirect_stdout(open(os.devnull, 'w')):
-                                lg = bs.login()
-                            if lg.error_code != '0':
-                                if verbose:
-                                    print(f"  baostock 登录失败: {lg.error_msg}")
-                                break
-                            rs = bs.query_history_k_data_plus(
-                                bs_code,
-                                "date,turn",
-                                start_date=start_str,
-                                end_date=end_str,
-                                frequency="d",
-                                adjustflag="2"
-                            )
-                            if rs.error_code == '0':
-                                turnover_dict = {}
-                                while (rs.error_code == '0') & rs.next():
-                                    row = rs.get_row_data()
-                                    turn = row[1]
-                                    if turn == '':
-                                        turn = 0.0
-                                    else:
-                                        turn = float(turn)
-                                    turnover_dict[row[0]] = turn
-                                df['turnover'] = df['date'].dt.strftime('%Y-%m-%d').map(turnover_dict)
-                                if verbose:
-                                    print(f"  ✓ baostock 补充换手率成功，覆盖 {len(turnover_dict)} 条")
-                                turnover_success = True
-                                break
-                            else:
-                                if verbose:
-                                    print(f"  baostock 查询失败: {rs.error_msg}")
-                                if attempt < 2:
-                                    time.sleep(2 ** attempt)
-                                else:
-                                    break
-                        except Exception as e:
-                            if verbose:
-                                print(f"  baostock 补充换手率异常: {e}")
-                            if attempt < 2:
-                                time.sleep(2 ** attempt)
-                            else:
-                                break
-                        finally:
-                            with redirect_stdout(open(os.devnull, 'w')):
-                                bs.logout()
-                    if not turnover_success or df['turnover'].isna().all():
-                        if verbose:
-                            print("  baostock 换手率缺失，尝试 akshare...")
-                        try:
-                            start_str_ak = (df['date'].min() - timedelta(days=10)).strftime('%Y%m%d')
-                            end_str_ak = (df['date'].max() + timedelta(days=5)).strftime('%Y%m%d')
-                            ak_df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_str_ak, end_date=end_str_ak, adjust="")
-                            if ak_df is not None and not ak_df.empty:
-                                ak_df = ak_df.rename(columns={'日期': 'date', '换手率': 'turnover'})
-                                ak_df['date'] = pd.to_datetime(ak_df['date'])
-                                turnover_dict = ak_df.set_index('date')['turnover'].to_dict()
-                                df['turnover'] = df['date'].map(turnover_dict)
-                                if verbose:
-                                    print(f"  ✓ akshare 补充换手率成功")
-                        except Exception as e:
-                            if verbose:
-                                print(f"  akshare 补换手率失败: {e}")
-                    if 'market_cap' not in df.columns:
-                        mc = self._get_realtime_market_cap(stock_code)
-                        if mc:
-                            df['market_cap'] = mc
-                        else:
-                            df['market_cap'] = 0
-                    if verbose:
-                        print(f"✓ (腾讯接口更新 {len(df)}条)")
-                    return df
-        except Exception as e:
-            if verbose:
-                print(f"  腾讯接口更新失败: {e}")
-        if verbose:
-            print("  腾讯接口失败，尝试 baostock 全量更新...")
-        max_retries = 3
-        for attempt in range(max_retries):
+        def sf(val):
+            try: return float(val) if val not in ('', None) else None
+            except: return None
+        def si(val):
+            try: return int(float(val)) if val not in ('', None) else 0
+            except: return 0
+        for attempt in range(2):
             try:
                 end_date = datetime.now()
                 start_date = end_date - timedelta(days=days + 10)
@@ -737,104 +452,53 @@ class AKShareFetcher:
                 with redirect_stdout(open(os.devnull, 'w')):
                     lg = bs.login()
                 if lg.error_code != '0':
-                    if verbose:
-                        print(f"  baostock 登录失败: {lg.error_msg}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        break
+                    if attempt < 1: time.sleep(2); continue
+                    break
+                fields = "date,code,open,high,low,close,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
                 rs = bs.query_history_k_data_plus(
-                    bs_code,
-                    "date,code,open,high,low,close,volume,turn",
-                    start_date=start_str,
-                    end_date=end_str,
-                    frequency="d",
-                    adjustflag="2"
+                    bs_code, fields,
+                    start_date=start_str, end_date=end_str,
+                    frequency="d", adjustflag="1"
                 )
                 if rs.error_code != '0':
-                    if verbose:
-                        print(f"  baostock 查询失败: {rs.error_msg}")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        break
+                    if attempt < 1:
+                        with redirect_stdout(open(os.devnull, 'w')): bs.logout()
+                        time.sleep(2); continue
+                    break
                 data_list = []
                 while (rs.error_code == '0') & rs.next():
                     row = rs.get_row_data()
-                    turn = row[7] if len(row) > 7 else ''
-                    if turn == '':
-                        turn = 0.0
-                    else:
-                        turn = float(turn)
                     data_list.append({
                         'date': row[0],
-                        'open': safe_float(row[2]),
-                        'high': safe_float(row[3]),
-                        'low': safe_float(row[4]),
-                        'close': safe_float(row[5]),
-                        'volume': safe_int(row[6]),
-                        'turnover': turn,
+                        'open': sf(row[2]) or 0.0,
+                        'high': sf(row[3]) or 0.0,
+                        'low': sf(row[4]) or 0.0,
+                        'close': sf(row[5]) or 0.0,
+                        'volume': si(row[6]),
+                        'amount': sf(row[7]) or 0.0,
+                        'turnover': sf(row[8]) or 0.0,
+                        'change_pct': sf(row[9]) or 0.0,
+                        'pe_dynamic': sf(row[10]),
+                        'pb': sf(row[11]),
+                        'ps': sf(row[12]),
+                        'pcf': sf(row[13]),
                     })
                 if data_list:
                     df = pd.DataFrame(data_list)
                     df['date'] = pd.to_datetime(df['date'])
                     df = df.sort_values('date', ascending=False)
                     df = df.head(days)
-                    if verbose:
-                        print(f"✓ (baostock更新 {len(df)}条)")
+                    if verbose: print(f"[OK](baostock更新 {len(df)}条)")
                     return df
-                else:
-                    if verbose:
-                        print(f"  baostock 返回空数据")
-                    if attempt < max_retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    else:
-                        break
-            except Exception as e:
-                if verbose:
-                    print(f"  baostock 异常: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                else:
-                    break
+                break
+            except Exception:
+                if attempt < 1: time.sleep(2); continue
+                break
             finally:
                 with redirect_stdout(open(os.devnull, 'w')):
                     bs.logout()
-        if verbose:
-            print("  尝试 akshare 更新...")
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days + 10)
-                start_str = start_date.strftime("%Y%m%d")
-                end_str = end_date.strftime("%Y%m%d")
-                df = ak.stock_zh_a_hist(symbol=stock_code, period="daily", start_date=start_str, end_date=end_str, adjust="")
-                if df is not None and not df.empty:
-                    df = df.rename(columns={
-                        '日期': 'date', '开盘': 'open', '最高': 'high', '最低': 'low',
-                        '收盘': 'close', '成交量': 'volume', '成交额': 'amount', '换手率': 'turnover'
-                    })
-                    df = df[['date', 'open', 'high', 'low', 'close', 'volume', 'turnover']]
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.sort_values('date', ascending=False)
-                    df = df.head(days)
-                    if verbose:
-                        print(f"✓ (akshare更新 {len(df)}条)")
-                    return df
-                else:
-                    if verbose:
-                        print(f"  akshare返回空数据，重试 {attempt + 1}/{max_retries}")
-                    time.sleep(2 ** attempt)
-            except Exception as e:
-                if verbose:
-                    print(f"  akshare未知错误 (尝试{attempt + 1}/{max_retries}): {e}")
-                time.sleep(2)
         return None
+
 
     def init_full_data(self, max_stocks=None, skip_failed=False, retry_failed=True, force_full=False):
         """
@@ -870,7 +534,7 @@ class AKShareFetcher:
                     failed_codes = json.load(f)
                 if failed_codes:
                     target_codes = failed_codes
-                    print(f"📋 检测到失败列表，将仅重试 {len(target_codes)} 只失败股票")
+                    print(f"[LIST] 检测到失败列表，将仅重试 {len(target_codes)} 只失败股票")
                 else:
                     target_codes = all_stock_codes
             except:
@@ -899,9 +563,9 @@ class AKShareFetcher:
         print("\n正在批量获取流通市值数据...")
         market_cap_map = self._fetch_market_cap_tencent(target_codes)
         if market_cap_map:
-            print(f"  ✓ 获取到 {len(market_cap_map)} 只股票流通市值")
+            print(f"  [OK]获取到 {len(market_cap_map)} 只股票流通市值")
         else:
-            print("  ⚠️ 市值获取失败，将使用默认值")
+            print("  [WARN] 市值获取失败，将使用默认值")
 
         total = len(target_codes)
         print(f"\n开始抓取 {total} 只股票的历史数据...")
@@ -941,21 +605,21 @@ class AKShareFetcher:
             else:
                 failed_codes.append(code)
                 if error:
-                    print(f"✗ {code} 失败: {error}")
+                    print(f"[FAIL] {code} 失败: {error}")
 
         # 保存本次失败的股票列表（覆盖或合并？如果是重试模式，应覆盖原列表）
         if failed_codes:
             try:
                 with open(failed_stocks_file, 'w', encoding='utf-8') as f:
                     json.dump(failed_codes, f, ensure_ascii=False, indent=2)
-                print(f"\n📁 已保存 {len(failed_codes)} 只最终失败的股票到 failed_stocks.json")
+                print(f"\n[FILE] 已保存 {len(failed_codes)} 只最终失败的股票到 failed_stocks.json")
             except Exception as e:
-                print(f"\n⚠️ 保存失败列表出错: {e}")
+                print(f"\n[WARN] 保存失败列表出错: {e}")
         else:
             # 如果全部成功，删除失败列表文件
             if failed_stocks_file.exists():
                 failed_stocks_file.unlink()
-                print("\n✅ 所有股票抓取成功，已删除失败列表文件")
+                print("\n[OK] 所有股票抓取成功，已删除失败列表文件")
 
         print("=" * 60)
         print(f"全量抓取完成! 成功: {success}, 最终失败: {len(failed_codes)}")
@@ -1017,21 +681,27 @@ class AKShareFetcher:
         last_trading_day_str = last_trading_day.strftime('%Y-%m-%d')
         is_today_trading = self._is_trading_day(today)
 
+        # 盘中拦截：交易时段内跳过更新，不请求数据也不刷新缓存
+        if is_trading_time and is_today_trading:
+            print(f"[SKIP] 交易时段内（{current_time.strftime('%H:%M')}），跳过数据更新，不刷新缓存")
+            print("=" * 60)
+            return
+
         # 缓存有效性检查：如果缓存日期有效且不是强制更新模式，则跳过
         if cache_date_obj and not max_stocks:
             # 收盘后且缓存日期为今天 -> 已更新过
             if cache_date_obj == today and is_after_market_close:
-                print(f"✓ 数据已于 {cache_date} 收盘后更新过，无需重复更新")
+                print(f"[OK]数据已于 {cache_date} 收盘后更新过，无需重复更新")
                 print("=" * 60)
                 return
             # 盘前且缓存日期为上一个交易日 -> 无需重复更新
             if cache_date_obj == last_trading_day and current_time < trading_start and is_today_trading:
-                print(f"✓ 当前时间 {current_time.strftime('%H:%M')} 早于开盘，且数据已更新至上一个交易日 {cache_date}，无需重复更新")
+                print(f"[OK]当前时间 {current_time.strftime('%H:%M')} 早于开盘，且数据已更新至上一个交易日 {cache_date}，无需重复更新")
                 print("=" * 60)
                 return
             # 非交易日且缓存日期为上一个交易日 -> 无需重复更新
             if cache_date_obj == last_trading_day and not is_today_trading:
-                print(f"✓ 数据已更新至上一个交易日 {cache_date}，今天非交易日，无需重复更新")
+                print(f"[OK]数据已更新至上一个交易日 {cache_date}，今天非交易日，无需重复更新")
                 print("=" * 60)
                 return
 
@@ -1082,7 +752,7 @@ class AKShareFetcher:
         print(f"  需要更新: {need_update} 只, 已最新: {skipped} 只")
 
         if need_update == 0:
-            print("✓ 所有数据已是最新")
+            print("[OK]所有数据已是最新")
             print("=" * 60)
             return
 
@@ -1091,7 +761,7 @@ class AKShareFetcher:
         update_codes = [code for code, _ in stocks_to_update]
         market_cap_map = self._fetch_market_cap_tencent(update_codes)
         if not market_cap_map:
-            print("  ⚠️ 市值获取失败")
+            print("  [WARN] 市值获取失败")
 
         def _update_stock_list(stock_tasks, market_cap_map):
             results = []
@@ -1120,8 +790,8 @@ class AKShareFetcher:
                 print("  使用单进程模式进行更新...")
                 results = []
                 for task in tqdm(tasks, desc="更新进度"):
-                    code, days, m_map, d_dir = task
-                    result = _update_one_stock_mp(code, days, m_map, d_dir)
+                    code, days, m_map, cf_map, d_dir = task
+                    result = _update_one_stock_mp(code, days, m_map, cf_map, d_dir)
                     results.append(result)
             success_list = []
             fail_list = []
@@ -1142,7 +812,7 @@ class AKShareFetcher:
             if retry == 0:
                 print(f"\n开始更新 {len(current_tasks)} 只股票...")
             else:
-                print(f"\n🔄 第 {retry} 次重试，剩余 {len(current_tasks)} 只股票...")
+                print(f"\n[RETRY] 第 {retry} 次重试，剩余 {len(current_tasks)} 只股票...")
             success_list, fail_list = _update_stock_list(current_tasks, market_cap_map)
             final_success.extend(success_list)
             current_tasks = [(code, days) for code, days in current_tasks if code in [f[0] for f in fail_list]]
@@ -1156,9 +826,9 @@ class AKShareFetcher:
             try:
                 with open(failed_stocks_file, 'w', encoding='utf-8') as f:
                     json.dump([code for code, _ in final_fail], f, ensure_ascii=False, indent=2)
-                print(f"\n⚠️ 有 {len(final_fail)} 只股票更新失败，已写入 {failed_stocks_file}")
+                print(f"\n[WARN] 有 {len(final_fail)} 只股票更新失败，已写入 {failed_stocks_file}")
             except Exception as e:
-                print(f"\n⚠️ 写入失败列表出错: {e}")
+                print(f"\n[WARN] 写入失败列表出错: {e}")
 
         updated = len(final_success)
         failed = len(final_fail)
@@ -1185,7 +855,7 @@ class AKShareFetcher:
             update_cache['last_update_date'] = cache_date_to_write
             with open(update_cache_file, 'w', encoding='utf-8') as f:
                 json.dump(update_cache, f)
-            print(f"✓ 缓存已更新，最后更新日期: {cache_date_to_write}")
+            print(f"[OK]缓存已更新，最后更新日期: {cache_date_to_write}")
         else:
             reasons = []
             if max_stocks:
@@ -1197,9 +867,9 @@ class AKShareFetcher:
             if not is_today_trading:
                 reasons.append("非交易日")
             if reasons:
-                print(f"ℹ️ 缓存未更新 ({', '.join(reasons)})")
+                print(f"[INFO] 缓存未更新 ({', '.join(reasons)})")
             else:
-                print(f"ℹ️ 缓存未更新")
+                print(f"[INFO] 缓存未更新")
 
         print("=" * 60)
         print(f"完成! 更新成功: {updated}, 跳过: {skipped}, 失败: {failed}")

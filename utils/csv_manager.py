@@ -27,16 +27,20 @@ class CSVManager:
         if not path.exists():
             return pd.DataFrame()
 
-        # 检查文件是否为空
         if path.stat().st_size == 0:
             return pd.DataFrame()
 
-        try:
-            df = pd.read_csv(path, parse_dates=['date'])
-            return df
-        except Exception as e:
-            print(f"  读取 {stock_code} 数据失败: {e}")
-            return pd.DataFrame()
+        for enc in ['gbk', 'utf-8']:
+            try:
+                df = pd.read_csv(path, parse_dates=['date'], encoding=enc)
+                return df
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                print(f"  读取 {stock_code} 数据失败: {e}")
+                return pd.DataFrame()
+        print(f"  读取 {stock_code} 编码失败 (非GBK/UTF-8)")
+        return pd.DataFrame()
 
     def write_stock(self, stock_code, df):
         """写入股票数据（自动去重排序）"""
@@ -54,17 +58,22 @@ class CSVManager:
         # 确保目录存在
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # 写入CSV
-        df.to_csv(path, index=False)
+        # 写入CSV (GBK编码)
+        df.to_csv(path, index=False, encoding='gbk')
         return path
     
     def update_stock(self, stock_code, new_df):
         """增量更新股票数据"""
+        path = self.get_stock_path(stock_code)
+        file_exists = path.exists() and path.stat().st_size > 0
         existing_df = self.read_stock(stock_code)
-        
+
         if existing_df.empty:
+            if file_exists:
+                print(f"  [ERR] {stock_code} 文件存在但读取为空，跳过更新防止数据丢失")
+                return None
             return self.write_stock(stock_code, new_df)
-        
+
         # 合并数据
         combined = pd.concat([existing_df, new_df], ignore_index=True)
         return self.write_stock(stock_code, combined)

@@ -21,6 +21,9 @@ from functools import partial
 import warnings
 import argparse
 import json
+import pickle
+import hashlib
+import os as _os
 
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent))
@@ -37,10 +40,11 @@ _worker_scorer = None
 _worker_stock_names = None
 _worker_data_dir = None
 _worker_parquet_cache = {}       # ★ 内存缓存：code -> full DataFrame，消除磁盘 I/O
+_worker_exclude_limit = False
 
-def _process_initializer(strategy_params_path, data_dir, stock_names):
+def _process_initializer(strategy_params_path, data_dir, stock_names, exclude_limit_state=False, skip_params=None):
     """子进程初始化：加载策略、评分器、股票名称（静默）"""
-    global _worker_strategy, _worker_scorer, _worker_stock_names, _worker_data_dir
+    global _worker_strategy, _worker_scorer, _worker_stock_names, _worker_data_dir, _worker_exclude_limit
     import os
     old_stdout = sys.stdout
     sys.stdout = open(os.devnull, 'w', encoding='utf-8')
@@ -51,10 +55,14 @@ def _process_initializer(strategy_params_path, data_dir, stock_names):
         if not strategy:
             from strategy.unified_b1_strategy import UnifiedB1Strategy
             strategy = registry.register(UnifiedB1Strategy, name='UnifiedB1Strategy')
+        if skip_params:
+            for k, v in skip_params.items():
+                strategy.params[k] = v
         _worker_strategy = strategy
-        _worker_scorer = StockScorer(CSVManager(data_dir), registry)
+        _worker_scorer = StockScorer(CSVManager(data_dir), registry, exclude_limit_state=exclude_limit_state)
         _worker_stock_names = stock_names
         _worker_data_dir = data_dir
+        _worker_exclude_limit = exclude_limit_state
     finally:
         sys.stdout = old_stdout
 
@@ -92,19 +100,23 @@ def _load_and_evaluate(code, end_date, min_similarity):
             return None
         latest_idx = cutoff - 1
 
-        # 快速预筛选：直接从原始 DataFrame 读最新行的 6 列（O(1)，无需创建过滤 DataFrame）
+        # 快速预筛选：直接从原始 DataFrame 读最新行的列（O(1)，无需创建过滤 DataFrame）
         row = df_cache.iloc[latest_idx]
         if not row['white_gt_yellow']:
             return None
-        if row['J'] >= 30:
+        if row['J'] >= _worker_strategy.params.get('j_threshold', 30):
             return None
-        if not row['volume_shrink']:
+        # ★ 缩量动态重算：取当天及前19天的最高量
+        vol_win = df_cache.iloc[max(0, latest_idx - 19):latest_idx + 1]['volume']
+        hhv_vol_20 = vol_win.max()
+        vol_shrink_ratio = _worker_strategy.params.get('volume_shrink_ratio', 0.618)
+        if row['volume'] >= hhv_vol_20 * vol_shrink_ratio:
             return None
         if row['DIF'] <= 0:
             return None
         if row['doubled']:
             return None
-        if row.get('market_cap', 999e9) < 40e8:
+        if row.get('market_cap', 999e9) < _worker_strategy.params.get('cap_threshold', 4_000_000_000):
             return None
 
         name = _worker_stock_names.get(code, '未知')
@@ -119,7 +131,9 @@ def _load_and_evaluate(code, end_date, min_similarity):
         if not signals:
             return None
 
-        score_info = _worker_scorer.score_stock(code, df_filtered)
+        signal = signals[0]
+        surge = signal.get('surge_start_date')
+        score_info = _worker_scorer.score_stock(code, df_filtered, start_date=surge)
         b1_score = score_info.get('b1_score', 0)
         if b1_score < min_similarity:
             return None
@@ -127,8 +141,6 @@ def _load_and_evaluate(code, end_date, min_similarity):
         bonus = _calc_bonus_static(df_filtered)
         b1_score += bonus
         b1_score = min(b1_score, 100)
-
-        signal = signals[0]
         return {
             'code': code, 'name': name,
             'b1_score': b1_score,
@@ -153,10 +165,6 @@ def _calc_bonus_static(df):
         return 0
     asc = df.sort_values('date').reset_index(drop=True)
     n = len(asc)
-    dif = asc['DIF'].values
-    dea = asc['DEA'].values
-    if n >= 2 and dif[-1] > 0 and dif[-2] > dea[-2] and dif[-1] >= dif[-2]:
-        bonus += 5
     if n >= 50:
         recent = asc.iloc[-50:]
         price_low = recent['close'].min()
@@ -171,21 +179,169 @@ def _calc_bonus_static(df):
         v10 = asc['volume'].iloc[-10:]
         if np.polyfit(np.arange(10), c10, 1)[0] > 0 and np.polyfit(np.arange(10), v10, 1)[0] > 0:
             bonus += 3
-        if np.polyfit(np.arange(10), asc['DIF'].iloc[-10:], 1)[0] > 0:
-            bonus += 3
     return bonus
+
+# ---- 优化4：预计算信号日（模块级 worker 函数） ----
+def _precompute_stock_unpack(args):
+    return _precompute_stock(*args)
+
+def _precompute_stock(code, trading_dates, trading_date_strs, min_similarity, decouple_j, decouple_vol, decouple_near):
+    """一次加载 parquet，遍历所有交易日，返回该股票所有信号日的列表
+    decouple_j=True: J不在此处过滤，存raw_j供后筛（宽松边界J<35）
+    decouple_vol=True: 缩量不在此处过滤，存raw_vol_ratio供后筛（宽松边界<0.90）
+    decouple_near=True: near_pct不在此处过滤，存raw位置距离供后筛（宽松边界100%）
+    未解耦的参数用当前config值直接过滤，不存raw值——减少缓存体积"""
+    global _worker_parquet_cache
+    try:
+        entry = _worker_parquet_cache.get(code)
+        if entry is None:
+            if code in _worker_parquet_cache:
+                return []
+            cache_path = Path(_worker_data_dir) / "indicators_cache" / f"{code}.parquet"
+            if not cache_path.exists():
+                _worker_parquet_cache[code] = None
+                return []
+            df_cache = pd.read_parquet(cache_path)
+            if df_cache.empty:
+                _worker_parquet_cache[code] = None
+                return []
+            df_cache['date'] = pd.to_datetime(df_cache['date'])
+            dates = df_cache['date'].values
+            _worker_parquet_cache[code] = (df_cache, dates)
+        else:
+            df_cache, dates = entry
+
+        name = _worker_stock_names.get(code, '未知')
+        if any(kw in name for kw in ['退', 'ST', '*ST']):
+            return []
+
+        j_threshold = _worker_strategy.params.get('j_threshold', 30)
+        vol_shrink = _worker_strategy.params.get('volume_shrink_ratio', 0.618)
+
+        results = []
+        for i, end_ts in enumerate(trading_dates):
+            cutoff = np.searchsorted(dates, end_ts, side='right')
+            if cutoff == 0:
+                continue
+            latest_idx = cutoff - 1
+            row = df_cache.iloc[latest_idx]
+
+            # 参数无关的硬性预筛
+            if not row['white_gt_yellow']:
+                continue
+            if row['DIF'] <= 0:
+                continue
+            if row['doubled']:
+                continue
+            if row.get('market_cap', 999e9) < 4_000_000_000:
+                continue
+
+            # J 阈值：解耦时宽松边界裁剪+存raw，未解耦时用config直接过滤
+            raw_j = row['J']
+            if decouple_j:
+                if raw_j >= 200:   # 与YAML J=200一致，覆盖全范围
+                    continue
+            else:
+                if raw_j >= j_threshold:
+                    continue
+
+            # 缩量比：解耦时宽松边界裁剪+存raw，未解耦时用config直接过滤
+            vol_win = df_cache.iloc[max(0, latest_idx - 19):latest_idx + 1]['volume']
+            hhv_vol_20 = vol_win.max()
+            raw_vol_ratio = row['volume'] / hhv_vol_20 if hhv_vol_20 > 0 else 1.0
+            if decouple_vol:
+                if raw_vol_ratio >= 2.0:   # 无实际限制（成交量/20日均量很少超过2）
+                    continue
+            else:
+                if raw_vol_ratio >= vol_shrink:
+                    continue
+
+            df_filtered = df_cache.iloc[:cutoff]
+            df_filtered = df_filtered.sort_values('date', ascending=False).reset_index(drop=True)
+
+            # ★ 解耦参数：临时将策略阈值改为宽松值，确保select_stocks生成全部潜在信号
+            old_j = _worker_strategy.params.get('j_threshold')
+            old_vol = _worker_strategy.params.get('volume_shrink_ratio')
+            old_near = _worker_strategy.params.get('near_pct', 3.5)
+            if decouple_j:
+                _worker_strategy.params['j_threshold'] = 35
+            if decouple_vol:
+                _worker_strategy.params['volume_shrink_ratio'] = 0.90
+            if decouple_near:
+                _worker_strategy.params['near_pct'] = 100.0
+
+            signals = _worker_strategy.select_stocks(df_filtered, name)
+
+            _worker_strategy.params['j_threshold'] = old_j
+            _worker_strategy.params['volume_shrink_ratio'] = old_vol
+            _worker_strategy.params['near_pct'] = old_near
+
+            # ★ 捕捉原始位置数据（解耦near_pct时用于后筛）
+            raw_fall_in_bowl = None
+            raw_dist_yellow_pct = None
+            raw_dist_white_pct = None
+            if decouple_near:
+                r_close = row['close']
+                r_yellow = row['yellow_line']
+                r_white = row['white_line']
+                raw_fall_in_bowl = (r_close >= r_yellow) and (r_close <= r_white)
+                if r_close >= r_yellow and r_yellow > 0:
+                    raw_dist_yellow_pct = round((r_close - r_yellow) / r_yellow * 100, 2)
+                if r_white > 0:
+                    raw_dist_white_pct = round(abs(r_close - r_white) / r_white * 100, 2)
+            if not signals:
+                continue
+
+            surge = signals[0].get('surge_start_date')
+            score_info = _worker_scorer.score_stock(code, df_filtered, start_date=surge)
+            b1_score = score_info.get('b1_score', 0)
+            if b1_score <= 0:
+                continue
+
+            bonus = _calc_bonus_static(df_filtered)
+            b1_score += bonus
+            b1_score = min(b1_score, 100)
+
+            signal = signals[0]
+            entry = {
+                'date_str': trading_date_strs[i],
+                'code': code, 'name': name,
+                'b1_score': b1_score,
+                'close': signal['close'],
+                'signal': signal,
+                'is_washout': signal.get('is_washout', False),
+                'is_super_b1': signal.get('is_super_b1', False),
+                'build_gain': signal.get('build_gain', 0),
+                'surge_turnover': signal.get('surge_turnover', 0),
+                'surge_start_date': signal.get('surge_start_date'),
+                'signal_day_low': row['low'],
+            }
+            if decouple_j:
+                entry['raw_j'] = raw_j
+            if decouple_vol:
+                entry['raw_vol_ratio'] = raw_vol_ratio
+            if decouple_near:
+                entry['fall_in_bowl'] = raw_fall_in_bowl
+                entry['raw_dist_yellow_pct'] = raw_dist_yellow_pct
+                entry['raw_dist_white_pct'] = raw_dist_white_pct
+            results.append(entry)
+        return results
+    except Exception:
+        return []
+
 
 # ======================== 主回测类 ========================
 class OptimizedBacktester:
-    def __init__(self, data_dir='data', use_cache=False, initial_cash=1_000_000):
+    def __init__(self, data_dir='data', use_cache=False, initial_cash=1_000_000, strategy_config="config/strategy_params.yaml"):
         self.data_dir = Path(data_dir)
         self.cache_dir = self.data_dir / "cache"
         self.use_cache = use_cache
         self.csv_manager = CSVManager(str(data_dir))
         self.initial_cash = initial_cash
         self.cash = initial_cash
+        self.strategy_config = strategy_config
 
-        self.registry = get_registry("config/strategy_params.yaml")
+        self.registry = get_registry(strategy_config)
         self.registry.auto_register_from_directory("strategy")
         self.strategy = self.registry.get_strategy('UnifiedB1Strategy')
         if not self.strategy:
@@ -202,6 +358,17 @@ class OptimizedBacktester:
         self.commission = 0.0003
         self.slippage = 0.001
         self.min_similarity = 60
+        self.exclude_limit_state = False
+        self.skip_wave_quality = False
+        self.skip_wave_break = False
+        self.skip_s1 = False
+        self.skip_washout = False
+        self.decouple_params = set()   # 解耦参数集合，如 {'j_threshold', 'volume_shrink_ratio'}
+        self._near_pct_override = None # 命令行覆盖 near_pct 值（用于扫参，不修改YAML）
+        self._near_pct_bull = None     # 多头区间的 near_pct（动态切换）
+        self._near_pct_bear = None     # 空头区间的 near_pct（动态切换）
+        self.zone_j_ranges = None      # J值允许区间列表 [(low,high), ...] 或 None(不过滤)
+        self.zone_vol_ranges = None    # 缩量比允许区间列表
 
         self.positions = []
         self.closed_trades = []
@@ -297,39 +464,68 @@ class OptimizedBacktester:
         return results[:self.max_stocks_per_day]
 
     def buy_stock(self, signal_date, stock_info, current_total_asset):
-        """第一批建仓"""
+        """连续B1逐日建仓1/3，三批共用最后一次的止损和计时"""
         code = stock_info['code']
-        for pos in self.positions:
-            if pos['code'] == code:
-                return False
         next_date = self._get_next_trading_day(signal_date)
         df = self._get_realtime_indicators(code, next_date)
         if df.empty:
             return False
         buy_price = df.iloc[0]['open']
         target_money = current_total_asset * self.position_pct
-        first_money = target_money / 3
-        shares = int(first_money / buy_price / 100) * 100
-        if shares == 0 or first_money > self.cash:
+        batch_money = target_money / 3
+        shares = int(batch_money / buy_price / 100) * 100
+        if shares == 0 or batch_money > self.cash:
             return False
         cost = shares * buy_price * (1 + self.commission)
         if cost > self.cash:
             return False
         stop_ref = stock_info['signal_day_low'] - 0.05
+
+        # 查找是否已有同一股的仓位
+        existing_pos = None
+        for pos in self.positions:
+            if pos['code'] == code:
+                existing_pos = pos
+                break
+
+        if existing_pos and existing_pos.get('batch_count', 1) < 3:
+            # 连续B1：加仓一批，更新止损和买入日为最后一次信号
+            existing_pos['shares'] += shares
+            existing_pos['cost'] += cost
+            existing_pos['batch_count'] += 1
+            existing_pos['batch_prices'].append(buy_price)
+            existing_pos['batch_dates'].append(next_date)
+            # ★ 止损更新为最后一次B1，但4天计时保持第一批买入日不变
+            existing_pos['stop_loss_ref'] = stop_ref
+            existing_pos['stop_loss_ref_active'] = stop_ref
+            existing_pos['buy_date'] = signal_date
+            existing_pos['washout_start_date'] = None
+            existing_pos['washout_low'] = None
+            self.cash -= cost
+            return True
+
+        if existing_pos:
+            return False  # 已有3批
+
+        # 新仓位：第一批
         self.cash -= cost
         pos = {
-            'code': code, 'shares': shares, 'initial_shares': shares,
-            'batch_count': 1, 'batch_stops': [stop_ref], 'batch_prices': [buy_price],
+            'code': code, 'shares': shares,
+            'batch_count': 1,
+            'batch_prices': [buy_price],
+            'batch_dates': [next_date],
             'buy_date': signal_date, 'actual_buy_date': next_date,
             'buy_price': buy_price, 'cost': cost,
             'b1_score': stock_info['b1_score'],
             'is_washout': stock_info['is_washout'],
             'is_super_b1': stock_info.get('is_super_b1', False),
+            'signal_j': stock_info.get('raw_j'),        # ★ 买入信号时的J值
+            'signal_vol_ratio': stock_info.get('raw_vol_ratio'),  # ★ 买入信号时的缩量比
+            'surge_start_date': stock_info.get('surge_start_date'),  # ★ 异动起点
             'stop_loss_ref': stop_ref, 'stop_loss_ref_active': stop_ref,
             'launched': False, 'washout_start_date': None, 'washout_low': None,
             'partial_sold': 0, 's1_sold': 0, 'didi_sold': 0, 'white_sold': 0,
             'has_been_profitable': False,
-            'batch_entry_log': [f"第一批@{buy_price}"]
         }
         self.positions.append(pos)
         return True
@@ -408,13 +604,15 @@ class OptimizedBacktester:
             'code': pos['code'], 'buy_date': pos['buy_date'], 'sell_date': date,
             'buy_price': pos['buy_price'], 'sell_price': price,
             'shares': shares, 'pnl': pnl,
-            'pnl_pct': (pnl / cost_part) * 100 if cost_part > 0 else 0, 'reason': reason
+            'pnl_pct': (pnl / cost_part) * 100 if cost_part > 0 else 0, 'reason': reason,
+            'signal_j': pos.get('signal_j'),           # ★ 买入时的J值
+            'signal_vol_ratio': pos.get('signal_vol_ratio'),  # ★ 买入时的缩量比
         })
         pos['shares'] -= shares
         pos['cost'] -= cost_part
 
-    def _detect_s1_on_position(self, df):
-        has_s1, _, _ = detect_s1_signal(df, lookback_days=35)
+    def _detect_s1_on_position(self, df, start_date=None):
+        has_s1, _, _ = detect_s1_signal(df, surge_start_date=start_date)
         return has_s1
 
     def _detect_didi(self, df):
@@ -446,15 +644,7 @@ class OptimizedBacktester:
             else:
                 hold_days = (pd.to_datetime(date) - pd.to_datetime(buy_day)).days
 
-            # 0. 滴滴战法核心止损：买入次日收盘 < 信号日 min(open,close) → 立即清仓
-            if hold_days == 1:
-                sig_df = self._get_realtime_indicators(pos['code'], pos['buy_date'])
-                if not sig_df.empty:
-                    sig_row = sig_df.iloc[0]
-                    sig_ref = min(sig_row['open'], sig_row['close'])
-                    if sell_price < sig_ref:
-                        self._sell_shares(pos, date, sell_price, pos['shares'], '滴滴战法止损')
-                        to_remove.append(pos); continue
+            # fix: 移除T+1滴滴战法止损 — 滴滴应为止盈信号(launched后生效)，非买入次日止损
 
             # 1. 黄线
             if sell_price < latest['yellow_line']:
@@ -468,22 +658,18 @@ class OptimizedBacktester:
                         pos['washout_low'] = latest['low']
                         pos['stop_loss_ref_active'] = pos['washout_low'] - 0.05
                     else:
-                        # 更新洗盘最低点
-                        if latest['low'] < pos['washout_low']:
-                            pos['washout_low'] = latest['low']
-                            pos['stop_loss_ref_active'] = pos['washout_low'] - 0.05
-                        if sell_price < pos['washout_low'] - 0.05:
+                        # 击穿对手盘止损只设一次，不更新——跌破即清仓
+                        if sell_price < pos['stop_loss_ref_active']:
                             self._sell_shares(pos, date, sell_price, pos['shares'], '击穿对手盘失败清仓')
                             to_remove.append(pos); continue
             else:
                 if pos.get('washout_start_date') is not None:
                     pos['washout_start_date'] = None
                     pos['washout_low'] = None
-                    pos['stop_loss_ref_active'] = min(pos['batch_stops'])
+                    pos['stop_loss_ref_active'] = pos['stop_loss_ref']
 
             # 2. 基础止损
-            active_stop = pos.get('stop_loss_ref_active',
-                                  min(pos['batch_stops']) if pos.get('batch_stops') else pos['batch_prices'][0]-0.05)
+            active_stop = pos.get('stop_loss_ref_active', pos.get('stop_loss_ref', pos['batch_prices'][0] - 0.05))
             if sell_price < active_stop:
                 self._sell_shares(pos, date, sell_price, pos['shares'], '基础止损')
                 to_remove.append(pos); continue
@@ -499,7 +685,7 @@ class OptimizedBacktester:
                 to_remove.append(pos); continue
 
             # 5. S1减仓≥50%
-            if self._detect_s1_on_position(df) and pos.get('s1_sold', 0) == 0:
+            if self._detect_s1_on_position(df, start_date=pos.get('surge_start_date')) and pos.get('s1_sold', 0) == 0:
                 sell_shares = max(int(pos['shares'] * 0.50), 100)
                 if sell_shares > 0 and sell_shares <= pos['shares']:
                     self._sell_shares(pos, date, sell_price, sell_shares, 'S1信号减仓≥50%')
@@ -552,6 +738,11 @@ class OptimizedBacktester:
         })
 
     def _build_trading_calendar(self, start_date, end_date):
+        # 优先用活跃市值CSV的日期列（已覆盖1993年以来全量交易日），避免扫描500只股票CSV
+        if self.market_timing is not None and self.market_timing.df is not None:
+            dates = self.market_timing.df['date'].dt.strftime('%Y-%m-%d').tolist()
+            return [d for d in dates if start_date <= d <= end_date]
+
         all_dates = set()
         sample_codes = self.all_stock_codes[:500] if len(self.all_stock_codes) > 500 else self.all_stock_codes
         for code in tqdm(sample_codes, desc="构建交易日历", leave=False):
@@ -567,26 +758,152 @@ class OptimizedBacktester:
             self.market_timing.summary()
         self.trading_days = self._build_trading_calendar(start_date, end_date)
         print(f"   交易日数: {len(self.trading_days)}")
-        print(f"   启动工作进程池 ({n_workers} workers)...")
+        # ★ 预热OS页缓存：主进程读一遍所有 parquet，后续 worker 读取时命中内存
+        cache_dir = Path(self.data_dir) / "indicators_cache"
+        if cache_dir.exists():
+            import time as _t
+            _t0 = _t.time()
+            files = list(cache_dir.glob("*.parquet"))
+            for f in tqdm(files, desc="预热缓存", leave=False):
+                with open(f, 'rb') as _f:
+                    _f.read()
+            print(f"   预热完成 ({len(files)} 文件, {_t.time()-_t0:.1f}s)")
 
-        # ★ 复用进程池：整个回测期间只创建一次，避免每天 spawn 开销
-        with mp.Pool(processes=n_workers,
-                     initializer=_process_initializer,
-                     initargs=("config/strategy_params.yaml", str(self.data_dir), self.stock_names)) as pool:
-            for i, date in enumerate(tqdm(self.trading_days, desc="回测进度")):
-                self.mark_to_market(date)
-                self.check_batch_entry(date)
-                self.check_exits_master(date)
-                selected = self.run_selection_on_date(date, pool, sample_size=sample_size)
-                if selected:
-                    # 活跃市值择时：空头区间不开新仓，但综合评分 > 80 的强信号除外
-                    if self.market_timing and not self.market_timing.can_open(date):
-                        selected = [s for s in selected if s['b1_score'] > 80]
-                if selected:
-                    current_total = self.cash + self._total_market_value(date)
-                    for stock in selected:
-                        success = self.buy_stock(date, stock, current_total)
-                        if not success: break
+        # ★ 优化4：预计算所有信号日（缓存到磁盘，解耦参数可复用）
+        codes = self.all_stock_codes[:sample_size] if sample_size else self.all_stock_codes
+        decouple_j = 'j_threshold' in self.decouple_params
+        decouple_vol = 'volume_shrink_ratio' in self.decouple_params
+        decouple_near = 'near_pct' in self.decouple_params
+        dc_tag = ('J' if decouple_j else '') + ('V' if decouple_vol else '') + ('N' if decouple_near else '') or 'none'
+        # 解耦参数用占位符哈希，使修改解耦参数值时仍能命中缓存
+        with open(self.strategy_config, 'rb') as _pf:
+            raw = _pf.read()
+        if decouple_j or decouple_vol or decouple_near:
+            import yaml as _yaml
+            _cfg = _yaml.safe_load(raw)
+            if decouple_j:
+                _cfg['UnifiedB1Strategy']['j_threshold'] = '__DECOUPLED__'
+            if decouple_vol:
+                _cfg['UnifiedB1Strategy']['volume_shrink_ratio'] = '__DECOUPLED__'
+            if decouple_near:
+                _cfg['UnifiedB1Strategy']['near_pct'] = '__DECOUPLED__'
+            params_hash = hashlib.md5(_yaml.dump(_cfg).encode()).hexdigest()[:8]
+        else:
+            params_hash = hashlib.md5(raw).hexdigest()[:8]
+        skip_params = {}
+        for flag in ('skip_wave_quality', 'skip_wave_break', 'skip_s1', 'skip_washout'):
+            if getattr(self, flag, False):
+                skip_params[flag] = True
+        if getattr(self, 's1_skip_types', None):
+            skip_params['s1_skip_types'] = self.s1_skip_types
+        # 放量巨阴子条件配置
+        s1_juyin = self.strategy.params.get('s1_juyin_config')
+        if s1_juyin is not None:
+            skip_params['s1_juyin_config'] = s1_juyin
+        ls_tag = "_nolimit" if self.exclude_limit_state else ""
+        skip_parts = []
+        for k in sorted(skip_params):
+            v = skip_params[k]
+            if isinstance(v, set):
+                skip_parts.append(f"{k}={'_'.join(sorted(v))}")
+            else:
+                skip_parts.append(k)
+        skip_tag = "_" + "_".join(skip_parts) if skip_parts else ""
+        cache_key = f"sig_v3_{start_date}_{end_date}_{self.min_similarity}_{params_hash}_{dc_tag}_{len(codes)}{ls_tag}{skip_tag}"
+        cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
+        cache_dir = Path(self.data_dir) / "signal_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"{start_date}_{end_date}_{dc_tag}_{cache_hash}.pkl"
+
+        if cache_path.exists():
+            print(f"\n   加载预计算缓存 [{dc_tag}]: {cache_path.name}")
+            with open(cache_path, 'rb') as f:
+                self._precomputed_signals = pickle.load(f)
+            print(f"   加载完成，共 {sum(len(v) for v in self._precomputed_signals.values())} 条信号")
+        else:
+            print(f"\n   预计算信号日 [{dc_tag}] ({n_workers} workers)...")
+            trading_dates_ts = [np.datetime64(d) for d in self.trading_days]
+            tasks = [(code, trading_dates_ts, self.trading_days, self.min_similarity, decouple_j, decouple_vol, decouple_near) for code in codes]
+
+            self._precomputed_signals = {}  # date_str → [signal_dict, ...]
+            with mp.Pool(processes=n_workers,
+                         initializer=_process_initializer,
+                         initargs=(self.strategy_config, str(self.data_dir), self.stock_names, self.exclude_limit_state, skip_params)) as pool:
+                chunksize = max(1, len(tasks) // (n_workers * 4))
+                for stock_results in tqdm(pool.imap_unordered(_precompute_stock_unpack, tasks, chunksize=chunksize),
+                                           total=len(tasks), desc="预计算信号"):
+                    for r in stock_results:
+                        d = r.pop('date_str')
+                        if d not in self._precomputed_signals:
+                            self._precomputed_signals[d] = []
+                        self._precomputed_signals[d].append(r)
+
+            for d in self._precomputed_signals:
+                self._precomputed_signals[d].sort(key=lambda x: (-x['b1_score'], x['code']))
+
+            print(f"   预计算完成，共 {sum(len(v) for v in self._precomputed_signals.values())} 条信号")
+            print(f"   保存缓存到: {cache_path.name}")
+            with open(cache_path, 'wb') as f:
+                pickle.dump(self._precomputed_signals, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # ★ 回测主循环：只需查字典 + 解耦参数后筛，无需进程池
+        print(f"\n   回测主循环...")
+        j_threshold = self.strategy.params.get('j_threshold', 30)
+        vol_shrink = self.strategy.params.get('volume_shrink_ratio', 0.618)
+        for i, date in enumerate(tqdm(self.trading_days, desc="回测进度")):
+            self.mark_to_market(date)
+            self.check_exits_master(date)
+
+            candidates = self._precomputed_signals.get(date, [])
+            filtered = []
+            for s in candidates:
+                if s['b1_score'] < self.min_similarity:
+                    continue
+                # J过滤：优先用区间，否则用解耦阈值
+                if self.zone_j_ranges is not None:
+                    rj = s.get('raw_j', 0)
+                    if not any(lo <= rj <= hi for lo, hi in self.zone_j_ranges):
+                        continue
+                elif decouple_j and s.get('raw_j', 0) >= j_threshold:
+                    continue
+                # 缩量比过滤：优先用区间，否则用解耦阈值
+                if self.zone_vol_ranges is not None:
+                    rv = s.get('raw_vol_ratio', 1)
+                    if not any(lo <= rv <= hi for lo, hi in self.zone_vol_ranges):
+                        continue
+                elif decouple_vol and s.get('raw_vol_ratio', 1) >= vol_shrink:
+                    continue
+                # near_pct过滤（解耦时后筛位置条件）, 支持按多/空头动态切换
+                if decouple_near:
+                    np_val = self._near_pct_override if self._near_pct_override is not None else self.strategy.params.get('near_pct', 3.5)
+                    # 动态 near_pct：根据当日择时状态切换
+                    if self._near_pct_bull is not None and self._near_pct_bear is not None and self.market_timing:
+                        if self.market_timing.can_open(date):
+                            np_val = self._near_pct_bull
+                        else:
+                            np_val = self._near_pct_bear
+                    if not s.get('fall_in_bowl', False):
+                        dist_y = s.get('raw_dist_yellow_pct')
+                        dist_w = s.get('raw_dist_white_pct')
+                        if dist_y is not None and dist_y <= np_val:
+                            pass
+                        elif dist_w is not None and dist_w <= np_val:
+                            pass
+                        elif s.get('is_washout', False):
+                            pass
+                        else:
+                            continue
+                filtered.append(s)
+            selected = filtered[:self.max_stocks_per_day]
+
+            if selected:
+                if self.market_timing and not self.market_timing.can_open(date):
+                    selected = [s for s in selected if s['b1_score'] >= 90]
+            if selected:
+                current_total = self.cash + self._total_market_value(date)
+                for stock in selected:
+                    success = self.buy_stock(date, stock, current_total)
+                    if not success: break
 
         final_date = self.trading_days[-1]
         for pos in self.positions[:]:
@@ -632,10 +949,12 @@ class OptimizedBacktester:
         print(f"平均盈利: {avg_win:,.0f}")
         print(f"平均亏损: {avg_loss:,.0f}")
 
-        df_equity.to_csv('backtest_equity.csv', index=False)
+        eq_file = 'backtest_equity.csv'
+        trades_file = 'backtest_trades.csv'
+        df_equity.to_csv(eq_file, index=False)
         if not df_trades.empty:
-            df_trades.to_csv('backtest_trades.csv', index=False)
-        print("\n详细数据已保存至 backtest_equity.csv 和 backtest_trades.csv")
+            df_trades.to_csv(trades_file, index=False)
+        print(f"\n详细数据已保存至 {eq_file} 和 {trades_file}")
 
 
 if __name__ == '__main__':
@@ -648,10 +967,100 @@ if __name__ == '__main__':
     parser.add_argument('--min-similarity', type=float, default=60)
     parser.add_argument('--market-timing', type=str, default=None,
                         help='活跃市值CSV路径，如 data/market/active_cap.csv')
+    parser.add_argument('--decouple', type=str, default='',
+                        help='解耦参数，逗号分隔，如 j_threshold,volume_shrink_ratio')
+    parser.add_argument('--zone-j', type=str, default=None,
+                        help='J值允许区间，如 -10~-7,23~33')
+    parser.add_argument('--zone-vol', type=str, default=None,
+                        help='缩量比允许区间，如 0.1~0.6')
+    parser.add_argument('--strategy-config', type=str, default='config/strategy_params.yaml',
+                        help='策略参数配置文件路径')
+    parser.add_argument('--near-pct', type=float, default=None,
+                        help='覆盖 near_pct 值（需配合 --decouple near_pct 使用，无需改YAML即可扫参）')
+    parser.add_argument('--near-pct-bull', type=float, default=None,
+                        help='多头区间的 near_pct（需配合择时使用）')
+    parser.add_argument('--near-pct-bear', type=float, default=None,
+                        help='空头区间的 near_pct（需配合择时使用）')
+    parser.add_argument('--no-limit-score', action='store_true',
+                        help='排除limit_state评分维度（涨停匹配）')
+    parser.add_argument('--skip-wave-quality', action='store_true',
+                        help='跳过波质量检测(异动量/积累均量>2)')
+    parser.add_argument('--skip-wave-break', action='store_true',
+                        help='跳过波断检查')
+    parser.add_argument('--skip-s1', action='store_true',
+                        help='跳过S1出货信号检测')
+    parser.add_argument('--skip-washout', action='store_true',
+                        help='跳过击穿对手盘通道')
+    parser.add_argument('--s1-skip-types', type=str, default='',
+                        help='S1跳过类型，逗号分隔，如 放量巨阴,顶部大风车')
+    parser.add_argument('--s1-juyin-config', type=str, default='',
+                        help='S1放量巨阴子条件: none=禁用, 如 vol_ratio_prev=none,price_pos=none')
+    parser.add_argument('--initial-cash', type=float, default=1_000_000,
+                        help='初始资金')
+    parser.add_argument('--position-pct', type=float, default=0.10,
+                        help='单只股票仓位占比')
+    parser.add_argument('--output-prefix', type=str, default='',
+                        help='输出文件前缀，如 _iter1 则输出 _iter1_equity.csv')
     args = parser.parse_args()
-    backtester = OptimizedBacktester(data_dir='data', use_cache=False)
+    prefix = args.output_prefix
+    backtester = OptimizedBacktester(data_dir='data', use_cache=False, strategy_config=args.strategy_config, initial_cash=args.initial_cash)
     backtester.max_stocks_per_day = args.max_stocks
     backtester.min_similarity = args.min_similarity
+    backtester.position_pct = args.position_pct
+    backtester.batch_pct = args.position_pct / 3
+    backtester.exclude_limit_state = args.no_limit_score
+    backtester.skip_wave_quality = args.skip_wave_quality
+    backtester.skip_wave_break = args.skip_wave_break
+    backtester.skip_s1 = args.skip_s1
+    backtester.skip_washout = args.skip_washout
+    # 逐笔回测支持：--s1-juyin-config
+    if args.s1_juyin_config:
+        cfg = {}
+        for pair in args.s1_juyin_config.split(','):
+            kv = pair.strip().split('=')
+            if len(kv) == 2:
+                k, v = kv[0].strip(), kv[1].strip()
+                cfg[k] = None if v.lower() == 'none' else float(v)
+        if cfg:
+            backtester.strategy.params['s1_juyin_config'] = cfg
+    if args.s1_skip_types:
+        backtester.s1_skip_types = set(t.strip() for t in args.s1_skip_types.split(',') if t.strip())
+    else:
+        backtester.s1_skip_types = None
+    if args.decouple:
+        backtester.decouple_params = set(p.strip() for p in args.decouple.split(',') if p.strip())
+        print(f"解耦参数: {backtester.decouple_params}")
+    if args.near_pct is not None:
+        backtester._near_pct_override = args.near_pct
+        if 'near_pct' not in backtester.decouple_params:
+            backtester.decouple_params.add('near_pct')
+            print(f"[自动] near_pct={args.near_pct} → 自动启用解耦")
+    if args.near_pct_bull is not None and args.near_pct_bear is not None:
+        backtester._near_pct_bull = args.near_pct_bull
+        backtester._near_pct_bear = args.near_pct_bear
+        if 'near_pct' not in backtester.decouple_params:
+            backtester.decouple_params.add('near_pct')
+        print(f"[动态] near_pct: 多头={args.near_pct_bull}, 空头={args.near_pct_bear}")
+
+    def _parse_ranges(s):
+        if not s: return None
+        ranges = []
+        for part in s.split(','):
+            part = part.strip()
+            if '~' in part:
+                lo, hi = part.split('~')
+                ranges.append((float(lo), float(hi)))
+            else:
+                v = float(part)
+                ranges.append((v, v))
+        return ranges
+
+    if args.zone_j:
+        backtester.zone_j_ranges = _parse_ranges(args.zone_j)
+        print(f"J区间过滤: {backtester.zone_j_ranges}")
+    if args.zone_vol:
+        backtester.zone_vol_ranges = _parse_ranges(args.zone_vol)
+        print(f"缩量比区间过滤: {backtester.zone_vol_ranges}")
 
     # 活跃市值择时开关
     if args.market_timing:

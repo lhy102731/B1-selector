@@ -1,34 +1,36 @@
-# 统一B1策略
+B1PatternMatch:
+  lookback_days: 35
+  min_similarity: 60
+  tolerances:
+    drawdown: 15
+    j_value: 13
+    move_avg_gain: 5
+    move_total_gain: 10
+    price_bias: 10
+    trend_ratio: 0.1
+    trend_spread: 10
+  top_n_results: 15
+  weights:
+    volume: 0.25           # Effort：量是根基(缩量Spring+放量确认+换手)
+    price_shape: 0.30      # Structure：DTW曲线+回撤+突破(异动期K线形态)
+    move_power: 0.18       # Cause→Effect：攻击力(涨幅+效率+节奏)
+    trend: 0.14            # Context：趋势环境(斜率+位置+均线)
+    divergence: 0.08       # Hidden：背离信号(J底背离+量价背离+金叉)
+    limit_state: 0.05      # Confirmation：涨停匹配+一字板惩罚
 UnifiedB1Strategy:
   M1: 14
   M2: 28
   M3: 57
   M4: 114
-  white_period: 10
-  j_threshold: 30
-  volume_shrink_ratio: 0.618
   cap_threshold: 4000000000
+  j_super_threshold: 20
+  j_threshold: 34
   max_gain_pct: 60
   max_surge_turnover: 90
   near_pct: 3.5
-
-# B1完美图形匹配
-B1PatternMatch:
-  min_similarity: 60
-  lookback_days: 35
-  weights:
-    trend_structure: 0.12
-    kdj_state: 0.13
-    volume_pattern: 0.25
-    price_shape: 0.20
-    move_strength: 0.15
-    build_health: 0.15
-  tolerances:
-    trend_ratio: 0.10
-    price_bias: 10
-    trend_spread: 10
-    j_value: 13
-    drawdown: 15
-    move_avg_gain: 5
-    move_total_gain: 10
-  top_n_results: 15
+  volume_shrink_ratio: 0.9  # 兜底值=高效区上界(zone_vol_ranges优先)
+  white_period: 10
+  skip_wave_quality: true     # 跳过波放量检测
+  zone_vol_ranges:
+  - [0.1, 0.65]
+  - [0.8, 0.9]

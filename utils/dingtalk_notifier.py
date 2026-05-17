@@ -151,30 +151,67 @@ class DingTalkNotifier:
             time.sleep(1)
         return success == len(parts)
 
-    def send_simple_b1_results(self, results: list, min_similarity: float):
-        if not results:
+    def send_simple_b1_results(self, results: list, min_similarity: float, b3_results: list = None):
+        if not results and not b3_results:
             return
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
-        lines = [
-            "## 统一B1选股结果（按相似度排序）",
-            "",
-            f"时间: {now}",
-            f"筛选数量: {len(results)} 只 | 相似度阈值: {min_similarity}%",
-            "━" * 30,
-            "",
-        ]
-        for i, r in enumerate(results[:15], 1):
-            lines.append(f"{i}. **{r['code']}** {r['name']}  **相似度: {r['b1_score']:.1f}%**")
-            washout_tag = " [击穿对手盘]" if r.get('is_washout') else ""
-            lines.append(f"   类型: {washout_tag or '标准B1'} | 价格: {r['close']} | J值: {r['J']:.1f}")
-            lines.append(f"   建仓涨幅: {r.get('build_gain', 0):.1f}% | 换手累加: {r.get('surge_turnover', 0):.1f}%")
-            if r.get('matched_case'):
-                lines.append(f"   匹配案例: {r['matched_case']} ({r.get('matched_date', '')})")
-            if r.get('breakdown'):
-                bd = r['breakdown']
-                lines.append(f"   分项: 趋势{bd.get('trend_structure',0):.0f}% KDJ{bd.get('kdj_state',0):.0f}% 量能{bd.get('volume_pattern',0):.0f}% 形态{bd.get('price_shape',0):.0f}%")
+
+        lines = []
+        has_b1 = bool(results)
+
+        if has_b1:
+            lines = [
+                "## 统一B1选股结果（按相似度排序）",
+                "",
+                f"时间: {now}",
+                f"筛选数量: {len(results)} 只 | 相似度阈值: {min_similarity}%",
+                "━" * 30,
+                "",
+            ]
+            for i, r in enumerate(results[:15], 1):
+                rank = r.get('max_high_vol_rank', 0)
+                rank_tag = " [-3量价背离]" if rank == 2 else ""
+                hist = r.get('hist_bonus', 0)
+                hist_tag = f" [+{hist}历史]" if hist > 0 else (f" [{hist}历史]" if hist < 0 else "")
+                lines.append(f"{i}. **{r['code']}** {r['name']}  **相似度: {r['b1_score']:.1f}%**{rank_tag}{hist_tag}")
+                washout_tag = " [击穿对手盘]" if r.get('is_washout') else ""
+                lines.append(f"   类型: {washout_tag or '标准B1'} | 价格: {r['close']} | J值: {r['J']:.1f}")
+                lines.append(f"   建仓涨幅: {r.get('build_gain', 0):.1f}% | 换手累加: {r.get('surge_turnover', 0):.1f}%")
+                if r.get('matched_case'):
+                    lines.append(f"   匹配案例: {r['matched_case']} ({r.get('matched_date', '')})")
+                if r.get('breakdown'):
+                    bd = r['breakdown']
+                    lines.append(f"   分项: 趋势{bd.get('trend',0):.0f}% KDJ{bd.get('divergence',0):.0f}% 量能{bd.get('volume',0):.0f}% 形态{bd.get('price_shape',0):.0f}%")
+                lines.append("")
+            lines.append("---")
+            lines.append("**策略条件**: 白线>黄线 | J<30 | 均线多头 | 缩量 | 无S1 | 建仓涨幅≤60% | 换手累加≤80%")
+            lines.append("**特殊通道**: 击穿对手盘（缩量破黄线后快速收回）")
+
+        # ---- B3选股结果 ----
+        if b3_results:
+            if has_b1:
+                lines.append("")
+                lines.append("---")
+                lines.append("")
+            lines.append("## B3涨停接力选股 (无砖+无择时)")
             lines.append("")
-        lines.append("---")
-        lines.append("**策略条件**: 白线>黄线 | J<30 | 均线多头 | 缩量 | 无S1 | 建仓涨幅≤60% | 换手累加≤80%")
-        lines.append("**特殊通道**: 击穿对手盘（缩量破黄线后快速收回）")
-        self.send_markdown("统一B1选股结果", "\n".join(lines))
+            lines.append(f"时间: {now}")
+            lines.append(f"筛选数量: {len(b3_results)} 只")
+            lines.append(f"公式: 昨涨≥9% + 今涨2-4% + 收阳 + 影线≤2% + 缩量0.6-0.9 + 双线 + 市值")
+            lines.append("━" * 30)
+            lines.append("")
+
+            if b3_results:
+                for i, r in enumerate(b3_results[:15], 1):
+                    lines.append(f"{i}. **{r['code']}** {r['name']}  价格: {r['close']}")
+                    lines.append(f"   昨涨: {r['ret_yesterday_pct']:.1f}% | 今涨: {r['ret_today_pct']:.1f}% | "
+                                 f"量比: {r['vol_ratio']:.2f} | J值: {r['J']:.1f}")
+                    lines.append("")
+            else:
+                lines.append("今日无B3信号")
+                lines.append("")
+
+            lines.append("---")
+            lines.append("**B3条件**: 昨涨≥9% | 今涨2-4% | 收阳 | 跳空高开<1% | 上下影线≤2% | 缩量0.6-0.9 | 双线达标 | 市值>50亿")
+
+        self.send_markdown("选股结果", "\n".join(lines))

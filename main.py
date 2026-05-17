@@ -15,6 +15,8 @@ import platform
 from pathlib import Path
 from datetime import datetime, time as dt_time
 import time
+import numpy as np
+import pandas as pd
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent
@@ -71,29 +73,93 @@ class QuantSystem:
 
     def init_data(self, max_stocks=None, force_full=False):
         print("=" * 60)
-        print("🚀 首次全量数据抓取")
+        print("[START] 首次全量数据抓取")
         print("=" * 60)
         self.fetcher.init_full_data(max_stocks=max_stocks, force_full=force_full)
-        print("\n✓ 数据初始化完成")
+        print("\n[OK] 数据初始化完成")
 
     def _smart_update(self, max_stocks=None):
-        print("\n🔄 执行数据更新...")
+        print("\n[UPDATE] 执行数据更新...")
         fetcher = AKShareFetcher()
         fetcher.daily_update(max_stocks=max_stocks)
-        print("\n✓ 数据更新完成")
+        # 同步更新资金流数据
+        try:
+            from utils.fund_flow_collector import FundFlowCollector
+            FundFlowCollector().collect_all()
+        except Exception as e:
+            print(f'[WARN] 资金流数据采集失败: {e}')
+        print("\n[OK] 数据更新完成")
 
     def update_data(self, max_stocks=None):
         print("=" * 60)
-        print("🔄 每日增量更新")
+        print("[UPDATE] 每日增量更新")
         print("=" * 60)
         if __name__ == '__main__':
             fetcher = AKShareFetcher()
             fetcher.daily_update(max_stocks=max_stocks)
-        print("\n✓ 数据更新完成")
+            # 同步更新资金流数据
+            try:
+                from utils.fund_flow_collector import FundFlowCollector
+                FundFlowCollector().collect_all()
+            except Exception as e:
+                print(f'[WARN] 资金流数据采集失败: {e}')
+        print("\n[OK] 数据更新完成")
+
+    @staticmethod
+    def _check_b3_signal(df_indicators):
+        """
+        B3选股条件检查 (无砖+无择时版本)
+        通达信公式: B3XG AND 双线 AND 流通市值
+        返回: dict or None
+        """
+        if len(df_indicators) < 3:
+            return None
+
+        # df_indicators 是降序排列, row 0 = 今天, row 1 = 昨天
+        t = df_indicators.iloc[0]
+        y = df_indicators.iloc[1]
+        y2 = df_indicators.iloc[2]
+
+        ret_today = (t['close'] / y['close'] - 1) if y['close'] > 0 else 0
+        ret_yesterday = (y['close'] / y2['close'] - 1) if y2['close'] > 0 else 0
+
+        # B3XG 7条件
+        if not (ret_yesterday >= 0.09):
+            return None
+        if not (0.02 <= ret_today <= 0.04):
+            return None
+        if not (t['close'] > t['open']):
+            return None
+        if not ((t['open'] / y['close'] - 1) < 0.01):
+            return None
+        if not ((t['high'] - t['close']) / max(t['close'], 0.01) <= 0.02):
+            return None
+        if not ((t['open'] - t['low']) / max(t['open'], 0.01) <= 0.02):
+            return None
+        vol_ratio = t['volume'] / y['volume'] if y['volume'] > 0 else 999
+        if not (0.6 <= vol_ratio <= 0.9):
+            return None
+
+        # 双线条件
+        if not (t.get('white_line', 0) > t.get('yellow_line', 0)):
+            return None
+        if not (t['close'] > t.get('yellow_line', 0)):
+            return None
+
+        # 市值条件 (缺失放行)
+        cap = t.get('market_cap', np.nan)
+        if pd.notna(cap) and cap <= 5_000_000_000:
+            return None
+
+        return {
+            'ret_today_pct': round(ret_today * 100, 2),
+            'ret_yesterday_pct': round(ret_yesterday * 100, 2),
+            'vol_ratio': round(vol_ratio, 2),
+        }
 
     def run_simple_b1(self, max_stocks=None, min_similarity=None, lookback_days=None):
         """
-        简化版B1选股流程：统一B1策略 + B1相似度排序
+        简化版B1选股流程：统一B1策略 + B1相似度排序 + B3选股
         """
         from strategy.pattern_config import MIN_SIMILARITY_SCORE, DEFAULT_LOOKBACK_DAYS
         if min_similarity is None:
@@ -102,7 +168,7 @@ class QuantSystem:
             lookback_days = DEFAULT_LOOKBACK_DAYS
 
         print("=" * 60)
-        print("🚀 执行统一B1选股流程")
+        print("[START] 执行统一B1选股流程")
         if max_stocks:
             print(f"   快速测试模式：只处理前 {max_stocks} 只股票")
         print(f"   相似度阈值: {min_similarity}%")
@@ -123,10 +189,19 @@ class QuantSystem:
         stock_names = self._load_stock_names({})
 
         selected = []
-        print(f"\n执行统一B1策略，共 {len(stock_codes)} 只股票...")
+        b3_selected = []
+        print(f"\n执行统一B1策略 + B3选股，共 {len(stock_codes)} 只股票...")
 
         from utils.stock_scorer import StockScorer
         scorer = StockScorer(self.csv_manager, self.registry)
+
+        # 加载历史适应度评分
+        history_bonus = {}
+        bonus_file = Path(self.data_dir) / 'stock_scoring' / 'bonus_lookup.json'
+        if bonus_file.exists():
+            import json
+            with open(bonus_file, 'r') as f:
+                history_bonus = json.load(f)
 
         for i, code in enumerate(stock_codes, 1):
             df = self.csv_manager.read_stock(code)
@@ -138,16 +213,38 @@ class QuantSystem:
                 continue
 
             df_indicators = strategy.calculate_indicators(df)
+
+            # ---- B3选股检查 (无砖+无择时) ----
+            b3_info = self._check_b3_signal(df_indicators)
+            if b3_info:
+                b3_selected.append({
+                    'code': code,
+                    'name': name,
+                    'close': df_indicators.iloc[0]['close'],
+                    'J': df_indicators.iloc[0].get('J', 0),
+                    **b3_info,
+                })
+
+            # ---- B1选股检查 ----
             signals = strategy.select_stocks(df_indicators, name)
 
             if signals:
-                score_info = scorer.score_stock(code, df_indicators, lookback_days)
-                if score_info['b1_score'] >= min_similarity:
-                    signal = signals[0]
+                signal = signals[0]
+                surge = signal.get('surge_start_date')
+                score_info = scorer.score_stock(code, df_indicators, lookback_days, start_date=surge)
+                # 量价共振扣分制: 最高价日量为区间第1→不扣分, 第2→扣3分
+                rank_penalty = 0
+                if signal.get('max_high_vol_rank') == 2:
+                    rank_penalty = 3
+                # 历史适应度加分: 从7周期回测查表
+                hist_bonus = history_bonus.get(code, 0)
+                b1_score = score_info['b1_score'] - rank_penalty + hist_bonus
+
+                if b1_score >= min_similarity:
                     selected.append({
                         'code': code,
                         'name': name,
-                        'b1_score': score_info['b1_score'],
+                        'b1_score': b1_score,
                         'matched_case': score_info['matched_case'],
                         'matched_date': score_info['matched_date'],
                         'breakdown': score_info['breakdown'],
@@ -156,18 +253,21 @@ class QuantSystem:
                         'surge_turnover': signal.get('surge_turnover', 0),
                         'close': signal['close'],
                         'J': signal['J'],
+                        'max_high_vol_rank': signal.get('max_high_vol_rank', 0),
+                        'vol_resonance_score': signal.get('vol_resonance_score', 0),
+                        'hist_bonus': hist_bonus,
                         'reasons': signal['reasons'],
                     })
 
             if i % 100 == 0:
-                print(f"  进度: {i}/{len(stock_codes)}，已选出 {len(selected)} 只...")
+                print(f"  进度: {i}/{len(stock_codes)}，B1 {len(selected)} 只, B3 {len(b3_selected)} 只...")
 
         selected.sort(key=lambda x: x['b1_score'], reverse=True)
 
-        print(f"\n✓ 最终选出 {len(selected)} 只股票")
+        print(f"\n[OK] B1最终选出 {len(selected)} 只股票, B3选出 {len(b3_selected)} 只股票")
 
-        if selected:
-            self.notifier.send_simple_b1_results(selected, min_similarity)
+        if selected or b3_selected:
+            self.notifier.send_simple_b1_results(selected, min_similarity, b3_results=b3_selected)
 
         return selected
 
