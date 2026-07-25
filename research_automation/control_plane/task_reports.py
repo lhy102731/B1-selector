@@ -36,6 +36,12 @@ _REQUIREMENT_FIELDS = frozenset(
     }
 )
 _SIDE_EFFECT_SUMMARY_FIELDS = frozenset({"observed", "unauthorized"})
+_TEST_RECEIPT_FIELDS = frozenset(
+    {"receipt_id", "command", "exit_code", "result"}
+)
+_REVIEW_RECEIPT_FIELDS = frozenset(
+    {"receipt_id", "reviewer_id", "exit_code", "result"}
+)
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -89,6 +95,60 @@ def _require_sha256(value: object, field_name: str) -> str:
     return value
 
 
+def _require_non_empty_string(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise TaskReportValidationError(
+            f"{field_name} must be a non-empty string"
+        )
+    return value
+
+
+def _require_exact_int(value: object, field_name: str) -> int:
+    if type(value) is not int:
+        raise TaskReportValidationError(
+            f"{field_name} must be an exact integer"
+        )
+    return value
+
+
+def _require_closed_mapping(
+    value: object,
+    field_name: str,
+    required_fields: frozenset[str],
+) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TaskReportValidationError(f"{field_name} must be a mapping")
+    missing_fields = required_fields - set(value)
+    if missing_fields:
+        names = ", ".join(sorted(missing_fields))
+        raise TaskReportValidationError(
+            f"{field_name} is missing fields: {names}"
+        )
+    unknown_fields = set(value) - required_fields
+    if unknown_fields:
+        names = ", ".join(sorted(unknown_fields))
+        raise TaskReportValidationError(
+            f"{field_name} contains unknown fields: {names}"
+        )
+    return value
+
+
+def _validate_receipt_common(
+    receipt: Mapping[str, object],
+    field_name: str,
+) -> None:
+    _require_non_empty_string(receipt["receipt_id"], f"{field_name}.receipt_id")
+    _require_exact_int(receipt["exit_code"], f"{field_name}.exit_code")
+    if receipt["result"] not in ("PASS", "FAIL"):
+        raise TaskReportValidationError(
+            f"{field_name}.result must be PASS or FAIL"
+        )
+    if receipt["result"] == "PASS" and receipt["exit_code"] != 0:
+        raise TaskReportValidationError(
+            f"{field_name} PASS requires exit_code 0"
+        )
+
+
 def task_report_v2_payload_sha256(report: Mapping[str, object]) -> str:
     """Return the domain-separated hash of all fields except the hash field."""
     if not isinstance(report, Mapping):
@@ -111,15 +171,46 @@ def _require_unique_string_list(value: object, field_name: str) -> list[str]:
     return value
 
 
-def _receipt_results(receipts: object) -> dict[str, tuple[object, object]]:
+def _receipt_results(
+    receipts: object,
+    field_name: str,
+) -> dict[str, tuple[object, object]]:
     if not isinstance(receipts, list):
-        return {}
+        raise TaskReportValidationError(f"{field_name} must be a list")
     results: dict[str, tuple[object, object]] = {}
-    for receipt in receipts:
+    for index, receipt in enumerate(receipts):
         if not isinstance(receipt, Mapping):
-            continue
+            raise TaskReportValidationError(
+                f"{field_name}[{index}] must be a mapping"
+            )
+        if field_name == "test_receipts":
+            _require_closed_mapping(
+                receipt,
+                f"{field_name}[{index}]",
+                _TEST_RECEIPT_FIELDS,
+            )
+            _validate_receipt_common(receipt, f"{field_name}[{index}]")
+            _require_non_empty_string(
+                receipt["command"],
+                f"{field_name}[{index}].command",
+            )
+        elif field_name == "review_receipts":
+            _require_closed_mapping(
+                receipt,
+                f"{field_name}[{index}]",
+                _REVIEW_RECEIPT_FIELDS,
+            )
+            _validate_receipt_common(receipt, f"{field_name}[{index}]")
+            _require_non_empty_string(
+                receipt["reviewer_id"],
+                f"{field_name}[{index}].reviewer_id",
+            )
         receipt_id = receipt.get("receipt_id")
         if isinstance(receipt_id, str) and receipt_id:
+            if receipt_id in results:
+                raise TaskReportValidationError(
+                    f"{field_name} must not contain duplicate receipt_id values"
+                )
             results[receipt_id] = (
                 receipt.get("result"),
                 receipt.get("exit_code"),
@@ -142,6 +233,11 @@ def _verified_evidence_ids(evidence_refs: object) -> set[str]:
         ):
             verified.add(evidence_id)
     return verified
+
+
+def _validate_nested_contracts(report: Mapping[str, object]) -> None:
+    _receipt_results(report.get("test_receipts"), "test_receipts")
+    _receipt_results(report.get("review_receipts"), "review_receipts")
 
 
 def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
@@ -174,8 +270,11 @@ def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
     if ticket_state != "SUCCEEDED":
         return "BLOCKED", ["TICKET_NOT_SUCCEEDED"]
 
-    test_results = _receipt_results(report.get("test_receipts"))
-    review_results = _receipt_results(report.get("review_receipts"))
+    test_results = _receipt_results(report.get("test_receipts"), "test_receipts")
+    review_results = _receipt_results(
+        report.get("review_receipts"),
+        "review_receipts",
+    )
     unexpected_changes = _require_unique_string_list(
         report.get("unexpected_changes"),
         "unexpected_changes",
@@ -352,6 +451,7 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
         raise TaskReportValidationError(
             "outcome must be PASS, FAIL, BLOCKED, or IN_DOUBT"
         )
+    _validate_nested_contracts(report)
     derived_outcome, derived_reasons = _derive_outcome(report)
     if report["outcome"] != derived_outcome:
         raise TaskReportValidationError("outcome does not match mechanical derivation")

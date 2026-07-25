@@ -363,6 +363,203 @@ class TaskReportV2TracerTests(unittest.TestCase):
         ):
             parse_task_report_v2_bytes(nested)
 
+    def test_duplicate_test_receipt_ids_are_rejected(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        test_receipts.append(copy.deepcopy(test_receipts[0]))
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "test_receipts must not contain duplicate receipt_id values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["caller_note"] = "not part of the receipt contract"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_rejects_missing_nested_fields(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        del receipt["command"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\] is missing fields: command",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_rejects_bool_as_exit_code(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["exit_code"] = False
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\]\.exit_code must be an exact integer",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_items_must_be_objects(self) -> None:
+        report = self._complete_report()
+        report["test_receipts"] = ["task-report-unit-tests"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\] must be a mapping",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_id_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["receipt_id"] = ""
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\]\.receipt_id must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_command_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["command"] = ""
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\]\.command must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_malformed_receipts_are_rejected_before_ticket_outcome_precedence(self) -> None:
+        report = self._complete_report()
+        report["ticket_state"] = "IN_DOUBT"
+        report["outcome"] = "IN_DOUBT"
+        report["reason_codes"] = ["TICKET_IN_DOUBT"]
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        test_receipts.append(copy.deepcopy(test_receipts[0]))
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "test_receipts must not contain duplicate receipt_id values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipt_result_is_closed_to_pass_or_fail(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["result"] = "GREEN"
+        report["outcome"] = "FAIL"
+        report["reason_codes"] = [
+            "REQUIRED_TEST_FAILED:task-report-unit-tests"
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\]\.result must be PASS or FAIL",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_receipt_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        review_receipts = report["review_receipts"]
+        self.assertIsInstance(review_receipts, list)
+        receipt = review_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["caller_note"] = "not part of the receipt contract"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_receipts\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_receipt_rejects_bool_as_exit_code(self) -> None:
+        report = self._complete_report()
+        review_receipts = report["review_receipts"]
+        self.assertIsInstance(review_receipts, list)
+        receipt = review_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["exit_code"] = False
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_receipts\[0\]\.exit_code must be an exact integer",
+        ):
+            validate_task_report_v2(report)
+
+    def test_passing_receipt_requires_zero_exit_code(self) -> None:
+        report = self._complete_report()
+        test_receipts = report["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["exit_code"] = 1
+        report["outcome"] = "FAIL"
+        report["reason_codes"] = [
+            "REQUIRED_TEST_FAILED:task-report-unit-tests"
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"test_receipts\[0\] PASS requires exit_code 0",
+        ):
+            validate_task_report_v2(report)
+
+    def test_test_receipts_must_be_an_array_even_when_none_are_required(self) -> None:
+        report = self._complete_report()
+        requirements = report["requirements"]
+        self.assertIsInstance(requirements, dict)
+        requirements["required_test_receipt_ids"] = []
+        report["test_receipts"] = {}
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "test_receipts must be a list",
+        ):
+            validate_task_report_v2(report)
+
 
 if __name__ == "__main__":
     unittest.main()
