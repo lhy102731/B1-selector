@@ -1,7 +1,7 @@
-"""Fail-closed integrity validation for TaskReport V2 documents.
+"""Fail-closed building and validation for TaskReport V2 documents.
 
-This module validates evidence documents only. It never creates or grants an
-authorization, ticket, lease, or phase transition.
+This module builds and validates evidence documents only. It never creates or
+grants an authorization, ticket, lease, or phase transition.
 """
 
 from __future__ import annotations
@@ -22,6 +22,17 @@ _IDENTITY_BINDING_FIELDS = frozenset(
 )
 _TASK_OUTCOMES = frozenset({"PASS", "FAIL", "BLOCKED", "IN_DOUBT"})
 _PHASES = frozenset(phase.value for phase in Phase)
+_COMPUTED_FIELDS = frozenset(
+    {"schema_version", "outcome", "reason_codes", "report_payload_sha256"}
+)
+_REQUIREMENT_FIELDS = frozenset(
+    {
+        "required_test_receipt_ids",
+        "required_review_receipt_ids",
+        "required_evidence_ids",
+    }
+)
+_SIDE_EFFECT_SUMMARY_FIELDS = frozenset({"observed", "unauthorized"})
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -34,18 +45,24 @@ _TASK_REPORT_V2_FIELDS = frozenset(
         "objective",
         "dependencies",
         "idempotency_key",
+        "task_spec_ref",
+        "task_spec_sha256",
+        "requirements",
         "allowed_files",
         "forbidden_files",
         "baseline_ref",
         "baseline_sha256",
         "input_evidence_refs",
         "test_receipts",
+        "review_receipts",
         "review_findings",
         "changed_files",
         "unexpected_changes",
         "external_invocations",
         "side_effect_summary",
+        "ticket_state",
         "outcome",
+        "reason_codes",
         "started_at",
         "completed_at",
         "report_payload_sha256",
@@ -55,6 +72,10 @@ _TASK_REPORT_V2_FIELDS = frozenset(
 
 class TaskReportValidationError(ValueError):
     """Raised when a TaskReport V2 document fails closed validation."""
+
+
+class TaskReportBuildError(TaskReportValidationError):
+    """Raised when an untrusted draft cannot produce a TaskReport V2."""
 
 
 def _require_sha256(value: object, field_name: str) -> str:
@@ -75,12 +96,173 @@ def task_report_v2_payload_sha256(report: Mapping[str, object]) -> str:
     return hashlib.sha256(_REPORT_HASH_DOMAIN + canonical_payload).hexdigest()
 
 
+def _require_unique_string_list(value: object, field_name: str) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise TaskReportValidationError(
+            f"{field_name} must be a list of non-empty strings"
+        )
+    if len(value) != len(set(value)):
+        raise TaskReportValidationError(f"{field_name} must not contain duplicates")
+    return value
+
+
+def _receipt_results(receipts: object) -> dict[str, tuple[object, object]]:
+    if not isinstance(receipts, list):
+        return {}
+    results: dict[str, tuple[object, object]] = {}
+    for receipt in receipts:
+        if not isinstance(receipt, Mapping):
+            continue
+        receipt_id = receipt.get("receipt_id")
+        if isinstance(receipt_id, str) and receipt_id:
+            results[receipt_id] = (
+                receipt.get("result"),
+                receipt.get("exit_code"),
+            )
+    return results
+
+
+def _verified_evidence_ids(evidence_refs: object) -> set[str]:
+    if not isinstance(evidence_refs, list):
+        return set()
+    verified: set[str] = set()
+    for evidence in evidence_refs:
+        if not isinstance(evidence, Mapping):
+            continue
+        evidence_id = evidence.get("evidence_id")
+        if (
+            isinstance(evidence_id, str)
+            and evidence_id
+            and evidence.get("status") == "VERIFIED"
+        ):
+            verified.add(evidence_id)
+    return verified
+
+
+def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
+    requirements = report.get("requirements")
+    if not isinstance(requirements, Mapping):
+        raise TaskReportValidationError("requirements must be a mapping")
+    if set(requirements) != _REQUIREMENT_FIELDS:
+        raise TaskReportValidationError(
+            "requirements must contain exactly required_test_receipt_ids, "
+            "required_review_receipt_ids, and required_evidence_ids"
+        )
+    required_test_ids = _require_unique_string_list(
+        requirements["required_test_receipt_ids"],
+        "required_test_receipt_ids",
+    )
+    required_review_ids = _require_unique_string_list(
+        requirements["required_review_receipt_ids"],
+        "required_review_receipt_ids",
+    )
+    required_evidence_ids = _require_unique_string_list(
+        requirements["required_evidence_ids"],
+        "required_evidence_ids",
+    )
+
+    ticket_state = report.get("ticket_state")
+    if ticket_state == "IN_DOUBT":
+        return "IN_DOUBT", ["TICKET_IN_DOUBT"]
+    if ticket_state == "FAILED":
+        return "FAIL", ["TICKET_FAILED"]
+    if ticket_state != "SUCCEEDED":
+        return "BLOCKED", ["TICKET_NOT_SUCCEEDED"]
+
+    test_results = _receipt_results(report.get("test_receipts"))
+    review_results = _receipt_results(report.get("review_receipts"))
+    unexpected_changes = _require_unique_string_list(
+        report.get("unexpected_changes"),
+        "unexpected_changes",
+    )
+    side_effect_summary = report.get("side_effect_summary")
+    if not isinstance(side_effect_summary, Mapping):
+        raise TaskReportValidationError("side_effect_summary must be a mapping")
+    if set(side_effect_summary) != _SIDE_EFFECT_SUMMARY_FIELDS:
+        raise TaskReportValidationError(
+            "side_effect_summary must contain exactly observed and unauthorized"
+        )
+    _require_unique_string_list(
+        side_effect_summary["observed"],
+        "side_effect_summary.observed",
+    )
+    unauthorized_effects = _require_unique_string_list(
+        side_effect_summary["unauthorized"],
+        "side_effect_summary.unauthorized",
+    )
+    failed_reasons = [
+        f"UNEXPECTED_CHANGE:{path}" for path in sorted(unexpected_changes)
+    ]
+    failed_reasons.extend(
+        f"UNAUTHORIZED_SIDE_EFFECT:{effect}"
+        for effect in sorted(unauthorized_effects)
+    )
+    failed_reasons.extend(
+        f"REQUIRED_TEST_FAILED:{receipt_id}"
+        for receipt_id in sorted(set(required_test_ids) & set(test_results))
+        if test_results[receipt_id] != ("PASS", 0)
+    )
+    failed_reasons.extend(
+        f"REQUIRED_REVIEW_FAILED:{receipt_id}"
+        for receipt_id in sorted(set(required_review_ids) & set(review_results))
+        if review_results[receipt_id] != ("PASS", 0)
+    )
+    missing_reasons = [
+        f"MISSING_REQUIRED_TEST_RECEIPT:{receipt_id}"
+        for receipt_id in sorted(set(required_test_ids) - set(test_results))
+    ]
+    missing_reasons.extend(
+        f"MISSING_REQUIRED_REVIEW_RECEIPT:{receipt_id}"
+        for receipt_id in sorted(set(required_review_ids) - set(review_results))
+    )
+    missing_reasons.extend(
+        f"MISSING_REQUIRED_EVIDENCE:{evidence_id}"
+        for evidence_id in sorted(
+            set(required_evidence_ids)
+            - _verified_evidence_ids(report.get("input_evidence_refs"))
+        )
+    )
+    if failed_reasons:
+        return "FAIL", failed_reasons + missing_reasons
+    if missing_reasons:
+        return "BLOCKED", missing_reasons
+    return "PASS", []
+
+
+def build_task_report_v2(draft: Mapping[str, object]) -> dict[str, object]:
+    """Build a report while keeping computed fields out of caller control."""
+    if not isinstance(draft, Mapping):
+        raise TaskReportBuildError("task report draft must be a mapping")
+    supplied_computed_fields = set(draft) & _COMPUTED_FIELDS
+    if supplied_computed_fields:
+        names = ", ".join(sorted(supplied_computed_fields))
+        raise TaskReportBuildError(
+            f"task report draft contains computed fields: {names}"
+        )
+
+    report = dict(draft)
+    report["schema_version"] = TASK_REPORT_V2
+    try:
+        outcome, reason_codes = _derive_outcome(report)
+    except TaskReportValidationError as error:
+        raise TaskReportBuildError(str(error)) from error
+    report["outcome"] = outcome
+    report["reason_codes"] = reason_codes
+    report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+    validate_task_report_v2(report)
+    return report
+
+
 def validate_task_report_v2(report: Mapping[str, object]) -> None:
     """Validate TaskReport V2 identity and payload integrity without side effects."""
     if not isinstance(report, Mapping):
         raise TaskReportValidationError("task report must be a mapping")
     if report.get("schema_version") != TASK_REPORT_V2:
-        raise TaskReportValidationError("schema_version must be control_plane.task_report.v2")
+        raise TaskReportValidationError(
+            "schema_version must be control_plane.task_report.v2"
+        )
     missing_fields = _TASK_REPORT_V2_FIELDS - set(report)
     if missing_fields:
         names = ", ".join(sorted(missing_fields))
@@ -91,6 +273,9 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
         raise TaskReportValidationError(f"task report contains unknown fields: {names}")
     if not isinstance(report["changed_files"], list):
         raise TaskReportValidationError("changed_files must be a list")
+    if not isinstance(report["review_receipts"], list):
+        raise TaskReportValidationError("review_receipts must be a list")
+    _require_sha256(report["task_spec_sha256"], "task_spec_sha256")
     identity_binding = report["identity_binding"]
     if not isinstance(identity_binding, Mapping):
         raise TaskReportValidationError("identity_binding must be a mapping")
@@ -109,6 +294,13 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
     if report["outcome"] not in _TASK_OUTCOMES:
         raise TaskReportValidationError(
             "outcome must be PASS, FAIL, BLOCKED, or IN_DOUBT"
+        )
+    derived_outcome, derived_reasons = _derive_outcome(report)
+    if report["outcome"] != derived_outcome:
+        raise TaskReportValidationError("outcome does not match mechanical derivation")
+    if report["reason_codes"] != derived_reasons:
+        raise TaskReportValidationError(
+            "reason_codes do not match mechanical derivation"
         )
 
     claimed_hash = _require_sha256(

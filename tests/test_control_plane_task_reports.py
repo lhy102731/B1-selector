@@ -4,7 +4,9 @@ import copy
 import unittest
 
 from research_automation.control_plane.task_reports import (
+    TaskReportBuildError,
     TaskReportValidationError,
+    build_task_report_v2,
     task_report_v2_payload_sha256,
     validate_task_report_v2,
 )
@@ -27,6 +29,13 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "objective": "Reject a task report whose hashed payload was changed.",
             "dependencies": [],
             "idempotency_key": "p0r2-t1-task-report-tracer-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/task-report-tracer.json",
+            "task_spec_sha256": "7" * 64,
+            "requirements": {
+                "required_test_receipt_ids": ["task-report-unit-tests"],
+                "required_review_receipt_ids": ["task-report-controller-review"],
+                "required_evidence_ids": [],
+            },
             "allowed_files": [
                 "research_automation/control_plane/task_reports.py",
                 "tests/test_control_plane_task_reports.py",
@@ -37,9 +46,18 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "input_evidence_refs": [],
             "test_receipts": [
                 {
+                    "receipt_id": "task-report-unit-tests",
                     "command": "python -m unittest tests.test_control_plane_task_reports -v",
                     "exit_code": 0,
                     "result": "PASS",
+                }
+            ],
+            "review_receipts": [
+                {
+                    "receipt_id": "task-report-controller-review",
+                    "reviewer_id": "primary-codex",
+                    "result": "PASS",
+                    "exit_code": 0,
                 }
             ],
             "review_findings": [],
@@ -57,7 +75,9 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "observed": ["WRITE_SCOPED_CODE_TEST_PLAN_AND_CONTROL_STATE"],
                 "unauthorized": [],
             },
+            "ticket_state": "SUCCEEDED",
             "outcome": "PASS",
+            "reason_codes": [],
             "started_at": "2026-07-26T06:40:00+08:00",
             "completed_at": "2026-07-26T06:41:00+08:00",
         }
@@ -141,6 +161,168 @@ class TaskReportV2TracerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(TaskReportValidationError, "phase must be P0 through P8"):
             validate_task_report_v2(report)
+
+    def test_builder_owns_outcome_and_missing_required_test_blocks_pass(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: value
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        draft.update(
+            {
+                "task_spec_ref": "research_state/control_plane/p0r2/task_specs/task-report-tracer.json",
+                "task_spec_sha256": "7" * 64,
+                "requirements": {
+                    "required_test_receipt_ids": ["required-unit-test"],
+                    "required_review_receipt_ids": [],
+                    "required_evidence_ids": [],
+                },
+                "review_receipts": [],
+                "ticket_state": "SUCCEEDED",
+            }
+        )
+
+        caller_selected = dict(draft)
+        caller_selected["outcome"] = "PASS"
+        with self.assertRaisesRegex(TaskReportBuildError, "computed fields"):
+            build_task_report_v2(caller_selected)
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "BLOCKED")
+        self.assertEqual(
+            report["reason_codes"],
+            ["MISSING_REQUIRED_TEST_RECEIPT:required-unit-test"],
+        )
+        validate_task_report_v2(report)
+
+    def test_failed_required_test_mechanically_derives_fail(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        test_receipts = draft["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["result"] = "FAIL"
+        receipt["exit_code"] = 1
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(
+            report["reason_codes"],
+            ["REQUIRED_TEST_FAILED:task-report-unit-tests"],
+        )
+        validate_task_report_v2(report)
+
+    def test_unexpected_change_mechanically_derives_fail(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        draft["unexpected_changes"] = ["strategy/unified_b1_strategy.py"]
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(
+            report["reason_codes"],
+            ["UNEXPECTED_CHANGE:strategy/unified_b1_strategy.py"],
+        )
+        validate_task_report_v2(report)
+
+    def test_unauthorized_side_effect_mechanically_derives_fail(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        side_effect_summary = draft["side_effect_summary"]
+        self.assertIsInstance(side_effect_summary, dict)
+        side_effect_summary["unauthorized"] = ["RUN_RESEARCH"]
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(
+            report["reason_codes"],
+            ["UNAUTHORIZED_SIDE_EFFECT:RUN_RESEARCH"],
+        )
+        validate_task_report_v2(report)
+
+    def test_missing_required_evidence_blocks_pass(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        requirements = draft["requirements"]
+        self.assertIsInstance(requirements, dict)
+        requirements["required_evidence_ids"] = ["required-baseline-evidence"]
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "BLOCKED")
+        self.assertEqual(
+            report["reason_codes"],
+            ["MISSING_REQUIRED_EVIDENCE:required-baseline-evidence"],
+        )
+        validate_task_report_v2(report)
+
+    def test_rehash_cannot_hide_an_outcome_derivation_mismatch(self) -> None:
+        forged = self._complete_report()
+        test_receipts = forged["test_receipts"]
+        self.assertIsInstance(test_receipts, list)
+        receipt = test_receipts[0]
+        self.assertIsInstance(receipt, dict)
+        receipt["result"] = "FAIL"
+        receipt["exit_code"] = 1
+        forged["report_payload_sha256"] = task_report_v2_payload_sha256(forged)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "outcome does not match mechanical derivation",
+        ):
+            validate_task_report_v2(forged)
 
 
 if __name__ == "__main__":
