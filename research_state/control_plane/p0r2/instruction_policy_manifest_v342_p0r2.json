@@ -1,0 +1,38 @@
+{
+  "schema_version": "control_plane.instruction_policy_manifest.v3",
+  "created_at": "2026-07-26T06:08:09.5872713+08:00",
+  "hash_algorithm": "sha256(UTF-8 'control_plane.instruction_policy.v1' + NUL + canonical_json(payload))",
+  "payload": {
+    "schema_version": "control_plane.instruction_policy_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P0",
+    "sources": [
+      {
+        "authority_order": 0,
+        "path": "AGENTS.md",
+        "source_sha256": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+        "bytes": 13233
+      }
+    ],
+    "resolved_rules": [
+      "strict_forward_validation_for_scientific_claims",
+      "no_parameter_scope_or_validation_design_changes_without_operator_approval",
+      "no_running_task_stop_cancel_or_parameter_change",
+      "no_set_param_reset_or_rollback_change_without_explicit_request",
+      "research_and_production_cache_and_runner_isolation",
+      "preserve_scoped_positive_negative_partial_and_antifactor_learning",
+      "multi_llm_roundtable_then_gated_handoff_for_future_discovery",
+      "no_unicode_emoji_in_python_source"
+    ],
+    "terminology": {
+      "agents_source_sha256": "raw digest of AGENTS.md source bytes",
+      "instruction_policy_hash": "domain-separated digest of this resolved policy payload",
+      "entry_policy_sha256": "post-freeze reviewed executable/import/scheduler policy digest"
+    }
+  },
+  "computed": {
+    "canonical_payload_bytes": 985,
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "entry_policy_sha256": null
+}

@@ -1,0 +1,46 @@
+{
+  "schema_version": "control_plane.plan_manifest.v3",
+  "created_at": "2026-07-26T06:08:09.5872713+08:00",
+  "hash_algorithm": {
+    "canonical_markdown": "strict UTF-8; reject BOM/NUL; CRLF or CR to LF; exactly one terminal LF; no Unicode normalization",
+    "canonical_json": "UTF-8; sorted object keys; compact separators; semantic array order preserved; ensure_ascii=false; allow_nan=false",
+    "plan_hash": "sha256(UTF-8 'control_plane.plan_bundle.v1' + NUL + canonical_json(payload))"
+  },
+  "payload": {
+    "schema_version": "control_plane.plan_bundle_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "change_request_id": "P0-CR-002",
+    "source_materialization": {
+      "source_draft_path": "docs/superpowers/evidence/2026-07-26-v342-complete-plan-draft.md",
+      "source_draft_sha256": "89d6d02ace45b2f86538a4e054b61233f469fab54c4ad532d33cf5f30d57743b",
+      "method": "NORMATIVE_SECTION_SPLIT_WITH_NON_EXPANSIVE_CLARIFICATIONS",
+      "semantic_delta_count": 3,
+      "semantic_deltas": [
+        {"id": "AUTHORIZATION_BOUNDARY_CLARIFIED", "authority_expanding": false},
+        {"id": "HASH_DAG_AND_IDENTITY_DOMAIN_SEPARATION_CLARIFIED", "authority_expanding": false},
+        {"id": "EXACT_PATH_INCREMENTAL_GIT_CONTROLS_CLARIFIED", "authority_expanding": false}
+      ],
+      "requires_reapproval_if_authority_expands": true
+    },
+    "expected_document_count": 11,
+    "documents": [
+      {"ordinal": 0, "role": "p0r2", "path": "docs/superpowers/plans/2026-07-26-v342-00-p0r2.md", "canonical_sha256": "5347a8b7c7f88d061597652c67d606cd6fcbe6088affa2737e3418cfa72f6e20", "canonical_bytes": 7493},
+      {"ordinal": 1, "role": "p1_foundations", "path": "docs/superpowers/plans/2026-07-26-v342-01-foundations.md", "canonical_sha256": "4fae9916840ab0fe2f88e37b0025d45ba9cd655669c9687d3e5820f39e87c3e1", "canonical_bytes": 3395},
+      {"ordinal": 2, "role": "p2_data_generation", "path": "docs/superpowers/plans/2026-07-26-v342-02-data-generation.md", "canonical_sha256": "5beeebd1833befe88a062d740fff70d815162bced0213efd1f8f224cefd990b9", "canonical_bytes": 2707},
+      {"ordinal": 3, "role": "p3_access_lineage", "path": "docs/superpowers/plans/2026-07-26-v342-03-access-lineage.md", "canonical_sha256": "55a97da3c93b1b0ca1bcd1be7748e0698f16913cfbc90bb422233c1d4978e577", "canonical_bytes": 1688},
+      {"ordinal": 4, "role": "p4_evidence_learning", "path": "docs/superpowers/plans/2026-07-26-v342-04-evidence-learning.md", "canonical_sha256": "259db971a88b4bb60a86df8c9bd22f5a28e95ba8021c4ad437cda546ae985b3f", "canonical_bytes": 2445},
+      {"ordinal": 5, "role": "p5_memory", "path": "docs/superpowers/plans/2026-07-26-v342-05-memory.md", "canonical_sha256": "23b83d7bacad0f8a6e885eebfa22ebdc5f98f6aa10c725d41436ca3d3ea4648a", "canonical_bytes": 2311},
+      {"ordinal": 6, "role": "p6_campaign", "path": "docs/superpowers/plans/2026-07-26-v342-06-campaign.md", "canonical_sha256": "98b51f98a15606d239ff3b3fde22137d7450f7fc35900acf5d11f0d3d74e5a92", "canonical_bytes": 2968},
+      {"ordinal": 7, "role": "p7_operations", "path": "docs/superpowers/plans/2026-07-26-v342-07-operations.md", "canonical_sha256": "be80f6ae1148c4e0852740003b0a0578c9709834a1fbd6924e7ca13f685b8080", "canonical_bytes": 2083},
+      {"ordinal": 8, "role": "p8_final_evaluator", "path": "docs/superpowers/plans/2026-07-26-v342-08-final-evaluator.md", "canonical_sha256": "bab6c40073a90016fac15d82cfd54676ff6a3ea933b3f9f648e0a6593062e91d", "canonical_bytes": 1663},
+      {"ordinal": 9, "role": "master_index", "path": "docs/superpowers/plans/2026-07-26-v342-index.md", "canonical_sha256": "b09f765906b884ea5f0cbf14c1903fe6bd814a071d48468671174ef2415d3354", "canonical_bytes": 7644},
+      {"ordinal": 10, "role": "change_request", "path": "docs/superpowers/plans/2026-07-26-v342-p0-change-request-002.md", "canonical_sha256": "c75f444af8dd1403008d71e9d115b799a187878fc06155e13dfbe39e19f5f0a6", "canonical_bytes": 3171}
+    ]
+  },
+  "computed": {
+    "canonical_payload_bytes": 3105,
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972"
+  },
+  "auto_advance": false
+}
+

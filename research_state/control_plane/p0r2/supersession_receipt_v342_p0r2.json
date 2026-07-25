@@ -1,0 +1,89 @@
+{
+  "schema_version": "control_plane.supersession_receipt.v1",
+  "new_plan_version": "V3.4.2-P0R2",
+  "new_plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+  "new_scope_hash": "d8ca0be226c43a54de63a5e5d50ffe905ab6da7746584095a9084b981fa26584",
+  "new_instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+  "identity_bundle_sha256": "5c55d7e7d5cc2f0b0def48d2244b20427c98664be962da681f0dc420deedae4b",
+  "supersedes": "V3.4.1-P0R1",
+  "legacy_plan": {
+    "manifest_path": "docs/superpowers/plans/2026-07-25-v34-plan-approval-manifest-p0r1.json",
+    "manifest_sha256": "d825bc379e275de44e676126fada48ef952267b921c8c5d59247542a52eb452d",
+    "plan_hash": "6603e962c65d81274fe2e9a2e4a2c9e987ae65837bc415ab4144058c38ab8d34",
+    "scope_hash": "ec0410ba5925474ca728bce4bc960f889fce405da3e1015bd5306c190d317027",
+    "instruction_policy_hash": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+    "prior_policy_hash_field": "policy_hash",
+    "prior_policy_hash_semantics": "raw AGENTS.md SHA-256 only",
+    "verified": true
+  },
+  "legacy_authorization": {
+    "path": "research_state/control_plane/p0/implementation_authorization_p0r1.json",
+    "sha256": "df998a489e8a84b247fc4d020723e80c16bb730df0c7cfa0b1366230d5bdea3c",
+    "authorization_ref": "p0-65a2dbf27ae54fd19bcafbfe22420a1a",
+    "state": "CLAIMED",
+    "reusable": false,
+    "capabilities_replayable": false
+  },
+  "legacy_gate": {
+    "status": "NOT_COMPUTED",
+    "p0_pass_adopted": false
+  },
+  "legacy_task_reports": [
+    {
+      "path": "research_state/control_plane/p0/task_report_p0_t1_contract_authority.json",
+      "sha256": "9beac163f88c1aeadee0c864a2a3dc9ad68bc06200225eff1bb26a13c882771a",
+      "schema_version": "control_plane.task_report.v1",
+      "source_status": "PASS_WITH_P0_GATE_NOT_COMPUTED",
+      "adoption_class": "ELIGIBLE_FOR_REVALIDATION",
+      "revalidation_required": true
+    },
+    {
+      "path": "research_state/control_plane/p0/task_report_p0_t2_inventory_import.json",
+      "sha256": "5c5052099ce22f2f0c0fd463bf5dfc62a949bbc05b44cbe2a5d4605034baeb9d",
+      "schema_version": "control_plane.p0_task_report.v1",
+      "source_status": "BLOCKED_BY_PLAN_REVISION",
+      "adoption_class": "PROVISIONAL_CURRENT_SNAPSHOT_BASELINE",
+      "revalidation_required": true
+    }
+  ],
+  "adoption_policy": {
+    "mode": "ORDERED_HASH_BOUND_REVALIDATION",
+    "source_task_order": [
+      "P0-T1-CONTRACT-AUTHORITY",
+      "P0-T2-INVENTORY-IMPORT"
+    ],
+    "final_file_expected_from_last_writer": true,
+    "source_outcome_preserved": true,
+    "target_gate_outcome": "NOT_YET_COMPUTED",
+    "usage_carried_by_reference": true,
+    "usage_count_in_target_total": false,
+    "unknown_usage_remains_unknown": true
+  },
+  "legacy_inventory": {
+    "path": "research_state/control_plane/p0/entry_inventory_p0_t2_initial.json",
+    "sha256": "9417175f3d502d7abd33f2c59d3f1e5487543f252f48d2b96367789daf40662c",
+    "entry_count": 368,
+    "final": false
+  },
+  "legacy_entry_policy": {
+    "path": "research_automation/control_plane/entry_policy.json",
+    "sha256": "7e1d2f185fd926879a17d10ff3fa419cfd4f46fd45a8c3c4c96ac0f9c322643f",
+    "review_state": "APPROVED_FOR_P0R1_SNAPSHOT_ONLY",
+    "active_authority": false,
+    "final_gate_eligible": false
+  },
+  "legacy_scheduler_snapshot": {
+    "path": "research_state/control_plane/p0/external_scheduler_inventory_p0_t2.json",
+    "sha256": "8cbc38e3a77cb7e3f7ed5c332e5c9e979ec5276af54592255614be3f7d919257",
+    "rescan_required": true,
+    "legacy_encoding_defect_in_other_manifests": true
+  },
+  "usage_evidence_rule": "Preserve source-specific totals; do not add 59441 to 58734; unknown remains unknown.",
+  "authorization_reused": false,
+  "old_evidence_immutable": true,
+  "old_phase_rights_carried_forward": [],
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false
+}

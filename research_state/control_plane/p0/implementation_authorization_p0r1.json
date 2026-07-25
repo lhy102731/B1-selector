@@ -1,0 +1,21 @@
+{
+  "schema_version": "control_plane.implementation_authorization_receipt.v1",
+  "authorization_ref": "p0-65a2dbf27ae54fd19bcafbfe22420a1a",
+  "authorization_identity_sha256": "d5f38140e264cfbe217b9304b28e182c237d7b34f6ff086afb02719fcdc605d0",
+  "command": "START_IMPLEMENTATION phase=P0",
+  "phase": "P0",
+  "actor_type": "human",
+  "observed_at": "2026-07-25T20:47:52.8048552+08:00",
+  "plan_version": "V3.4.1-P0R1",
+  "plan_hash": "6603e962c65d81274fe2e9a2e4a2c9e987ae65837bc415ab4144058c38ab8d34",
+  "scope_hash": "ec0410ba5925474ca728bce4bc960f889fce405da3e1015bd5306c190d317027",
+  "policy_hash": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+  "state": "CLAIMED",
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false,
+  "windows_scheduler_or_acl_mutation_authorized": false,
+  "git_mutation_authorized": false,
+  "external_model_concurrency_required": true
+}

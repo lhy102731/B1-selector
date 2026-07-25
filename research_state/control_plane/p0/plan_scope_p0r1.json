@@ -1,0 +1,124 @@
+{
+  "schema_version": "control_plane.plan_scope.v1",
+  "plan_version": "V3.4.1-P0R1",
+  "phase": "P0",
+  "auto_advance": false,
+  "external_model_concurrency_required": true,
+  "approved_change_requests": [
+    {
+      "id": "P0-CR-001",
+      "path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001.md",
+      "sha256": "26e84b18ebc42a2a76baa170d9eb31a0630cda1a18faa959ff0f44d5b73738e7"
+    },
+    {
+      "id": "P0-CR-001-A",
+      "path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001-a.md",
+      "sha256": "55a7d7be04345521c8805c0c37b9abfac67ac4065474f0523fb52748579727ce"
+    },
+    {
+      "id": "P0-CR-001-B",
+      "path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001-b.md",
+      "sha256": "c069ee622fc740f353c507496337accc6c6212a1d32d529aa5c5ac8cec400681"
+    }
+  ],
+  "policy_binding": {
+    "canonical_source": "workspace_and_invocation_match",
+    "invocation_sha256": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+    "workspace_path": "AGENTS.md",
+    "workspace_sha256": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82"
+  },
+  "task_ids": [
+    "P0-T1-CONTRACT-AUTHORITY",
+    "P0-T2-INVENTORY-IMPORT",
+    "P0-T3-GATE-VALIDATOR",
+    "P0-T4-EXECUTION-SINKS",
+    "P0-T5-AUTHORITY-WRITES-LOOPS",
+    "P0-T6-WEB-ENTRY-GUARDS",
+    "P0-T7-INTEGRATION-GATE"
+  ],
+  "allowed_files": [
+    "ag2_research/discovery_handoff.py",
+    "ag2_research/knowledge_bridge.py",
+    "ag2_research/orchestrator.py",
+    "apps/web_roundtable.py",
+    "apps/web_server.py",
+    "build_daily_ret_cache.py",
+    "research/brick_ag2_kbase_sqnav_autorun.py",
+    "research_automation/__init__.py",
+    "research_automation/automation_controller.py",
+    "research_automation/autonomous_runner.py",
+    "research_automation/control_plane/__init__.py",
+    "research_automation/control_plane/contracts.py",
+    "research_automation/control_plane/entry_guard.py",
+    "research_automation/control_plane/entry_policy.json",
+    "research_automation/control_plane/p0_gate.py",
+    "research_automation/discovery_execution_bridge.py",
+    "research_automation/evolution_loop.py",
+    "research_automation/experiment_runner.py",
+    "research_automation/handoff_runner_repair.py",
+    "research_automation/handoff_updater.py",
+    "research_automation/kb_gate.py",
+    "research_automation/kbase_ag2_full_cycle.py",
+    "research_automation/patch_executor.py",
+    "research_automation/registry_updater.py",
+    "research_automation/run_brick_sqnav_backlog.py",
+    "research_automation/safety.py",
+    "research_automation/snapshot_updater.py",
+    "run_research.py",
+    "run_research_cycle.py",
+    "tests/test_ag2_orchestration_contracts.py",
+    "tests/test_automation_resilience.py",
+    "tests/test_control_plane_contracts.py",
+    "tests/test_control_plane_entry_guard.py",
+    "tests/test_control_plane_p0_gate.py",
+    "tests/test_control_plane_sink_guards.py",
+    "tests/test_discovery_handoff_bridge.py",
+    "tests/test_handoff_runner_repair.py",
+    "tests/test_import_side_effects.py",
+    "tests/test_kbase_ag2_full_cycle.py",
+    "tests/test_knowledge_bridge.py",
+    "tests/test_legacy_campaign_guards.py",
+    "tests/test_web_entry_guards.py",
+    "tools/data/fetch_active_cap.py",
+    "tools/diagnostics/test_llm_connectivity.py"
+  ],
+  "generated_state_prefix": "research_state/control_plane/p0/",
+  "forbidden_roots": [
+    ".env",
+    "artifacts/",
+    "config/",
+    "data/",
+    "models/",
+    "research_state/* except research_state/control_plane/p0/",
+    "strategy/",
+    "D:/KBase/",
+    "ag2_research/knowledge_base/"
+  ],
+  "forbidden_actions": [
+    "backtest_or_research_execution",
+    "branch_or_worktree_creation",
+    "cache_build_or_rebuild",
+    "data_update_or_mutation",
+    "final_holdout_access",
+    "git_stage_commit_push_or_mutation",
+    "kbase_content_write",
+    "process_stop_cancel_or_parameter_change",
+    "production_config_change",
+    "production_model_parameter_signal_or_strategy_change",
+    "real_campaign_start",
+    "registry_snapshot_handoff_or_memory_content_write",
+    "windows_scheduler_or_acl_mutation"
+  ],
+  "p0_runtime_allowed_side_effects": [
+    "READ",
+    "WRITE_CONTROL_PLANE"
+  ],
+  "external_review_roster": [
+    "volcengine:glm51",
+    "volcengine:doubao",
+    "volcengine:kimi_hs",
+    "volcengine:minimax_hs",
+    "deepseek_official:deepseekv4"
+  ],
+  "external_review_manifest": "docs/superpowers/reviews/2026-07-25-p0-cr001-panel/roster_manifest.json"
+}

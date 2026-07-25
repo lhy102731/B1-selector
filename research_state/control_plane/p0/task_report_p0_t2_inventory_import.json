@@ -1,0 +1,207 @@
+{
+  "schema_version": "control_plane.p0_task_report.v1",
+  "task_id": "P0-T2-INVENTORY-IMPORT",
+  "phase": "P0",
+  "objective": "Produce a complete deterministic entry inventory and reviewed policy, and remove import-time work while preserving explicit CLI behavior.",
+  "dependencies": [
+    {
+      "task_id": "P0-T1-CONTRACT-AUTHORITY",
+      "report": "research_state/control_plane/p0/task_report_p0_t1_contract_authority.json",
+      "report_sha256": "9beac163f88c1aeadee0c864a2a3dc9ad68bc06200225eff1bb26a13c882771a",
+      "status": "PASS"
+    }
+  ],
+  "idempotency_key": "p0r1:p0-t2-inventory-import:initial-freeze:v1",
+  "plan_version": "V3.4.1-P0R1",
+  "plan_hash": "6603e962c65d81274fe2e9a2e4a2c9e987ae65837bc415ab4144058c38ab8d34",
+  "scope_hash": "ec0410ba5925474ca728bce4bc960f889fce405da3e1015bd5306c190d317027",
+  "policy_hash": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+  "allowed_files": [
+    "research_automation/__init__.py",
+    "research_automation/control_plane/entry_guard.py",
+    "research_automation/control_plane/entry_policy.json",
+    "build_daily_ret_cache.py",
+    "tools/diagnostics/test_llm_connectivity.py",
+    "tools/data/fetch_active_cap.py",
+    "tests/test_control_plane_entry_guard.py",
+    "tests/test_import_side_effects.py",
+    "research_state/control_plane/p0/"
+  ],
+  "baseline_hashes": {
+    "research_automation/__init__.py": "f0f866514d782ddebc04271a2c6206b279ae4d1c051b33624a15ea8f61ce8bdc",
+    "research_automation/control_plane/entry_guard.py": "f1e816c7ef0a985750f01178f6fbdcedf062725c09accf9a83350016f15dc4da",
+    "research_automation/control_plane/entry_policy.json": null,
+    "build_daily_ret_cache.py": "3c20b32874873dc7108842dccc3cf94843ea6ec0b7e279bebc27d653728f3938",
+    "tools/diagnostics/test_llm_connectivity.py": "b1dcc277176610d3b08fbbc442ea5d8b661974029cb1959f035f4171726d43d3",
+    "tools/data/fetch_active_cap.py": "91796e25ee97ce1b61c7d3c2e3ee257a4ade0efb6873f3eb270872285ffb593f",
+    "tests/test_control_plane_entry_guard.py": "2120476de95345813b538e0eba780849b88a096768fda70566a5c039ac080241",
+    "tests/test_import_side_effects.py": null
+  },
+  "red_commands": [
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scanner_records_cannot_approve_themselves_as_entry_policy -v",
+      "observed_failure": "Scanner records were accepted as their own declaration policy."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_hand_wrapped_scanner_records_cannot_approve_themselves -v",
+      "observed_failure": "A caller-created ReviewedEntryPolicy wrapper bypassed scanner-policy separation."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_reviewed_policy_rejects_a_different_identity_binding -v",
+      "observed_failure": "load_policy did not accept or verify the approved IdentityBinding."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scheduler_omission_becomes_an_explicit_unknown_record -v",
+      "observed_failure": "An omitted scheduler fixture produced no scheduler record."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scheduler_unknown_is_explicit_not_silent -v",
+      "observed_failure": "Unavailable scheduler metadata discarded the known task identity."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scan_assigns_conservative_closed_dispositions -v",
+      "observed_failure": "TEST_ONLY and DENIED_WEB records used actor types outside the closed actor contract."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_entry_record_rejects_actor_type_outside_the_contract -v",
+      "observed_failure": "EntryRecord accepted an actor type outside ACTOR_TYPES."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scan_excludes_generated_directories_but_keeps_tools_data -v",
+      "observed_failure": "The global _output exclusion incorrectly removed tools/_output."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_manifest_writer_fails_before_an_unticketed_file_effect -v",
+      "observed_failure": "The public manifest writer created arbitrary parent directories and files without a lease."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scan_rejects_a_missing_inventory_root -v",
+      "observed_failure": "A nonexistent inventory root silently produced an incomplete inventory."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scan_fails_closed_when_a_source_directory_is_unreadable -v",
+      "observed_failure": "os.walk errors were silently ignored."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_scan_fails_closed_when_source_hashing_is_denied -v",
+      "observed_failure": "Source hashing errors could become null content hashes."
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests.test_reviewed_policy_requires_every_record_field -v",
+      "observed_failure": "A policy record missing disposition was silently defaulted and accepted."
+    }
+  ],
+  "green_commands": [
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard.EntryInventoryTests -v",
+      "result": "31 tests passed"
+    },
+    {
+      "command": "python -m unittest tests.test_import_side_effects -v",
+      "result": "8 tests passed"
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_contracts tests.test_control_plane_entry_guard tests.test_import_side_effects -v",
+      "result": "117 tests passed"
+    },
+    {
+      "command": "three isolated python -B control-plane import probes",
+      "result": "0.070671s, 0.064190s, 0.063618s; all quiet; autogen and ag2_research.orchestrator absent"
+    },
+    {
+      "command": "load reviewed policy, load initial inventory, rescan with read-only scheduler evidence, and compare all records",
+      "result": "368 records; exact_match=true"
+    }
+  ],
+  "inventory_summary": {
+    "record_count": 368,
+    "duplicate_entry_ids": 0,
+    "null_non_scheduler_hashes": 0,
+    "invalid_actor_types": 0,
+    "dispositions": {
+      "ADMIN_ONLY": 57,
+      "DENIED_WEB": 3,
+      "LEGACY_UNAUDITED": 251,
+      "PRODUCTION_DAILY": 8,
+      "TEST_ONLY": 49,
+      "CONTROLLED_RESEARCH": 0
+    },
+    "entry_inventory_ref": "research_state/control_plane/p0/entry_inventory_p0_t2_initial.json",
+    "entry_inventory_sha256": "9417175f3d502d7abd33f2c59d3f1e5487543f252f48d2b96367789daf40662c",
+    "entry_policy_ref": "research_automation/control_plane/entry_policy.json",
+    "entry_policy_sha256": "7e1d2f185fd926879a17d10ff3fa419cfd4f46fd45a8c3c4c96ac0f9c322643f",
+    "external_scheduler_inventory_ref": "research_state/control_plane/p0/external_scheduler_inventory_p0_t2.json",
+    "external_scheduler_inventory_sha256": "8cbc38e3a77cb7e3f7ed5c332e5c9e979ec5276af54592255614be3f7d919257"
+  },
+  "review_findings": [
+    {
+      "review": "specification_compliance",
+      "reviewer": "p0_t2_inventory_audit",
+      "initial_status": "DONE_WITH_CONCERNS",
+      "resolution": "Closed scanner self-approval, exact hash binding, scheduler omission/action/identity, actor closed set, exact exclusions, generic reparse detection, fail-closed scanning and hashing, required policy fields, metadata substitution, and the unticketed manifest writer."
+    },
+    {
+      "review": "code_quality_and_import_safety",
+      "reviewer": "p0_t2_import_review",
+      "initial_status": "DONE_WITH_CONCERNS",
+      "resolution": "Added three isolated cold samples, explicit heavy-module absence, all public export resolution with dotenv loading disabled, broad filesystem/network/process import guards, and mocked explicit CLI behavior tests."
+    },
+    {
+      "review": "main_controller_final_review",
+      "reviewer": "Codex",
+      "status": "GREEN_CURRENT_SNAPSHOT",
+      "resolution": "All current inventory, policy, scheduler evidence, public metadata comparisons, import boundaries, and task regressions were rechecked after the last code edit."
+    }
+  ],
+  "changed_files": {
+    "research_automation/__init__.py": "eda152780f2d3bdb07b0946866c747b2a98020698043c91a1c2f37b69e0042e4",
+    "research_automation/control_plane/entry_guard.py": "bdf3d2ad902ea890c3d8a1f4413f022b283d28b33ed9d7537427e022c862413c",
+    "research_automation/control_plane/entry_policy.json": "7e1d2f185fd926879a17d10ff3fa419cfd4f46fd45a8c3c4c96ac0f9c322643f",
+    "build_daily_ret_cache.py": "08ee9572be1a8f886d286d906c774869363b413bfeaef1e8d68913c9c39ef936",
+    "tools/diagnostics/test_llm_connectivity.py": "3e366784e06c96e527e1fa5995cb232fd75954ee5bc21a1de9685446993a3099",
+    "tools/data/fetch_active_cap.py": "5ab07cb103a819a1913ccfc09655c557f28a66b5792ff7ea09e4ebf0f0d82121",
+    "tests/test_control_plane_entry_guard.py": "ab169c5493e71862a97ea6b36831cb410ff3f34118f8525389833625b314d7df",
+    "tests/test_import_side_effects.py": "85544d293038c9a551c0c996a994de01624e8c37366b8bcc59a0d0bde9ef5f52",
+    "research_state/control_plane/p0/entry_inventory_p0_t2_initial.json": "9417175f3d502d7abd33f2c59d3f1e5487543f252f48d2b96367789daf40662c",
+    "research_state/control_plane/p0/external_scheduler_inventory_p0_t2.json": "8cbc38e3a77cb7e3f7ed5c332e5c9e979ec5276af54592255614be3f7d919257"
+  },
+  "unexpected_changes": [],
+  "protected_process": {
+    "pid": 24704,
+    "present_during_task": true,
+    "altered": false,
+    "policy": "DO_NOT_STOP_OR_ALTER"
+  },
+  "external_model_usage": {
+    "known_total_tokens": 58734,
+    "unknown_usage_count": 1,
+    "implementation_batch_a": {
+      "volcengine/glm51": 7821,
+      "volcengine/doubao": "unknown; OUTPUT_NOT_CAPTURED",
+      "volcengine/kimi_hs": 12590,
+      "volcengine/minimax_hs": 6938,
+      "deepseek_official": 16256
+    },
+    "concurrent_review": {
+      "glm51": 2099,
+      "doubao": 6474,
+      "kimi_hs": 2098,
+      "minimax_hs": 2265,
+      "deepseekv4": 2193
+    }
+  },
+  "blocking_plan_conflict": {
+    "id": "P0-CR-002-REQUIRED",
+    "finding": "P0-T2 freezes content_sha256 for scanned code, while P0-T3 through P0-T7 must modify that same scan surface. P0-T7 is not allowed to refresh entry_policy.json, so the final P0R1 gate must reject a stale policy.",
+    "required_resolution": "Issue a P0R2 plan revision with new plan and scope hashes, split T7 into a code-freeze step and a final inventory/policy review step, then obtain a fresh START_IMPLEMENTATION phase=P0 authorization. Existing provisional diffs may be carried forward and revalidated; scanner output must never set APPROVED automatically.",
+    "policy_hash_note": "The control-plane policy_hash remains the AGENTS.md binding. The entry_policy.json artifact hash is entry_policy_sha256 and must not replace policy_hash."
+  },
+  "rollback_point": "Reverse only the P0-T2 allowlisted file patches; preserve generated audit evidence. No Git reset, checkout, task stop, data mutation, or KBase operation is authorized.",
+  "task_level_result": "GREEN_CURRENT_SNAPSHOT",
+  "status": "BLOCKED_BY_PLAN_REVISION",
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false,
+  "completed_at": "2026-07-26T01:20:55.3517492+08:00"
+}

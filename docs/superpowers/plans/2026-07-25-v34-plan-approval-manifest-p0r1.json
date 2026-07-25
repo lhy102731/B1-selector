@@ -1,0 +1,40 @@
+{
+  "schema_version": "v34_plan_approval_manifest.v2",
+  "plan_version": "V3.4.1-P0R1",
+  "phase": "P0",
+  "status": "PLAN_REVISION_READY_FOR_AUTHORIZATION",
+  "plan_hash_algorithm": "sha256(each sorted relative path + NUL + file sha256 + NUL + byte length + LF)",
+  "scope_hash_algorithm": "sha256(canonical UTF-8 JSON; sorted object keys; preserved semantic array order; compact separators; no dynamic fields)",
+  "plan_hash": "6603e962c65d81274fe2e9a2e4a2c9e987ae65837bc415ab4144058c38ab8d34",
+  "scope_hash": "ec0410ba5925474ca728bce4bc960f889fce405da3e1015bd5306c190d317027",
+  "policy_hash": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82",
+  "scope_path": "research_state/control_plane/p0/plan_scope_p0r1.json",
+  "files": [
+    {"path": "docs/superpowers/plans/2026-07-25-v34-01-entry-contracts.md", "sha256": "a8413f5e9c6c70f4d41d1d700292293f987b667096d53cf4fd332c26220bf0e9", "bytes": 13346},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-02-data-generation.md", "sha256": "e5ea2730dba3f60ec473faec0aadaabd6ba14aaf80cd9211fad2e4cfcda8d6bd", "bytes": 9933},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-03-access-evidence-learning.md", "sha256": "eb95659cc0ee1ef6ebd5fafb6dac7e378f06c12c89104dd78e9fa8b9a261c838", "bytes": 13442},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-04-memory-campaign.md", "sha256": "cf56f30e608366260db48034ad40ed797fbf5a6f9a199c89b3db2a54054da246", "bytes": 11279},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-05-final-evaluator-ops.md", "sha256": "c825221206bd062f0c95a7e0446ed7c414478c415e43042ec82cc9bb4e8d0791", "bytes": 8700},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-index.md", "sha256": "ca9ffd0649391240614b856a05d4a555ff070efddb01ac524b2decc154ce275a", "bytes": 9019},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001-a.md", "sha256": "55a7d7be04345521c8805c0c37b9abfac67ac4065474f0523fb52748579727ce", "bytes": 3777},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001-b.md", "sha256": "c069ee622fc740f353c507496337accc6c6212a1d32d529aa5c5ac8cec400681", "bytes": 2638},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-p0-change-request-001.md", "sha256": "26e84b18ebc42a2a76baa170d9eb31a0630cda1a18faa959ff0f44d5b73738e7", "bytes": 12854},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-p0-revision-001.md", "sha256": "6edd023006b0f99847331a573dd4c5062d97375a895a2b9550f12f6c38b3dedd", "bytes": 22150},
+    {"path": "docs/superpowers/plans/2026-07-25-v34-superpowers-master-prompt.md", "sha256": "9ae824525fecc81596c1cc65d8b5ef32182c13b06450ae8c01af59f453423728", "bytes": 35463}
+  ],
+  "approved_change_requests": [
+    "P0-CR-001",
+    "P0-CR-001-A",
+    "P0-CR-001-B"
+  ],
+  "external_model_concurrency_required": true,
+  "external_review_manifest": "docs/superpowers/reviews/2026-07-25-p0-cr001-panel/roster_manifest.json",
+  "next_authorized_step": "START_IMPLEMENTATION phase=P0",
+  "implementation_authorization_consumed": false,
+  "auto_advance": false,
+  "p1_authorized": false,
+  "real_campaign_authorized": false,
+  "final_eval_authorized": false,
+  "windows_scheduler_or_acl_mutation_authorized": false,
+  "git_policy": "EXPLICIT_ONLY"
+}

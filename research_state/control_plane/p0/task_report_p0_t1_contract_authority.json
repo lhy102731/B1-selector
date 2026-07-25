@@ -1,0 +1,280 @@
+{
+  "schema_version": "control_plane.task_report.v1",
+  "plan_version": "V3.4.1-P0R1",
+  "task_id": "P0-T1-CONTRACT-AUTHORITY",
+  "phase": "P0",
+  "objective": "Replace public-hash token bootstrap with the closed envelope/grant/ticket/lease state machine.",
+  "authorization_ref": "p0-65a2dbf27ae54fd19bcafbfe22420a1a",
+  "started_at": "2026-07-25T20:47:52.8048552+08:00",
+  "completed_at": "2026-07-25T23:58:22.5102429+08:00",
+  "identity_binding": {
+    "plan_hash": "6603e962c65d81274fe2e9a2e4a2c9e987ae65837bc415ab4144058c38ab8d34",
+    "scope_hash": "ec0410ba5925474ca728bce4bc960f889fce405da3e1015bd5306c190d317027",
+    "policy_hash": "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82"
+  },
+  "dependencies": [
+    "approved P0 revision",
+    "fresh P0 implementation authorization"
+  ],
+  "idempotency_key": "V3.4.1-P0R1:P0-T1-CONTRACT-AUTHORITY",
+  "allowed_files": [
+    "research_automation/control_plane/__init__.py",
+    "research_automation/control_plane/contracts.py",
+    "research_automation/control_plane/entry_guard.py",
+    "research_automation/safety.py",
+    "tests/test_control_plane_contracts.py",
+    "tests/test_control_plane_entry_guard.py"
+  ],
+  "baseline_ref": "research_state/control_plane/p0/implementation_baseline_p0r1.json",
+  "baseline_sha256": "bc1ca44d2c32ff6128a4cc80a09a327605a611c14abab686905b524aeafab701",
+  "red_evidence": [
+    {
+      "behavior": "lease secret is not derivable from a task ticket and public lease id",
+      "result": "RED: forged derived lease was accepted"
+    },
+    {
+      "behavior": "mixed-separator UNC is rejected before filesystem resolution",
+      "result": "RED: Path.resolve was reached"
+    },
+    {
+      "behavior": "DOS device names are rejected before filesystem resolution",
+      "result": "RED: NUL reached Path.resolve"
+    },
+    {
+      "behavior": "unsafe approved roots are lexically rejected before filesystem access",
+      "result": "RED: Path.is_symlink was reached for a mixed UNC permission root"
+    },
+    {
+      "behavior": "legacy AuthorizationGrant and EntryGuard cannot authorize",
+      "result": "RED: allows returned true and a permissive injected authorizer bypassed EntryGuard"
+    },
+    {
+      "behavior": "capability repr does not expose bearer secrets",
+      "result": "RED: all three bearer secrets appeared in repr"
+    },
+    {
+      "behavior": "a deleted fixed SQLite store is never recreated",
+      "result": "RED: default SQLite rwc mode recreated the file"
+    },
+    {
+      "behavior": "SQLite lock failures are fail-closed AuthorizationError values",
+      "result": "RED: raw sqlite3.OperationalError escaped"
+    },
+    {
+      "behavior": "schema v2 validates columns, unique keys, and primary keys",
+      "result": "RED: drifted task_tickets and side_effect_events schemas were accepted"
+    },
+    {
+      "behavior": "duplicate actual entry ids cannot hide substituted metadata",
+      "result": "RED: dict construction silently retained the last record"
+    },
+    {
+      "behavior": "IN_DOUBT cannot be replayed across keys, grants, preissued tickets, or alternate entries",
+      "result": "RED: each bypass could mint or begin another matching resource effect"
+    },
+    {
+      "behavior": "begin and mark-IN_DOUBT races serialize safely",
+      "result": "RED: a second matching ticket could begin while the first remained IN_PROGRESS"
+    },
+    {
+      "behavior": "begin repeats entry permission and approved-root containment",
+      "result": "RED: a ticket began after its entry permission was deleted"
+    },
+    {
+      "behavior": "begin rejects existing reparse parents before Path.resolve",
+      "result": "RED: swapped symlink parent reached Path.resolve"
+    }
+  ],
+  "green_evidence": [
+    {
+      "command": "python -m unittest tests.test_control_plane_contracts -v",
+      "result": "PASS",
+      "tests_run": 12
+    },
+    {
+      "command": "python -m unittest tests.test_control_plane_entry_guard -v",
+      "result": "PASS",
+      "tests_run": 73
+    },
+    {
+      "behavior": "P1 envelope is rejected by P0 without consumption",
+      "result": "PASS; envelope remained PENDING"
+    },
+    {
+      "behavior": "begin-vs-mark concurrency",
+      "result": "PASS; mark reached IN_DOUBT and competing begin was always denied"
+    },
+    {
+      "behavior": "test collection integrity",
+      "result": "PASS; no duplicate unittest method names remain"
+    }
+  ],
+  "test_harness_corrections": [
+    "Added the missing hmac import before accepting the lease-derivation test as behavioral RED.",
+    "Renamed an overwritten legacy-schema test so both legacy behaviors are collected."
+  ],
+  "review_findings": [
+    {
+      "review": "specification compliance",
+      "finding": "approved identity, approved-root reparse, missing-leaf case identity, and legacy migration closure",
+      "resolution": "RESOLVED_AND_REGRESSION_TESTED"
+    },
+    {
+      "review": "code quality round 1",
+      "finding": "derivable lease secret, mixed UNC, DOS aliases, legacy authority shims, rwc store race, schema drift, secret repr, duplicate test name",
+      "resolution": "RESOLVED_AND_REGRESSION_TESTED"
+    },
+    {
+      "review": "specification compliance round 2",
+      "finding": "IN_DOUBT replay, duplicate actual entry ids, missing P1 negative tracer",
+      "resolution": "RESOLVED_AND_REGRESSION_TESTED"
+    },
+    {
+      "review": "code quality round 2",
+      "finding": "cross-entry and IN_PROGRESS replay window; begin lacked repeated permission/root/reparse containment",
+      "resolution": "RESOLVED_AND_REGRESSION_TESTED"
+    },
+    {
+      "review": "main-controller final delta review",
+      "finding": "preissued replay race and append-event primary-key drift",
+      "resolution": "RESOLVED_AND_REGRESSION_TESTED"
+    }
+  ],
+  "open_findings": [],
+  "deferred_by_approved_plan": [
+    "record_gate and GateSnapshot belong to P0-T3-GATE-VALIDATOR",
+    "sink-open handle and post-lease TOCTOU protection belong to P0-T4-EXECUTION-SINKS",
+    "module decomposition and test-fixture deduplication are non-blocking maintainability work"
+  ],
+  "external_model_runs": [
+    {
+      "batch": "implementation_batch_a",
+      "provider": "volcengine",
+      "profile": "glm51",
+      "status": "USAGE_RECORDED_RESPONSE_STATUS_UNAVAILABLE_IN_HANDOFF",
+      "provider_reported_total_tokens": 7821
+    },
+    {
+      "batch": "implementation_batch_a",
+      "provider": "volcengine",
+      "profile": "doubao",
+      "status": "OUTPUT_NOT_CAPTURED",
+      "provider_reported_total_tokens": null
+    },
+    {
+      "batch": "implementation_batch_a",
+      "provider": "volcengine",
+      "profile": "kimi_hs",
+      "status": "USAGE_RECORDED_RESPONSE_STATUS_UNAVAILABLE_IN_HANDOFF",
+      "provider_reported_total_tokens": 12590
+    },
+    {
+      "batch": "implementation_batch_a",
+      "provider": "volcengine",
+      "profile": "minimax_hs",
+      "status": "USAGE_RECORDED_RESPONSE_STATUS_UNAVAILABLE_IN_HANDOFF",
+      "provider_reported_total_tokens": 6938
+    },
+    {
+      "batch": "implementation_batch_a",
+      "provider": "deepseek_official",
+      "profile": "deepseekv4",
+      "status": "USAGE_RECORDED_RESPONSE_STATUS_UNAVAILABLE_IN_HANDOFF",
+      "provider_reported_total_tokens": 16256
+    },
+    {
+      "batch": "concurrent_review",
+      "provider": "volcengine",
+      "profile": "glm51",
+      "status": "EMPTY_RESPONSE",
+      "provider_reported_total_tokens": 2099
+    },
+    {
+      "batch": "concurrent_review",
+      "provider": "volcengine",
+      "profile": "doubao",
+      "status": "OK",
+      "provider_reported_total_tokens": 6474
+    },
+    {
+      "batch": "concurrent_review",
+      "provider": "volcengine",
+      "profile": "kimi_hs",
+      "status": "EMPTY_RESPONSE",
+      "provider_reported_total_tokens": 2098
+    },
+    {
+      "batch": "concurrent_review",
+      "provider": "volcengine",
+      "profile": "minimax_hs",
+      "status": "EMPTY_RESPONSE",
+      "provider_reported_total_tokens": 2265
+    },
+    {
+      "batch": "concurrent_review",
+      "provider": "deepseek_official",
+      "profile": "deepseekv4",
+      "status": "EMPTY_RESPONSE",
+      "provider_reported_total_tokens": 2193
+    }
+  ],
+  "external_model_token_accounting": {
+    "known_total_tokens": 58734,
+    "unknown_usage_profiles": [
+      "implementation_batch_a:volcengine:doubao"
+    ],
+    "zero_was_not_imputed_for_unknown_usage": true,
+    "silent_model_replacement": false
+  },
+  "changed_files": [
+    {
+      "path": "research_automation/control_plane/__init__.py",
+      "baseline_sha256": "77a7d18264a57224ff72b1ac597c44c6b3c1317a104ee3a6a54e442dced3bd79",
+      "current_sha256": "daa549addbfab3d3fda678a50bf4b833e4dd5dc82671bbc95a25a287c4216b66"
+    },
+    {
+      "path": "research_automation/control_plane/contracts.py",
+      "baseline_sha256": "5c8338b927ed654aaaf407e93729ddb1d149d16b830f373744a9a599f31557a9",
+      "current_sha256": "c35e6277a8a3cb029cb85742679283509697b9cc5a3936addd3793966199e6c2"
+    },
+    {
+      "path": "research_automation/control_plane/entry_guard.py",
+      "baseline_sha256": "f1e816c7ef0a985750f01178f6fbdcedf062725c09accf9a83350016f15dc4da",
+      "current_sha256": "da9416d76f102232d73f9a72c4b08ee6bcc16f064d3fe13dff4a7f5766eb55db"
+    },
+    {
+      "path": "tests/test_control_plane_contracts.py",
+      "baseline_sha256": "60c48b802640760cf2533d1b0967eda22f43320ee683124f1279d6e19a95426b",
+      "current_sha256": "826fdc37380440802431f8b45677371093dc78ef935efc45391baf19c2245001"
+    },
+    {
+      "path": "tests/test_control_plane_entry_guard.py",
+      "baseline_sha256": "2120476de95345813b538e0eba780849b88a096768fda70566a5c039ac080241",
+      "current_sha256": "0ab37ec4619b417c4f7c690537a722bf461afb79883399b6ccbe8ec369596cae"
+    }
+  ],
+  "unexpected_changes": [],
+  "read_only_diagnostic_notes": [
+    "One bounded troubleshooting command unintentionally matched generated files under research_state and was truncated; it made no writes, computed no research-result hashes, and was not repeated."
+  ],
+  "side_effect_summary": {
+    "research_runs": 0,
+    "backtests": 0,
+    "campaign_runs": 0,
+    "data_updates": 0,
+    "cache_builds": 0,
+    "kbase_writes": 0,
+    "git_mutations": 0,
+    "scheduled_task_mutations": 0,
+    "protected_process_mutations": 0,
+    "protected_process_pid": 24704,
+    "protected_process_present_at_close": true
+  },
+  "rollback_point": "Per-file reverse patch for P0-T1 only; do not alter unrelated workspace state.",
+  "task_status": "PASS",
+  "p0_gate_status": "NOT_COMPUTED",
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false
+}

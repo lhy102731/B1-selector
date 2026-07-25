@@ -1,0 +1,36 @@
+{
+  "schema_version": "control_plane.external_scheduler_inventory.v1",
+  "phase": "P0",
+  "observed_at": "2026-07-26T01:18:14.5537692+08:00",
+  "collection_mode": "READ_ONLY",
+  "task_path": "\\A\u80a1\u9009\u80a1",
+  "task_state": "Ready",
+  "operational_classification": "PRODUCTION_DAILY",
+  "task_xml": {
+    "path": "C:\\Windows\\System32\\Tasks\\A\u80a1\u9009\u80a1",
+    "sha256": "200c98df8867e503a33634383bd699a84b8c691e2a16f0352d33b106b35930cd"
+  },
+  "action": {
+    "execute": "D:\\workspace\\a-share-quant-selector-main\\run_select.bat",
+    "arguments": null,
+    "working_directory": null,
+    "content_sha256": "12892b445034b91aaec10a2ad8bb4707940a562f326eeab2e9925b333fc1a1c0"
+  },
+  "principal": {
+    "user_id": "Administrator",
+    "logon_type": "Interactive",
+    "run_level": "Limited"
+  },
+  "trigger": {
+    "type": "MSFT_TaskDailyTrigger",
+    "start_boundary": "2026-03-16T20:00:00",
+    "enabled": true,
+    "days_interval": 1
+  },
+  "acl": {
+    "owner": "BUILTIN\\Administrators",
+    "sddl": "O:BAG:S-1-5-21-639824271-1593654341-2886392847-513D:AI(A;;FR;;;LA)(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;BA)"
+  },
+  "altered_by_p0": false,
+  "unresolved_risk": "Writable production code chain remains a production-hardening concern; P0 does not mutate the task or its ACL."
+}

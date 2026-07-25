@@ -1,0 +1,21 @@
+{
+  "schema_version": "control_plane.change_request_approval.v2",
+  "change_request_id": "P0-CR-002",
+  "change_request_path": "docs/superpowers/plans/2026-07-26-v342-p0-change-request-002.md",
+  "change_request_sha256": "0f49aac1fa8a2cebec90e788c09c353b1297a7ac8657af538008d66820e4d0e2",
+  "approval_kind": "OPERATOR_NATURAL_LANGUAGE_INSTRUCTION",
+  "operator_statement": "开始吧，我要去休息睡觉了，你自己推行进度，每次完成一个小阶段就git提交一次，做好版本控制",
+  "operator_statement_sha256": "f25bee3c82767aacdecdb182a5c01ea9c0ebc4818fab0052f5f57ef1f7dd9274",
+  "operator_statement_hash_rule": "SHA-256 of exact UTF-8 quote, no BOM or trailing newline",
+  "interpretation": "Approve P0-CR-002 materialization and bounded P0R2 implementation with exact-path incremental Git commits; no automatic phase advance or research/data/holdout/production side effects.",
+  "exact_magic_command_observed": false,
+  "command": null,
+  "hash_preapproved": false,
+  "hash_binding_kind": "POST_MATERIALIZATION_DERIVED_FROM_APPROVED_DRAFT_WITH_NON_EXPANSIVE_CLARIFICATIONS",
+  "implementation_authorized": true,
+  "git_branch_and_exact_commit_authorized": true,
+  "git_push_authorized": false,
+  "auto_advance": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false
+}

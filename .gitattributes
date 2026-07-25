@@ -1,0 +1,11 @@
+# Content-addressed control-plane plans, evidence, state, and code must keep
+# checkout bytes stable on Windows even when core.autocrlf=true.
+.gitattributes text eol=lf
+AGENTS.md text eol=lf
+docs/superpowers/plans/** text eol=lf
+docs/superpowers/evidence/** text eol=lf
+docs/superpowers/reviews/** text eol=lf
+research_state/control_plane/** text eol=lf
+research_automation/control_plane/** text eol=lf
+tests/test_control_plane_*.py text eol=lf
+tests/test_import_side_effects.py text eol=lf

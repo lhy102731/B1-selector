@@ -1,0 +1,43 @@
+{
+  "schema_version": "control_plane.plan_freeze_receipt.v2-documentary",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P0",
+  "task_id": "P0R2-0-PLAN-FREEZE",
+  "attempt_id": "p0r2-attempt-001",
+  "observed_at": "2026-07-26T06:08:09.5872713+08:00",
+  "git_head_before_stage": "0b7e0fdeac7060c1ce99999731c116157d1ddfbd",
+  "branch": "codex/v342-control-plane",
+  "identity_bundle_sha256": "5c55d7e7d5cc2f0b0def48d2244b20427c98664be962da681f0dc420deedae4b",
+  "artifacts": [
+    {"path": ".gitattributes", "sha256": "17f53f08b7ae4f02d167bf07772feef04c79bb28708169bb879c6e157ce5600d", "bytes": 491},
+    {"path": "research_state/control_plane/p0r2/plan_manifest_v342_p0r2.json", "sha256": "bc5389fbcdf41c6705ee2b4c163041a3611d3b481e95a74cf2dae4a75f49a99d", "bytes": 4104},
+    {"path": "research_state/control_plane/p0r2/scope_manifest_v342_p0r2.json", "sha256": "683ce3253c388a9207d975446ad7e5eea28fe2aa8efc530a12d56023f64f2768", "bytes": 6595},
+    {"path": "research_state/control_plane/p0r2/instruction_policy_manifest_v342_p0r2.json", "sha256": "dcdaf5faca2c1d47ac4549f83e6d438a7996c33ef2656cf7db33a81da66af3e3", "bytes": 1605},
+    {"path": "research_state/control_plane/p0r2/identity_bundle_v342_p0r2.json", "sha256": "371f510e5d5448668ba3ad9910798e235e278e46926181f5a7328f7676cace50", "bytes": 694},
+    {"path": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json", "sha256": "0bf4b985c74bf6ee7e31cbfc6886bdbe08635abd0b4344331fee3fa721bb8710", "bytes": 8351},
+    {"path": "research_state/control_plane/p0r2/supersession_receipt_v342_p0r2.json", "sha256": "6a1e1b7a0a545a1721d868e4ae344516abe31562126a0a59df031b258e1eeca9", "bytes": 3964},
+    {"path": "research_state/control_plane/p0r2/implementation_authorization_receipt_v342_p0r2.json", "sha256": "0be4603b307d947c3a6c61df60d576727291613257ba4595714f89c3eb56dc7d", "bytes": 2151},
+    {"path": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-002.json", "sha256": "f795de9d854ad7ccd9a4778adece502d08827dae0960529eaeffed2a748fdddb", "bytes": 1315}
+  ],
+  "verification": {
+    "method": "independent stdlib byte and canonical-payload recomputation",
+    "plan_document_count": 11,
+    "source_draft_exact_hash_match": true,
+    "plan_hash_match": true,
+    "scope_hash_match": true,
+    "instruction_policy_hash_match": true,
+    "identity_bundle_hash_match": true,
+    "baseline_payload_hash_match": true,
+    "legacy_evidence_hashes_match": true,
+    "natural_language_quote_hash_match": true,
+    "pending_placeholder_count": 0
+  },
+  "stage_verdict": "PASS",
+  "authority_store_created": false,
+  "capability_issued": false,
+  "p0_code_implemented": false,
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false
+}

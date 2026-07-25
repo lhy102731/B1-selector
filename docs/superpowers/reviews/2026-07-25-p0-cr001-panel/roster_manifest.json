@@ -1,0 +1,65 @@
+{
+  "schema_version": "p0_change_request_review_roster.v1",
+  "change_request_id": "P0-CR-001",
+  "change_request_sha256": "26e84b18ebc42a2a76baa170d9eb31a0630cda1a18faa959ff0f44d5b73738e7",
+  "execution_mode": "parallel",
+  "started_after_approval": true,
+  "fallback_or_model_substitution": false,
+  "members": [
+    {
+      "profile": "glm51",
+      "model": "glm-5.2",
+      "provider_class": "volcengine",
+      "lane": "scope_and_phase_boundary",
+      "status": "OK",
+      "elapsed_seconds": 63.581,
+      "response_capture": "COMPLETE",
+      "provider_reported_usage": {"prompt_tokens": 2948, "completion_tokens": 3301, "total_tokens": 6249}
+    },
+    {
+      "profile": "doubao",
+      "model": "doubao-seed-2.0-pro",
+      "provider_class": "volcengine",
+      "lane": "entry_import_and_sink_closure",
+      "status": "OK",
+      "elapsed_seconds": 91.908,
+      "response_capture": "COMPLETE",
+      "provider_reported_usage": {"prompt_tokens": 3246, "completion_tokens": 6697, "total_tokens": 9943}
+    },
+    {
+      "profile": "kimi_hs",
+      "model": "kimi-k2.7-code",
+      "provider_class": "volcengine",
+      "lane": "authorization_sqlite_concurrency",
+      "status": "OK",
+      "elapsed_seconds": 156.462,
+      "response_capture": "COMPLETE",
+      "provider_reported_usage": {"prompt_tokens": 2914, "completion_tokens": 5778, "total_tokens": 8692}
+    },
+    {
+      "profile": "minimax_hs",
+      "model": "minimax-m3",
+      "provider_class": "volcengine",
+      "lane": "web_scheduler_operations_performance",
+      "status": "OK_MAX_TOKENS",
+      "elapsed_seconds": 61.489,
+      "response_capture": "TRUNCATED_AT_6000_COMPLETION_TOKENS",
+      "provider_reported_usage": {"prompt_tokens": 3087, "completion_tokens": 6000, "total_tokens": 9087}
+    },
+    {
+      "profile": "deepseekv4",
+      "model": "deepseek-v4-pro",
+      "provider_class": "deepseek_official",
+      "lane": "adversarial_integration_and_tdd",
+      "status": "OK_MAX_TOKENS",
+      "elapsed_seconds": 106.244,
+      "response_capture": "TRUNCATED_AT_6000_COMPLETION_TOKENS",
+      "provider_reported_usage": {"prompt_tokens": 3182, "completion_tokens": 6000, "total_tokens": 9182}
+    }
+  ],
+  "provider_reported_totals": {
+    "prompt_tokens": 15377,
+    "completion_tokens": 27776,
+    "total_tokens": 43153
+  }
+}
