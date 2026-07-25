@@ -70,15 +70,77 @@ class TaskReportV2TracerTests(unittest.TestCase):
 
         tampered = copy.deepcopy(report)
         changed_files = tampered["changed_files"]
-        assert isinstance(changed_files, list)
-        assert isinstance(changed_files[0], dict)
-        changed_files[0]["current_sha256"] = "6" * 64
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["current_sha256"] = "6" * 64
 
         with self.assertRaisesRegex(
             TaskReportValidationError,
             "report_payload_sha256 mismatch",
         ):
             validate_task_report_v2(tampered)
+
+    def test_unknown_top_level_field_is_rejected_even_with_a_valid_hash(self) -> None:
+        report = self._complete_report()
+        report["caller_selected_verdict"] = "PASS"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(TaskReportValidationError, "unknown fields"):
+            validate_task_report_v2(report)
+
+    def test_missing_required_field_is_rejected_even_with_a_valid_hash(self) -> None:
+        report = self._complete_report()
+        del report["changed_files"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(TaskReportValidationError, "missing fields: changed_files"):
+            validate_task_report_v2(report)
+
+    def test_changed_files_must_always_be_an_array(self) -> None:
+        report = self._complete_report()
+        report["changed_files"] = {
+            "research_automation/control_plane/task_reports.py": "ADD"
+        }
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "changed_files must be a list",
+        ):
+            validate_task_report_v2(report)
+
+    def test_identity_binding_requires_exact_named_sha256_digests(self) -> None:
+        report = self._complete_report()
+        identity_binding = report["identity_binding"]
+        self.assertIsInstance(identity_binding, dict)
+        identity_binding["plan_hash"] = "public-plan-name"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "identity_binding.plan_hash must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_outcome_is_a_closed_v2_value(self) -> None:
+        report = self._complete_report()
+        report["outcome"] = "GREEN_CURRENT_SNAPSHOT"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "outcome must be PASS, FAIL, BLOCKED, or IN_DOUBT",
+        ):
+            validate_task_report_v2(report)
+
+    def test_phase_is_closed_to_the_declared_control_plane_phases(self) -> None:
+        report = self._complete_report()
+        report["phase"] = "P9"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(TaskReportValidationError, "phase must be P0 through P8"):
+            validate_task_report_v2(report)
 
 
 if __name__ == "__main__":
