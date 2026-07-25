@@ -1,0 +1,42 @@
+{
+  "lane": "outcome_builder",
+  "blocking_findings": [
+    {
+      "id": "OB-001",
+      "risk": "Worker can arbitrarily set outcome (including PASS) and compute a valid payload hash, as current validation only checks hash integrity not outcome provenance, fully bypassing required trusted builder outcome derivation.",
+      "minimal_fix": "Remove outcome from the worker-signed/hashed payload schema; enforce outcome is only computed and appended by the trusted builder post-validation of all input receipts, never part of worker-submitted hashable content.",
+      "test": "Submit a worker-generated report with self-set outcome=PASS and correctly computed payload hash, confirm validation rejects the report as invalid for containing a worker-supplied outcome field."
+    },
+    {
+      "id": "OB-002",
+      "risk": "No deterministic outcome precedence and mandatory trigger rules, allowing inconsistent or incorrect outcome derivation (e.g., PASS assigned even with missing required test receipts or unresolved reviews).",
+      "minimal_fix": "Implement strict non-overridable outcome precedence with explicit mandatory triggers; PASS requires all mandatory checks.",
+      "test": "Inject a blocking trigger alongside all PASS-eligible conditions and confirm the derived outcome remains non-PASS."
+    },
+    {
+      "id": "OB-003",
+      "risk": "Outcome derivation does not require binding to immutable P0R1 V1 report exact byte hashes, allowing tampered legacy reports to be used to derive false PASS outcomes.",
+      "minimal_fix": "Require exact full-byte SHA-256 for every legacy adoption input and verify it before classification.",
+      "test": "Submit a modified V1 report with a mismatched byte hash and confirm adoption is blocked."
+    }
+  ],
+  "non_blocking_findings": [
+    {
+      "id": "OB-NB-001",
+      "risk": "Outcome derivation input lineage is not persisted.",
+      "minimal_fix": "Persist ordered input receipt digests in the final report.",
+      "test": "Confirm every derivation input has a content digest in the report."
+    }
+  ],
+  "recommended_next_three_tests": [
+    "Reject a worker-supplied PASS even when its payload hash is valid.",
+    "A missing required receipt prevents PASS.",
+    "A legacy report with the wrong exact byte hash cannot be adopted."
+  ],
+  "avoid_building": [
+    "Worker-facing outcome overrides.",
+    "Unaudited manual outcome adjustment.",
+    "UNKNOWN usage converted to zero or a fixed estimate."
+  ],
+  "verdict": "BLOCKED"
+}

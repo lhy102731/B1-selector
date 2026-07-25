@@ -1,0 +1,77 @@
+{
+  "schema_version": "control_plane.development_review_result.v1",
+  "request_id": "v342-p0r2-t1-task-report-v2-review-001",
+  "execution_mode": "parallel",
+  "members": [
+    {
+      "profile": "glm51",
+      "provider_class": "volcengine",
+      "lane": "schema_contract",
+      "requested_model": "glm-5.2",
+      "response_model": "glm-5.2",
+      "status": "EMPTY_RESPONSE",
+      "provider_request_id_sha256": "2c342b88a79cf2c8a2b5439eac7bca0c0bba5bdb873b5b80ca72750fb86e48e5",
+      "elapsed_seconds": 20.005,
+      "usage": {"status": "REPORTED", "input_tokens": 539, "output_tokens": 1200, "total_tokens": 1739},
+      "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "profile": "doubao",
+      "provider_class": "volcengine",
+      "lane": "outcome_builder",
+      "requested_model": "doubao-seed-2.0-pro",
+      "response_model": "doubao-seed-2.0-pro",
+      "status": "OK",
+      "provider_request_id_sha256": "480b346e69098d7e241073ed5b705e24cceb21e4268cdbed1fc7eaa474734e62",
+      "elapsed_seconds": 35.538,
+      "usage": {"status": "REPORTED", "input_tokens": 622, "output_tokens": 2617, "total_tokens": 3239},
+      "provider_response_sha256": "bd33cbf716e652464a5981bb3b3349456b6e87e684d2952a0e739058f8cc30eb",
+      "stored_response": "docs/superpowers/reviews/2026-07-26-v342-p0r2/t1-task-report-v2/responses/attempt-001-doubao.json",
+      "stored_response_kind": "CONTROLLER_NORMALIZED_EXCERPT"
+    },
+    {
+      "profile": "kimi_hs",
+      "provider_class": "volcengine",
+      "lane": "adversarial_adoption",
+      "requested_model": "kimi-k2.7-code",
+      "response_model": "kimi-k2.7-code",
+      "status": "EMPTY_RESPONSE",
+      "provider_request_id_sha256": "b6bcb88f8d310048df6a3741c1451a8628798617da47498eaae79ab6cfd03c53",
+      "elapsed_seconds": 25.196,
+      "usage": {"status": "REPORTED", "input_tokens": 541, "output_tokens": 1200, "total_tokens": 1741},
+      "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "profile": "minimax_hs",
+      "provider_class": "volcengine",
+      "lane": "complexity_runtime",
+      "requested_model": "minimax-m3",
+      "response_model": "minimax-m3",
+      "status": "EMPTY_RESPONSE",
+      "provider_request_id_sha256": "f379d9720c1e0bad5f04239602a70e08aa2ab7a29603746b1fca72ff9e76df9e",
+      "elapsed_seconds": 15.639,
+      "usage": {"status": "REPORTED", "input_tokens": 699, "output_tokens": 1200, "total_tokens": 1899},
+      "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "profile": "deepseekv4",
+      "provider_class": "deepseek_official",
+      "lane": "integration_tdd",
+      "requested_model": "deepseek-v4-pro",
+      "response_model": null,
+      "status": "ERROR",
+      "provider_request_id_sha256": null,
+      "elapsed_seconds": 0.887,
+      "usage": {"status": "UNKNOWN", "input_tokens": null, "output_tokens": null, "total_tokens": null},
+      "error_type": "BadRequestError",
+      "root_cause": "Nested environment placeholders in extra_params were not recursively resolved before request serialization."
+    }
+  ],
+  "known_usage_totals": {"input_tokens": 2401, "output_tokens": 6217, "total_tokens": 8618},
+  "unknown_usage_member_count": 1,
+  "successful_response_count": 1,
+  "empty_response_count": 3,
+  "error_count": 1,
+  "fallback_or_model_substitution": false,
+  "retry_required": true
+}

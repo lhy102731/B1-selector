@@ -1,0 +1,68 @@
+{
+  "schema_version": "control_plane.development_review_request.v1",
+  "request_id": "v342-p0r2-t1-task-report-v2-review-001",
+  "plan_version": "V3.4.2-P0R2",
+  "task_id": "P0R2-T1-STORE-BOOTSTRAP-REPORTING",
+  "code_commit": "072fe08",
+  "execution_mode": "parallel",
+  "prompt_path": "docs/superpowers/reviews/2026-07-26-v342-p0r2/t1-task-report-v2/panel_prompt.md",
+  "prompt_sha256": "4291e744fee9a95609f3dbfba99fdfa208c02b9e6676821c7ab82e294dbb16f5",
+  "prompt_bytes": 2251,
+  "members": [
+    {
+      "profile": "glm51",
+      "provider_class": "volcengine",
+      "lane": "schema_contract",
+      "model": "glm-5.2",
+      "base_url_sha256": "778a359761641fcc30e1800beea4651d2dd586795e3366c4cd65f1dfed66762e",
+      "api_key_present": true,
+      "timeout_seconds": 120,
+      "max_output_tokens": 1200
+    },
+    {
+      "profile": "doubao",
+      "provider_class": "volcengine",
+      "lane": "outcome_builder",
+      "model": "doubao-seed-2.0-pro",
+      "base_url_sha256": "778a359761641fcc30e1800beea4651d2dd586795e3366c4cd65f1dfed66762e",
+      "api_key_present": true,
+      "timeout_seconds": 120,
+      "max_output_tokens": 1200
+    },
+    {
+      "profile": "kimi_hs",
+      "provider_class": "volcengine",
+      "lane": "adversarial_adoption",
+      "model": "kimi-k2.7-code",
+      "base_url_sha256": "778a359761641fcc30e1800beea4651d2dd586795e3366c4cd65f1dfed66762e",
+      "api_key_present": true,
+      "timeout_seconds": 180,
+      "max_output_tokens": 1200
+    },
+    {
+      "profile": "minimax_hs",
+      "provider_class": "volcengine",
+      "lane": "complexity_runtime",
+      "model": "minimax-m3",
+      "base_url_sha256": "778a359761641fcc30e1800beea4651d2dd586795e3366c4cd65f1dfed66762e",
+      "api_key_present": true,
+      "timeout_seconds": 180,
+      "max_output_tokens": 1200
+    },
+    {
+      "profile": "deepseekv4",
+      "provider_class": "deepseek_official",
+      "lane": "integration_tdd",
+      "model": "deepseek-v4-pro",
+      "base_url_sha256": "a34e2a4708ed1c61008a151688838dcf1c44d4e7f08054633e72ba7c0b16cfc1",
+      "api_key_present": true,
+      "timeout_seconds": 120,
+      "max_output_tokens": 1200
+    }
+  ],
+  "authority_secret_access": false,
+  "research_data_access": false,
+  "workspace_write_access": false,
+  "research_or_backtest_execution": false,
+  "status": "FROZEN_PENDING_INVOCATION"
+}

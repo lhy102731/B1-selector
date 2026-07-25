@@ -1,0 +1,68 @@
+{
+  "schema_version": "control_plane.development_review_retry_result.v1",
+  "retry_id": "v342-p0r2-t1-task-report-v2-review-001-retry-001",
+  "execution_mode": "parallel",
+  "members": [
+    {
+      "profile": "glm51",
+      "provider_class": "volcengine",
+      "lane": "schema_contract",
+      "requested_model": "glm-5.2",
+      "response_model": "glm-5.2",
+      "status": "EMPTY_RESPONSE",
+      "provider_request_id_sha256": "2c7562ebac1630a68400594d63afa8b20e7bc617254465b8c29bf3ec825b40c2",
+      "elapsed_seconds": 60.735,
+      "usage": {"status": "REPORTED", "input_tokens": 561, "output_tokens": 4000, "total_tokens": 4561},
+      "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "takeover_reason": "EMPTY_RESPONSE_AFTER_TWO_ATTEMPTS"
+    },
+    {
+      "profile": "kimi_hs",
+      "provider_class": "volcengine",
+      "lane": "adversarial_adoption",
+      "requested_model": "kimi-k2.7-code",
+      "response_model": "kimi-k2.7-code",
+      "status": "EMPTY_RESPONSE",
+      "provider_request_id_sha256": "773a1167bed7e6ffc592ece3846c0e15ce483f5958361c32881a2070ab33e1e2",
+      "elapsed_seconds": 78.113,
+      "usage": {"status": "REPORTED", "input_tokens": 563, "output_tokens": 4000, "total_tokens": 4563},
+      "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "takeover_reason": "EMPTY_RESPONSE_AFTER_TWO_ATTEMPTS"
+    },
+    {
+      "profile": "minimax_hs",
+      "provider_class": "volcengine",
+      "lane": "complexity_runtime",
+      "requested_model": "minimax-m3",
+      "response_model": "minimax-m3",
+      "status": "OK",
+      "provider_request_id_sha256": "ad0e99263d03488e5c9fe070ac94a111305802213503b432cf68b0e5842d265e",
+      "elapsed_seconds": 29.702,
+      "usage": {"status": "REPORTED", "input_tokens": 720, "output_tokens": 2849, "total_tokens": 3569},
+      "provider_response_sha256": "f490b760b2afd53e560bc927bbb0d11660c31e298c7b8863a4d1de4ef20c8422",
+      "stored_response": "docs/superpowers/reviews/2026-07-26-v342-p0r2/t1-task-report-v2/responses/retry-001-minimax.json",
+      "stored_response_kind": "CONTROLLER_NORMALIZED_EXCERPT"
+    },
+    {
+      "profile": "deepseekv4",
+      "provider_class": "deepseek_official",
+      "lane": "integration_tdd",
+      "requested_model": "deepseek-v4-pro",
+      "response_model": "deepseek-v4-pro",
+      "status": "OK",
+      "provider_request_id_sha256": "bc25a9c3a9d67d0dffd8fdb24860adff1cb51a0328b129ad6c4db54390f4b0ee",
+      "elapsed_seconds": 56.198,
+      "usage": {"status": "REPORTED", "input_tokens": 675, "output_tokens": 3802, "total_tokens": 4477},
+      "provider_response_sha256": "d95769ae4a858fdf45dfcc439d6ba3dc2ebf1fea39b472d19bb86ff68cf6cbf7",
+      "stored_response": "docs/superpowers/reviews/2026-07-26-v342-p0r2/t1-task-report-v2/responses/retry-001-deepseekv4.json",
+      "stored_response_kind": "CONTROLLER_NORMALIZED_EXCERPT"
+    }
+  ],
+  "known_usage_totals": {"input_tokens": 2519, "output_tokens": 14651, "total_tokens": 17170},
+  "unknown_usage_member_count": 0,
+  "successful_response_count": 2,
+  "empty_response_count": 2,
+  "error_count": 0,
+  "fallback_or_model_substitution": false,
+  "additional_retry_authorized": false
+}

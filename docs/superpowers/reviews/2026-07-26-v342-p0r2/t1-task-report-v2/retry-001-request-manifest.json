@@ -1,0 +1,21 @@
+{
+  "schema_version": "control_plane.development_review_retry_request.v1",
+  "retry_id": "v342-p0r2-t1-task-report-v2-review-001-retry-001",
+  "original_request_id": "v342-p0r2-t1-task-report-v2-review-001",
+  "prompt_sha256": "4291e744fee9a95609f3dbfba99fdfa208c02b9e6676821c7ab82e294dbb16f5",
+  "execution_mode": "parallel",
+  "members": [
+    {"profile": "glm51", "provider_class": "volcengine", "model": "glm-5.2", "retry_reason": "EMPTY_RESPONSE_AFTER_REPORTED_USAGE"},
+    {"profile": "kimi_hs", "provider_class": "volcengine", "model": "kimi-k2.7-code", "retry_reason": "EMPTY_RESPONSE_AFTER_REPORTED_USAGE"},
+    {"profile": "minimax_hs", "provider_class": "volcengine", "model": "minimax-m3", "retry_reason": "EMPTY_RESPONSE_AFTER_REPORTED_USAGE"},
+    {"profile": "deepseekv4", "provider_class": "deepseek_official", "model": "deepseek-v4-pro", "retry_reason": "CLIENT_NESTED_ENV_RESOLUTION_BUG_FIXED"}
+  ],
+  "request_changes": {
+    "max_api_output_tokens": 4000,
+    "requested_response_limit_tokens": 1200,
+    "recursive_extra_params_resolution": true,
+    "sdk_max_retries": 0
+  },
+  "provider_or_model_substitution": false,
+  "status": "FROZEN_PENDING_INVOCATION"
+}

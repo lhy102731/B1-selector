@@ -1,0 +1,42 @@
+{
+  "lane": "integration_tdd",
+  "blocking_findings": [
+    {
+      "id": "INTEG-TDD-001",
+      "risk": "A worker can choose PASS and recompute a valid payload hash if validation never re-derives outcome.",
+      "minimal_fix": "The trusted builder excludes computed fields and validation mechanically re-derives outcome from requirements, receipts, ticket state, scope delta, and side effects.",
+      "test": "A PASS report with a failing required receipt is rejected even after rehashing."
+    },
+    {
+      "id": "INTEG-TDD-002",
+      "risk": "A permissive V1 normalization path can turn a tampered legacy report into apparently valid V2 evidence.",
+      "minimal_fix": "Use one exact-byte-hash adoption adapter and preserve the legacy source outcome without promotion.",
+      "test": "A one-byte V1 mutation fails adoption before V2 construction."
+    }
+  ],
+  "non_blocking_findings": [
+    {
+      "id": "INTEG-TDD-003",
+      "risk": "Usage parsing can coerce null UNKNOWN values to numeric zero.",
+      "minimal_fix": "Enforce nullable numeric fields and closed usage status without coercion.",
+      "test": "UNKNOWN usage requires null numeric values."
+    },
+    {
+      "id": "INTEG-TDD-004",
+      "risk": "An empty changed_files array is not proof that the baseline had no change.",
+      "minimal_fix": "The trusted builder must derive file deltas from the bound baseline rather than trust a worker assertion.",
+      "test": "A baseline mismatch cannot be hidden by an empty changed_files list."
+    }
+  ],
+  "recommended_next_three_tests": [
+    "Exact-byte legacy adoption followed by strict V2 validation.",
+    "Mechanical outcome re-derivation rejects a caller-selected PASS.",
+    "UNKNOWN external usage remains null and cannot be post-filled to force PASS."
+  ],
+  "avoid_building": [
+    "A separate adoption RPC service.",
+    "A random or time-dependent outcome derivation.",
+    "A lenient JSON parser that coerces null values."
+  ],
+  "verdict": "READY_WITH_FIXES"
+}

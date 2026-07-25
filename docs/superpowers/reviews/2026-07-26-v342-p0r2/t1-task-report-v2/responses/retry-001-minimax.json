@@ -1,0 +1,47 @@
+{
+  "lane": "complexity_runtime",
+  "blocking_findings": [
+    {
+      "id": "CR-001",
+      "risk": "An unbounded report or legacy blob can exhaust memory before validation completes.",
+      "minimal_fix": "Apply one shared raw-byte cap before JSON parsing or legacy adoption.",
+      "test": "Reject a report above the byte cap with a stable typed error."
+    },
+    {
+      "id": "CR-002",
+      "risk": "Arbitrarily deep nested structures can raise RecursionError instead of a schema error.",
+      "minimal_fix": "Apply a deterministic maximum nesting depth before semantic validation.",
+      "test": "Reject depth above the limit without an unhandled exception."
+    },
+    {
+      "id": "CR-003",
+      "risk": "Repeated full-payload walks add memory and runtime without audit value.",
+      "minimal_fix": "Keep validation bounded and profile before replacing stdlib canonical JSON.",
+      "test": "Use a synthetic bounded-size regression test after the strict parser exists."
+    },
+    {
+      "id": "CR-004",
+      "risk": "Batch adoption can retain every raw V1 blob and scale memory with backlog size.",
+      "minimal_fix": "Adopt one byte-capped V1 report at a time and release it before the next.",
+      "test": "Large synthetic adoption remains bounded by one blob rather than total backlog size."
+    }
+  ],
+  "non_blocking_findings": [
+    {
+      "id": "CR-011",
+      "risk": "Caching a hash by mutable object identity can return a stale result.",
+      "minimal_fix": "Do not add report-hash memoization."
+    }
+  ],
+  "recommended_next_three_tests": [
+    "Reject excessive nesting with a typed schema error.",
+    "Reject raw report bytes over the configured cap.",
+    "Confirm the strict parser and canonical hash agree on a golden fixture."
+  ],
+  "avoid_building": [
+    "A custom canonical JSON serializer before profiling.",
+    "Mutable-object hash caches.",
+    "Parallel hashing or a generic streaming JSON parser."
+  ],
+  "verdict": "BLOCKED"
+}
