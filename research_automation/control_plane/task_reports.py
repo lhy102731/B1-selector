@@ -42,6 +42,9 @@ _TEST_RECEIPT_FIELDS = frozenset(
 _REVIEW_RECEIPT_FIELDS = frozenset(
     {"receipt_id", "reviewer_id", "exit_code", "result"}
 )
+_EVIDENCE_REF_FIELDS = frozenset(
+    {"evidence_id", "evidence_ref", "evidence_sha256", "status"}
+)
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -218,26 +221,61 @@ def _receipt_results(
     return results
 
 
-def _verified_evidence_ids(evidence_refs: object) -> set[str]:
+def _evidence_statuses(evidence_refs: object) -> dict[str, object]:
     if not isinstance(evidence_refs, list):
-        return set()
-    verified: set[str] = set()
+        return {}
+    statuses: dict[str, object] = {}
     for evidence in evidence_refs:
         if not isinstance(evidence, Mapping):
             continue
         evidence_id = evidence.get("evidence_id")
-        if (
-            isinstance(evidence_id, str)
-            and evidence_id
-            and evidence.get("status") == "VERIFIED"
-        ):
-            verified.add(evidence_id)
-    return verified
+        if isinstance(evidence_id, str) and evidence_id:
+            statuses[evidence_id] = evidence.get("status")
+    return statuses
+
+
+def _validate_evidence_refs(evidence_refs: object) -> None:
+    if not isinstance(evidence_refs, list):
+        raise TaskReportValidationError("input_evidence_refs must be a list")
+    evidence_ids: set[str] = set()
+    for index, evidence in enumerate(evidence_refs):
+        if not isinstance(evidence, Mapping):
+            raise TaskReportValidationError(
+                f"input_evidence_refs[{index}] must be a mapping"
+            )
+        _require_closed_mapping(
+            evidence,
+            f"input_evidence_refs[{index}]",
+            _EVIDENCE_REF_FIELDS,
+        )
+        _require_sha256(
+            evidence["evidence_sha256"],
+            f"input_evidence_refs[{index}].evidence_sha256",
+        )
+        evidence_id = _require_non_empty_string(
+            evidence["evidence_id"],
+            f"input_evidence_refs[{index}].evidence_id",
+        )
+        if evidence_id in evidence_ids:
+            raise TaskReportValidationError(
+                "input_evidence_refs must not contain duplicate evidence_id values"
+            )
+        evidence_ids.add(evidence_id)
+        _require_non_empty_string(
+            evidence["evidence_ref"],
+            f"input_evidence_refs[{index}].evidence_ref",
+        )
+        if evidence["status"] not in ("VERIFIED", "INVALID", "IN_DOUBT"):
+            raise TaskReportValidationError(
+                f"input_evidence_refs[{index}].status must be VERIFIED, "
+                "INVALID, or IN_DOUBT"
+            )
 
 
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
     _receipt_results(report.get("review_receipts"), "review_receipts")
+    _validate_evidence_refs(report.get("input_evidence_refs"))
 
 
 def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
@@ -261,10 +299,21 @@ def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
         requirements["required_evidence_ids"],
         "required_evidence_ids",
     )
+    evidence_statuses = _evidence_statuses(report.get("input_evidence_refs"))
 
     ticket_state = report.get("ticket_state")
     if ticket_state == "IN_DOUBT":
         return "IN_DOUBT", ["TICKET_IN_DOUBT"]
+    in_doubt_evidence = [
+        evidence_id
+        for evidence_id in sorted(set(required_evidence_ids) & set(evidence_statuses))
+        if evidence_statuses[evidence_id] == "IN_DOUBT"
+    ]
+    if in_doubt_evidence:
+        return "IN_DOUBT", [
+            f"REQUIRED_EVIDENCE_IN_DOUBT:{evidence_id}"
+            for evidence_id in in_doubt_evidence
+        ]
     if ticket_state == "FAILED":
         return "FAIL", ["TICKET_FAILED"]
     if ticket_state != "SUCCEEDED":
@@ -311,6 +360,11 @@ def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
         for receipt_id in sorted(set(required_review_ids) & set(review_results))
         if review_results[receipt_id] != ("PASS", 0)
     )
+    failed_reasons.extend(
+        f"REQUIRED_EVIDENCE_INVALID:{evidence_id}"
+        for evidence_id in sorted(set(required_evidence_ids) & set(evidence_statuses))
+        if evidence_statuses[evidence_id] == "INVALID"
+    )
     missing_reasons = [
         f"MISSING_REQUIRED_TEST_RECEIPT:{receipt_id}"
         for receipt_id in sorted(set(required_test_ids) - set(test_results))
@@ -322,8 +376,7 @@ def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
     missing_reasons.extend(
         f"MISSING_REQUIRED_EVIDENCE:{evidence_id}"
         for evidence_id in sorted(
-            set(required_evidence_ids)
-            - _verified_evidence_ids(report.get("input_evidence_refs"))
+            set(required_evidence_ids) - set(evidence_statuses)
         )
     )
     if failed_reasons:

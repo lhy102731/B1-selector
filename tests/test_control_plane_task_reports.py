@@ -560,6 +560,202 @@ class TaskReportV2TracerTests(unittest.TestCase):
         ):
             validate_task_report_v2(report)
 
+    def test_evidence_ref_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "8" * 64,
+                "status": "VERIFIED",
+                "caller_note": "not part of the evidence contract",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_input_evidence_refs_must_be_an_array(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = {}
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "input_evidence_refs must be a list",
+        ):
+            validate_task_report_v2(report)
+
+    def test_input_evidence_ref_items_must_be_objects(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = ["implementation-baseline"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\] must be a mapping",
+        ):
+            validate_task_report_v2(report)
+
+    def test_evidence_ref_requires_a_strict_sha256(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "NOT-A-DIGEST",
+                "status": "VERIFIED",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\]\.evidence_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_evidence_id_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "8" * 64,
+                "status": "VERIFIED",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\]\.evidence_id must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_evidence_ref_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "",
+                "evidence_sha256": "8" * 64,
+                "status": "VERIFIED",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\]\.evidence_ref must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_evidence_status_is_closed(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "8" * 64,
+                "status": "STALE",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\]\.status must be VERIFIED, INVALID, or IN_DOUBT",
+        ):
+            validate_task_report_v2(report)
+
+    def test_duplicate_evidence_ids_are_rejected(self) -> None:
+        report = self._complete_report()
+        evidence = {
+            "evidence_id": "implementation-baseline",
+            "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+            "evidence_sha256": "8" * 64,
+            "status": "VERIFIED",
+        }
+        report["input_evidence_refs"] = [evidence, copy.deepcopy(evidence)]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "input_evidence_refs must not contain duplicate evidence_id values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_required_invalid_evidence_mechanically_derives_fail(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        requirements = draft["requirements"]
+        self.assertIsInstance(requirements, dict)
+        requirements["required_evidence_ids"] = ["implementation-baseline"]
+        draft["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "8" * 64,
+                "status": "INVALID",
+            }
+        ]
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(
+            report["reason_codes"],
+            ["REQUIRED_EVIDENCE_INVALID:implementation-baseline"],
+        )
+
+    def test_required_in_doubt_evidence_mechanically_derives_in_doubt(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            }
+        }
+        requirements = draft["requirements"]
+        self.assertIsInstance(requirements, dict)
+        requirements["required_evidence_ids"] = ["implementation-baseline"]
+        draft["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+                "evidence_sha256": "8" * 64,
+                "status": "IN_DOUBT",
+            }
+        ]
+
+        report = build_task_report_v2(draft)
+
+        self.assertEqual(report["outcome"], "IN_DOUBT")
+        self.assertEqual(
+            report["reason_codes"],
+            ["REQUIRED_EVIDENCE_IN_DOUBT:implementation-baseline"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
