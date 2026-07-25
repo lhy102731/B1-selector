@@ -45,6 +45,16 @@ _REVIEW_RECEIPT_FIELDS = frozenset(
 _EVIDENCE_REF_FIELDS = frozenset(
     {"evidence_id", "evidence_ref", "evidence_sha256", "status"}
 )
+_REVIEW_FINDING_FIELDS = frozenset(
+    {
+        "finding_id",
+        "review_receipt_id",
+        "severity",
+        "status",
+        "summary",
+        "resolution",
+    }
+)
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -272,10 +282,81 @@ def _validate_evidence_refs(evidence_refs: object) -> None:
             )
 
 
+def _validate_review_findings(
+    findings: object,
+    review_results: Mapping[str, tuple[object, object]],
+) -> None:
+    if not isinstance(findings, list):
+        raise TaskReportValidationError("review_findings must be a list")
+    finding_ids: set[str] = set()
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, Mapping):
+            raise TaskReportValidationError(
+                f"review_findings[{index}] must be a mapping"
+            )
+        _require_closed_mapping(
+            finding,
+            f"review_findings[{index}]",
+            _REVIEW_FINDING_FIELDS,
+        )
+        if finding["severity"] not in ("BLOCKING", "NON_BLOCKING"):
+            raise TaskReportValidationError(
+                f"review_findings[{index}].severity must be BLOCKING or "
+                "NON_BLOCKING"
+            )
+        if finding["status"] not in ("OPEN", "RESOLVED"):
+            raise TaskReportValidationError(
+                f"review_findings[{index}].status must be OPEN or RESOLVED"
+            )
+        finding_id = _require_non_empty_string(
+            finding["finding_id"],
+            f"review_findings[{index}].finding_id",
+        )
+        if finding_id in finding_ids:
+            raise TaskReportValidationError(
+                "review_findings must not contain duplicate finding_id values"
+            )
+        finding_ids.add(finding_id)
+        _require_non_empty_string(
+            finding["summary"],
+            f"review_findings[{index}].summary",
+        )
+        review_receipt_id = _require_non_empty_string(
+            finding["review_receipt_id"],
+            f"review_findings[{index}].review_receipt_id",
+        )
+        if review_receipt_id not in review_results:
+            raise TaskReportValidationError(
+                f"review_findings[{index}] references unknown review receipt: "
+                f"{review_receipt_id}"
+            )
+        if (
+            review_results[review_receipt_id] == ("PASS", 0)
+            and finding["severity"] == "BLOCKING"
+            and finding["status"] == "OPEN"
+        ):
+            raise TaskReportValidationError(
+                f"review_findings[{index}] conflicts with PASS review receipt"
+            )
+        if finding["status"] == "OPEN" and finding["resolution"] is not None:
+            raise TaskReportValidationError(
+                f"review_findings[{index}] OPEN requires resolution null"
+            )
+        if finding["status"] == "RESOLVED":
+            _require_non_empty_string(
+                finding["resolution"],
+                f"review_findings[{index}].resolution",
+            )
+
+
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
-    _receipt_results(report.get("review_receipts"), "review_receipts")
+    review_results = _receipt_results(
+        report.get("review_receipts"),
+        "review_receipts",
+    )
     _validate_evidence_refs(report.get("input_evidence_refs"))
+    _validate_review_findings(report.get("review_findings"), review_results)
 
 
 def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:

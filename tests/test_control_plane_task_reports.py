@@ -756,6 +756,237 @@ class TaskReportV2TracerTests(unittest.TestCase):
             ["REQUIRED_EVIDENCE_IN_DOUBT:implementation-baseline"],
         )
 
+    def test_review_findings_must_be_an_array(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = {}
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "review_findings must be a list",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": "Confirmed by the controller.",
+                "caller_note": "not part of the finding contract",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_severity_is_closed(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "CRITICAL",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": "Confirmed by the controller.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.severity must be BLOCKING or NON_BLOCKING",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_status_is_closed(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "IGNORED",
+                "summary": "A bounded review note.",
+                "resolution": None,
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.status must be OPEN or RESOLVED",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_id_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": "Confirmed by the controller.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.finding_id must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_summary_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "",
+                "resolution": "Confirmed by the controller.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.summary must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_receipt_id_must_be_a_non_empty_string(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": "Confirmed by the controller.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.review_receipt_id must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_duplicate_review_finding_ids_are_rejected(self) -> None:
+        report = self._complete_report()
+        finding = {
+            "finding_id": "finding-001",
+            "review_receipt_id": "task-report-controller-review",
+            "severity": "NON_BLOCKING",
+            "status": "RESOLVED",
+            "summary": "A bounded review note.",
+            "resolution": "Confirmed by the controller.",
+        }
+        report["review_findings"] = [finding, copy.deepcopy(finding)]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "review_findings must not contain duplicate finding_id values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_open_review_finding_requires_null_resolution(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "OPEN",
+                "summary": "A bounded review note.",
+                "resolution": "Premature resolution text.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\] OPEN requires resolution null",
+        ):
+            validate_task_report_v2(report)
+
+    def test_resolved_review_finding_requires_resolution_text(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": None,
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\]\.resolution must be a non-empty string",
+        ):
+            validate_task_report_v2(report)
+
+    def test_review_finding_must_reference_an_existing_review_receipt(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "unknown-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A bounded review note.",
+                "resolution": "Confirmed by the controller.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\] references unknown review receipt: unknown-review",
+        ):
+            validate_task_report_v2(report)
+
+    def test_passing_review_cannot_have_an_open_blocking_finding(self) -> None:
+        report = self._complete_report()
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "BLOCKING",
+                "status": "OPEN",
+                "summary": "A blocking issue is still unresolved.",
+                "resolution": None,
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"review_findings\[0\] conflicts with PASS review receipt",
+        ):
+            validate_task_report_v2(report)
+
 
 if __name__ == "__main__":
     unittest.main()
