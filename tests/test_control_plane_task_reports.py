@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 
 from research_automation.control_plane.task_reports import (
+    MAX_TASK_REPORT_V2_BYTES,
+    MAX_TASK_REPORT_V2_DEPTH,
     TaskReportBuildError,
     TaskReportValidationError,
     build_task_report_v2,
+    parse_task_report_v2_bytes,
     task_report_v2_payload_sha256,
     validate_task_report_v2,
 )
@@ -323,6 +327,41 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "outcome does not match mechanical derivation",
         ):
             validate_task_report_v2(forged)
+
+    def test_byte_parser_rejects_duplicate_json_keys(self) -> None:
+        report = self._complete_report()
+        encoded = json.dumps(
+            report,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        duplicate = (encoded[:-1] + ',"outcome":"PASS"}').encode("utf-8")
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "duplicate JSON key: outcome",
+        ):
+            parse_task_report_v2_bytes(duplicate)
+
+    def test_byte_parser_rejects_oversized_input_before_json_parsing(self) -> None:
+        oversized = b"{" + (b"x" * MAX_TASK_REPORT_V2_BYTES) + b"}"
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "exceeds 65536 byte limit",
+        ):
+            parse_task_report_v2_bytes(oversized)
+
+    def test_byte_parser_rejects_excessive_nesting_with_a_typed_error(self) -> None:
+        depth = MAX_TASK_REPORT_V2_DEPTH + 1
+        nested = ((b'{"x":' * depth) + b"null" + (b"}" * depth))
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "exceeds 64 level nesting limit",
+        ):
+            parse_task_report_v2_bytes(nested)
 
 
 if __name__ == "__main__":

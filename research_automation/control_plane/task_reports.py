@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 from collections.abc import Mapping
 
@@ -15,6 +16,8 @@ from .contracts import Phase, canonical_json
 
 
 TASK_REPORT_V2 = "control_plane.task_report.v2"
+MAX_TASK_REPORT_V2_BYTES = 64 * 1024
+MAX_TASK_REPORT_V2_DEPTH = 64
 _REPORT_HASH_DOMAIN = b"control_plane.task_report.v2\0"
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_BINDING_FIELDS = frozenset(
@@ -253,6 +256,60 @@ def build_task_report_v2(draft: Mapping[str, object]) -> dict[str, object]:
     report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
     validate_task_report_v2(report)
     return report
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise TaskReportValidationError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _require_bounded_json_depth(value: object) -> None:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_TASK_REPORT_V2_DEPTH:
+            raise TaskReportValidationError(
+                f"task report exceeds {MAX_TASK_REPORT_V2_DEPTH} level nesting limit"
+            )
+        if isinstance(current, Mapping):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+
+
+def parse_task_report_v2_bytes(raw: bytes) -> dict[str, object]:
+    """Parse exact UTF-8 JSON bytes without last-write-wins duplicate keys."""
+    if not isinstance(raw, bytes):
+        raise TaskReportValidationError("task report input must be bytes")
+    if len(raw) > MAX_TASK_REPORT_V2_BYTES:
+        raise TaskReportValidationError(
+            f"task report exceeds {MAX_TASK_REPORT_V2_BYTES} byte limit"
+        )
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise TaskReportValidationError("task report must be strict UTF-8") from error
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except TaskReportValidationError:
+        raise
+    except RecursionError as error:
+        raise TaskReportValidationError(
+            f"task report exceeds {MAX_TASK_REPORT_V2_DEPTH} level nesting limit"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise TaskReportValidationError("task report must be valid JSON") from error
+    _require_bounded_json_depth(payload)
+    if not isinstance(payload, dict):
+        raise TaskReportValidationError("task report JSON must be an object")
+    validate_task_report_v2(payload)
+    return payload
 
 
 def validate_task_report_v2(report: Mapping[str, object]) -> None:
