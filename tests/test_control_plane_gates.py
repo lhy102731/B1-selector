@@ -669,6 +669,41 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertIn("GateAuthorityMismatchError", stderr.getvalue())
 
+    def test_cli_returns_exit_code_two_for_a_verified_computed_fail(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fail_draft = dict(fixture.draft)
+            fail_draft["unresolved_risks"] = ["known-risk"]
+            fail_report = PhaseGateBuilder().build(fail_draft)
+            report_path = fixture.root / "gate-fail-report.json"
+            report_path.write_text(
+                canonical_json(fail_report),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "verify",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--read-only",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn('"verdict":"FAIL"', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
