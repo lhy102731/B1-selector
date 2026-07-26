@@ -14,11 +14,14 @@ from research_automation.control_plane.stores import (
     StorePairDescriptor,
     StoreConfigurationError,
     read_store_pair_descriptor,
-    trusted_bootstrap,
 )
 
 
 class TrustedBootstrapTests(unittest.TestCase):
+    def test_bootstrap_is_not_a_worker_visible_module_api(self) -> None:
+        self.assertNotIn("trusted_bootstrap", stores_module.__all__)
+        self.assertFalse(hasattr(stores_module, "trusted_bootstrap"))
+
     def test_callers_cannot_select_store_paths(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -26,7 +29,7 @@ class TrustedBootstrapTests(unittest.TestCase):
             attacker_operational = root / "attacker-operational.sqlite3"
 
             with self.assertRaises(TypeError):
-                trusted_bootstrap(
+                stores_module._trusted_bootstrap(
                     authority_path=attacker_authority,
                     operational_path=attacker_operational,
                 )
@@ -47,7 +50,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                     _AUTHORITY_STORE_PATH=shared_path,
                     _OPERATIONAL_STORE_PATH=shared_path,
                 ):
-                    trusted_bootstrap()
+                    stores_module._trusted_bootstrap()
 
             self.assertFalse(shared_path.exists())
 
@@ -62,7 +65,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                receipt = trusted_bootstrap()
+                receipt = stores_module._trusted_bootstrap()
 
             self.assertEqual(receipt.authority_path, authority_path.resolve())
             self.assertEqual(receipt.operational_path, operational_path.resolve())
@@ -83,7 +86,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                receipt = trusted_bootstrap()
+                receipt = stores_module._trusted_bootstrap()
                 descriptor = read_store_pair_descriptor()
 
             self.assertIsInstance(descriptor, StorePairDescriptor)
@@ -145,7 +148,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                     stores_module.StoreBootstrapError,
                     "bootstrap failed",
                 ):
-                    trusted_bootstrap()
+                    stores_module._trusted_bootstrap()
 
             self.assertFalse(authority_path.exists())
             self.assertFalse(operational_path.exists())
@@ -162,7 +165,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                trusted_bootstrap()
+                stores_module._trusted_bootstrap()
                 before = {
                     path: (
                         hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -172,7 +175,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 }
 
                 with self.assertRaises(StoreAlreadyBootstrappedError):
-                    trusted_bootstrap()
+                    stores_module._trusted_bootstrap()
 
                 after = {
                     path: (

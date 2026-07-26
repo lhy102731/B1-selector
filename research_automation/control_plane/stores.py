@@ -194,7 +194,7 @@ def _trusted_bootstrap_at_paths(
     )
 
 
-def trusted_bootstrap() -> StoreBootstrapReceipt:
+def _trusted_bootstrap() -> StoreBootstrapReceipt:
     """Provision the two fixed-path stores from a trusted entrypoint."""
 
     return _trusted_bootstrap_at_paths(
@@ -258,5 +258,4 @@ __all__ = [
     "StoreError",
     "StorePairDescriptor",
     "read_store_pair_descriptor",
-    "trusted_bootstrap",
 ]
