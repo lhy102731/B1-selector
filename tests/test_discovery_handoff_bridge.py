@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import yaml
@@ -15,7 +16,9 @@ from ag2_research.discovery_handoff import (
 )
 from ag2_research.agents import create_agents
 from ag2_research.config import ResearchConfig
+from research_automation.control_plane.contracts import SideEffect
 from research_automation.control_plane.sink_guard import ExecutionAuthorizationError
+from research_automation.control_plane.sink_guard import ExecutionInvocation, RunnerIdentity
 from research_automation.discovery_execution_bridge import (
     DiscoveryExecutionPlan,
     build_execution_plan,
@@ -62,6 +65,56 @@ def _roundtable_document(status="APPROVED", strategy_id="brick", factors=None):
 
 
 class DiscoveryHandoffBridgeTests(unittest.TestCase):
+    def _authorized_execution_fixture(self, root: Path):
+        """Build a plan/invocation pair without touching the real authority store."""
+        handoff = root / "handoff.yaml"
+        handoff.write_text("handoff_type: kbase_discovery\n", encoding="utf-8")
+        output = root / "research-output"
+        runner_path = Path(__file__).resolve()
+        project_root = Path(__file__).resolve().parent.parent
+        runner_ref = runner_path.relative_to(project_root).as_posix()
+        plan = DiscoveryExecutionPlan(
+            handoff_path=str(handoff),
+            strategy_id="brick",
+            runner_id="test-runner",
+            runner_script=str(runner_path),
+            output_dir=str(output),
+            factor_names=["test_factor"],
+            reason="test",
+            command=[
+                sys.executable,
+                str(runner_path),
+                "--handoff-path",
+                str(handoff),
+                "--output-dir",
+                str(output),
+            ],
+        )
+        invocation = ExecutionInvocation(
+            intent_ref="research_state/control_plane/p0r2/intents/discovery.json",
+            entry_id="callable:research_automation.discovery_execution_bridge:execute_plan",
+            effect=SideEffect.START_SUBPROCESS,
+            operation="SUBPROCESS",
+            argv=tuple(plan.command),
+            cwd=str(project_root),
+            runner=RunnerIdentity(
+                module="tests.test_discovery_handoff_bridge",
+                callable_name="main",
+                source_ref=runner_ref,
+                source_sha256="a" * 64,
+            ),
+            resource_paths=(str(runner_path), str(handoff), str(output)),
+        )
+        permit = SimpleNamespace(
+            operation="SUBPROCESS",
+            effect=SideEffect.START_SUBPROCESS,
+            argv=tuple(plan.command),
+            resource_paths=tuple(
+                path.resolve() for path in (runner_path, handoff, output)
+            ),
+        )
+        return plan, invocation, permit, output
+
     def test_execute_plan_requires_authority_before_creating_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -85,6 +138,105 @@ class DiscoveryHandoffBridgeTests(unittest.TestCase):
 
             self.assertFalse(output_dir.exists())
             runner.assert_not_called()
+
+    def test_execute_plan_dry_run_without_authority_has_no_effects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = DiscoveryExecutionPlan(
+                handoff_path=str(root / "handoff.yaml"),
+                strategy_id="brick",
+                runner_id="test-runner",
+                runner_script=str(Path(__file__).resolve()),
+                output_dir=str(root / "research-output"),
+                factor_names=["test_factor"],
+                reason="test",
+                command=[sys.executable, "-V"],
+            )
+            with (
+                patch("research_automation.discovery_execution_bridge.AuthorityReader") as reader,
+                patch("research_automation.discovery_execution_bridge.ExecutionSinkGuard") as guard,
+                patch("research_automation.discovery_execution_bridge.AuthorizedSubprocess") as sink,
+                patch("research_automation.discovery_execution_bridge.subprocess.run") as runner,
+            ):
+                self.assertIsNone(execute_plan(plan, dry_run=True))
+
+            self.assertFalse(Path(plan.output_dir).exists())
+            reader.assert_not_called()
+            guard.assert_not_called()
+            sink.assert_not_called()
+            runner.assert_not_called()
+
+    def test_execute_plan_valid_authorization_rechecks_identity_before_effect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan, invocation, permit, output = self._authorized_execution_fixture(Path(directory))
+            lease = object()
+            guard = MagicMock()
+
+            def authorize(checked_lease, checked_invocation):
+                self.assertIs(lease, checked_lease)
+                self.assertIs(invocation, checked_invocation)
+                self.assertFalse(output.exists())
+                return permit
+
+            guard.authorize.side_effect = authorize
+            sink = MagicMock()
+            sink.run.side_effect = lambda checked_lease, checked_invocation: (
+                self.assertTrue(output.is_dir())
+                or "completed"
+            )
+            with (
+                patch("research_automation.discovery_execution_bridge.ExecutionSinkGuard", return_value=guard),
+                patch("research_automation.discovery_execution_bridge.AuthorizedSubprocess", return_value=sink),
+            ):
+                result = execute_plan(
+                    plan,
+                    execution_lease=lease,
+                    execution_invocation=invocation,
+                )
+
+            self.assertEqual("completed", result)
+            self.assertTrue(output.is_dir())
+            guard.authorize.assert_called_once_with(lease, invocation)
+            sink.run.assert_called_once_with(lease, invocation)
+
+    def test_execute_plan_rejects_command_or_resource_tampering_before_mkdir(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plan, invocation, permit, output = self._authorized_execution_fixture(Path(directory))
+            plan.command[1] = str(Path(__file__).resolve().parent / "other.py")
+            guard = MagicMock()
+            guard.authorize.return_value = permit
+            sink = MagicMock()
+            with (
+                patch("research_automation.discovery_execution_bridge.ExecutionSinkGuard", return_value=guard),
+                patch("research_automation.discovery_execution_bridge.AuthorizedSubprocess", return_value=sink),
+            ):
+                with self.assertRaises(ExecutionAuthorizationError):
+                    execute_plan(
+                        plan,
+                        execution_lease=object(),
+                        execution_invocation=invocation,
+                    )
+
+            self.assertFalse(output.exists())
+            sink.assert_not_called()
+
+            # A valid command is still denied when the immutable intent omits
+            # the exact output resource that would be created.
+            plan, invocation, permit, output = self._authorized_execution_fixture(Path(directory))
+            permit.resource_paths = permit.resource_paths[:-1]
+            guard.authorize.return_value = permit
+            with patch(
+                "research_automation.discovery_execution_bridge.ExecutionSinkGuard",
+                return_value=guard,
+            ):
+                with self.assertRaises(ExecutionAuthorizationError):
+                    execute_plan(
+                        plan,
+                        execution_lease=object(),
+                        execution_invocation=invocation,
+                    )
+
+            self.assertFalse(output.exists())
 
     def test_only_complete_approved_handoff_is_loaded(self):
         with tempfile.TemporaryDirectory() as directory:
