@@ -704,6 +704,35 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn('"verdict":"FAIL"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_returns_exit_code_three_for_corrupt_gate_evidence(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            report_path = fixture.root / "corrupt-gate-report.json"
+            report_path.write_bytes(b"not-json")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "verify",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--read-only",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 3)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("GateValidationError", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()
