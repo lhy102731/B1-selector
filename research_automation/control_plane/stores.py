@@ -129,8 +129,12 @@ _AUTHORITY_SCHEMA = (
             receipt_kind IN ('TEST', 'REVIEW', 'EVIDENCE')
         ),
         receipt_id TEXT NOT NULL,
+        issuer_actor_id TEXT NOT NULL,
+        issuer_actor_type TEXT NOT NULL,
+        issuer_invocation_id TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         payload_sha256 TEXT NOT NULL,
+        attestation_sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY(ticket_id, receipt_kind, receipt_id)
     ) WITHOUT ROWID
@@ -434,6 +438,17 @@ class TaskTicketSnapshot:
     evidence_ref: str
     started_at: datetime
     completed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedReceiptAttestation:
+    ticket_id: str
+    receipt_kind: str
+    receipt_id: str
+    issuer: Actor
+    payload_json: str
+    payload_sha256: str
+    attestation_sha256: str
 
 
 @dataclass(frozen=True)
@@ -1081,6 +1096,98 @@ def _canonical_task_spec(task_spec: Mapping[str, object]) -> str:
         raise TaskTicketError("task spec is not canonical JSON") from error
 
 
+def _canonical_trusted_receipt(
+    receipt_kind: str,
+    payload: Mapping[str, object],
+) -> tuple[str, str, str, str]:
+    kind = _require_nonempty(receipt_kind, "receipt_kind").upper()
+    if kind not in {"TEST", "REVIEW", "EVIDENCE"}:
+        raise TaskTicketError("receipt_kind is invalid")
+    if not isinstance(payload, Mapping):
+        raise TaskTicketError("trusted receipt payload must be a mapping")
+    from .task_reports import (
+        TaskReportValidationError,
+        _receipt_results,
+        _validate_evidence_refs,
+    )
+
+    try:
+        if kind == "TEST":
+            _receipt_results([payload], "test_receipts")
+            identity_field = "receipt_id"
+        elif kind == "REVIEW":
+            _receipt_results([payload], "review_receipts")
+            identity_field = "receipt_id"
+        else:
+            _validate_evidence_refs([payload])
+            identity_field = "evidence_id"
+        receipt_id = _require_nonempty(payload.get(identity_field), identity_field)
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TaskReportValidationError, TypeError, ValueError) as error:
+        raise TaskTicketError("trusted receipt payload is invalid") from error
+    payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+    return kind, receipt_id, payload_json, payload_sha256
+
+
+def _receipt_attestation_sha256(
+    root_secret: _BearerSecret,
+    *,
+    ticket_id: str,
+    receipt_kind: str,
+    receipt_id: str,
+    issuer: Actor,
+    payload_sha256: str,
+) -> str:
+    if not isinstance(root_secret, _BearerSecret) or not isinstance(issuer, Actor):
+        raise TaskTicketError("trusted receipt issuer is invalid")
+    message = json.dumps(
+        {
+            "issuer_actor_id": issuer.actor_id,
+            "issuer_actor_type": issuer.actor_type,
+            "issuer_invocation_id": issuer.invocation_id,
+            "payload_sha256": _require_sha256(
+                payload_sha256,
+                "payload_sha256",
+            ),
+            "receipt_id": _require_nonempty(receipt_id, "receipt_id"),
+            "receipt_kind": _require_nonempty(receipt_kind, "receipt_kind"),
+            "ticket_id": _require_nonempty(ticket_id, "ticket_id"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hmac.new(
+        root_secret._reveal_for_authority_check().encode("utf-8"),
+        b"control_plane.trusted_receipt_attestation.v1\0" + message,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _require_independent_receipt_issuer(
+    receipt_kind: str,
+    issuer: Actor,
+    task_actor: Actor,
+) -> None:
+    allowed_actor_types = {
+        "TEST": frozenset({"automation"}),
+        "REVIEW": frozenset({"human", "llm"}),
+        "EVIDENCE": frozenset({"human", "automation"}),
+    }
+    if (
+        not isinstance(issuer, Actor)
+        or issuer.actor_type not in allowed_actor_types[receipt_kind]
+    ):
+        raise TaskTicketError("trusted receipt issuer role is invalid")
+    if issuer == task_actor:
+        raise TaskTicketError("task actor cannot attest its own receipt")
+
+
 def _report_timestamp(value: object) -> datetime:
     if not isinstance(value, str):
         raise TaskReportAuthorityError("TaskReport timestamp is invalid")
@@ -1238,7 +1345,7 @@ def _verify_task_report_authority(
 class _AuthorityStore:
     """Trusted V2 authority mutations; never exported to ordinary workers."""
 
-    __slots__ = ("_clock",)
+    __slots__ = ("_clock", "_root_secret")
 
     def __init__(
         self,
@@ -1247,6 +1354,7 @@ class _AuthorityStore:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         _require_store_root(_authority_spec(), root_secret)
+        self._root_secret = _BearerSecret(root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _now(self) -> datetime:
@@ -1794,70 +1902,151 @@ class _AuthorityStore:
             raise TaskTicketError("task execution lease is invalid")
         return row
 
-    def _record_task_receipt(
+    def _attest_task_receipt(
         self,
         lease: TaskExecutionLease,
         *,
         receipt_kind: str,
+        issuer: Actor,
         payload: Mapping[str, object],
-    ) -> bool:
-        kind = _require_nonempty(receipt_kind, "receipt_kind").upper()
-        if kind not in {"TEST", "REVIEW", "EVIDENCE"}:
-            raise TaskTicketError("receipt_kind is invalid")
-        if not isinstance(payload, Mapping):
-            raise TaskTicketError("trusted receipt payload must be a mapping")
-        identity_field = "evidence_id" if kind == "EVIDENCE" else "receipt_id"
-        try:
-            receipt_id = _require_nonempty(payload.get(identity_field), identity_field)
-            payload_json = json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
+    ) -> TrustedReceiptAttestation:
+        kind, receipt_id, payload_json, payload_sha256 = (
+            _canonical_trusted_receipt(receipt_kind, payload)
+        )
+
+        def read_task_actor(connection: sqlite3.Connection) -> Actor:
+            row = self._require_task_lease(connection, lease)
+            return Actor(
+                actor_id=str(row["grant_actor_id"]),
+                actor_type=str(row["grant_actor_type"]),
+                invocation_id=str(row["grant_invocation_id"]),
             )
-        except (TypeError, ValueError) as error:
-            raise TaskTicketError("trusted receipt payload is invalid") from error
-        payload_sha256 = hashlib.sha256(
-            payload_json.encode("utf-8")
-        ).hexdigest()
-        now = self._now()
+
+        task_actor = _SqliteUnitOfWork(_authority_spec())._read(read_task_actor)
+        _require_independent_receipt_issuer(kind, issuer, task_actor)
+        if kind == "REVIEW" and payload.get("reviewer_id") != issuer.actor_id:
+            raise TaskTicketError("review receipt issuer does not match reviewer_id")
+        attestation_sha256 = _receipt_attestation_sha256(
+            self._root_secret,
+            ticket_id=lease.ticket_id,
+            receipt_kind=kind,
+            receipt_id=receipt_id,
+            issuer=issuer,
+            payload_sha256=payload_sha256,
+        )
+        return TrustedReceiptAttestation(
+            ticket_id=lease.ticket_id,
+            receipt_kind=kind,
+            receipt_id=receipt_id,
+            issuer=issuer,
+            payload_json=payload_json,
+            payload_sha256=payload_sha256,
+            attestation_sha256=attestation_sha256,
+        )
+
+    def _record_task_receipt(
+        self,
+        lease: TaskExecutionLease,
+        *,
+        attestation: TrustedReceiptAttestation,
+    ) -> bool:
+        if not isinstance(attestation, TrustedReceiptAttestation):
+            raise TaskTicketError("trusted receipt attestation is invalid")
+        try:
+            payload = json.loads(attestation.payload_json)
+            if not isinstance(payload, Mapping):
+                raise ValueError("receipt payload must be an object")
+            kind, receipt_id, payload_json, payload_sha256 = (
+                _canonical_trusted_receipt(attestation.receipt_kind, payload)
+            )
+        except (TaskTicketError, TypeError, ValueError) as error:
+            raise TaskTicketError("trusted receipt attestation is invalid") from error
+        if (
+            attestation.ticket_id != lease.ticket_id
+            or attestation.receipt_id != receipt_id
+            or attestation.payload_json != payload_json
+            or not hmac.compare_digest(
+                attestation.payload_sha256,
+                payload_sha256,
+            )
+        ):
+            raise TaskTicketError("trusted receipt attestation is invalid")
 
         def record(connection: sqlite3.Connection) -> bool:
-            self._require_task_lease(connection, lease)
+            row = self._require_task_lease(connection, lease)
+            task_actor = Actor(
+                actor_id=str(row["grant_actor_id"]),
+                actor_type=str(row["grant_actor_type"]),
+                invocation_id=str(row["grant_invocation_id"]),
+            )
+            _require_independent_receipt_issuer(
+                kind,
+                attestation.issuer,
+                task_actor,
+            )
+            if (
+                kind == "REVIEW"
+                and payload.get("reviewer_id") != attestation.issuer.actor_id
+            ):
+                raise TaskTicketError(
+                    "review receipt issuer does not match reviewer_id"
+                )
+            expected_attestation_sha256 = _receipt_attestation_sha256(
+                self._root_secret,
+                ticket_id=lease.ticket_id,
+                receipt_kind=kind,
+                receipt_id=receipt_id,
+                issuer=attestation.issuer,
+                payload_sha256=payload_sha256,
+            )
+            if not hmac.compare_digest(
+                attestation.attestation_sha256,
+                expected_attestation_sha256,
+            ):
+                raise TaskTicketError("trusted receipt attestation is invalid")
             existing = connection.execute(
                 """
-                SELECT payload_json, payload_sha256
+                SELECT issuer_actor_id, issuer_actor_type,
+                       issuer_invocation_id, payload_json, payload_sha256,
+                       attestation_sha256
                 FROM trusted_task_receipts_v2
                 WHERE ticket_id = ? AND receipt_kind = ? AND receipt_id = ?
                 """,
                 (lease.ticket_id, kind, receipt_id),
             ).fetchone()
             if existing is not None:
-                if (
-                    str(existing["payload_json"]) != payload_json
-                    or not hmac.compare_digest(
-                        str(existing["payload_sha256"]),
-                        payload_sha256,
-                    )
-                ):
+                expected_existing = (
+                    attestation.issuer.actor_id,
+                    attestation.issuer.actor_type,
+                    attestation.issuer.invocation_id,
+                    payload_json,
+                    payload_sha256,
+                    expected_attestation_sha256,
+                )
+                if tuple(str(value) for value in existing) != expected_existing:
                     raise TrustedReceiptConflictError(
                         "trusted receipt identity changed content"
                     )
                 return False
+            now = self._now()
             connection.execute(
                 """
                 INSERT INTO trusted_task_receipts_v2
-                (ticket_id, receipt_kind, receipt_id, payload_json,
-                 payload_sha256, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (ticket_id, receipt_kind, receipt_id, issuer_actor_id,
+                 issuer_actor_type, issuer_invocation_id, payload_json,
+                 payload_sha256, attestation_sha256, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     lease.ticket_id,
                     kind,
                     receipt_id,
+                    attestation.issuer.actor_id,
+                    attestation.issuer.actor_type,
+                    attestation.issuer.invocation_id,
                     payload_json,
                     payload_sha256,
+                    expected_attestation_sha256,
                     _utc_text(now),
                 ),
             )
@@ -1869,7 +2058,11 @@ class _AuthorityStore:
                     "ticket_id": lease.ticket_id,
                     "receipt_kind": kind,
                     "receipt_id": receipt_id,
+                    "issuer_actor_id": attestation.issuer.actor_id,
+                    "issuer_actor_type": attestation.issuer.actor_type,
+                    "issuer_invocation_id": attestation.issuer.invocation_id,
                     "payload_sha256": payload_sha256,
+                    "attestation_sha256": expected_attestation_sha256,
                 },
                 created_at=now,
             )
@@ -2343,6 +2536,7 @@ __all__ = [
     "TaskTicketError",
     "TaskTicketIdempotencyError",
     "TaskTicketStateError",
+    "TrustedReceiptAttestation",
     "TrustedReceiptConflictError",
     "read_store_pair_descriptor",
 ]

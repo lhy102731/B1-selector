@@ -1310,6 +1310,11 @@ class TrustedBootstrapTests(unittest.TestCase):
             "exit_code": 0,
             "result": "PASS",
         }
+        issuer = Actor(
+            "trusted-test-runner",
+            "automation",
+            "invocation-store-tests",
+        )
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1347,23 +1352,53 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 lease = authority._begin_task(ticket)
 
-                authority._record_task_receipt(
+                with self.assertRaises(stores_module.TaskTicketError):
+                    authority._record_task_receipt(
+                        lease,
+                        attestation=object(),
+                    )
+                with self.assertRaises(stores_module.TaskTicketError):
+                    authority._attest_task_receipt(
+                        lease,
+                        receipt_kind="TEST",
+                        issuer=actor,
+                        payload=receipt,
+                    )
+
+                attestation = authority._attest_task_receipt(
                     lease,
                     receipt_kind="TEST",
+                    issuer=issuer,
                     payload=receipt,
                 )
-                authority._record_task_receipt(
-                    lease,
-                    receipt_kind="TEST",
-                    payload=receipt,
+                forged_attestation = stores_module.TrustedReceiptAttestation(
+                    ticket_id=attestation.ticket_id,
+                    receipt_kind=attestation.receipt_kind,
+                    receipt_id=attestation.receipt_id,
+                    issuer=attestation.issuer,
+                    payload_json=attestation.payload_json,
+                    payload_sha256=attestation.payload_sha256,
+                    attestation_sha256="0" * 64,
                 )
+                with self.assertRaises(stores_module.TaskTicketError):
+                    authority._record_task_receipt(
+                        lease,
+                        attestation=forged_attestation,
+                    )
+                authority._record_task_receipt(lease, attestation=attestation)
+                authority._record_task_receipt(lease, attestation=attestation)
                 changed = dict(receipt)
                 changed["result"] = "FAIL"
+                changed_attestation = authority._attest_task_receipt(
+                    lease,
+                    receipt_kind="TEST",
+                    issuer=issuer,
+                    payload=changed,
+                )
                 with self.assertRaises(stores_module.TrustedReceiptConflictError):
                     authority._record_task_receipt(
                         lease,
-                        receipt_kind="TEST",
-                        payload=changed,
+                        attestation=changed_attestation,
                     )
 
                 self.assertEqual(
@@ -1374,6 +1409,11 @@ class TrustedBootstrapTests(unittest.TestCase):
     def test_task_report_binding_is_cross_checked_against_authority(self) -> None:
         now = [datetime(2026, 7, 26, 7, 30, tzinfo=timezone.utc)]
         actor = Actor("operator", "human", "invocation-report-binding")
+        receipt_issuer = Actor(
+            "trusted-evidence-runner",
+            "automation",
+            "invocation-report-evidence",
+        )
         identity = AuthorityIdentity(
             plan_hash="a" * 64,
             scope_hash="b" * 64,
@@ -1445,15 +1485,25 @@ class TrustedBootstrapTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
                 lease = authority._begin_task(ticket)
-                authority._record_task_receipt(
+                test_attestation = authority._attest_task_receipt(
                     lease,
                     receipt_kind="TEST",
+                    issuer=receipt_issuer,
                     payload=test_receipt,
+                )
+                evidence_attestation = authority._attest_task_receipt(
+                    lease,
+                    receipt_kind="EVIDENCE",
+                    issuer=receipt_issuer,
+                    payload=input_evidence,
                 )
                 authority._record_task_receipt(
                     lease,
-                    receipt_kind="EVIDENCE",
-                    payload=input_evidence,
+                    attestation=test_attestation,
+                )
+                authority._record_task_receipt(
+                    lease,
+                    attestation=evidence_attestation,
                 )
                 started_at = now[0]
                 now[0] += timedelta(minutes=1)
