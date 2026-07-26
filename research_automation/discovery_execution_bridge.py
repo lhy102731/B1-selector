@@ -406,7 +406,18 @@ def _assert_plan_matches_permit(
 
     handoff_path = _canonical_plan_path(plan.handoff_path, field_name="handoff_path")
     output_path = _canonical_plan_path(plan.output_dir, field_name="output_dir")
+    command = tuple(plan.command)
+    if len(command) != 6 or command[2] != "--handoff-path" or command[4] != "--output-dir":
+        raise ExecutionAuthorizationError("discovery command shape is invalid")
+    if _canonical_plan_path(command[1], field_name="command.runner_script") != runner_path:
+        raise ExecutionAuthorizationError("command runner differs from execution plan")
+    if _canonical_plan_path(command[3], field_name="command.handoff_path") != handoff_path:
+        raise ExecutionAuthorizationError("command handoff differs from execution plan")
+    if _canonical_plan_path(command[5], field_name="command.output_dir") != output_path:
+        raise ExecutionAuthorizationError("command output differs from execution plan")
     approved_paths = tuple(getattr(permit, "resource_paths", ()))
+    if runner_path not in approved_paths:
+        raise ExecutionAuthorizationError("runner path is not bound by the execution intent")
     if handoff_path not in approved_paths:
         raise ExecutionAuthorizationError("handoff path is not bound by the execution intent")
     if output_path not in approved_paths:
