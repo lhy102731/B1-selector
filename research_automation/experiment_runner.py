@@ -719,7 +719,12 @@ class RealBacktestExecutor(BacktestExecutor):
                 return {"success": False, "error": f"workspace not found: {ws_path}",
                         "requires_manual_integration": False}
         elif self.workspace_mode and self.workspace_manager is not None:
-            ws_path = self.workspace_manager.create_workspace(experiment, spec)
+            return {
+                "success": False,
+                "error": "a pre-created, intent-bound workspace_path is required",
+                "requires_manual_integration": False,
+                "command": None,
+            }
         if ws_path is not None:
             script_path = ws_path / spec.script
             if not script_path.exists():
