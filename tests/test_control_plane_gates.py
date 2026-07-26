@@ -111,6 +111,23 @@ class PhaseGateBuilderTests(unittest.TestCase):
         self.assertEqual(len(report["gate_report_sha256"]), 64)
         validate_gate_report(report)
 
+    def test_gate_requires_exactly_one_active_grant(self) -> None:
+        cases = (
+            ([], "ACTIVE_GRANT_COUNT:0"),
+            (["grant-001", "grant-002"], "ACTIVE_GRANT_COUNT:2"),
+        )
+        for active_grant_ids, expected_reason in cases:
+            with self.subTest(active_grant_ids=active_grant_ids):
+                draft = self._passing_draft()
+                authority_snapshot = dict(draft["authority_snapshot"])
+                authority_snapshot["active_grant_ids"] = active_grant_ids
+                draft["authority_snapshot"] = authority_snapshot
+
+                report = PhaseGateBuilder().build(draft)
+
+                self.assertEqual(report["verdict"], "FAIL")
+                self.assertIn(expected_reason, report["reason_codes"])
+
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")

@@ -176,6 +176,11 @@ def _derive_gate_verdict(
     authority = report["authority_snapshot"]
     if not isinstance(authority, Mapping):
         raise GateValidationError("authority_snapshot must be a mapping")
+    active_grant_ids = authority["active_grant_ids"]
+    if not isinstance(active_grant_ids, list):
+        raise GateValidationError("authority_snapshot.active_grant_ids invalid")
+    if len(active_grant_ids) != 1:
+        reasons.append(f"ACTIVE_GRANT_COUNT:{len(active_grant_ids)}")
     for field_name, reason_prefix in (
         ("open_ticket_ids", "OPEN_TICKET"),
         ("failed_ticket_ids", "FAILED_TICKET"),
