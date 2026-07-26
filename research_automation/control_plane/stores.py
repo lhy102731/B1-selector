@@ -2330,6 +2330,81 @@ class _AuthorityStore:
 
         return _SqliteUnitOfWork(_authority_spec())._write(record)
 
+    def _mark_task_in_doubt(
+        self,
+        ticket_id: str,
+        *,
+        evidence_ref: str,
+    ) -> TaskTicketSnapshot:
+        trusted_ticket_id = _require_nonempty(ticket_id, "ticket_id")
+        evidence = _require_nonempty(evidence_ref, "evidence_ref")
+
+        def mark(
+            connection: sqlite3.Connection,
+        ) -> tuple[datetime, datetime]:
+            row = connection.execute(
+                """
+                SELECT task_id, attempt_id, state, started_at
+                FROM task_tickets_v2
+                WHERE ticket_id = ?
+                """,
+                (trusted_ticket_id,),
+            ).fetchone()
+            if (
+                row is None
+                or row["state"] != "IN_PROGRESS"
+                or row["started_at"] is None
+            ):
+                raise TaskTicketStateError("task ticket is not IN_PROGRESS")
+            started_at = _parse_utc_text(str(row["started_at"]))
+            completed_at = self._now()
+            if completed_at < started_at:
+                raise TaskTicketStateError(
+                    "task reconciliation time precedes its start"
+                )
+            update = connection.execute(
+                """
+                UPDATE task_tickets_v2
+                SET state = 'IN_DOUBT', completed_at = ?, evidence_ref = ?
+                WHERE ticket_id = ? AND state = 'IN_PROGRESS'
+                """,
+                (
+                    _utc_text(completed_at),
+                    evidence,
+                    trusted_ticket_id,
+                ),
+            )
+            if update.rowcount != 1:
+                raise TaskTicketStateError(
+                    "task reconciliation lost a concurrent race"
+                )
+            _insert_authority_outbox(
+                connection,
+                event_type="TASK_IN_DOUBT",
+                aggregate_id=trusted_ticket_id,
+                payload={
+                    "ticket_id": trusted_ticket_id,
+                    "task_id": str(row["task_id"]),
+                    "attempt_id": str(row["attempt_id"]),
+                    "state": "IN_DOUBT",
+                    "evidence_ref": evidence,
+                    "completed_at": _utc_text(completed_at),
+                },
+                created_at=completed_at,
+            )
+            return started_at, completed_at
+
+        started_at, completed_at = _SqliteUnitOfWork(_authority_spec())._write(
+            mark
+        )
+        return TaskTicketSnapshot(
+            ticket_id=trusted_ticket_id,
+            state="IN_DOUBT",
+            evidence_ref=evidence,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+
     def _finish_task(
         self,
         lease: TaskExecutionLease,

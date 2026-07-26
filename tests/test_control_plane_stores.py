@@ -1417,6 +1417,15 @@ class TrustedBootstrapTests(unittest.TestCase):
                     AuthorityReader().trusted_receipt_count(ticket.ticket_id),
                     1,
                 )
+                in_doubt = authority._mark_task_in_doubt(
+                    ticket.ticket_id,
+                    evidence_ref="evidence/task-crash-reconciliation.json",
+                )
+                self.assertEqual(in_doubt.state, "IN_DOUBT")
+                self.assertEqual(
+                    AuthorityReader().task_ticket_state(ticket.ticket_id),
+                    "IN_DOUBT",
+                )
 
     def test_task_report_binding_is_cross_checked_against_authority(self) -> None:
         now = [datetime(2026, 7, 26, 7, 30, tzinfo=timezone.utc)]
