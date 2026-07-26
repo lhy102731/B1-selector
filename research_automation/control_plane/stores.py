@@ -108,6 +108,7 @@ _AUTHORITY_SCHEMA = (
         task_spec_sha256 TEXT NOT NULL,
         task_spec_payload_json TEXT NOT NULL,
         request_sha256 TEXT NOT NULL,
+        allowed_effects_json TEXT NOT NULL,
         secret_sha256 TEXT NOT NULL,
         lease_id TEXT,
         lease_secret_sha256 TEXT,
@@ -391,6 +392,7 @@ class TaskAuthorityTicket:
     idempotency_key: str
     task_spec_ref: str
     task_spec_sha256: str
+    allowed_side_effects: tuple[SideEffect, ...]
     actor: Actor
     identity: AuthorityIdentity
     _bearer_secret: _BearerSecret = field(repr=False, compare=False)
@@ -405,6 +407,7 @@ class TaskExecutionLease:
     phase: Phase
     attempt_id: str
     task_id: str
+    allowed_side_effects: tuple[SideEffect, ...]
     actor: Actor
     identity: AuthorityIdentity
     _bearer_secret: _BearerSecret = field(repr=False, compare=False)
@@ -474,6 +477,7 @@ class TaskReportAuthorityBinding:
     actor_type: str
     invocation_id: str
     identity: AuthorityIdentity
+    allowed_side_effects: tuple[SideEffect, ...]
     ticket_state: str
     report_payload_sha256: str
 
@@ -953,6 +957,33 @@ def _effects_json(effects: tuple[SideEffect, ...]) -> str:
     )
 
 
+def _require_side_effects(
+    value: object,
+    field_name: str,
+) -> tuple[SideEffect, ...]:
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or not all(isinstance(effect, SideEffect) for effect in value)
+        or len(set(value)) != len(value)
+    ):
+        raise TaskTicketError(
+            f"{field_name} must be unique SideEffect values"
+        )
+    return value
+
+
+def _effects_from_json(value: object) -> tuple[SideEffect, ...]:
+    try:
+        raw_effects = json.loads(str(value))
+        if not isinstance(raw_effects, list):
+            raise ValueError("effects must be an array")
+        effects = tuple(SideEffect(raw_effect) for raw_effect in raw_effects)
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise TaskTicketError("stored task side effects are invalid") from error
+    return _require_side_effects(effects, "stored task side effects")
+
+
 def _require_unique_string_array(value: object, field_name: str) -> None:
     if not isinstance(value, list):
         raise TaskTicketError(f"{field_name} must be an array")
@@ -1171,6 +1202,7 @@ def _verify_task_report_authority(
                 row["grant_instruction_policy_hash"]
             ),
         ),
+        allowed_side_effects=_effects_from_json(row["allowed_effects_json"]),
         ticket_state=str(row["state"]),
         report_payload_sha256=str(report["report_payload_sha256"]),
     )
@@ -1419,11 +1451,20 @@ class _AuthorityStore:
         self,
         grant: AuthorityGrant,
         task_spec: Mapping[str, object],
+        *,
+        allowed_side_effects: tuple[SideEffect, ...],
     ) -> TaskAuthorityTicket:
+        requested_effects = _require_side_effects(
+            allowed_side_effects,
+            "allowed_side_effects",
+        )
         payload_json = _canonical_task_spec(task_spec)
+        allowed_effects_json = _effects_json(requested_effects)
         request_sha256 = hashlib.sha256(
-            b"control_plane.task_spec_binding.v1\0"
+            b"control_plane.task_spec_binding.v2\0"
             + payload_json.encode("utf-8")
+            + b"\0"
+            + allowed_effects_json.encode("utf-8")
         ).hexdigest()
         idempotency_key = str(task_spec["idempotency_key"])
         ticket_id = hashlib.sha256(
@@ -1444,6 +1485,10 @@ class _AuthorityStore:
 
         def issue(connection: sqlite3.Connection) -> None:
             self._require_active_grant(connection, grant)
+            if not set(requested_effects).issubset(grant.allowed_side_effects):
+                raise TaskTicketError(
+                    "task side effects exceed the active phase grant"
+                )
             existing = connection.execute(
                 """
                 SELECT request_sha256 FROM task_tickets_v2
@@ -1465,9 +1510,10 @@ class _AuthorityStore:
                 INSERT INTO task_tickets_v2
                 (ticket_id, grant_id, phase, attempt_id, task_id,
                  idempotency_key, task_spec_ref, task_spec_sha256,
-                 task_spec_payload_json, request_sha256, secret_sha256,
-                 state, created_at, started_at, completed_at, evidence_ref)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED', ?,
+                  task_spec_payload_json, request_sha256, allowed_effects_json,
+                  secret_sha256,
+                  state, created_at, started_at, completed_at, evidence_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED', ?,
                         NULL, NULL, NULL)
                 """,
                 (
@@ -1481,6 +1527,7 @@ class _AuthorityStore:
                     str(task_spec["task_spec_sha256"]),
                     payload_json,
                     request_sha256,
+                    allowed_effects_json,
                     ticket_secret_sha256,
                     _utc_text(now),
                 ),
@@ -1499,6 +1546,9 @@ class _AuthorityStore:
                     "task_spec_ref": task_spec["task_spec_ref"],
                     "task_spec_sha256": task_spec["task_spec_sha256"],
                     "request_sha256": request_sha256,
+                    "allowed_side_effects": [
+                        effect.value for effect in requested_effects
+                    ],
                 },
                 created_at=now,
             )
@@ -1514,6 +1564,7 @@ class _AuthorityStore:
             idempotency_key=idempotency_key,
             task_spec_ref=str(task_spec["task_spec_ref"]),
             task_spec_sha256=str(task_spec["task_spec_sha256"]),
+            allowed_side_effects=requested_effects,
             actor=grant.actor,
             identity=grant.identity,
             _bearer_secret=_BearerSecret(ticket_secret_value),
@@ -1557,6 +1608,7 @@ class _AuthorityStore:
             row["idempotency_key"],
             row["task_spec_ref"],
             row["task_spec_sha256"],
+            row["allowed_effects_json"],
             row["grant_actor_id"],
             row["grant_actor_type"],
             row["grant_invocation_id"],
@@ -1573,6 +1625,7 @@ class _AuthorityStore:
             ticket.idempotency_key,
             ticket.task_spec_ref,
             ticket.task_spec_sha256,
+            _effects_json(ticket.allowed_side_effects),
             ticket.actor.actor_id,
             ticket.actor.actor_type,
             ticket.actor.invocation_id,
@@ -1638,6 +1691,7 @@ class _AuthorityStore:
             phase=ticket.phase,
             attempt_id=ticket.attempt_id,
             task_id=ticket.task_id,
+            allowed_side_effects=ticket.allowed_side_effects,
             actor=ticket.actor,
             identity=ticket.identity,
             _bearer_secret=_BearerSecret(lease_secret_value),
@@ -1679,6 +1733,7 @@ class _AuthorityStore:
             row["phase"],
             row["attempt_id"],
             row["task_id"],
+            row["allowed_effects_json"],
             row["grant_actor_id"],
             row["grant_actor_type"],
             row["grant_invocation_id"],
@@ -1694,6 +1749,7 @@ class _AuthorityStore:
             lease.phase.value,
             lease.attempt_id,
             lease.task_id,
+            _effects_json(lease.allowed_side_effects),
             lease.actor.actor_id,
             lease.actor.actor_type,
             lease.actor.invocation_id,
@@ -1837,6 +1893,7 @@ class _AuthorityStore:
                 row["phase"],
                 row["attempt_id"],
                 row["task_id"],
+                row["allowed_effects_json"],
                 row["grant_actor_id"],
                 row["grant_actor_type"],
                 row["grant_invocation_id"],
@@ -1852,6 +1909,7 @@ class _AuthorityStore:
                 lease.phase.value,
                 lease.attempt_id,
                 lease.task_id,
+                _effects_json(lease.allowed_side_effects),
                 lease.actor.actor_id,
                 lease.actor.actor_type,
                 lease.actor.invocation_id,

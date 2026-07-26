@@ -1043,7 +1043,10 @@ class TrustedBootstrapTests(unittest.TestCase):
                     actor=actor,
                     identity=identity,
                     expires_at=now + timedelta(hours=1),
-                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                    allowed_side_effects=(
+                        SideEffect.READ,
+                        SideEffect.WRITE_CONTROL_PLANE,
+                    ),
                 )
                 grant = authority.claim_authorization(
                     envelope,
@@ -1053,17 +1056,48 @@ class TrustedBootstrapTests(unittest.TestCase):
                     identity=identity,
                 )
 
-                first = authority._issue_task_ticket(grant, task_spec)
-                replay = authority._issue_task_ticket(grant, task_spec)
+                with self.assertRaises(stores_module.TaskTicketError):
+                    authority._issue_task_ticket(
+                        grant,
+                        task_spec,
+                        allowed_side_effects=(SideEffect.RUN_RESEARCH,),
+                    )
+
+                first = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                replay = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                with self.assertRaises(
+                    stores_module.TaskTicketIdempotencyError
+                ):
+                    authority._issue_task_ticket(
+                        grant,
+                        task_spec,
+                        allowed_side_effects=(SideEffect.READ,),
+                    )
                 changed_spec = dict(task_spec)
                 changed_spec["objective"] = "Different task semantics."
                 with self.assertRaises(
                     stores_module.TaskTicketIdempotencyError
                 ):
-                    authority._issue_task_ticket(grant, changed_spec)
+                    authority._issue_task_ticket(
+                        grant,
+                        changed_spec,
+                        allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                    )
 
                 self.assertEqual(replay.ticket_id, first.ticket_id)
                 self.assertEqual(replay.task_id, first.task_id)
+                self.assertEqual(
+                    replay.allowed_side_effects,
+                    (SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 self.assertEqual(
                     AuthorityReader().task_ticket_state(first.ticket_id),
                     "ISSUED",
@@ -1122,8 +1156,16 @@ class TrustedBootstrapTests(unittest.TestCase):
                     actor=actor,
                     identity=identity,
                 )
-                ticket = authority._issue_task_ticket(grant, task_spec)
+                ticket = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 lease = authority._begin_task(ticket)
+                self.assertEqual(
+                    lease.allowed_side_effects,
+                    (SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 now[0] += timedelta(minutes=1)
                 snapshot = authority._finish_task(
                     lease,
@@ -1204,7 +1246,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                     actor=actor,
                     identity=identity,
                 )
-                ticket = authority._issue_task_ticket(grant, task_spec)
+                ticket = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 lease = authority._begin_task(ticket)
 
                 authority._record_task_receipt(
@@ -1296,7 +1342,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                     actor=actor,
                     identity=identity,
                 )
-                ticket = authority._issue_task_ticket(grant, task_spec)
+                ticket = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 lease = authority._begin_task(ticket)
                 authority._record_task_receipt(
                     lease,
@@ -1361,6 +1411,10 @@ class TrustedBootstrapTests(unittest.TestCase):
                 self.assertEqual(binding.ticket_id, ticket.ticket_id)
                 self.assertEqual(binding.actor_id, actor.actor_id)
                 self.assertEqual(binding.invocation_id, actor.invocation_id)
+                self.assertEqual(
+                    binding.allowed_side_effects,
+                    (SideEffect.WRITE_CONTROL_PLANE,),
+                )
                 self.assertEqual(
                     binding.report_payload_sha256,
                     report["report_payload_sha256"],
