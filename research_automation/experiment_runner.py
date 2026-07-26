@@ -786,6 +786,19 @@ class RealBacktestExecutor(BacktestExecutor):
                 "requires_manual_integration": False,
                 "command": None,
             }
+        required_resources = {
+            script_path.resolve(),
+            rdir.resolve(),
+        }
+        if ws_path is not None:
+            required_resources.add(ws_path.resolve())
+        if not required_resources.issubset(set(permit.resource_paths)):
+            return {
+                "success": False,
+                "error": "backtest resources differ from immutable execution intent",
+                "requires_manual_integration": False,
+                "command": None,
+            }
 
         if dry_run:
             return {"success": True, "dry_run": True, "command": argv,
