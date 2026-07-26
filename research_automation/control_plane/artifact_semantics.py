@@ -14,7 +14,7 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 
-from .contracts import canonical_sha256
+from .contracts import ACTOR_TYPES, Phase, SideEffect, canonical_sha256
 
 
 MAX_ARTIFACT_JSON_DEPTH = 64
@@ -177,6 +177,54 @@ _FORBIDDEN_FREEZE_ROOTS = frozenset(
         "tmp",
     }
 )
+_ENTRY_RECORD_FIELDS = frozenset(
+    {
+        "entry_id",
+        "path",
+        "kind",
+        "callable_name",
+        "actor_type",
+        "content_sha256",
+        "disposition",
+        "trust_state",
+        "declared_side_effects",
+        "declared_phase",
+        "resource_roots",
+        "external_metadata",
+        "source",
+    }
+)
+_ENTRY_DISPOSITIONS = frozenset(
+    {
+        "CONTROLLED_RESEARCH",
+        "LEGACY_UNAUDITED",
+        "PRODUCTION_DAILY",
+        "ADMIN_ONLY",
+        "TEST_ONLY",
+        "DENIED_WEB",
+    }
+)
+_INVENTORY_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "freeze_payload_sha256",
+        "entries",
+        "entry_count",
+        "inventory_payload_sha256",
+    }
+)
+_REQUIRED_IMPORT_SEAM_IDS = frozenset(
+    {
+        "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run",
+        "callable:research_automation.discovery_execution_bridge:execute_plan",
+        "callable:research_automation.kbase_ag2_full_cycle:run_kbase_ag2_full_cycle",
+    }
+)
+_REQUIRED_SCHEDULER_ENTRY_ID = "external:scheduler:/A\u80a1\u9009\u80a1"
 _BASELINE_HASH_ALGORITHM = (
     "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; "
     "semantic array order preserved; compact separators)"
@@ -411,10 +459,200 @@ def validate_code_freeze_manifest(
     return payload
 
 
+def _string_array(value: object, field_name: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or any(
+            not isinstance(item, str) or not item or item != item.strip()
+            for item in value
+        )
+        or len(value) != len(set(value))
+    ):
+        raise ArtifactSemanticError(
+            f"{field_name} must contain unique canonical strings"
+        )
+    return list(value)
+
+
+def _validate_entry_records(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise ArtifactSemanticError("entry inventory entries must be a list")
+    normalized: list[dict[str, object]] = []
+    entry_ids: set[str] = set()
+    previous_sort_key: tuple[str, str, str] | None = None
+    for index, item in enumerate(value):
+        entry = _exact_mapping(
+            item,
+            _ENTRY_RECORD_FIELDS,
+            f"entries[{index}]",
+        )
+        entry_id = _string(entry["entry_id"], f"entries[{index}].entry_id")
+        if entry_id in entry_ids:
+            raise ArtifactSemanticError("entry inventory contains duplicate entry ids")
+        entry_ids.add(entry_id)
+        kind = _string(entry["kind"], f"entries[{index}].kind")
+        source = _string(entry["source"], f"entries[{index}].source")
+        if kind == "external_scheduler":
+            path = _string(entry["path"], f"entries[{index}].path").replace(
+                "\\", "/"
+            )
+            if not path.startswith("/") or source != "external_scheduler_inventory":
+                raise ArtifactSemanticError("external scheduler entry identity is invalid")
+        else:
+            path = _freeze_path(entry["path"], f"entries[{index}].path")
+        actor_type = _string(
+            entry["actor_type"],
+            f"entries[{index}].actor_type",
+        )
+        if actor_type not in ACTOR_TYPES:
+            raise ArtifactSemanticError("entry actor_type is outside the closed set")
+        disposition = _string(
+            entry["disposition"],
+            f"entries[{index}].disposition",
+        )
+        if disposition not in _ENTRY_DISPOSITIONS:
+            raise ArtifactSemanticError("entry disposition is outside the closed set")
+        content_sha256 = _sha256(
+            entry["content_sha256"],
+            f"entries[{index}].content_sha256",
+        )
+        effects = _string_array(
+            entry["declared_side_effects"],
+            f"entries[{index}].declared_side_effects",
+        )
+        if any(effect not in {item.value for item in SideEffect} for effect in effects):
+            raise ArtifactSemanticError("entry declared_side_effects is invalid")
+        declared_phase = entry["declared_phase"]
+        if declared_phase is not None and (
+            not isinstance(declared_phase, str)
+            or declared_phase not in {item.value for item in Phase}
+        ):
+            raise ArtifactSemanticError("entry declared_phase is invalid")
+        roots = _string_array(
+            entry["resource_roots"],
+            f"entries[{index}].resource_roots",
+        )
+        metadata = entry["external_metadata"]
+        if (
+            not isinstance(metadata, Mapping)
+            or any(
+                not isinstance(key, str)
+                or not key
+                or key != key.strip()
+                or not isinstance(metadata_value, str)
+                or not metadata_value
+                or metadata_value != metadata_value.strip()
+                for key, metadata_value in metadata.items()
+            )
+        ):
+            raise ArtifactSemanticError("entry external_metadata is invalid")
+        normalized_entry = {
+            "entry_id": entry_id,
+            "path": path,
+            "kind": kind,
+            "callable_name": _string(
+                entry["callable_name"],
+                f"entries[{index}].callable_name",
+            ),
+            "actor_type": actor_type,
+            "content_sha256": content_sha256,
+            "disposition": disposition,
+            "trust_state": _string(
+                entry["trust_state"],
+                f"entries[{index}].trust_state",
+            ),
+            "declared_side_effects": effects,
+            "declared_phase": declared_phase,
+            "resource_roots": roots,
+            "external_metadata": dict(sorted(metadata.items())),
+            "source": source,
+        }
+        sort_key = (kind, path, entry_id)
+        if previous_sort_key is not None and sort_key < previous_sort_key:
+            raise ArtifactSemanticError("entry inventory entries must be sorted")
+        previous_sort_key = sort_key
+        normalized.append(normalized_entry)
+    return normalized
+
+
+def validate_final_inventory(
+    raw: bytes,
+    *,
+    expected_plan_version: str,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_identity: Mapping[str, str],
+    freeze_manifest: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate a final executable inventory against the code freeze."""
+    payload = parse_strict_json(raw, artifact_name="final_inventory")
+    if set(payload) != _INVENTORY_TOP_LEVEL_FIELDS:
+        raise ArtifactSemanticError("final_inventory has an invalid top-level contract")
+    if payload["schema_version"] != "control_plane.entry_inventory.v2":
+        raise ArtifactSemanticError("unsupported final inventory schema")
+    if payload["plan_version"] != expected_plan_version:
+        raise ArtifactSemanticError("final inventory plan identity mismatch")
+    if payload["phase"] != expected_phase:
+        raise ArtifactSemanticError("final inventory phase mismatch")
+    if payload["attempt_id"] != expected_attempt_id:
+        raise ArtifactSemanticError("final inventory attempt mismatch")
+    _validate_identity(payload["identity_binding"], expected=expected_identity)
+    freeze_digest = _sha256(
+        payload["freeze_payload_sha256"],
+        "final_inventory.freeze_payload_sha256",
+    )
+    if freeze_digest != freeze_manifest.get("freeze_payload_sha256"):
+        raise ArtifactSemanticError("final inventory is not bound to the code freeze")
+    entries = _validate_entry_records(payload["entries"])
+    _exact_nonnegative_int(payload["entry_count"], "final inventory entry_count")
+    if payload["entry_count"] != len(entries):
+        raise ArtifactSemanticError("final inventory entry_count mismatch")
+    entry_ids = {str(entry["entry_id"]) for entry in entries}
+    missing_seams = _REQUIRED_IMPORT_SEAM_IDS - entry_ids
+    if missing_seams:
+        raise ArtifactSemanticError("final inventory is missing required import seams")
+    if _REQUIRED_SCHEDULER_ENTRY_ID not in entry_ids:
+        raise ArtifactSemanticError("final inventory is missing scheduler evidence")
+    freeze_files = freeze_manifest.get("files")
+    if not isinstance(freeze_files, list):
+        raise ArtifactSemanticError("code-freeze files are unavailable")
+    freeze_by_path = {
+        str(item["path"]): (str(item["sha256"]), int(item["bytes"]))
+        for item in freeze_files
+        if isinstance(item, Mapping)
+    }
+    inventory_by_path: dict[str, str] = {}
+    for entry in entries:
+        if entry["kind"] == "external_scheduler":
+            continue
+        path = str(entry["path"])
+        digest = str(entry["content_sha256"])
+        prior = inventory_by_path.setdefault(path, digest)
+        if prior != digest:
+            raise ArtifactSemanticError(
+                "inventory records disagree about one frozen file"
+            )
+        if path not in freeze_by_path or freeze_by_path[path][0] != digest:
+            raise ArtifactSemanticError(
+                f"final inventory differs from the code freeze: {path}"
+            )
+    if set(inventory_by_path) != set(freeze_by_path):
+        raise ArtifactSemanticError(
+            "final inventory and code-freeze file sets differ"
+        )
+    payload_without_hash = dict(payload)
+    payload_without_hash["entries"] = entries
+    payload_without_hash.pop("inventory_payload_sha256", None)
+    if payload["inventory_payload_sha256"] != canonical_sha256(payload_without_hash):
+        raise ArtifactSemanticError("final inventory payload hash mismatch")
+    return payload
+
+
 __all__ = [
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
     "parse_strict_json",
     "validate_code_freeze_manifest",
+    "validate_final_inventory",
     "validate_implementation_baseline",
 ]
