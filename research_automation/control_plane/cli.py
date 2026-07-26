@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Sequence, TextIO
+from typing import Iterable, Sequence, TextIO
 
 from .contracts import Phase, canonical_json
 from .gates import (
@@ -38,6 +38,21 @@ from .task_reports import (
 _MAX_GATE_REPORT_BYTES = 256 * 1024
 _MAX_GATE_ARTIFACT_BYTES = 4 * 1024 * 1024
 _MAX_AUTHORITY_CAPABILITY_CHARS = 4096
+_FORBIDDEN_GATE_OUTPUT_ROOTS = frozenset(
+    {
+        "apps",
+        "config",
+        "docs",
+        "research_automation",
+        "strategy",
+        "tests",
+        "tools",
+        "utils",
+    }
+)
+_FORBIDDEN_GATE_OUTPUT_SUFFIXES = frozenset(
+    {".cfg", ".ini", ".py", ".pyc", ".toml", ".yaml", ".yml"}
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -99,11 +114,8 @@ def _read_repository_file(
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
     root = repository_root.resolve(strict=True)
-    requested = Path(path_text)
-    candidate = requested if requested.is_absolute() else root / requested
+    resolved = _resolve_repository_path(path_text, root, strict=True)
     try:
-        resolved = candidate.resolve(strict=True)
-        resolved.relative_to(root)
         if not resolved.is_file():
             raise GateEvidenceError("gate report path is not a file")
         with resolved.open("rb") as stream:
@@ -119,14 +131,47 @@ def _read_repository_file(
     return raw
 
 
-def _repository_reference(path_text: str, repository_root: Path) -> str:
+def _resolve_repository_path(
+    path_text: str,
+    repository_root: Path,
+    *,
+    strict: bool,
+) -> Path:
+    if not isinstance(path_text, str) or not path_text.strip():
+        raise GateEvidenceError("repository path is empty")
+    normalized = path_text.replace("\\", "/")
+    drive, tail = os.path.splitdrive(normalized)
+    if (
+        ":" in tail
+        or normalized.startswith("//?/")
+        or normalized.startswith("//./")
+        or any(
+            character in '<>"|?*' or ord(character) < 32
+            for character in normalized
+        )
+    ):
+        raise GateEvidenceError("repository path contains ambiguous characters")
+    if drive and not Path(path_text).is_absolute():
+        raise GateEvidenceError("repository path has an invalid drive prefix")
     root = repository_root.resolve(strict=True)
     requested = Path(path_text)
     candidate = requested if requested.is_absolute() else root / requested
     try:
-        resolved = candidate.resolve(strict=True)
-        relative = resolved.relative_to(root)
+        resolved = candidate.resolve(strict=strict)
+        resolved.relative_to(root)
     except (OSError, ValueError) as error:
+        raise GateEvidenceError(
+            "repository path is unavailable or outside the repository"
+        ) from error
+    return resolved
+
+
+def _repository_reference(path_text: str, repository_root: Path) -> str:
+    root = repository_root.resolve(strict=True)
+    resolved = _resolve_repository_path(path_text, root, strict=True)
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as error:
         raise GateEvidenceError(
             "repository reference is unavailable or outside the repository"
         ) from error
@@ -140,17 +185,28 @@ def _write_repository_bytes(
     path_text: str,
     repository_root: Path,
     raw: bytes,
+    *,
+    protected_paths: Iterable[Path] = (),
 ) -> Path:
     root = repository_root.resolve(strict=True)
-    requested = Path(path_text)
-    candidate = requested if requested.is_absolute() else root / requested
-    try:
-        resolved = candidate.resolve(strict=False)
-        resolved.relative_to(root)
-    except (OSError, ValueError) as error:
+    resolved = _resolve_repository_path(path_text, root, strict=False)
+    relative = resolved.relative_to(root)
+    if relative.parts and relative.parts[0].casefold() in {
+        item.casefold() for item in _FORBIDDEN_GATE_OUTPUT_ROOTS
+    }:
         raise GateEvidenceError(
-            "output path is outside the repository"
-        ) from error
+            "gate output must be published outside source and configuration roots"
+        )
+    if resolved.suffix.casefold() in _FORBIDDEN_GATE_OUTPUT_SUFFIXES:
+        raise GateEvidenceError("gate output has a forbidden source/config suffix")
+    protected = {
+        path.resolve(strict=False)
+        for path in protected_paths
+    }
+    if resolved in protected:
+        raise GateEvidenceError("gate output collides with an input evidence file")
+    if resolved.exists():
+        raise GateEvidenceError("gate output already exists and is immutable")
     if not resolved.parent.is_dir():
         raise GateEvidenceError("output directory does not exist")
     temporary_path: str | None = None
@@ -166,7 +222,16 @@ def _write_repository_bytes(
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
+        if resolved.exists():
+            raise GateEvidenceError("gate output already exists and is immutable")
         os.replace(temporary_path, resolved)
+    except GateEvidenceError:
+        if temporary_path is not None:
+            try:
+                Path(temporary_path).unlink()
+            except OSError:
+                pass
+        raise
     except OSError as error:
         if temporary_path is not None:
             try:
@@ -184,9 +249,22 @@ def _build_gate_candidate(
     authority_reader: AuthorityReader,
     stdout: TextIO,
 ) -> int:
+    phase = Phase(str(args.phase))
+    if authority_reader.phase_gate_closure(phase, args.attempt_id) is not None:
+        raise GateAuthorityMismatchError(
+            "phase attempt already has an immutable gate closure"
+        )
+    protected_paths: list[Path] = []
     task_reference = _repository_reference(
         args.task_report_id,
         repository_root,
+    )
+    protected_paths.append(
+        _resolve_repository_path(
+            args.task_report_id,
+            repository_root,
+            strict=True,
+        )
     )
     task_bytes = _read_repository_file(args.task_report_id, repository_root)
     try:
@@ -209,6 +287,13 @@ def _build_gate_candidate(
         ("scheduler_inventory", "scheduler_inventory"),
     ):
         path_text = str(getattr(args, option_name))
+        protected_paths.append(
+            _resolve_repository_path(
+                path_text,
+                repository_root,
+                strict=True,
+            )
+        )
         artifact_bytes = _read_repository_file(
             path_text,
             repository_root,
@@ -219,7 +304,7 @@ def _build_gate_candidate(
             "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
         }
     snapshot = authority_reader.phase_gate_snapshot(
-        Phase(str(args.phase)),
+        phase,
         args.attempt_id,
     )
     identity_binding = task_report["identity_binding"]
@@ -262,6 +347,7 @@ def _build_gate_candidate(
         args.output,
         repository_root,
         canonical_json(candidate).encode("utf-8"),
+        protected_paths=protected_paths,
     )
     stdout.write(
         canonical_json(

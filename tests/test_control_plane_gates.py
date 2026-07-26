@@ -810,6 +810,124 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         self.assertFalse(output_path.exists())
                         self.assertIn("GateEvidenceError", stderr.getvalue())
 
+    def test_cli_rejects_gate_output_collisions_and_source_paths(self) -> None:
+        cases = (
+            "reports/gate.json",
+            "research_automation/control_plane/new-report.json",
+            "reports/output.json:stream",
+        )
+        for output_text in cases:
+            with self.subTest(output=output_text):
+                with self._trusted_gate_fixture() as fixture:
+                    stdout = StringIO()
+                    stderr = StringIO()
+                    exit_code = gate_cli_main(
+                        [
+                            "gate",
+                            "build",
+                            "--phase",
+                            "P0",
+                            "--attempt-id",
+                            "p0r2-attempt-001",
+                            "--freeze-manifest",
+                            "artifacts/code_freeze_manifest.json",
+                            "--inventory",
+                            "artifacts/final_inventory.json",
+                            "--entry-policy",
+                            "artifacts/reviewed_entry_policy.json",
+                            "--scheduler-inventory",
+                            "artifacts/scheduler_inventory.json",
+                            "--task-report-id",
+                            "reports/gate.json",
+                            "--output",
+                            output_text,
+                        ],
+                        stdout=stdout,
+                        stderr=stderr,
+                        authority_reader=fixture.reader,
+                        repository_root=fixture.root,
+                    )
+
+                    self.assertEqual(exit_code, 3)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertIn("GateEvidenceError", stderr.getvalue())
+
+    def test_cli_does_not_overwrite_an_existing_gate_output(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            output_path = fixture.root / "existing-report.json"
+            output_path.write_bytes(b"immutable")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "build",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--freeze-manifest",
+                    "artifacts/code_freeze_manifest.json",
+                    "--inventory",
+                    "artifacts/final_inventory.json",
+                    "--entry-policy",
+                    "artifacts/reviewed_entry_policy.json",
+                    "--scheduler-inventory",
+                    "artifacts/scheduler_inventory.json",
+                    "--task-report-id",
+                    "reports/gate.json",
+                    "--output",
+                    str(output_path),
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 3)
+            self.assertEqual(output_path.read_bytes(), b"immutable")
+            self.assertIn("GateEvidenceError", stderr.getvalue())
+
+    def test_cli_rejects_build_for_a_closed_gate_attempt(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fixture.closer.close(fixture.report)
+            output_path = fixture.root / "closed-attempt-report.json"
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "build",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--freeze-manifest",
+                    "artifacts/code_freeze_manifest.json",
+                    "--inventory",
+                    "artifacts/final_inventory.json",
+                    "--entry-policy",
+                    "artifacts/reviewed_entry_policy.json",
+                    "--scheduler-inventory",
+                    "artifacts/scheduler_inventory.json",
+                    "--task-report-id",
+                    "reports/gate.json",
+                    "--output",
+                    str(output_path),
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 4)
+            self.assertFalse(output_path.exists())
+            self.assertIn("GateAuthorityMismatchError", stderr.getvalue())
+
     def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             report_path = fixture.root / "gate-report.json"
