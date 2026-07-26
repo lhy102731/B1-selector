@@ -342,7 +342,6 @@ def _run_code_reviewer(diff_text: str, prompt: str, output_dir: Path) -> tuple[b
 def _apply_diff(
     diff_text: str,
     *,
-    output_dir: Path,
     workspace: Path,
     lease: TaskExecutionLease,
     invocation: ExecutionInvocation,
@@ -362,7 +361,7 @@ def _apply_diff(
         lease,
         invocation,
         diff_text,
-        audit_path=output_dir / "applied.diff",
+        audit_path=workspace / "repair.diff",
     )
 
 
@@ -876,6 +875,7 @@ def repair_handoff_runner(
 
     try:
         workspace = _stage_repair_workspace(files, output_dir=out)
+        diff_path = workspace / "repair.diff"
     except (ExecutionAuthorizationError, OSError, ValueError) as error:
         result = RepairResult(
             ok=False,
@@ -898,7 +898,6 @@ def repair_handoff_runner(
     try:
         apply_proc = _apply_diff(
             diff,
-            output_dir=out,
             workspace=workspace,
             lease=patch_lease,
             invocation=patch_invocation,
