@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,7 @@ from .discovery_execution_bridge import (
 )
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
+    AuthorizedPatchApplier,
     AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
@@ -338,49 +340,64 @@ def _run_code_reviewer(diff_text: str, prompt: str, output_dir: Path) -> tuple[b
         return False, text
 
 
-def _apply_diff(diff_text: str, *, output_dir: Path) -> subprocess.CompletedProcess[str]:
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".diff", prefix="handoff-runner-repair-", delete=False
-    ) as handle:
-        handle.write(diff_text)
-        temp_path = Path(handle.name)
-    try:
-        check = subprocess.run(
-            ["git", "apply", "--check", str(temp_path)],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+def _apply_diff(
+    diff_text: str,
+    *,
+    output_dir: Path,
+    workspace: Path,
+    lease: TaskExecutionLease,
+    invocation: ExecutionInvocation,
+    authority_reader: AuthorityReader,
+) -> object:
+    """Apply a repair diff only through the isolated authorized patch sink."""
+    sink = AuthorizedPatchApplier(
+        authority_reader=authority_reader,
+        repository_root=PROJECT_ROOT,
+        runner=lambda command, **kwargs: subprocess.run(
+            command,
             timeout=60,
-        )
-        if check.returncode != 0:
-            return check
-        return subprocess.run(
-            ["git", "apply", str(temp_path)],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-        )
-    finally:
-        try:
-            saved = output_dir / "applied.diff"
-            saved.write_text(diff_text, encoding="utf-8")
-        finally:
-            temp_path.unlink(missing_ok=True)
+            **kwargs,
+        ),
+    )
+    return sink.apply(
+        lease,
+        invocation,
+        diff_text,
+        audit_path=output_dir / "applied.diff",
+    )
 
 
-def _compile_changed(files: list[str]) -> tuple[bool, str]:
-    py_files = [str(PROJECT_ROOT / item) for item in files if item.endswith(".py")]
+def _stage_repair_workspace(files: list[str], *, output_dir: Path) -> Path:
+    """Copy only repair targets into a disposable workspace."""
+    workspace = output_dir / "workspace"
+    workspace.mkdir(parents=True, exist_ok=False)
+    for relative in files:
+        source = PROJECT_ROOT / relative
+        target = workspace / relative
+        if source.exists():
+            if source.is_symlink() or not source.is_file():
+                raise ExecutionAuthorizationError(
+                    f"repair source is not a regular file: {relative}"
+                )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+    return workspace
+
+
+def _compile_changed(
+    files: list[str],
+    *,
+    workspace: Path = PROJECT_ROOT,
+) -> tuple[bool, str]:
+    py_files = [str(workspace / item) for item in files if item.endswith(".py")]
     if not py_files:
         return True, "no python files changed"
     try:
         proc = subprocess.run(
             [sys.executable, "-m", "py_compile", *py_files],
-            cwd=str(PROJECT_ROOT),
+            cwd=str(workspace),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -393,7 +410,11 @@ def _compile_changed(files: list[str]) -> tuple[bool, str]:
     return proc.returncode == 0, output.strip() or "py_compile clean"
 
 
-def _run_changed_tests(files: list[str]) -> tuple[bool, str]:
+def _run_changed_tests(
+    files: list[str],
+    *,
+    workspace: Path = PROJECT_ROOT,
+) -> tuple[bool, str]:
     modules = [
         item.removesuffix(".py").replace("/", ".")
         for item in files
@@ -406,7 +427,7 @@ def _run_changed_tests(files: list[str]) -> tuple[bool, str]:
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "unittest", module],
-                cwd=str(PROJECT_ROOT),
+                cwd=str(workspace),
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -423,18 +444,26 @@ def _run_changed_tests(files: list[str]) -> tuple[bool, str]:
     return True, "\n\n".join(logs)
 
 
-def _snapshot_changed_files(files: list[str]) -> dict[str, bytes | None]:
+def _snapshot_changed_files(
+    files: list[str],
+    *,
+    workspace: Path = PROJECT_ROOT,
+) -> dict[str, bytes | None]:
     snapshot: dict[str, bytes | None] = {}
     for relative in files:
-        path = PROJECT_ROOT / relative
+        path = workspace / relative
         snapshot[relative] = path.read_bytes() if path.is_file() else None
     return snapshot
 
 
-def _snapshot_restored(snapshot: dict[str, bytes | None]) -> tuple[bool, list[str]]:
+def _snapshot_restored(
+    snapshot: dict[str, bytes | None],
+    *,
+    workspace: Path = PROJECT_ROOT,
+) -> tuple[bool, list[str]]:
     mismatches: list[str] = []
     for relative, expected in snapshot.items():
-        path = PROJECT_ROOT / relative
+        path = workspace / relative
         if expected is None:
             if path.exists():
                 mismatches.append(f"expected removed after rollback: {relative}")
@@ -450,60 +479,23 @@ def _rollback_exact_diff(
     *,
     output_dir: Path,
     snapshot: dict[str, bytes | None],
+    workspace: Path,
 ) -> tuple[bool, str]:
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".diff", prefix="handoff-runner-rollback-", delete=False
-    ) as handle:
-        handle.write(diff_text)
-        temp_path = Path(handle.name)
-    logs: list[str] = []
+    del diff_text, snapshot
+    logs: list[str] = ["rollback=discard_isolated_workspace"]
     try:
-        check = subprocess.run(
-            ["git", "apply", "--reverse", "--check", str(temp_path)],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-        )
-        logs.append(
-            f"reverse_check_returncode={check.returncode}\n"
-            f"{(check.stdout or '')}{(check.stderr or '')}"
-        )
-        if check.returncode != 0:
-            restored, mismatches = _snapshot_restored(snapshot)
-            logs.append(f"snapshot_restored={restored}\n" + "\n".join(mismatches))
-            output = "\n\n".join(logs)
-            (output_dir / "rollback.log").write_text(output, encoding="utf-8")
-            return False, output
-        reverse = subprocess.run(
-            ["git", "apply", "--reverse", str(temp_path)],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-        )
-        restored, mismatches = _snapshot_restored(snapshot)
-        logs.append(
-            f"reverse_apply_returncode={reverse.returncode}\n"
-            f"{(reverse.stdout or '')}{(reverse.stderr or '')}"
-        )
-        logs.append(f"snapshot_restored={restored}\n" + "\n".join(mismatches))
+        shutil.rmtree(workspace)
+        logs.append("workspace_discarded=true")
+        restored = not workspace.exists()
+        logs.append(f"workspace_absent={restored}")
         output = "\n\n".join(logs)
         (output_dir / "rollback.log").write_text(output, encoding="utf-8")
-        return reverse.returncode == 0 and restored, output
+        return restored, output
     except Exception as exc:  # noqa: BLE001 - rollback failures must be archived.
-        restored, mismatches = _snapshot_restored(snapshot)
         logs.append(f"{type(exc).__name__}: {exc}")
-        logs.append(f"snapshot_restored={restored}\n" + "\n".join(mismatches))
         output = "\n\n".join(logs)
         (output_dir / "rollback.log").write_text(output, encoding="utf-8")
         return False, output
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def repair_handoff_runner(
@@ -524,6 +516,10 @@ def repair_handoff_runner(
     llm_invocation=None,
     execution_llm_lease=None,
     execution_llm_invocation=None,
+    patch_lease=None,
+    patch_invocation=None,
+    execution_patch_lease=None,
+    execution_patch_invocation=None,
     authority_reader=None,
     repository_root: str | Path | None = None,
 ) -> RepairResult:
@@ -536,6 +532,12 @@ def repair_handoff_runner(
         llm_invocation
         if llm_invocation is not None
         else execution_llm_invocation
+    )
+    patch_lease = patch_lease if patch_lease is not None else execution_patch_lease
+    patch_invocation = (
+        patch_invocation
+        if patch_invocation is not None
+        else execution_patch_invocation
     )
     if not dry_run and (
         not isinstance(lease, TaskExecutionLease)
@@ -695,7 +697,6 @@ def repair_handoff_runner(
 
     diff = _extract_diff(proc.stdout or "")
     diff_path = out / "candidate.diff"
-    diff_path.write_text(diff, encoding="utf-8")
     required_files = {
         spec["runner_path"],
         spec["test_path"],
@@ -745,11 +746,65 @@ def repair_handoff_runner(
                 json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            return result
+        return result
 
-    pre_apply_snapshot = _snapshot_changed_files(files)
-    apply_proc = _apply_diff(diff, output_dir=out)
-    if apply_proc.returncode != 0:
+    if not isinstance(patch_lease, TaskExecutionLease) or not isinstance(
+        patch_invocation, ExecutionInvocation
+    ):
+        result = RepairResult(
+            ok=False,
+            status="unauthorized",
+            handoff_path=str(handoff),
+            output_dir=str(out),
+            factor_names=names,
+            allowed_files=sorted(allowed),
+            changed_files=files,
+            prompt_path=str(prompt_path),
+            error="patch execution lease and invocation are required before mutation",
+            logs=["control-plane sink guard: missing patch authority"],
+        )
+        (out / "repair_result.json").write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return result
+
+    try:
+        workspace = _stage_repair_workspace(files, output_dir=out)
+    except (ExecutionAuthorizationError, OSError, ValueError) as error:
+        result = RepairResult(
+            ok=False,
+            status="workspace_rejected",
+            handoff_path=str(handoff),
+            output_dir=str(out),
+            factor_names=names,
+            allowed_files=sorted(allowed),
+            changed_files=files,
+            prompt_path=str(prompt_path),
+            error=str(error),
+        )
+        (out / "repair_result.json").write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return result
+
+    pre_apply_snapshot = _snapshot_changed_files(files, workspace=workspace)
+    try:
+        apply_proc = _apply_diff(
+            diff,
+            output_dir=out,
+            workspace=workspace,
+            lease=patch_lease,
+            invocation=patch_invocation,
+            authority_reader=reader,
+        )
+    except (ExecutionAuthorizationError, OSError, ValueError) as error:
+        apply_proc = None
+        apply_error = str(error)
+    else:
+        apply_error = ""
+    if apply_proc is None or getattr(apply_proc, "returncode", 0) != 0:
         result = RepairResult(
             ok=False,
             status="apply_failed",
@@ -761,7 +816,8 @@ def repair_handoff_runner(
             prompt_path=str(prompt_path),
             diff_path=str(diff_path),
             review_path=str(out / "code_review.txt") if (out / "code_review.txt").exists() else None,
-            error=((apply_proc.stdout or "") + (apply_proc.stderr or ""))[-2000:],
+            error=(apply_error or ((getattr(apply_proc, "stdout", "") or "") +
+                                   (getattr(apply_proc, "stderr", "") or "")))[-2000:],
         )
         (out / "repair_result.json").write_text(
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
@@ -769,9 +825,11 @@ def repair_handoff_runner(
         )
         return result
 
-    compile_ok, compile_output = _compile_changed(files)
+    compile_ok, compile_output = _compile_changed(files, workspace=workspace)
     test_ok, test_output = (
-        _run_changed_tests(files) if compile_ok else (False, "tests skipped: compile failed")
+        _run_changed_tests(files, workspace=workspace)
+        if compile_ok
+        else (False, "tests skipped: compile failed")
     )
     (out / "compile.log").write_text(compile_output, encoding="utf-8")
     (out / "tests.log").write_text(test_output, encoding="utf-8")
@@ -783,6 +841,7 @@ def repair_handoff_runner(
             diff,
             output_dir=out,
             snapshot=pre_apply_snapshot,
+            workspace=workspace,
         )
     gate_failure = "compile_failed" if not compile_ok else "tests_failed"
     if gates_ok:
