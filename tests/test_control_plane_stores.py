@@ -29,6 +29,7 @@ from research_automation.control_plane.sqlite_uow import (
     SqliteSchemaError,
     SqliteUnitOfWorkError,
 )
+from research_automation.control_plane.task_reports import build_task_report_v2
 
 
 class TrustedBootstrapTests(unittest.TestCase):
@@ -1060,6 +1061,143 @@ class TrustedBootstrapTests(unittest.TestCase):
                     AuthorityReader().trusted_receipt_count(ticket.ticket_id),
                     1,
                 )
+
+    def test_task_report_binding_is_cross_checked_against_authority(self) -> None:
+        now = [datetime(2026, 7, 26, 7, 30, tzinfo=timezone.utc)]
+        actor = Actor("operator", "human", "invocation-report-binding")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        test_receipt = {
+            "receipt_id": "store-tests",
+            "command": "python -m unittest tests.test_control_plane_stores -v",
+            "exit_code": 0,
+            "result": "PASS",
+        }
+        task_spec = {
+            "task_id": "P0R2-T1-REPORT-BINDING",
+            "objective": "Cross-check TaskReport against trusted authority.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-report-binding-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/report.json",
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": ["store-tests"],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_automation/control_plane/stores.py"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
+            "baseline_sha256": "e" * 64,
+            "input_evidence_refs": [],
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now[0])
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now[0] + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                ticket = authority._issue_task_ticket(grant, task_spec)
+                lease = authority._begin_task(ticket)
+                authority._record_task_receipt(
+                    lease,
+                    receipt_kind="TEST",
+                    payload=test_receipt,
+                )
+                started_at = now[0]
+                now[0] += timedelta(minutes=1)
+                authority._finish_task(
+                    lease,
+                    outcome="SUCCEEDED",
+                    evidence_ref="evidence/report-binding.json",
+                )
+
+                report = build_task_report_v2(
+                    {
+                        "plan_version": "V3.4.2-P0R2",
+                        "phase": "P0",
+                        "task_id": task_spec["task_id"],
+                        "attempt_id": "p0r2-attempt-001",
+                        "authorization_ref": envelope.authorization_ref,
+                        "ticket_id": ticket.ticket_id,
+                        "identity_binding": {
+                            "plan_hash": identity.plan_hash,
+                            "scope_hash": identity.scope_hash,
+                            "instruction_policy_hash": (
+                                identity.instruction_policy_hash
+                            ),
+                        },
+                        "objective": task_spec["objective"],
+                        "dependencies": task_spec["dependencies"],
+                        "idempotency_key": task_spec["idempotency_key"],
+                        "task_spec_ref": task_spec["task_spec_ref"],
+                        "task_spec_sha256": task_spec["task_spec_sha256"],
+                        "requirements": task_spec["requirements"],
+                        "allowed_files": task_spec["allowed_files"],
+                        "forbidden_files": task_spec["forbidden_files"],
+                        "baseline_ref": task_spec["baseline_ref"],
+                        "baseline_sha256": task_spec["baseline_sha256"],
+                        "input_evidence_refs": task_spec["input_evidence_refs"],
+                        "test_receipts": [test_receipt],
+                        "review_receipts": [],
+                        "review_findings": [],
+                        "changed_files": [],
+                        "external_invocations": [],
+                        "side_effect_summary": {
+                            "observed": [],
+                            "unauthorized": [],
+                        },
+                        "ticket_state": "SUCCEEDED",
+                        "started_at": started_at.isoformat(),
+                        "completed_at": now[0].isoformat(),
+                    }
+                )
+                binding = AuthorityReader().verify_task_report_binding(report)
+
+                self.assertEqual(binding.ticket_id, ticket.ticket_id)
+                self.assertEqual(binding.actor_id, actor.actor_id)
+                self.assertEqual(binding.invocation_id, actor.invocation_id)
+                self.assertEqual(
+                    binding.report_payload_sha256,
+                    report["report_payload_sha256"],
+                )
+                forged_draft = dict(report)
+                for computed_field in (
+                    "schema_version",
+                    "unexpected_changes",
+                    "outcome",
+                    "reason_codes",
+                    "report_payload_sha256",
+                ):
+                    forged_draft.pop(computed_field)
+                forged_draft["objective"] = "Untrusted changed objective."
+                forged_report = build_task_report_v2(forged_draft)
+                with self.assertRaises(stores_module.TaskReportAuthorityError):
+                    AuthorityReader().verify_task_report_binding(forged_report)
 
 
 if __name__ == "__main__":

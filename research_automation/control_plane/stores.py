@@ -226,6 +226,10 @@ class TrustedReceiptConflictError(TaskTicketError):
     """Raised when one trusted receipt identity changes content."""
 
 
+class TaskReportAuthorityError(StoreError):
+    """Raised when TaskReport evidence disagrees with trusted authority facts."""
+
+
 class _BearerSecret:
     """Opaque in-memory secret whose normal renderings are always redacted."""
 
@@ -454,6 +458,19 @@ class OutboxMirrorResult:
     scanned_events: int
     inserted_events: int
     acknowledged_events: int
+
+
+@dataclass(frozen=True, slots=True)
+class TaskReportAuthorityBinding:
+    ticket_id: str
+    grant_id: str
+    authorization_ref: str
+    actor_id: str
+    actor_type: str
+    invocation_id: str
+    identity: AuthorityIdentity
+    ticket_state: str
+    report_payload_sha256: str
 
 
 def _path_identity(path: str | Path) -> str:
@@ -759,6 +776,34 @@ class AuthorityReader:
             )
         )
 
+    def verify_task_report_binding(
+        self,
+        report: Mapping[str, object],
+    ) -> TaskReportAuthorityBinding:
+        from .task_reports import (
+            TaskReportValidationError,
+            parse_task_report_v2_bytes,
+        )
+
+        try:
+            frozen_report = parse_task_report_v2_bytes(
+                json.dumps(
+                    report,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError, TaskReportValidationError) as error:
+            raise TaskReportAuthorityError("TaskReport V2 is invalid") from error
+        return _SqliteUnitOfWork(_authority_spec())._read(
+            lambda connection: _verify_task_report_authority(
+                connection,
+                frozen_report,
+            )
+        )
+
 
 class OperationalReader:
     """Read-only journal queries with no generic SQL surface."""
@@ -909,6 +954,159 @@ def _canonical_task_spec(task_spec: Mapping[str, object]) -> str:
         )
     except (TypeError, ValueError) as error:
         raise TaskTicketError("task spec is not canonical JSON") from error
+
+
+def _report_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise TaskReportAuthorityError("TaskReport timestamp is invalid")
+    try:
+        return _require_aware_datetime(
+            datetime.fromisoformat(value.replace("Z", "+00:00")),
+            "TaskReport timestamp",
+        )
+    except ValueError as error:
+        raise TaskReportAuthorityError("TaskReport timestamp is invalid") from error
+
+
+def _trusted_receipts_from_report(
+    report: Mapping[str, object],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    result: dict[tuple[str, str], tuple[str, str]] = {}
+    groups = (
+        ("TEST", "test_receipts", "receipt_id"),
+        ("REVIEW", "review_receipts", "receipt_id"),
+        ("EVIDENCE", "input_evidence_refs", "evidence_id"),
+    )
+    for kind, field_name, identity_field in groups:
+        values = report[field_name]
+        if not isinstance(values, list):
+            raise TaskReportAuthorityError("TaskReport receipt arrays are invalid")
+        for payload in values:
+            if not isinstance(payload, Mapping):
+                raise TaskReportAuthorityError("TaskReport receipt is invalid")
+            receipt_id = str(payload[identity_field])
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            result[(kind, receipt_id)] = (
+                payload_json,
+                hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+            )
+    return result
+
+
+def _verify_task_report_authority(
+    connection: sqlite3.Connection,
+    report: Mapping[str, object],
+) -> TaskReportAuthorityBinding:
+    row = connection.execute(
+        """
+        SELECT ticket.*,
+               grant.authorization_ref AS grant_authorization_ref,
+               grant.actor_id AS grant_actor_id,
+               grant.actor_type AS grant_actor_type,
+               grant.invocation_id AS grant_invocation_id,
+               grant.plan_hash AS grant_plan_hash,
+               grant.scope_hash AS grant_scope_hash,
+               grant.instruction_policy_hash AS grant_instruction_policy_hash
+        FROM task_tickets_v2 AS ticket
+        JOIN phase_grants_v2 AS grant ON grant.grant_id = ticket.grant_id
+        WHERE ticket.ticket_id = ?
+        """,
+        (str(report["ticket_id"]),),
+    ).fetchone()
+    if row is None:
+        raise TaskReportAuthorityError("TaskReport ticket is unknown")
+    identity = report["identity_binding"]
+    if not isinstance(identity, Mapping):
+        raise TaskReportAuthorityError("TaskReport identity binding is invalid")
+    report_binding = (
+        report["ticket_id"],
+        report["authorization_ref"],
+        report["phase"],
+        report["attempt_id"],
+        report["task_id"],
+        report["idempotency_key"],
+        report["task_spec_ref"],
+        report["task_spec_sha256"],
+        report["ticket_state"],
+        identity["plan_hash"],
+        identity["scope_hash"],
+        identity["instruction_policy_hash"],
+    )
+    trusted_binding = (
+        row["ticket_id"],
+        row["grant_authorization_ref"],
+        row["phase"],
+        row["attempt_id"],
+        row["task_id"],
+        row["idempotency_key"],
+        row["task_spec_ref"],
+        row["task_spec_sha256"],
+        row["state"],
+        row["grant_plan_hash"],
+        row["grant_scope_hash"],
+        row["grant_instruction_policy_hash"],
+    )
+    if report_binding != trusted_binding:
+        raise TaskReportAuthorityError("TaskReport authority binding mismatch")
+    task_spec_payload = {
+        field_name: report[field_name] for field_name in _TASK_SPEC_FIELDS
+    }
+    if _canonical_task_spec(task_spec_payload) != row["task_spec_payload_json"]:
+        raise TaskReportAuthorityError("TaskReport task spec mismatch")
+    if row["started_at"] is None or row["completed_at"] is None:
+        raise TaskReportAuthorityError("TaskReport ticket is not terminal")
+    if (
+        _report_timestamp(report["started_at"])
+        != _parse_utc_text(str(row["started_at"]))
+        or _report_timestamp(report["completed_at"])
+        != _parse_utc_text(str(row["completed_at"]))
+    ):
+        raise TaskReportAuthorityError("TaskReport ticket timestamps mismatch")
+
+    expected_receipts = _trusted_receipts_from_report(report)
+    trusted_receipts: dict[tuple[str, str], tuple[str, str]] = {}
+    for receipt in connection.execute(
+        """
+        SELECT receipt_kind, receipt_id, payload_json, payload_sha256
+        FROM trusted_task_receipts_v2
+        WHERE ticket_id = ?
+        """,
+        (row["ticket_id"],),
+    ):
+        key = (str(receipt["receipt_kind"]), str(receipt["receipt_id"]))
+        payload_json = str(receipt["payload_json"])
+        payload_sha256 = str(receipt["payload_sha256"])
+        if not hmac.compare_digest(
+            hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+            payload_sha256,
+        ):
+            raise TaskReportAuthorityError("trusted receipt integrity mismatch")
+        trusted_receipts[key] = (payload_json, payload_sha256)
+    if trusted_receipts != expected_receipts:
+        raise TaskReportAuthorityError("TaskReport trusted receipts mismatch")
+    return TaskReportAuthorityBinding(
+        ticket_id=str(row["ticket_id"]),
+        grant_id=str(row["grant_id"]),
+        authorization_ref=str(row["grant_authorization_ref"]),
+        actor_id=str(row["grant_actor_id"]),
+        actor_type=str(row["grant_actor_type"]),
+        invocation_id=str(row["grant_invocation_id"]),
+        identity=AuthorityIdentity(
+            plan_hash=str(row["grant_plan_hash"]),
+            scope_hash=str(row["grant_scope_hash"]),
+            instruction_policy_hash=str(
+                row["grant_instruction_policy_hash"]
+            ),
+        ),
+        ticket_state=str(row["state"]),
+        report_payload_sha256=str(report["report_payload_sha256"]),
+    )
 
 
 class _AuthorityStore:
@@ -1937,6 +2135,8 @@ __all__ = [
     "StoreIdentity",
     "TaskAuthorityTicket",
     "TaskExecutionLease",
+    "TaskReportAuthorityBinding",
+    "TaskReportAuthorityError",
     "TaskTicketSnapshot",
     "TaskTicketError",
     "TaskTicketIdempotencyError",
