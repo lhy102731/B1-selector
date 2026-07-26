@@ -30,6 +30,7 @@ from .task_reports import (
 
 
 _MAX_GATE_REPORT_BYTES = 256 * 1024
+_MAX_GATE_ARTIFACT_BYTES = 4 * 1024 * 1024
 _MAX_AUTHORITY_CAPABILITY_CHARS = 4096
 
 
@@ -86,7 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
 def _read_repository_file(
     path_text: str,
     repository_root: Path,
+    *,
+    max_bytes: int = _MAX_GATE_REPORT_BYTES,
 ) -> bytes:
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
     root = repository_root.resolve(strict=True)
     requested = Path(path_text)
     candidate = requested if requested.is_absolute() else root / requested
@@ -96,15 +101,15 @@ def _read_repository_file(
         if not resolved.is_file():
             raise GateEvidenceError("gate report path is not a file")
         with resolved.open("rb") as stream:
-            raw = stream.read(_MAX_GATE_REPORT_BYTES + 1)
+            raw = stream.read(max_bytes + 1)
     except GateEvidenceError:
         raise
     except (OSError, ValueError) as error:
         raise GateEvidenceError(
             "gate report path is unavailable or outside the repository"
         ) from error
-    if len(raw) > _MAX_GATE_REPORT_BYTES:
-        raise GateEvidenceError("gate report exceeds its byte limit")
+    if len(raw) > max_bytes:
+        raise GateEvidenceError("repository evidence exceeds its byte limit")
     return raw
 
 
@@ -198,7 +203,11 @@ def _build_gate_candidate(
         ("scheduler_inventory", "scheduler_inventory"),
     ):
         path_text = str(getattr(args, option_name))
-        artifact_bytes = _read_repository_file(path_text, repository_root)
+        artifact_bytes = _read_repository_file(
+            path_text,
+            repository_root,
+            max_bytes=_MAX_GATE_ARTIFACT_BYTES,
+        )
         artifacts[field_name] = {
             "ref": _repository_reference(path_text, repository_root),
             "sha256": hashlib.sha256(artifact_bytes).hexdigest(),

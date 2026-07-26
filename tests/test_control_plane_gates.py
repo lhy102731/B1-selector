@@ -746,6 +746,57 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn('"status":"BUILT"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_allows_large_gate_artifacts_but_rejects_oversized_artifacts(
+        self,
+    ) -> None:
+        for size, expected_exit_code in (
+            (256 * 1024 + 1, 0),
+            (4 * 1024 * 1024 + 1, 3),
+        ):
+            with self.subTest(size=size):
+                with self._trusted_gate_fixture() as fixture:
+                    artifact_path = fixture.artifact_paths[
+                        "code_freeze_manifest"
+                    ]
+                    artifact_path.write_bytes(b"x" * size)
+                    output_path = fixture.root / f"built-{size}.json"
+                    stdout = StringIO()
+                    stderr = StringIO()
+
+                    exit_code = gate_cli_main(
+                        [
+                            "gate",
+                            "build",
+                            "--phase",
+                            "P0",
+                            "--attempt-id",
+                            "p0r2-attempt-001",
+                            "--freeze-manifest",
+                            "artifacts/code_freeze_manifest.json",
+                            "--inventory",
+                            "artifacts/final_inventory.json",
+                            "--entry-policy",
+                            "artifacts/reviewed_entry_policy.json",
+                            "--scheduler-inventory",
+                            "artifacts/scheduler_inventory.json",
+                            "--task-report-id",
+                            "reports/gate.json",
+                            "--output",
+                            str(output_path),
+                        ],
+                        stdout=stdout,
+                        stderr=stderr,
+                        authority_reader=fixture.reader,
+                        repository_root=fixture.root,
+                    )
+
+                    self.assertEqual(exit_code, expected_exit_code)
+                    if expected_exit_code == 0:
+                        self.assertTrue(output_path.is_file())
+                    else:
+                        self.assertFalse(output_path.exists())
+                        self.assertIn("GateEvidenceError", stderr.getvalue())
+
     def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             report_path = fixture.root / "gate-report.json"
