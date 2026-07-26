@@ -2089,6 +2089,7 @@ def _mirror_authority_outbox(
         _OperationalJournal,
     ):
         raise TypeError("trusted authority and operational journal are required")
+    read_store_pair_descriptor()
     events = authority._read_pending_outbox(limit=limit)
     inserted = 0
     acknowledged = 0
