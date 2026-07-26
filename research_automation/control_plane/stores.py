@@ -732,7 +732,9 @@ class _AuthorityStore:
         if type(limit) is not int or not 1 <= limit <= 1_000:
             raise ValueError("outbox limit must be between 1 and 1000")
 
-        def read(connection: sqlite3.Connection) -> tuple[AuthorityOutboxEvent, ...]:
+        def read(
+            connection: sqlite3.Connection,
+        ) -> tuple[AuthorityOutboxEvent, ...]:
             rows = connection.execute(
                 """
                 SELECT sequence, event_id, event_type, aggregate_id,
@@ -744,18 +746,41 @@ class _AuthorityStore:
                 """,
                 (limit,),
             ).fetchall()
-            return tuple(
-                AuthorityOutboxEvent(
-                    sequence=int(row["sequence"]),
-                    event_id=str(row["event_id"]),
-                    event_type=str(row["event_type"]),
-                    aggregate_id=str(row["aggregate_id"]),
-                    payload_json=str(row["payload_json"]),
-                    payload_sha256=str(row["payload_sha256"]),
-                    created_at=_parse_utc_text(str(row["created_at"])),
+            events: list[AuthorityOutboxEvent] = []
+            for row in rows:
+                payload_json = str(row["payload_json"])
+                payload_sha256 = str(row["payload_sha256"])
+                try:
+                    payload = json.loads(payload_json)
+                    if not isinstance(payload, dict):
+                        raise ValueError("outbox payload must be an object")
+                    canonical_json, canonical_sha256 = _canonical_payload(payload)
+                except (TypeError, ValueError) as error:
+                    raise OutboxConflictError(
+                        "authority outbox payload is invalid"
+                    ) from error
+                if (
+                    canonical_json != payload_json
+                    or not hmac.compare_digest(
+                        canonical_sha256,
+                        payload_sha256,
+                    )
+                ):
+                    raise OutboxConflictError(
+                        "authority outbox payload integrity mismatch"
+                    )
+                events.append(
+                    AuthorityOutboxEvent(
+                        sequence=int(row["sequence"]),
+                        event_id=str(row["event_id"]),
+                        event_type=str(row["event_type"]),
+                        aggregate_id=str(row["aggregate_id"]),
+                        payload_json=payload_json,
+                        payload_sha256=payload_sha256,
+                        created_at=_parse_utc_text(str(row["created_at"])),
+                    )
                 )
-                for row in rows
-            )
+            return tuple(events)
 
         return _SqliteUnitOfWork(_authority_spec())._read(read)
 

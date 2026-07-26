@@ -530,6 +530,57 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 self.assertEqual(reader.pending_outbox_count(), 1)
 
+    def test_tampered_outbox_payload_is_not_mirrored(self) -> None:
+        now = datetime(2026, 7, 26, 3, 30, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-outbox-integrity")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                journal = stores_module._OperationalJournal(clock=lambda: now)
+                authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                tamper = sqlite3.connect(authority_path)
+                try:
+                    tamper.execute(
+                        """
+                        UPDATE authority_outbox
+                        SET payload_json = payload_json || 'tampered'
+                        """
+                    )
+                    tamper.commit()
+                finally:
+                    tamper.close()
+
+                with self.assertRaises(stores_module.OutboxConflictError):
+                    stores_module._mirror_authority_outbox(
+                        authority,
+                        journal,
+                        limit=10,
+                    )
+
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 1)
+                self.assertEqual(stores_module.OperationalReader().event_count(), 0)
+
 
 if __name__ == "__main__":
     unittest.main()
