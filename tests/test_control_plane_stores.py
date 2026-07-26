@@ -899,6 +899,82 @@ class TrustedBootstrapTests(unittest.TestCase):
                     "ISSUED",
                 )
 
+    def test_task_ticket_finishes_exactly_once_through_a_lease(self) -> None:
+        now = [datetime(2026, 7, 26, 6, 30, tzinfo=timezone.utc)]
+        actor = Actor("operator", "human", "invocation-task-finish")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        task_spec = {
+            "task_id": "P0R2-T1-TASK-FINISH",
+            "objective": "Prove one terminal task transition.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-task-finish-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/finish.json",
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_automation/control_plane/stores.py"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
+            "baseline_sha256": "e" * 64,
+            "input_evidence_refs": [],
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now[0])
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now[0] + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                ticket = authority._issue_task_ticket(grant, task_spec)
+                lease = authority._begin_task(ticket)
+                now[0] += timedelta(minutes=1)
+                snapshot = authority._finish_task(
+                    lease,
+                    outcome="SUCCEEDED",
+                    evidence_ref="evidence/task-finish.json",
+                )
+
+                with self.assertRaises(stores_module.TaskTicketStateError):
+                    authority._finish_task(
+                        lease,
+                        outcome="SUCCEEDED",
+                        evidence_ref="evidence/task-finish.json",
+                    )
+
+                self.assertEqual(snapshot.state, "SUCCEEDED")
+                self.assertEqual(snapshot.ticket_id, ticket.ticket_id)
+                self.assertEqual(
+                    AuthorityReader().task_ticket_state(ticket.ticket_id),
+                    "SUCCEEDED",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

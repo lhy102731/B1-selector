@@ -108,6 +108,8 @@ _AUTHORITY_SCHEMA = (
         task_spec_payload_json TEXT NOT NULL,
         request_sha256 TEXT NOT NULL,
         secret_sha256 TEXT NOT NULL,
+        lease_id TEXT,
+        lease_secret_sha256 TEXT,
         state TEXT NOT NULL CHECK(
             state IN ('ISSUED', 'IN_PROGRESS', 'SUCCEEDED', 'FAILED', 'IN_DOUBT')
         ),
@@ -201,6 +203,10 @@ class TaskTicketError(StoreError):
 
 class TaskTicketIdempotencyError(TaskTicketError):
     """Raised when one idempotency key is reused for different semantics."""
+
+
+class TaskTicketStateError(TaskTicketError):
+    """Raised when a ticket transition does not match its expected state."""
 
 
 class _BearerSecret:
@@ -363,6 +369,29 @@ class TaskAuthorityTicket:
     actor: Actor
     identity: AuthorityIdentity
     _bearer_secret: _BearerSecret = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskExecutionLease:
+    lease_id: str
+    ticket_id: str
+    grant_id: str
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    task_id: str
+    actor: Actor
+    identity: AuthorityIdentity
+    _bearer_secret: _BearerSecret = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskTicketSnapshot:
+    ticket_id: str
+    state: str
+    evidence_ref: str
+    started_at: datetime
+    completed_at: datetime
 
 
 @dataclass(frozen=True)
@@ -1178,6 +1207,238 @@ class _AuthorityStore:
             _bearer_secret=_BearerSecret(ticket_secret_value),
         )
 
+    @staticmethod
+    def _require_task_ticket(
+        connection: sqlite3.Connection,
+        ticket: TaskAuthorityTicket,
+    ) -> sqlite3.Row:
+        if not isinstance(ticket, TaskAuthorityTicket):
+            raise TaskTicketError("task ticket capability is invalid")
+        row = connection.execute(
+            """
+            SELECT ticket.*,
+                   grant.authorization_ref AS grant_authorization_ref,
+                   grant.actor_id AS grant_actor_id,
+                   grant.actor_type AS grant_actor_type,
+                   grant.invocation_id AS grant_invocation_id,
+                   grant.plan_hash AS grant_plan_hash,
+                   grant.scope_hash AS grant_scope_hash,
+                   grant.instruction_policy_hash AS grant_instruction_policy_hash,
+                   grant.state AS grant_state
+            FROM task_tickets_v2 AS ticket
+            JOIN phase_grants_v2 AS grant ON grant.grant_id = ticket.grant_id
+            WHERE ticket.ticket_id = ?
+            """,
+            (ticket.ticket_id,),
+        ).fetchone()
+        supplied_secret_sha256 = hashlib.sha256(
+            ticket._bearer_secret._reveal_for_authority_check().encode("utf-8")
+        ).hexdigest()
+        if row is None or row["grant_state"] != "ACTIVE":
+            raise TaskTicketError("task ticket is unavailable")
+        stored_binding = (
+            row["grant_id"],
+            row["grant_authorization_ref"],
+            row["phase"],
+            row["attempt_id"],
+            row["task_id"],
+            row["idempotency_key"],
+            row["task_spec_ref"],
+            row["task_spec_sha256"],
+            row["grant_actor_id"],
+            row["grant_actor_type"],
+            row["grant_invocation_id"],
+            row["grant_plan_hash"],
+            row["grant_scope_hash"],
+            row["grant_instruction_policy_hash"],
+        )
+        supplied_binding = (
+            ticket.grant_id,
+            ticket.authorization_ref,
+            ticket.phase.value,
+            ticket.attempt_id,
+            ticket.task_id,
+            ticket.idempotency_key,
+            ticket.task_spec_ref,
+            ticket.task_spec_sha256,
+            ticket.actor.actor_id,
+            ticket.actor.actor_type,
+            ticket.actor.invocation_id,
+            ticket.identity.plan_hash,
+            ticket.identity.scope_hash,
+            ticket.identity.instruction_policy_hash,
+        )
+        if stored_binding != supplied_binding or not hmac.compare_digest(
+            str(row["secret_sha256"]),
+            supplied_secret_sha256,
+        ):
+            raise TaskTicketError("task ticket capability is invalid")
+        return row
+
+    def _begin_task(self, ticket: TaskAuthorityTicket) -> TaskExecutionLease:
+        now = self._now()
+        lease_id = f"lease_{secrets.token_hex(16)}"
+        lease_secret_value = secrets.token_urlsafe(32)
+        lease_secret_sha256 = hashlib.sha256(
+            lease_secret_value.encode("utf-8")
+        ).hexdigest()
+
+        def begin(connection: sqlite3.Connection) -> None:
+            row = self._require_task_ticket(connection, ticket)
+            if row["state"] != "ISSUED":
+                raise TaskTicketStateError("task ticket is not ISSUED")
+            update = connection.execute(
+                """
+                UPDATE task_tickets_v2
+                SET state = 'IN_PROGRESS', started_at = ?, lease_id = ?,
+                    lease_secret_sha256 = ?
+                WHERE ticket_id = ? AND state = 'ISSUED'
+                """,
+                (
+                    _utc_text(now),
+                    lease_id,
+                    lease_secret_sha256,
+                    ticket.ticket_id,
+                ),
+            )
+            if update.rowcount != 1:
+                raise TaskTicketStateError("task begin lost a concurrent race")
+            _insert_authority_outbox(
+                connection,
+                event_type="TASK_STARTED",
+                aggregate_id=ticket.ticket_id,
+                payload={
+                    "ticket_id": ticket.ticket_id,
+                    "lease_id": lease_id,
+                    "task_id": ticket.task_id,
+                    "attempt_id": ticket.attempt_id,
+                    "started_at": _utc_text(now),
+                },
+                created_at=now,
+            )
+
+        _SqliteUnitOfWork(_authority_spec())._write(begin)
+        return TaskExecutionLease(
+            lease_id=lease_id,
+            ticket_id=ticket.ticket_id,
+            grant_id=ticket.grant_id,
+            authorization_ref=ticket.authorization_ref,
+            phase=ticket.phase,
+            attempt_id=ticket.attempt_id,
+            task_id=ticket.task_id,
+            actor=ticket.actor,
+            identity=ticket.identity,
+            _bearer_secret=_BearerSecret(lease_secret_value),
+        )
+
+    def _finish_task(
+        self,
+        lease: TaskExecutionLease,
+        *,
+        outcome: str,
+        evidence_ref: str,
+    ) -> TaskTicketSnapshot:
+        if not isinstance(lease, TaskExecutionLease):
+            raise TaskTicketError("task execution lease is invalid")
+        terminal_state = _require_nonempty(outcome, "outcome").upper()
+        if terminal_state not in {"SUCCEEDED", "FAILED", "IN_DOUBT"}:
+            raise TaskTicketError("task outcome is invalid")
+        evidence = _require_nonempty(evidence_ref, "evidence_ref")
+        now = self._now()
+        lease_secret_sha256 = hashlib.sha256(
+            lease._bearer_secret._reveal_for_authority_check().encode("utf-8")
+        ).hexdigest()
+
+        def finish(connection: sqlite3.Connection) -> datetime:
+            row = connection.execute(
+                """
+                SELECT ticket.*,
+                       grant.authorization_ref AS grant_authorization_ref,
+                       grant.actor_id AS grant_actor_id,
+                       grant.actor_type AS grant_actor_type,
+                       grant.invocation_id AS grant_invocation_id,
+                       grant.plan_hash AS grant_plan_hash,
+                       grant.scope_hash AS grant_scope_hash,
+                       grant.instruction_policy_hash AS grant_instruction_policy_hash,
+                       grant.state AS grant_state
+                FROM task_tickets_v2 AS ticket
+                JOIN phase_grants_v2 AS grant ON grant.grant_id = ticket.grant_id
+                WHERE ticket.ticket_id = ?
+                """,
+                (lease.ticket_id,),
+            ).fetchone()
+            if row is None or row["state"] != "IN_PROGRESS":
+                raise TaskTicketStateError("task ticket is not IN_PROGRESS")
+            stored_binding = (
+                row["lease_id"],
+                row["grant_id"],
+                row["grant_authorization_ref"],
+                row["phase"],
+                row["attempt_id"],
+                row["task_id"],
+                row["grant_actor_id"],
+                row["grant_actor_type"],
+                row["grant_invocation_id"],
+                row["grant_plan_hash"],
+                row["grant_scope_hash"],
+                row["grant_instruction_policy_hash"],
+                row["grant_state"],
+            )
+            supplied_binding = (
+                lease.lease_id,
+                lease.grant_id,
+                lease.authorization_ref,
+                lease.phase.value,
+                lease.attempt_id,
+                lease.task_id,
+                lease.actor.actor_id,
+                lease.actor.actor_type,
+                lease.actor.invocation_id,
+                lease.identity.plan_hash,
+                lease.identity.scope_hash,
+                lease.identity.instruction_policy_hash,
+                "ACTIVE",
+            )
+            if stored_binding != supplied_binding or not hmac.compare_digest(
+                str(row["lease_secret_sha256"]),
+                lease_secret_sha256,
+            ):
+                raise TaskTicketError("task execution lease is invalid")
+            update = connection.execute(
+                """
+                UPDATE task_tickets_v2
+                SET state = ?, completed_at = ?, evidence_ref = ?
+                WHERE ticket_id = ? AND state = 'IN_PROGRESS'
+                """,
+                (terminal_state, _utc_text(now), evidence, lease.ticket_id),
+            )
+            if update.rowcount != 1:
+                raise TaskTicketStateError("task finish lost a concurrent race")
+            _insert_authority_outbox(
+                connection,
+                event_type=f"TASK_{terminal_state}",
+                aggregate_id=lease.ticket_id,
+                payload={
+                    "ticket_id": lease.ticket_id,
+                    "task_id": lease.task_id,
+                    "attempt_id": lease.attempt_id,
+                    "state": terminal_state,
+                    "evidence_ref": evidence,
+                    "completed_at": _utc_text(now),
+                },
+                created_at=now,
+            )
+            return _parse_utc_text(str(row["started_at"]))
+
+        started_at = _SqliteUnitOfWork(_authority_spec())._write(finish)
+        return TaskTicketSnapshot(
+            ticket_id=lease.ticket_id,
+            state=terminal_state,
+            evidence_ref=evidence,
+            started_at=started_at,
+            completed_at=now,
+        )
+
     def claim_authorization(
         self,
         envelope: AuthorizationEnvelope,
@@ -1495,7 +1756,10 @@ __all__ = [
     "StorePairDescriptor",
     "StoreIdentity",
     "TaskAuthorityTicket",
+    "TaskExecutionLease",
+    "TaskTicketSnapshot",
     "TaskTicketError",
     "TaskTicketIdempotencyError",
+    "TaskTicketStateError",
     "read_store_pair_descriptor",
 ]
