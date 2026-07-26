@@ -588,6 +588,57 @@ class ExecutionSinkTests(unittest.TestCase):
             self.assertEqual(calls, [["git", "apply", "--check", str(audit_path)]])
             self.assertEqual(target_path.read_text(encoding="utf-8"), "before\n")
 
+    def test_patch_traversal_is_rejected_before_audit_write(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        with lease_tests._live_lease(
+            with_intent=True,
+            intent_kind="patch",
+        ) as (root, _, _, lease, intent_info):
+            workspace = Path(str(intent_info["workspace"]))
+            target_path = Path(str(intent_info["target_path"]))
+            audit_path = Path(str(intent_info["audit_path"]))
+            calls: list[list[str]] = []
+
+            def runner(argv: list[str], **kwargs: object) -> object:
+                calls.append(list(argv))
+                return SimpleNamespace(returncode=0)
+
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:patch",
+                effect=SideEffect.GIT_MUTATION,
+                operation="PATCH_APPLY",
+                argv=("git", "apply", str(audit_path)),
+                cwd=str(workspace),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedPatchApplier.apply",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(target_path), str(audit_path)),
+            )
+            sink = AuthorizedPatchApplier(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            with self.assertRaises(ExecutionAuthorizationError):
+                sink.apply(
+                    lease,
+                    invocation,
+                    "--- a/../outside.py\n"
+                    "+++ b/../outside.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-before\n"
+                    "+after\n",
+                    audit_path=audit_path,
+                )
+
+            self.assertFalse(audit_path.exists())
+            self.assertEqual(calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()
