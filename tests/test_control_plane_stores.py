@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.stores import (
+    StorePairDescriptor,
     StoreConfigurationError,
+    read_store_pair_descriptor,
     trusted_bootstrap,
 )
 
@@ -66,6 +68,29 @@ class TrustedBootstrapTests(unittest.TestCase):
             self.assertFalse(os.path.samefile(authority_path, operational_path))
             self.assertGreater(authority_path.stat().st_size, 0)
             self.assertGreater(operational_path.stat().st_size, 0)
+
+    def test_bootstrapped_stores_share_one_random_pair_identity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                receipt = trusted_bootstrap()
+                descriptor = read_store_pair_descriptor()
+
+            self.assertIsInstance(descriptor, StorePairDescriptor)
+            self.assertEqual(descriptor.installation_id, receipt.installation_id)
+            self.assertEqual(descriptor.authority_kind, "AUTHORITY_STORE")
+            self.assertEqual(
+                descriptor.operational_kind,
+                "OPERATIONAL_JOURNAL",
+            )
+            self.assertEqual(len(descriptor.installation_id), 64)
 
 
 if __name__ == "__main__":

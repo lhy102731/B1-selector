@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import secrets
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -43,13 +44,29 @@ class StoreBootstrapReceipt:
 
     authority_path: Path
     operational_path: Path
+    installation_id: str
+
+
+@dataclass(frozen=True)
+class StorePairDescriptor:
+    """Narrow read-only view of a provisioned store pair."""
+
+    installation_id: str
+    authority_kind: str
+    operational_kind: str
 
 
 def _path_identity(path: str | Path) -> str:
     return os.path.normcase(str(Path(path).resolve(strict=False)))
 
 
-def _provision_store(path: Path, *, owner: str, metadata_table: str) -> None:
+def _provision_store(
+    path: Path,
+    *,
+    store_kind: str,
+    metadata_table: str,
+    installation_id: str,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, isolation_level=None)
     try:
@@ -64,7 +81,11 @@ def _provision_store(path: Path, *, owner: str, metadata_table: str) -> None:
         )
         connection.executemany(
             f"INSERT INTO {metadata_table}(key, value) VALUES (?, ?)",
-            (("store_owner", owner), ("schema_version", "1")),
+            (
+                ("installation_id", installation_id),
+                ("schema_version", "1"),
+                ("store_kind", store_kind),
+            ),
         )
         connection.execute("PRAGMA user_version = 1")
         connection.commit()
@@ -88,18 +109,21 @@ def _trusted_bootstrap_at_paths(
     if resolved_authority.exists() or resolved_operational.exists():
         raise StoreBootstrapError("control-plane stores are already provisioned")
 
+    installation_id = secrets.token_hex(32)
     created: list[Path] = []
     try:
         _provision_store(
             resolved_authority,
-            owner="AUTHORITY_STORE",
+            store_kind="AUTHORITY_STORE",
             metadata_table="authority_meta",
+            installation_id=installation_id,
         )
         created.append(resolved_authority)
         _provision_store(
             resolved_operational,
-            owner="OPERATIONAL_JOURNAL",
+            store_kind="OPERATIONAL_JOURNAL",
             metadata_table="operational_meta",
+            installation_id=installation_id,
         )
         created.append(resolved_operational)
     except (OSError, sqlite3.DatabaseError) as error:
@@ -114,6 +138,7 @@ def _trusted_bootstrap_at_paths(
     return StoreBootstrapReceipt(
         authority_path=resolved_authority,
         operational_path=resolved_operational,
+        installation_id=installation_id,
     )
 
 
@@ -126,10 +151,58 @@ def trusted_bootstrap() -> StoreBootstrapReceipt:
     )
 
 
+def _read_store_metadata(path: Path, metadata_table: str) -> dict[str, str]:
+    database_uri = path.resolve(strict=False).as_uri()
+    try:
+        connection = sqlite3.connect(
+            f"{database_uri}?mode=ro",
+            uri=True,
+            isolation_level=None,
+        )
+        try:
+            return {
+                str(key): str(value)
+                for key, value in connection.execute(
+                    f"SELECT key, value FROM {metadata_table}"
+                )
+            }
+        finally:
+            connection.close()
+    except (OSError, ValueError, sqlite3.DatabaseError) as error:
+        raise StoreBootstrapError("control-plane store pair is unavailable") from error
+
+
+def read_store_pair_descriptor() -> StorePairDescriptor:
+    """Read only the fixed pair identity; never return a SQL connection."""
+
+    authority = _read_store_metadata(_AUTHORITY_STORE_PATH, "authority_meta")
+    operational = _read_store_metadata(
+        _OPERATIONAL_STORE_PATH,
+        "operational_meta",
+    )
+    installation_id = authority.get("installation_id")
+    if (
+        not installation_id
+        or operational.get("installation_id") != installation_id
+        or authority.get("store_kind") != "AUTHORITY_STORE"
+        or operational.get("store_kind") != "OPERATIONAL_JOURNAL"
+        or authority.get("schema_version") != "1"
+        or operational.get("schema_version") != "1"
+    ):
+        raise StoreBootstrapError("control-plane store pair identity mismatch")
+    return StorePairDescriptor(
+        installation_id=installation_id,
+        authority_kind=authority["store_kind"],
+        operational_kind=operational["store_kind"],
+    )
+
+
 __all__ = [
     "StoreBootstrapError",
     "StoreBootstrapReceipt",
     "StoreConfigurationError",
     "StoreError",
+    "StorePairDescriptor",
+    "read_store_pair_descriptor",
     "trusted_bootstrap",
 ]
