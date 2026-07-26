@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from .contracts import Phase, canonical_json
+from .stores import AuthorityReader
 
 
 GATE_REPORT_V1 = "control_plane.gate_report.v1"
@@ -58,6 +59,10 @@ class GateBuildError(GateError):
 
 class GateValidationError(GateError):
     """Raised when a GateReport is malformed or internally inconsistent."""
+
+
+class GateAuthorityMismatchError(GateError):
+    """Raised when a gate report disagrees with current trusted authority."""
 
 
 def _require_nonempty(value: object, field_name: str) -> str:
@@ -293,16 +298,23 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
         "authority_snapshot",
         frozenset(
             {
+                "active_grant_ids",
                 "open_ticket_ids",
+                "succeeded_ticket_ids",
                 "failed_ticket_ids",
                 "in_doubt_ticket_ids",
                 "pending_outbox_count",
             }
         ),
     )
+    _require_string_array(
+        authority["active_grant_ids"],
+        "authority_snapshot.active_grant_ids",
+    )
     all_ticket_ids: list[str] = []
     for field_name in (
         "open_ticket_ids",
+        "succeeded_ticket_ids",
         "failed_ticket_ids",
         "in_doubt_ticket_ids",
     ):
@@ -424,11 +436,37 @@ class PhaseGateBuilder:
         return report
 
 
+class PhaseGateVerifier:
+    """Verify report integrity against a fresh consistent authority snapshot."""
+
+    __slots__ = ("_authority_reader",)
+
+    def __init__(
+        self,
+        *,
+        authority_reader: AuthorityReader | None = None,
+    ) -> None:
+        self._authority_reader = authority_reader or AuthorityReader()
+
+    def verify(self, report: Mapping[str, object]) -> None:
+        validate_gate_report(report)
+        actual = self._authority_reader.phase_gate_snapshot(
+            Phase(str(report["phase"])),
+            str(report["attempt_id"]),
+        )
+        if report["authority_snapshot"] != actual.to_report_dict():
+            raise GateAuthorityMismatchError(
+                "gate authority snapshot does not match current authority"
+            )
+
+
 __all__ = [
+    "GateAuthorityMismatchError",
     "GateBuildError",
     "GateError",
     "GateValidationError",
     "PhaseGateBuilder",
+    "PhaseGateVerifier",
     "gate_report_sha256",
     "validate_gate_report",
 ]

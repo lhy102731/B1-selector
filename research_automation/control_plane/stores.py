@@ -445,6 +445,30 @@ class TaskTicketSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class PhaseGateAuthoritySnapshot:
+    """One consistent authority view used to verify a phase gate."""
+
+    phase: Phase
+    attempt_id: str
+    active_grant_ids: tuple[str, ...]
+    open_ticket_ids: tuple[str, ...]
+    succeeded_ticket_ids: tuple[str, ...]
+    failed_ticket_ids: tuple[str, ...]
+    in_doubt_ticket_ids: tuple[str, ...]
+    pending_outbox_count: int
+
+    def to_report_dict(self) -> dict[str, object]:
+        return {
+            "active_grant_ids": list(self.active_grant_ids),
+            "open_ticket_ids": list(self.open_ticket_ids),
+            "succeeded_ticket_ids": list(self.succeeded_ticket_ids),
+            "failed_ticket_ids": list(self.failed_ticket_ids),
+            "in_doubt_ticket_ids": list(self.in_doubt_ticket_ids),
+            "pending_outbox_count": self.pending_outbox_count,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class TrustedReceiptAttestation:
     ticket_id: str
     receipt_kind: str
@@ -789,6 +813,74 @@ class AuthorityReader:
                 ).fetchone()[0]
             )
         )
+
+    def phase_gate_snapshot(
+        self,
+        phase: Phase,
+        attempt_id: str,
+    ) -> PhaseGateAuthoritySnapshot:
+        if not isinstance(phase, Phase):
+            raise ValueError("phase must be a Phase")
+        expected_attempt_id = _require_nonempty(attempt_id, "attempt_id")
+
+        def read_snapshot(
+            connection: sqlite3.Connection,
+        ) -> PhaseGateAuthoritySnapshot:
+            active_grant_ids = tuple(
+                str(row["grant_id"])
+                for row in connection.execute(
+                    """
+                    SELECT grant_id FROM phase_grants_v2
+                    WHERE phase = ? AND attempt_id = ? AND state = 'ACTIVE'
+                    ORDER BY grant_id
+                    """,
+                    (phase.value, expected_attempt_id),
+                )
+            )
+            ticket_ids_by_state: dict[str, list[str]] = {
+                "OPEN": [],
+                "SUCCEEDED": [],
+                "FAILED": [],
+                "IN_DOUBT": [],
+            }
+            for row in connection.execute(
+                """
+                SELECT ticket_id, state FROM task_tickets_v2
+                WHERE phase = ? AND attempt_id = ?
+                ORDER BY ticket_id
+                """,
+                (phase.value, expected_attempt_id),
+            ):
+                state = str(row["state"])
+                if state in {"ISSUED", "IN_PROGRESS"}:
+                    bucket = "OPEN"
+                elif state in {"SUCCEEDED", "FAILED", "IN_DOUBT"}:
+                    bucket = state
+                else:
+                    raise TaskTicketStateError(
+                        "task ticket has an unsupported gate state"
+                    )
+                ticket_ids_by_state[bucket].append(str(row["ticket_id"]))
+            pending_outbox_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM authority_outbox
+                    WHERE mirrored_at IS NULL
+                    """
+                ).fetchone()[0]
+            )
+            return PhaseGateAuthoritySnapshot(
+                phase=phase,
+                attempt_id=expected_attempt_id,
+                active_grant_ids=active_grant_ids,
+                open_ticket_ids=tuple(ticket_ids_by_state["OPEN"]),
+                succeeded_ticket_ids=tuple(ticket_ids_by_state["SUCCEEDED"]),
+                failed_ticket_ids=tuple(ticket_ids_by_state["FAILED"]),
+                in_doubt_ticket_ids=tuple(ticket_ids_by_state["IN_DOUBT"]),
+                pending_outbox_count=pending_outbox_count,
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read_snapshot)
 
     def authorization_state(self, authorization_ref: str) -> str | None:
         _require_nonempty(authorization_ref, "authorization_ref")
@@ -2925,6 +3017,7 @@ __all__ = [
     "OutboxConflictError",
     "OutboxMirrorResult",
     "PendingOutboxError",
+    "PhaseGateAuthoritySnapshot",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",
