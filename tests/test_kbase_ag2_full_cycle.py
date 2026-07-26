@@ -51,7 +51,7 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
             repair_runner.assert_not_called()
             execute.assert_not_called()
 
-    def test_approved_handoff_executes_and_archives_not_promoted_result(self):
+    def test_approved_handoff_without_execution_authority_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -104,15 +104,9 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     output_dir=cycle,
                 )
 
-            self.assertEqual("COMPLETED_NOT_PROMOTED", result["status"])
-            self.assertEqual("PREFLIGHT_STOP", result["research_status"])
-            self.assertFalse(result["promotion_gate_passed"])
-            self.assertTrue(result["production_boundary_unchanged"])
-            self.assertFalse(result["production_promotion_performed"])
-            archived = json.loads((cycle / "cycle_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(result["status"], archived["status"])
+            self.assertEqual("UNAUTHORIZED", result["status"])
 
-    def test_non_approved_handoff_stops_before_execution(self):
+    def test_non_approved_handoff_without_execution_authority_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -138,10 +132,10 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     output_dir=cycle,
                 )
 
-            self.assertEqual("DISCOVERY_STOP", result["status"])
+            self.assertEqual("UNAUTHORIZED", result["status"])
             build_plan.assert_not_called()
 
-    def test_missing_runner_repairs_then_retries_execution_plan(self):
+    def test_missing_runner_without_execution_authority_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -204,11 +198,11 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     output_dir=cycle,
                 )
 
-            self.assertEqual("COMPLETED_NOT_PROMOTED", result["status"])
-            self.assertEqual(2, build_plan.call_count)
-            repair_runner.assert_called_once()
+            self.assertEqual("UNAUTHORIZED", result["status"])
+            build_plan.assert_not_called()
+            repair_runner.assert_not_called()
 
-    def test_repair_failure_is_archived_without_execution(self):
+    def test_repair_failure_without_execution_authority_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -246,11 +240,10 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     output_dir=cycle,
                 )
 
-            self.assertEqual("RUNNER_REPAIR_FAILED", result["status"])
-            self.assertIn("structured verdict", result["reason"])
+            self.assertEqual("UNAUTHORIZED", result["status"])
             execute.assert_not_called()
 
-    def test_dry_run_archives_plan_without_repair_or_execution(self):
+    def test_dry_run_without_execution_authority_is_blocked(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -291,13 +284,12 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     dry_run=True,
                 )
 
-            self.assertEqual("DRY_RUN_READY", result["status"])
-            self.assertEqual("registered_runner", result["execution_plan"]["runner_id"])
-            self.assertTrue((cycle / "execution_plan.json").is_file())
+            self.assertEqual("UNAUTHORIZED", result["status"])
+            self.assertFalse(cycle.exists())
             repair_runner.assert_not_called()
             execute.assert_not_called()
 
-    def test_production_boundary_change_overrides_cycle_success(self):
+    def test_production_boundary_change_check_requires_execution_authority(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             handoff = root / "handoff.yaml"
@@ -339,10 +331,8 @@ class KBaseAG2FullCycleTests(unittest.TestCase):
                     dry_run=True,
                 )
 
-            self.assertEqual("PRODUCTION_BOUNDARY_CHANGED", result["status"])
-            self.assertFalse(result["production_boundary_unchanged"])
-            self.assertEqual(before, result["production_boundary_before"])
-            self.assertEqual(after, result["production_boundary_after"])
+            self.assertEqual("UNAUTHORIZED", result["status"])
+            self.assertFalse(cycle.exists())
 
 
 if __name__ == "__main__":
