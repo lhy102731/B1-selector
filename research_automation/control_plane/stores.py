@@ -8,6 +8,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 import os
 from pathlib import Path
 import re
@@ -15,7 +16,11 @@ import secrets
 from typing import Callable
 
 from .contracts import Actor, Phase, SideEffect
-from .sqlite_uow import _SqliteUnitOfWork, _StoreSpec
+from .sqlite_uow import (
+    _SqliteUnitOfWork,
+    _StoreSpec,
+    _schema_sha256_for_statements,
+)
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -319,6 +324,38 @@ def _path_identity(path: str | Path) -> str:
     return os.path.normcase(str(Path(path).resolve(strict=False)))
 
 
+def _metadata_schema_statement(metadata_table: str) -> str:
+    return f"""
+        CREATE TABLE {metadata_table} (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        ) WITHOUT ROWID
+        """
+
+
+def _store_schema_statements(
+    *,
+    store_kind: str,
+    metadata_table: str,
+) -> tuple[str, ...]:
+    domain_schema = (
+        _AUTHORITY_SCHEMA
+        if store_kind == "AUTHORITY_STORE"
+        else _OPERATIONAL_SCHEMA
+    )
+    return (_metadata_schema_statement(metadata_table),) + domain_schema
+
+
+@lru_cache(maxsize=2)
+def _expected_schema_sha256(store_kind: str, metadata_table: str) -> str:
+    return _schema_sha256_for_statements(
+        _store_schema_statements(
+            store_kind=store_kind,
+            metadata_table=metadata_table,
+        )
+    )
+
+
 def _provision_store(
     path: Path,
     *,
@@ -330,14 +367,12 @@ def _provision_store(
     connection = sqlite3.connect(path, isolation_level=None)
     try:
         connection.execute("BEGIN IMMEDIATE")
-        connection.execute(
-            f"""
-            CREATE TABLE {metadata_table} (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            ) WITHOUT ROWID
-            """
+        schema = _store_schema_statements(
+            store_kind=store_kind,
+            metadata_table=metadata_table,
         )
+        for statement in schema:
+            connection.execute(statement)
         connection.executemany(
             f"INSERT INTO {metadata_table}(key, value) VALUES (?, ?)",
             (
@@ -346,13 +381,6 @@ def _provision_store(
                 ("store_kind", store_kind),
             ),
         )
-        schema = (
-            _AUTHORITY_SCHEMA
-            if store_kind == "AUTHORITY_STORE"
-            else _OPERATIONAL_SCHEMA
-        )
-        for statement in schema:
-            connection.execute(statement)
         connection.execute("PRAGMA user_version = 1")
         connection.commit()
     finally:
@@ -540,14 +568,7 @@ class AuthorityReader:
     __slots__ = ()
 
     def read_identity(self) -> StoreIdentity:
-        return _read_store_identity(
-            _StoreSpec(
-                path=_AUTHORITY_STORE_PATH,
-                store_kind="AUTHORITY_STORE",
-                metadata_table="authority_meta",
-                schema_version=1,
-            )
-        )
+        return _read_store_identity(_authority_spec())
 
 
 class OperationalReader:
@@ -556,14 +577,7 @@ class OperationalReader:
     __slots__ = ()
 
     def read_identity(self) -> StoreIdentity:
-        return _read_store_identity(
-            _StoreSpec(
-                path=_OPERATIONAL_STORE_PATH,
-                store_kind="OPERATIONAL_JOURNAL",
-                metadata_table="operational_meta",
-                schema_version=1,
-            )
-        )
+        return _read_store_identity(_operational_spec())
 
 
 def _authority_spec() -> _StoreSpec:
@@ -572,6 +586,23 @@ def _authority_spec() -> _StoreSpec:
         store_kind="AUTHORITY_STORE",
         metadata_table="authority_meta",
         schema_version=1,
+        expected_schema_sha256=_expected_schema_sha256(
+            "AUTHORITY_STORE",
+            "authority_meta",
+        ),
+    )
+
+
+def _operational_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_OPERATIONAL_STORE_PATH,
+        store_kind="OPERATIONAL_JOURNAL",
+        metadata_table="operational_meta",
+        schema_version=1,
+        expected_schema_sha256=_expected_schema_sha256(
+            "OPERATIONAL_JOURNAL",
+            "operational_meta",
+        ),
     )
 
 

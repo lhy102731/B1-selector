@@ -25,6 +25,7 @@ from research_automation.control_plane.stores import (
     StoreConfigurationError,
     read_store_pair_descriptor,
 )
+from research_automation.control_plane.sqlite_uow import SqliteSchemaError
 
 
 class TrustedBootstrapTests(unittest.TestCase):
@@ -402,6 +403,27 @@ class TrustedBootstrapTests(unittest.TestCase):
                 tuple(root.glob(".*.bootstrap")),
                 (),
             )
+
+    def test_authority_reader_rejects_any_schema_drift(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                drift = sqlite3.connect(authority_path)
+                try:
+                    drift.execute("CREATE TABLE unreviewed_table(value TEXT)")
+                    drift.commit()
+                finally:
+                    drift.close()
+
+                with self.assertRaises(SqliteSchemaError):
+                    AuthorityReader().read_identity()
 
 
 if __name__ == "__main__":

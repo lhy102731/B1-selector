@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +55,7 @@ class _StoreSpec:
     store_kind: str
     metadata_table: str
     schema_version: int
+    expected_schema_sha256: str | None = None
 
     def __post_init__(self) -> None:
         resolved = Path(self.path).resolve(strict=False)
@@ -64,7 +67,52 @@ class _StoreSpec:
             raise ValueError("invalid store schema specification")
         if type(self.schema_version) is not int or self.schema_version < 1:
             raise ValueError("schema_version must be a positive integer")
+        if (
+            self.expected_schema_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.expected_schema_sha256)
+            is None
+        ):
+            raise ValueError("expected_schema_sha256 must be a SHA-256 digest")
         object.__setattr__(self, "path", resolved)
+
+
+def _schema_sha256(connection: sqlite3.Connection) -> str:
+    records = [
+        {
+            "type": str(row[0]),
+            "name": str(row[1]),
+            "table": str(row[2]),
+            "sql": None if row[3] is None else str(row[3]),
+        }
+        for row in connection.execute(
+            """
+            SELECT type, name, tbl_name, sql
+            FROM sqlite_master
+            WHERE name NOT LIKE 'sqlite_%'
+            ORDER BY type, name
+            """
+        )
+    ]
+    canonical = json.dumps(
+        records,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(b"control_plane.sqlite_schema.v1\0" + canonical).hexdigest()
+
+
+def _schema_sha256_for_statements(statements: tuple[str, ...]) -> str:
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        for statement in statements:
+            connection.execute(statement)
+        digest = _schema_sha256(connection)
+        connection.rollback()
+        return digest
+    finally:
+        connection.close()
 
 
 def _sqlite_authorizer(
@@ -162,6 +210,12 @@ class _SqliteUnitOfWork:
             or metadata.get("store_kind") != self._spec.store_kind
         ):
             raise SqliteSchemaError("control-plane store schema identity mismatch")
+        if (
+            self._spec.expected_schema_sha256 is not None
+            and _schema_sha256(connection)
+            != self._spec.expected_schema_sha256
+        ):
+            raise SqliteSchemaError("control-plane store schema structure mismatch")
 
     def _read(
         self,
