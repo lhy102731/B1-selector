@@ -762,6 +762,73 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 self.assertEqual(grant.attempt_id, "p0r2-attempt-001")
 
+    def test_concurrent_authorization_claim_has_one_winner(self) -> None:
+        now = datetime(2026, 7, 26, 5, 30, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-claim-race")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                start = Barrier(2)
+
+                def claim_once():
+                    start.wait(timeout=2)
+                    try:
+                        return (
+                            "SUCCESS",
+                            authority.claim_authorization(
+                                envelope,
+                                expected_phase=Phase.P0,
+                                expected_attempt_id="p0r2-attempt-001",
+                                actor=actor,
+                                identity=identity,
+                            ),
+                        )
+                    except stores_module.AuthorizationReplayError as error:
+                        return ("REPLAY", error)
+
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    results = tuple(executor.map(lambda _index: claim_once(), range(2)))
+
+                self.assertEqual(
+                    sum(status == "SUCCESS" for status, _value in results),
+                    1,
+                    results,
+                )
+                self.assertEqual(
+                    sum(status == "REPLAY" for status, _value in results),
+                    1,
+                    results,
+                )
+                self.assertEqual(
+                    AuthorityReader().authorization_state(
+                        envelope.authorization_ref
+                    ),
+                    "CLAIMED",
+                )
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
