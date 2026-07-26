@@ -217,6 +217,22 @@ _INVENTORY_TOP_LEVEL_FIELDS = frozenset(
         "inventory_payload_sha256",
     }
 )
+_POLICY_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "review_state",
+        "reviewer_id",
+        "review_receipt_sha256",
+        "inventory_payload_sha256",
+        "entries",
+        "entry_count",
+        "policy_payload_sha256",
+    }
+)
 _REQUIRED_IMPORT_SEAM_IDS = frozenset(
     {
         "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run",
@@ -648,11 +664,63 @@ def validate_final_inventory(
     return payload
 
 
+def validate_reviewed_entry_policy(
+    raw: bytes,
+    *,
+    expected_plan_version: str,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_identity: Mapping[str, str],
+    final_inventory: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate an independently reviewed, identity-bound entry policy."""
+    payload = parse_strict_json(raw, artifact_name="reviewed_entry_policy")
+    if set(payload) != _POLICY_TOP_LEVEL_FIELDS:
+        raise ArtifactSemanticError(
+            "reviewed_entry_policy has an invalid top-level contract"
+        )
+    if payload["schema_version"] != "control_plane.entry_policy.v1":
+        raise ArtifactSemanticError("unsupported reviewed entry policy schema")
+    if payload["plan_version"] != expected_plan_version:
+        raise ArtifactSemanticError("reviewed policy plan identity mismatch")
+    if payload["phase"] != expected_phase:
+        raise ArtifactSemanticError("reviewed policy phase mismatch")
+    if payload["attempt_id"] != expected_attempt_id:
+        raise ArtifactSemanticError("reviewed policy attempt mismatch")
+    _validate_identity(payload["identity_binding"], expected=expected_identity)
+    if payload["review_state"] != "APPROVED":
+        raise ArtifactSemanticError("reviewed policy is not APPROVED")
+    reviewer_id = _string(payload["reviewer_id"], "reviewed_policy.reviewer_id")
+    if reviewer_id.casefold() in {"scanner", "automatic", "auto"}:
+        raise ArtifactSemanticError("scanner output cannot self-approve a policy")
+    _sha256(payload["review_receipt_sha256"], "reviewed_policy.review_receipt_sha256")
+    inventory_digest = _sha256(
+        payload["inventory_payload_sha256"],
+        "reviewed_policy.inventory_payload_sha256",
+    )
+    if inventory_digest != final_inventory.get("inventory_payload_sha256"):
+        raise ArtifactSemanticError("reviewed policy is not bound to final inventory")
+    entries = _validate_entry_records(payload["entries"])
+    _exact_nonnegative_int(payload["entry_count"], "reviewed policy entry_count")
+    if payload["entry_count"] != len(entries):
+        raise ArtifactSemanticError("reviewed policy entry_count mismatch")
+    inventory_entries = _validate_entry_records(final_inventory.get("entries"))
+    if entries != inventory_entries:
+        raise ArtifactSemanticError("reviewed policy entries differ from final inventory")
+    payload_without_hash = dict(payload)
+    payload_without_hash["entries"] = entries
+    payload_without_hash.pop("policy_payload_sha256", None)
+    if payload["policy_payload_sha256"] != canonical_sha256(payload_without_hash):
+        raise ArtifactSemanticError("reviewed policy payload hash mismatch")
+    return payload
+
+
 __all__ = [
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
     "parse_strict_json",
     "validate_code_freeze_manifest",
     "validate_final_inventory",
+    "validate_reviewed_entry_policy",
     "validate_implementation_baseline",
 ]

@@ -12,6 +12,7 @@ from research_automation.control_plane.artifact_semantics import (
     validate_code_freeze_manifest,
     validate_final_inventory,
     validate_implementation_baseline,
+    validate_reviewed_entry_policy,
 )
 from research_automation.control_plane.contracts import (
     canonical_json,
@@ -338,6 +339,117 @@ class FinalInventoryTests(unittest.TestCase):
 
             with self.assertRaises(ArtifactSemanticError):
                 self._validate(inventory, freeze)
+
+
+class ReviewedEntryPolicyTests(unittest.TestCase):
+    identity = FinalInventoryTests.identity
+
+    def _artifacts(
+        self,
+        root: Path,
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        helper = FinalInventoryTests()
+        freeze = helper._freeze(root)
+        inventory = helper._inventory(freeze)
+        validate_final_inventory(
+            canonical_json(inventory).encode("utf-8"),
+            expected_plan_version="V3.4.2-P0R2",
+            expected_phase="P0",
+            expected_attempt_id="p0r2-attempt-001",
+            expected_identity=self.identity,
+            freeze_manifest=freeze,
+        )
+        return freeze, inventory
+
+    def _policy(self, inventory: dict[str, object]) -> dict[str, object]:
+        entries = json.loads(canonical_json(inventory["entries"]))
+        payload: dict[str, object] = {
+            "schema_version": "control_plane.entry_policy.v1",
+            "plan_version": "V3.4.2-P0R2",
+            "phase": "P0",
+            "attempt_id": "p0r2-attempt-001",
+            "identity_binding": dict(self.identity),
+            "review_state": "APPROVED",
+            "reviewer_id": "independent-reviewer",
+            "review_receipt_sha256": "e" * 64,
+            "inventory_payload_sha256": inventory[
+                "inventory_payload_sha256"
+            ],
+            "entries": entries,
+            "entry_count": len(entries),
+        }
+        payload["policy_payload_sha256"] = canonical_sha256(payload)
+        return payload
+
+    def _validate(
+        self,
+        policy: dict[str, object],
+        inventory: dict[str, object],
+    ) -> None:
+        validate_reviewed_entry_policy(
+            canonical_json(policy).encode("utf-8"),
+            expected_plan_version="V3.4.2-P0R2",
+            expected_phase="P0",
+            expected_attempt_id="p0r2-attempt-001",
+            expected_identity=self.identity,
+            final_inventory=inventory,
+        )
+
+    def test_valid_reviewed_policy_matches_inventory_exactly(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _, inventory = self._artifacts(Path(tmp))
+            self._validate(self._policy(inventory), inventory)
+
+    def test_scanner_cannot_self_approve_policy(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _, inventory = self._artifacts(Path(tmp))
+            policy = self._policy(inventory)
+            policy["reviewer_id"] = "scanner"
+            policy["policy_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in policy.items()
+                    if key != "policy_payload_sha256"
+                }
+            )
+
+            with self.assertRaises(ArtifactSemanticError):
+                self._validate(policy, inventory)
+
+    def test_reviewed_policy_entry_drift_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _, inventory = self._artifacts(Path(tmp))
+            policy = self._policy(inventory)
+            entries = policy["entries"]
+            self.assertIsInstance(entries, list)
+            entries[0]["trust_state"] = "forged"
+            policy["policy_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in policy.items()
+                    if key != "policy_payload_sha256"
+                }
+            )
+
+            with self.assertRaises(ArtifactSemanticError):
+                self._validate(policy, inventory)
+
+    def test_old_source_tree_policy_contract_is_rejected(self) -> None:
+        old_policy = (
+            ROOT
+            / "research_automation"
+            / "control_plane"
+            / "entry_policy.json"
+        ).read_bytes()
+        with self.assertRaises(ArtifactSemanticError):
+            validate_reviewed_entry_policy(
+                old_policy,
+                expected_plan_version="V3.4.2-P0R2",
+                expected_phase="P0",
+                expected_attempt_id="p0r2-attempt-001",
+                expected_identity=self.identity,
+                final_inventory={"entries": [], "inventory_payload_sha256": "f" * 64},
+            )
 
 if __name__ == "__main__":
     unittest.main()
