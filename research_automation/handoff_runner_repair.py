@@ -31,8 +31,13 @@ from .discovery_execution_bridge import (
     extract_factor_output,
     load_handoff_document,
 )
-from .control_plane.sink_guard import ExecutionInvocation
-from .control_plane.stores import TaskExecutionLease
+from .control_plane.contracts import SideEffect
+from .control_plane.sink_guard import (
+    ExecutionAuthorizationError,
+    ExecutionInvocation,
+    ExecutionSinkGuard,
+)
+from .control_plane.stores import AuthorityReader, TaskExecutionLease
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -533,6 +538,30 @@ def repair_handoff_runner(
             error="execution lease and invocation are required before runner repair",
             logs=["control-plane sink guard: missing execution authority"],
         )
+    if not dry_run:
+        try:
+            reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
+            guard = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root or PROJECT_ROOT,
+            )
+            permit = guard.authorize(lease, invocation)
+            if (
+                permit.operation != "REPAIR"
+                or permit.effect is not SideEffect.RUN_RESEARCH
+            ):
+                raise ExecutionAuthorizationError(
+                    "runner repair requires a RUN_RESEARCH REPAIR intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            return RepairResult(
+                ok=False,
+                status="unauthorized",
+                handoff_path=str(handoff),
+                output_dir=str(out),
+                error=str(error),
+                logs=["control-plane sink guard: execution intent rejected"],
+            )
     out.mkdir(parents=True, exist_ok=True)
     try:
         document = load_handoff_document(handoff)
