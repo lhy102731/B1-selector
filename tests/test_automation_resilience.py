@@ -146,6 +146,20 @@ class BaselineFailFastTests(unittest.TestCase):
 
 
 class OutputOwnershipTests(unittest.TestCase):
+    def test_real_backtest_without_execution_lease_fails_before_subprocess(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            executor = RealBacktestExecutor(project_root=root)
+            with patch("research_automation.experiment_runner.subprocess.run") as run:
+                result = executor.execute(
+                    {"strategy": "B1", "params": {}},
+                    result_dir=root / "result",
+                )
+
+            self.assertFalse(result["success"])
+            self.assertIn("execution lease", result["error"].lower())
+            run.assert_not_called()
+
     def test_failed_run_does_not_archive_or_delete_preexisting_output(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
