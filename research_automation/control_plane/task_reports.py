@@ -60,6 +60,12 @@ _REVIEW_FINDING_FIELDS = frozenset(
 _CHANGED_FILE_FIELDS = frozenset(
     {"path", "change_type", "baseline_sha256", "current_sha256"}
 )
+_EXTERNAL_INVOCATION_FIELDS = frozenset(
+    {"invocation_id", "invocation_ref", "invocation_sha256", "usage"}
+)
+_USAGE_FIELDS = frozenset(
+    {"status", "input_tokens", "output_tokens", "total_tokens"}
+)
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -131,6 +137,14 @@ def _require_exact_int(value: object, field_name: str) -> int:
     if type(value) is not int:
         raise TaskReportValidationError(
             f"{field_name} must be an exact integer"
+        )
+    return value
+
+
+def _require_nonnegative_exact_int(value: object, field_name: str) -> int:
+    if type(value) is not int or value < 0:
+        raise TaskReportValidationError(
+            f"{field_name} must be a nonnegative exact integer"
         )
     return value
 
@@ -581,6 +595,79 @@ def _validate_side_effect_summary(value: object) -> None:
     )
 
 
+def _validate_external_invocations(value: object) -> None:
+    if not isinstance(value, list):
+        raise TaskReportValidationError("external_invocations must be a list")
+    invocation_ids: set[str] = set()
+    for index, invocation in enumerate(value):
+        if not isinstance(invocation, Mapping):
+            raise TaskReportValidationError(
+                f"external_invocations[{index}] must be a mapping"
+            )
+        _require_closed_mapping(
+            invocation,
+            f"external_invocations[{index}]",
+            _EXTERNAL_INVOCATION_FIELDS,
+        )
+        _require_sha256(
+            invocation["invocation_sha256"],
+            f"external_invocations[{index}].invocation_sha256",
+        )
+        _require_repo_relative_posix_file_path(
+            invocation["invocation_ref"],
+            f"external_invocations[{index}].invocation_ref",
+        )
+        invocation_id = _require_non_empty_string(
+            invocation["invocation_id"],
+            f"external_invocations[{index}].invocation_id",
+        )
+        if invocation_id in invocation_ids:
+            raise TaskReportValidationError(
+                "external_invocations must not contain duplicate "
+                "invocation_id values"
+            )
+        invocation_ids.add(invocation_id)
+        usage = _require_closed_mapping(
+            invocation["usage"],
+            f"external_invocations[{index}].usage",
+            _USAGE_FIELDS,
+        )
+        if usage["status"] not in ("REPORTED", "ESTIMATED", "UNKNOWN"):
+            raise TaskReportValidationError(
+                f"external_invocations[{index}].usage.status must be REPORTED, "
+                "ESTIMATED, or UNKNOWN"
+            )
+        token_fields = ("input_tokens", "output_tokens", "total_tokens")
+        if usage["status"] == "UNKNOWN" and any(
+            usage[field_name] is not None for field_name in token_fields
+        ):
+            raise TaskReportValidationError(
+                f"external_invocations[{index}].usage UNKNOWN requires token "
+                "values null"
+            )
+        if usage["status"] in ("REPORTED", "ESTIMATED"):
+            _require_nonnegative_exact_int(
+                usage["total_tokens"],
+                f"external_invocations[{index}].usage.total_tokens",
+            )
+            for field_name in ("input_tokens", "output_tokens"):
+                if usage[field_name] is not None:
+                    _require_nonnegative_exact_int(
+                        usage[field_name],
+                        f"external_invocations[{index}].usage.{field_name}",
+                    )
+            if (
+                usage["input_tokens"] is not None
+                and usage["output_tokens"] is not None
+                and usage["total_tokens"]
+                != usage["input_tokens"] + usage["output_tokens"]
+            ):
+                raise TaskReportValidationError(
+                    f"external_invocations[{index}].usage.total_tokens must "
+                    "equal input_tokens plus output_tokens"
+                )
+
+
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
     review_results = _receipt_results(
@@ -592,6 +679,7 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _validate_scope_file_rules(report)
     _validate_changed_files(report.get("changed_files"))
     _validate_side_effect_summary(report.get("side_effect_summary"))
+    _validate_external_invocations(report.get("external_invocations"))
     claimed_unexpected = _require_unique_string_list(
         report.get("unexpected_changes"),
         "unexpected_changes",

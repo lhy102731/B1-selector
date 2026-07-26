@@ -88,6 +88,19 @@ class TaskReportV2TracerTests(unittest.TestCase):
         report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
         return report
 
+    def _reported_external_invocation(self) -> dict[str, object]:
+        return {
+            "invocation_id": "review-doubao-attempt-001",
+            "invocation_ref": "research_state/control_plane/p0r2/invocations/review-doubao-attempt-001.json",
+            "invocation_sha256": "a" * 64,
+            "usage": {
+                "status": "REPORTED",
+                "input_tokens": 1200,
+                "output_tokens": 300,
+                "total_tokens": 1500,
+            },
+        }
+
     def test_tampering_after_payload_hash_is_rejected(self) -> None:
         report = self._complete_report()
         validate_task_report_v2(report)
@@ -1408,6 +1421,181 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "dependencies must be a list of non-empty strings",
         ):
             validate_task_report_v2(report)
+
+    def test_external_invocations_must_be_an_array(self) -> None:
+        report = self._complete_report()
+        report["external_invocations"] = {}
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "external_invocations must be a list",
+        ):
+            validate_task_report_v2(report)
+
+    def test_external_invocation_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        invocation["caller_note"] = "not part of the invocation contract"
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_external_invocation_requires_a_strict_sha256(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        invocation["invocation_sha256"] = "NOT-A-DIGEST"
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.invocation_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_external_invocation_ref_must_be_repository_relative_posix(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        invocation["invocation_ref"] = "../outside.json"
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.invocation_ref must be a repository-relative POSIX file path",
+        ):
+            validate_task_report_v2(report)
+
+    def test_duplicate_external_invocation_ids_are_rejected(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        report["external_invocations"] = [
+            invocation,
+            copy.deepcopy(invocation),
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "external_invocations must not contain duplicate invocation_id values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_usage_summary_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        usage = invocation["usage"]
+        self.assertIsInstance(usage, dict)
+        usage["fixed_estimate"] = 3000
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.usage contains unknown fields: fixed_estimate",
+        ):
+            validate_task_report_v2(report)
+
+    def test_usage_status_is_closed(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        usage = invocation["usage"]
+        self.assertIsInstance(usage, dict)
+        usage["status"] = "APPROXIMATE"
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.usage\.status must be REPORTED, ESTIMATED, or UNKNOWN",
+        ):
+            validate_task_report_v2(report)
+
+    def test_unknown_usage_requires_all_token_values_null(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        usage = invocation["usage"]
+        self.assertIsInstance(usage, dict)
+        usage["status"] = "UNKNOWN"
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.usage UNKNOWN requires token values null",
+        ):
+            validate_task_report_v2(report)
+
+    def test_known_usage_rejects_bool_as_token_count(self) -> None:
+        for status in ("REPORTED", "ESTIMATED"):
+            with self.subTest(status=status):
+                report = self._complete_report()
+                invocation = self._reported_external_invocation()
+                usage = invocation["usage"]
+                self.assertIsInstance(usage, dict)
+                usage["status"] = status
+                usage["total_tokens"] = False
+                report["external_invocations"] = [invocation]
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    r"external_invocations\[0\]\.usage\.total_tokens must be a nonnegative exact integer",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_known_usage_total_matches_reported_components(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        usage = invocation["usage"]
+        self.assertIsInstance(usage, dict)
+        usage["total_tokens"] = 1499
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.usage\.total_tokens must equal input_tokens plus output_tokens",
+        ):
+            validate_task_report_v2(report)
+
+    def test_unknown_usage_stays_null_without_changing_outcome(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        invocation["usage"] = {
+            "status": "UNKNOWN",
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": None,
+        }
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        validate_task_report_v2(report)
+
+        self.assertEqual(report["outcome"], "PASS")
+
+    def test_known_usage_preserves_total_when_components_are_unavailable(self) -> None:
+        report = self._complete_report()
+        invocation = self._reported_external_invocation()
+        invocation["usage"] = {
+            "status": "REPORTED",
+            "input_tokens": None,
+            "output_tokens": None,
+            "total_tokens": 1500,
+        }
+        report["external_invocations"] = [invocation]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        validate_task_report_v2(report)
 
 
 if __name__ == "__main__":
