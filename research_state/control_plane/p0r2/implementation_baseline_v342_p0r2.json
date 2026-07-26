@@ -3,7 +3,7 @@
   "plan_version": "V3.4.2-P0R2",
   "phase": "P0",
   "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)",
-  "baseline_payload_sha256": "58e98bf64dc9e8aeaa4818ec94a1d632ca66c4a0663fe4687b0611ce42dc1e16",
+  "baseline_payload_sha256": "b05f524e283149276c36e68b4d5312ec36fb7f1012f3ab62c5b4a6d3b524734e",
   "baseline": {
     "attempt_id": "p0r2-attempt-001",
     "git_head": "0b7e0fdeac7060c1ce99999731c116157d1ddfbd",
@@ -48,7 +48,10 @@
       " M tests/test_discovery_handoff_bridge.py",
       " M tests/test_handoff_runner_repair.py",
       " M tests/test_kbase_ag2_full_cycle.py",
-      " M tests/test_control_plane_sink_guards.py"
+      " M tests/test_control_plane_sink_guards.py",
+      " M research_automation/registry_updater.py",
+      " M research_automation/snapshot_updater.py",
+      " M research_automation/handoff_updater.py"
     ],
     "file_state_count": 56,
     "file_states": {
