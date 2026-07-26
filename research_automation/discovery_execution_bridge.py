@@ -375,6 +375,7 @@ def _assert_plan_matches_permit(
     invocation: ExecutionInvocation,
     *,
     permit: object,
+    project_root: Path = PROJECT_ROOT,
 ) -> None:
     """Bind the caller-visible plan fields to the already verified intent.
 
@@ -389,7 +390,7 @@ def _assert_plan_matches_permit(
     if getattr(permit, "argv", None) != invocation.argv:
         raise ExecutionAuthorizationError("execution permit command is invalid")
 
-    project_root = PROJECT_ROOT.resolve(strict=True)
+    project_root = project_root.resolve(strict=True)
     runner_path = _canonical_plan_path(plan.runner_script, field_name="runner_script")
     try:
         declared_runner = (project_root / invocation.runner.source_ref).resolve(strict=True)
@@ -428,8 +429,13 @@ def execute_plan(
     plan: DiscoveryExecutionPlan,
     *,
     dry_run: bool = False,
+    lease: TaskExecutionLease | None = None,
+    invocation: ExecutionInvocation | None = None,
     execution_lease: TaskExecutionLease | None = None,
     execution_invocation: ExecutionInvocation | None = None,
+    authority_reader: AuthorityReader | None = None,
+    repository_root: str | Path | None = None,
+    subprocess_sink=None,
 ) -> subprocess.CompletedProcess | None:
     """Execute one registered discovery plan behind the P0R2 sink boundary.
 
@@ -439,6 +445,12 @@ def execute_plan(
     dry run remains a side-effect-free preview and therefore does not require a
     lease.
     """
+    execution_lease = execution_lease if execution_lease is not None else lease
+    execution_invocation = (
+        execution_invocation
+        if execution_invocation is not None
+        else invocation
+    )
     if dry_run:
         return None
     if execution_lease is None or execution_invocation is None:
@@ -450,10 +462,11 @@ def execute_plan(
     # AuthorizedSubprocess wrapper repeats the check immediately before the
     # subprocess call, covering changes made while the output directory was
     # being prepared.
-    authority_reader = AuthorityReader()
+    root = Path(repository_root or PROJECT_ROOT).resolve(strict=True)
+    authority_reader = authority_reader if authority_reader is not None else AuthorityReader()
     guard = ExecutionSinkGuard(
         authority_reader=authority_reader,
-        repository_root=PROJECT_ROOT,
+        repository_root=root,
     )
     permit = guard.authorize(execution_lease, execution_invocation)
     if (
@@ -467,12 +480,13 @@ def execute_plan(
         plan,
         execution_invocation,
         permit=permit,
+        project_root=root,
     )
 
     output_path = _canonical_plan_path(plan.output_dir, field_name="output_dir")
     output_path.mkdir(parents=True, exist_ok=True)
-    sink = AuthorizedSubprocess(
+    sink = subprocess_sink or AuthorizedSubprocess(
         authority_reader=authority_reader,
-        repository_root=PROJECT_ROOT,
+        repository_root=root,
     )
     return sink.run(execution_lease, execution_invocation)
