@@ -196,6 +196,31 @@ def _execute_with_logs(
         raise ExecutionAuthorizationError("full-cycle command differs from execution intent")
     if invocation.cwd is None or Path(invocation.cwd).resolve() != PROJECT_ROOT.resolve():
         raise ExecutionAuthorizationError("full-cycle cwd differs from execution intent")
+    permit = ExecutionSinkGuard(
+        authority_reader=authority_reader,
+        repository_root=PROJECT_ROOT,
+    ).authorize(lease, invocation)
+    if (
+        permit.operation != "SUBPROCESS"
+        or permit.effect is not SideEffect.START_SUBPROCESS
+    ):
+        raise ExecutionAuthorizationError(
+            "full-cycle runner requires a START_SUBPROCESS intent"
+        )
+    expected_resources = tuple(
+        Path(value).resolve()
+        for value in (
+            plan.runner_script,
+            plan.handoff_path,
+            plan.output_dir,
+            stdout_path,
+            stderr_path,
+        )
+    )
+    if permit.resource_paths != expected_resources:
+        raise ExecutionAuthorizationError(
+            "full-cycle runner resources differ from execution intent"
+        )
 
     def _runner(command, **kwargs):
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
