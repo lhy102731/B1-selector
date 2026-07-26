@@ -755,6 +755,9 @@ class PhaseGateCloser:
             verdict=verdict,
         )
 
+    def close_bytes(self, raw: bytes) -> PhaseGateClosure:
+        return self.close(parse_gate_report_v1_bytes(raw))
+
 
 __all__ = [
     "GateAuthorityMismatchError",

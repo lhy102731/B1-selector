@@ -553,7 +553,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_closer_atomically_records_a_passing_gate(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            closure = fixture.closer.close(fixture.report)
+            closure = fixture.closer.close_bytes(
+                canonical_json(fixture.report).encode("utf-8")
+            )
 
             self.assertEqual(closure.phase, Phase.P0)
             self.assertEqual(closure.attempt_id, "p0r2-attempt-001")
