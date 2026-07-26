@@ -4,7 +4,9 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
+from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.stores import (
     StoreConfigurationError,
     trusted_bootstrap,
@@ -12,6 +14,21 @@ from research_automation.control_plane.stores import (
 
 
 class TrustedBootstrapTests(unittest.TestCase):
+    def test_callers_cannot_select_store_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            attacker_authority = root / "attacker-authority.sqlite3"
+            attacker_operational = root / "attacker-operational.sqlite3"
+
+            with self.assertRaises(TypeError):
+                trusted_bootstrap(
+                    authority_path=attacker_authority,
+                    operational_path=attacker_operational,
+                )
+
+            self.assertFalse(attacker_authority.exists())
+            self.assertFalse(attacker_operational.exists())
+
     def test_same_path_fails_before_a_store_is_created(self) -> None:
         with TemporaryDirectory() as tmp:
             shared_path = Path(tmp) / "control-plane.sqlite3"
@@ -20,10 +37,12 @@ class TrustedBootstrapTests(unittest.TestCase):
                 StoreConfigurationError,
                 "different SQLite files",
             ):
-                trusted_bootstrap(
-                    authority_path=shared_path,
-                    operational_path=shared_path,
-                )
+                with patch.multiple(
+                    stores_module,
+                    _AUTHORITY_STORE_PATH=shared_path,
+                    _OPERATIONAL_STORE_PATH=shared_path,
+                ):
+                    trusted_bootstrap()
 
             self.assertFalse(shared_path.exists())
 
@@ -33,10 +52,12 @@ class TrustedBootstrapTests(unittest.TestCase):
             authority_path = root / "authority" / "authority.sqlite3"
             operational_path = root / "operational" / "operational.sqlite3"
 
-            receipt = trusted_bootstrap(
-                authority_path=authority_path,
-                operational_path=operational_path,
-            )
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                receipt = trusted_bootstrap()
 
             self.assertEqual(receipt.authority_path, authority_path.resolve())
             self.assertEqual(receipt.operational_path, operational_path.resolve())

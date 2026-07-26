@@ -8,6 +8,23 @@ import os
 from pathlib import Path
 
 
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+_AUTHORITY_STORE_PATH = (
+    _REPOSITORY_ROOT
+    / "research_state"
+    / "control_plane"
+    / "authority"
+    / "authority.sqlite3"
+)
+_OPERATIONAL_STORE_PATH = (
+    _REPOSITORY_ROOT
+    / "research_state"
+    / "control_plane"
+    / "operational"
+    / "operational.sqlite3"
+)
+
+
 class StoreError(RuntimeError):
     """Base error for trusted control-plane storage."""
 
@@ -55,12 +72,12 @@ def _provision_store(path: Path, *, owner: str, metadata_table: str) -> None:
         connection.close()
 
 
-def trusted_bootstrap(
+def _trusted_bootstrap_at_paths(
     *,
     authority_path: str | Path,
     operational_path: str | Path,
 ) -> StoreBootstrapReceipt:
-    """Provision the trusted stores after validating their isolation."""
+    """Private test seam for provisioning fixed production locations."""
 
     resolved_authority = Path(authority_path).resolve(strict=False)
     resolved_operational = Path(operational_path).resolve(strict=False)
@@ -97,6 +114,15 @@ def trusted_bootstrap(
     return StoreBootstrapReceipt(
         authority_path=resolved_authority,
         operational_path=resolved_operational,
+    )
+
+
+def trusted_bootstrap() -> StoreBootstrapReceipt:
+    """Provision the two fixed-path stores from a trusted entrypoint."""
+
+    return _trusted_bootstrap_at_paths(
+        authority_path=_AUTHORITY_STORE_PATH,
+        operational_path=_OPERATIONAL_STORE_PATH,
     )
 
 
