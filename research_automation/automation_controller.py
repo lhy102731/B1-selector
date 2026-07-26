@@ -101,6 +101,10 @@ class AutomationController:
             raise ExecutionAuthorizationError(
                 "controller requires a RUN_RESEARCH AUTONOMOUS intent"
             )
+        if self.output_root.resolve() not in permit.resource_paths:
+            raise ExecutionAuthorizationError(
+                "controller output root is not bound by the execution intent"
+            )
 
     def run_from_proposal(self, experiment_id: str, proposal: dict) -> Experiment:
         try:
