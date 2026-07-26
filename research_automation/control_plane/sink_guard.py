@@ -553,6 +553,173 @@ class AuthorizedSubprocess:
         return self._runner(list(permit.argv), **kwargs)
 
 
+class AuthorizedPatchApplier:
+    """Patch sink whose audit write and Git runner are fenced by one lease."""
+
+    def __init__(
+        self,
+        *,
+        authority_reader: AuthorityReader,
+        repository_root: str | Path,
+        runner: Callable[..., object] | None = None,
+    ) -> None:
+        self._guard = ExecutionSinkGuard(
+            authority_reader=authority_reader,
+            repository_root=repository_root,
+        )
+        try:
+            self._repository_root = Path(repository_root).resolve(strict=True)
+        except (OSError, ValueError) as error:
+            raise ExecutionAuthorizationError(
+                "repository root is unavailable"
+            ) from error
+        self._runner = runner or subprocess.run
+
+    def apply(
+        self,
+        lease: TaskExecutionLease | None,
+        invocation: ExecutionInvocation,
+        diff_text: str,
+        *,
+        audit_path: str | Path,
+    ) -> object:
+        if not isinstance(lease, TaskExecutionLease):
+            raise ExecutionAuthorizationError("a live task lease is required")
+        permit = self._guard.authorize(lease, invocation)
+        if (
+            permit.operation != "PATCH_APPLY"
+            or permit.effect is not SideEffect.GIT_MUTATION
+            or permit.cwd is None
+        ):
+            raise ExecutionAuthorizationError(
+                "patch sink requires a bound patch operation and workspace"
+            )
+        if not isinstance(diff_text, str) or not diff_text:
+            raise ExecutionAuthorizationError("patch text must be a non-empty string")
+        try:
+            diff_bytes = diff_text.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise ExecutionAuthorizationError("patch text must be valid UTF-8") from error
+        if len(diff_bytes) > 4 * 1024 * 1024:
+            raise ExecutionAuthorizationError("patch text exceeds its size limit")
+
+        audit = _resolve_absolute_path(str(audit_path), field_name="audit_path")
+        if audit.exists():
+            raise ExecutionAuthorizationError("audit path already exists")
+        audit_parent = _resolve_absolute_path(
+            str(audit.parent),
+            field_name="audit_parent",
+            require_directory=True,
+        )
+        if audit_parent != audit.parent:
+            raise ExecutionAuthorizationError("audit path parent is not canonical")
+        if audit == permit.cwd or not _is_contained(audit, permit.cwd):
+            raise ExecutionAuthorizationError("audit path is outside the isolated workspace")
+
+        targets = _parse_patch_target_paths(diff_text)
+        target_paths: list[Path] = []
+        for relative in targets:
+            target = _resolve_absolute_path(
+                str(permit.cwd / relative),
+                field_name="patch_target",
+            )
+            if not _is_contained(target, permit.cwd):
+                raise ExecutionAuthorizationError("patch target escapes the workspace")
+            if not target.is_file():
+                raise ExecutionAuthorizationError("patch target must be an existing file")
+            target_paths.append(target)
+        if not target_paths:
+            raise ExecutionAuthorizationError("patch contains no target files")
+        if len(set(target_paths)) != len(target_paths):
+            raise ExecutionAuthorizationError("patch target list contains duplicates")
+        expected_resources = tuple(target_paths) + (audit,)
+        if permit.resource_paths != expected_resources:
+            raise ExecutionAuthorizationError(
+                "patch targets and audit path are not exactly bound by the intent"
+            )
+        expected_argv = ("git", "apply", str(audit))
+        if permit.argv != expected_argv:
+            raise ExecutionAuthorizationError(
+                "patch Git argv is not the immutable authorized command"
+            )
+        if permit.cwd == self._repository_root:
+            raise ExecutionAuthorizationError("patch workspace must be isolated from repository root")
+
+        # Every target, the audit parent, the exact argv and the workspace have
+        # been validated before the first write or subprocess invocation.
+        try:
+            with audit.open("xb") as stream:
+                stream.write(diff_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except (OSError, ValueError) as error:
+            raise ExecutionAuthorizationError("unable to persist patch audit") from error
+
+        common_kwargs: dict[str, object] = {
+            "cwd": str(permit.cwd),
+            "capture_output": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "check": False,
+        }
+        check_argv = ["git", "apply", "--check", str(audit)]
+        check_result = self._runner(check_argv, **common_kwargs)
+        if getattr(check_result, "returncode", None) != 0:
+            raise ExecutionAuthorizationError("git apply --check rejected the patch")
+        apply_result = self._runner(list(permit.argv), **common_kwargs)
+        if getattr(apply_result, "returncode", None) != 0:
+            raise ExecutionAuthorizationError("git apply rejected the authorized patch")
+        return apply_result
+
+
+def _parse_patch_target_paths(diff_text: str) -> tuple[str, ...]:
+    """Return canonical relative paths from a deliberately narrow unified diff."""
+    lines = diff_text.splitlines()
+    targets: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith("--- "):
+            index += 1
+            continue
+        if index + 1 >= len(lines) or not lines[index + 1].startswith("+++ "):
+            raise ExecutionAuthorizationError("patch has an incomplete file header")
+        old_name = _parse_patch_header_path(line[4:], prefix="a/")
+        new_name = _parse_patch_header_path(lines[index + 1][4:], prefix="b/")
+        if old_name != new_name:
+            raise ExecutionAuthorizationError("patch renames are not authorized")
+        targets.append(new_name)
+        index += 2
+    if not targets:
+        raise ExecutionAuthorizationError("patch has no unified file headers")
+    if len(set(targets)) != len(targets):
+        raise ExecutionAuthorizationError("patch contains duplicate file headers")
+    return tuple(targets)
+
+
+def _parse_patch_header_path(raw: str, *, prefix: str) -> str:
+    if "\t" in raw:
+        raise ExecutionAuthorizationError("patch headers may not contain timestamps")
+    value = raw.strip()
+    if not value.startswith(prefix):
+        raise ExecutionAuthorizationError("patch header path prefix is invalid")
+    value = value[len(prefix) :]
+    if (
+        not value
+        or "\\" in value
+        or value.startswith("/")
+        or ":" in value
+        or any(character in '<>\"|?*' for character in value)
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ExecutionAuthorizationError("patch header path is unsafe")
+    parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ExecutionAuthorizationError("patch header path contains traversal")
+    return "/".join(parts)
+
+
 def _is_contained(candidate: Path, root: Path) -> bool:
     try:
         candidate.relative_to(root)
@@ -562,6 +729,7 @@ def _is_contained(candidate: Path, root: Path) -> bool:
 
 
 __all__ = [
+    "AuthorizedPatchApplier",
     "AuthorizedSubprocess",
     "ExecutionAuthorizationError",
     "ExecutionInvocation",

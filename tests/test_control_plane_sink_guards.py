@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
@@ -24,6 +25,7 @@ from research_automation.control_plane.stores import (
     TaskTicketError,
 )
 from research_automation.control_plane.sink_guard import (
+    AuthorizedPatchApplier,
     AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
@@ -40,7 +42,10 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
         self,
         *,
         with_intent: bool = False,
+        intent_kind: str = "subprocess",
     ) -> Iterator[tuple[object, ...]]:
+        if intent_kind not in {"subprocess", "patch"}:
+            raise ValueError("unsupported test intent kind")
         now = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-sink-guard")
         identity = AuthorityIdentity(
@@ -48,12 +53,21 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
             scope_hash="b" * 64,
             instruction_policy_hash="c" * 64,
         )
+        task_id = (
+            "P0R2-T4-PATCH" if intent_kind == "patch" else "P0R2-T4-SUBPROCESS"
+        )
+        intent_name = "patch" if intent_kind == "patch" else "intent"
+        authorized_effect = (
+            SideEffect.GIT_MUTATION
+            if intent_kind == "patch"
+            else SideEffect.START_SUBPROCESS
+        )
         task_spec = {
-            "task_id": "P0R2-T4-SUBPROCESS",
-            "objective": "Authorize one bounded subprocess tracer.",
+            "task_id": task_id,
+            "objective": f"Authorize one bounded {intent_kind} tracer.",
             "dependencies": [],
-            "idempotency_key": "p0r2-t4-subprocess-001",
-            "task_spec_ref": "research_state/control_plane/p0r2/tasks/subprocess.json",
+            "idempotency_key": f"p0r2-t4-{intent_kind}-001",
+            "task_spec_ref": f"research_state/control_plane/p0r2/tasks/{intent_kind}.json",
             "task_spec_sha256": "d" * 64,
             "requirements": {
                 "required_test_receipt_ids": [],
@@ -67,7 +81,7 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
             "input_evidence_refs": [
                 {
                     "evidence_id": "execution-intent",
-                    "evidence_ref": "research_state/control_plane/p0r2/intents/intent.json",
+                    "evidence_ref": f"research_state/control_plane/p0r2/intents/{intent_name}.json",
                     "evidence_sha256": "f" * 64,
                     "status": "VERIFIED",
                 }
@@ -85,9 +99,32 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                 runner_bytes = b"# authorized sink runner fixture\n"
                 runner_path.write_bytes(runner_bytes)
                 runner_sha256 = hashlib.sha256(runner_bytes).hexdigest()
+                if intent_kind == "patch":
+                    workspace = resource_root / "isolated-workspace"
+                    target_path = workspace / "strategy" / "candidate.py"
+                    target_path.parent.mkdir(parents=True)
+                    target_path.write_text("before\n", encoding="utf-8")
+                    audit_path = workspace / "audit" / "candidate.diff"
+                    audit_path.parent.mkdir()
+                    entry_id = "callable:test:patch"
+                    operation = "PATCH_APPLY"
+                    argv = ["git", "apply", str(audit_path)]
+                    cwd = str(workspace)
+                    callable_name = "AuthorizedPatchApplier.apply"
+                    resource_paths = [str(target_path), str(audit_path)]
+                else:
+                    workspace = resource_root
+                    target_path = None
+                    audit_path = None
+                    entry_id = "callable:test:subprocess"
+                    operation = "SUBPROCESS"
+                    argv = ["python", "-V"]
+                    cwd = str(resource_root)
+                    callable_name = "AuthorizedSubprocess.run"
+                    resource_paths = [str(resource_root)]
                 intent_payload: dict[str, object] = {
                     "schema_version": "control_plane.execution_intent.v1",
-                    "intent_id": "intent-subprocess-001",
+                    "intent_id": f"intent-{intent_kind}-001",
                     "plan_version": "V3.4.2-P0R2",
                     "phase": "P0",
                     "attempt_id": "p0r2-attempt-001",
@@ -97,24 +134,24 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                         "scope_hash": identity.scope_hash,
                         "instruction_policy_hash": identity.instruction_policy_hash,
                     },
-                    "entry_id": "callable:test:subprocess",
-                    "operation": "SUBPROCESS",
-                    "effect": SideEffect.START_SUBPROCESS.value,
-                    "argv": ["python", "-V"],
-                    "cwd": str(resource_root),
+                    "entry_id": entry_id,
+                    "operation": operation,
+                    "effect": authorized_effect.value,
+                    "argv": argv,
+                    "cwd": cwd,
                     "runner": {
                         "module": "research_automation.control_plane.sink_guard",
-                        "callable_name": "AuthorizedSubprocess.run",
+                        "callable_name": callable_name,
                         "source_ref": "research_automation/control_plane/sink_guard.py",
                         "source_sha256": runner_sha256,
                     },
                     "resource_roots": [str(resource_root)],
-                    "resource_paths": [str(resource_root)],
+                    "resource_paths": resource_paths,
                 }
                 intent_payload["intent_payload_sha256"] = hashlib.sha256(
                     canonical_json(intent_payload).encode("utf-8")
                 ).hexdigest()
-                intent_ref = "research_state/control_plane/p0r2/intents/intent.json"
+                intent_ref = f"research_state/control_plane/p0r2/intents/{intent_name}.json"
                 intent_path = root / intent_ref
                 intent_path.parent.mkdir(parents=True, exist_ok=True)
                 intent_bytes = canonical_json(intent_payload).encode("utf-8")
@@ -127,6 +164,9 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                     "resource_root": str(resource_root),
                     "runner_source_ref": "research_automation/control_plane/sink_guard.py",
                     "runner_source_sha256": runner_sha256,
+                    "workspace": str(workspace),
+                    "target_path": None if target_path is None else str(target_path),
+                    "audit_path": None if audit_path is None else str(audit_path),
                 }
             with patch.multiple(
                 stores_module,
@@ -151,7 +191,7 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                         0,
                         tzinfo=timezone.utc,
                     ),
-                    allowed_side_effects=(SideEffect.START_SUBPROCESS,),
+                    allowed_side_effects=(authorized_effect,),
                 )
                 grant = authority.claim_authorization(
                     envelope,
@@ -163,7 +203,7 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                 ticket = authority._issue_task_ticket(
                     grant,
                     task_spec,
-                    allowed_side_effects=(SideEffect.START_SUBPROCESS,),
+                    allowed_side_effects=(authorized_effect,),
                 )
                 lease = authority._begin_task(ticket)
                 if intent_info is None:
@@ -206,7 +246,7 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                 AuthorityReader().execution_lease_binding(lease)
 
 
-class SubprocessSinkTests(unittest.TestCase):
+class ExecutionSinkTests(unittest.TestCase):
     def test_unauthorized_subprocess_fails_before_runner_is_called(self) -> None:
         calls: list[tuple[object, ...]] = []
 
@@ -239,6 +279,58 @@ class SubprocessSinkTests(unittest.TestCase):
             sink.run(None, invocation)
 
         self.assertEqual(calls, [])
+
+
+    def test_unauthorized_patch_fails_before_audit_write_or_git(self) -> None:
+        calls: list[tuple[object, ...]] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return object()
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            workspace = root / "isolated-workspace"
+            workspace.mkdir()
+            audit_path = workspace / "audit" / "candidate.diff"
+            invocation = ExecutionInvocation(
+                intent_ref="research_state/control_plane/p0r2/intents/patch.json",
+                entry_id="callable:test:patch",
+                effect=SideEffect.GIT_MUTATION,
+                operation="PATCH_APPLY",
+                argv=("git", "apply", str(audit_path)),
+                cwd=str(workspace),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedPatchApplier.apply",
+                    source_ref="research_automation/control_plane/sink_guard.py",
+                    source_sha256="a" * 64,
+                ),
+                resource_paths=(
+                    str(workspace / "strategy" / "candidate.py"),
+                    str(audit_path),
+                ),
+            )
+            sink = AuthorizedPatchApplier(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            with self.assertRaises(ExecutionAuthorizationError):
+                sink.apply(
+                    None,
+                    invocation,
+                    "--- a/strategy/candidate.py\n"
+                    "+++ b/strategy/candidate.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-before\n"
+                    "+after\n",
+                    audit_path=audit_path,
+                )
+
+            self.assertFalse(audit_path.exists())
+            self.assertEqual(calls, [])
 
     def test_valid_intent_allows_runner_only_after_lease_validation(self) -> None:
         lease_tests = ExecutionLeaseBindingTests()
@@ -377,6 +469,72 @@ class SubprocessSinkTests(unittest.TestCase):
                 sink.run(lease, invocation)
 
         self.assertEqual(calls, [])
+
+    def test_valid_patch_checks_then_applies_without_unsafe_path(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+
+        with lease_tests._live_lease(
+            with_intent=True,
+            intent_kind="patch",
+        ) as (root, _, _, lease, intent_info):
+            workspace = Path(str(intent_info["workspace"]))
+            target_path = Path(str(intent_info["target_path"]))
+            audit_path = Path(str(intent_info["audit_path"]))
+            calls: list[tuple[list[str], dict[str, object]]] = []
+
+            def runner(argv: list[str], **kwargs: object) -> object:
+                calls.append((list(argv), dict(kwargs)))
+                self.assertTrue(audit_path.is_file())
+                if "--check" not in argv:
+                    target_path.write_text("after\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:patch",
+                effect=SideEffect.GIT_MUTATION,
+                operation="PATCH_APPLY",
+                argv=("git", "apply", str(audit_path)),
+                cwd=str(workspace),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedPatchApplier.apply",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(target_path), str(audit_path)),
+            )
+            diff_text = (
+                "--- a/strategy/candidate.py\n"
+                "+++ b/strategy/candidate.py\n"
+                "@@ -1 +1 @@\n"
+                "-before\n"
+                "+after\n"
+            )
+            sink = AuthorizedPatchApplier(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            sink.apply(
+                lease,
+                invocation,
+                diff_text,
+                audit_path=audit_path,
+            )
+
+            self.assertEqual(target_path.read_text(encoding="utf-8"), "after\n")
+            self.assertEqual(audit_path.read_text(encoding="utf-8"), diff_text)
+            self.assertEqual(
+                [call[0] for call in calls],
+                [
+                    ["git", "apply", "--check", str(audit_path)],
+                    ["git", "apply", str(audit_path)],
+                ],
+            )
+            self.assertTrue(all("--unsafe-path" not in argv for argv, _ in calls))
+            self.assertTrue(all(kwargs["cwd"] == str(workspace) for _, kwargs in calls))
 
 
 if __name__ == "__main__":
