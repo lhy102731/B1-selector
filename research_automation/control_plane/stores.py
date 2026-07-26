@@ -74,7 +74,11 @@ _AUTHORITY_SCHEMA = (
         allowed_effects_json TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('PENDING', 'CLAIMED', 'EXPIRED')),
         created_at TEXT NOT NULL,
-        claimed_at TEXT
+        claimed_at TEXT,
+        UNIQUE(
+            phase, attempt_id, actor_id, actor_type, invocation_id,
+            plan_hash, scope_hash, instruction_policy_hash
+        )
     ) WITHOUT ROWID
     """,
     """
@@ -1715,6 +1719,61 @@ class _AuthorityStore:
             expires_at=expires_at,
             allowed_side_effects=allowed_side_effects,
             _bearer_secret=_BearerSecret(bearer_secret),
+        )
+
+    def _recover_pending_authorization_for_binding(
+        self,
+        *,
+        phase: Phase,
+        attempt_id: str,
+        actor: Actor,
+        identity: AuthorityIdentity,
+    ) -> AuthorizationEnvelope:
+        if (
+            not isinstance(phase, Phase)
+            or not isinstance(actor, Actor)
+            or not isinstance(identity, AuthorityIdentity)
+        ):
+            raise AuthorizationRejectedError(
+                "authorization recovery binding is invalid"
+            )
+        expected_attempt_id = _require_nonempty(attempt_id, "attempt_id")
+
+        def read(connection: sqlite3.Connection) -> tuple[sqlite3.Row, ...]:
+            return tuple(
+                connection.execute(
+                    """
+                    SELECT authorization_ref, state
+                    FROM authorizations_v2
+                    WHERE phase = ? AND attempt_id = ?
+                      AND actor_id = ? AND actor_type = ?
+                      AND invocation_id = ? AND plan_hash = ?
+                      AND scope_hash = ? AND instruction_policy_hash = ?
+                    """,
+                    (
+                        phase.value,
+                        expected_attempt_id,
+                        actor.actor_id,
+                        actor.actor_type,
+                        actor.invocation_id,
+                        identity.plan_hash,
+                        identity.scope_hash,
+                        identity.instruction_policy_hash,
+                    ),
+                )
+            )
+
+        rows = _SqliteUnitOfWork(_authority_spec())._read(read)
+        if len(rows) != 1:
+            raise AuthorizationRejectedError(
+                "pending authorization recovery is ambiguous or unavailable"
+            )
+        if rows[0]["state"] != "PENDING":
+            raise AuthorizationReplayError(
+                "only a pending authorization can be recovered"
+            )
+        return self._recover_pending_authorization(
+            str(rows[0]["authorization_ref"])
         )
 
     def _recover_claimed_grant(

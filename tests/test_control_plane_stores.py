@@ -286,8 +286,13 @@ class TrustedBootstrapTests(unittest.TestCase):
                     expires_at=now + timedelta(hours=1),
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
-                recovered_envelope = authority._recover_pending_authorization(
-                    envelope.authorization_ref
+                recovered_envelope = (
+                    authority._recover_pending_authorization_for_binding(
+                        phase=Phase.P0,
+                        attempt_id="p0r2-attempt-001",
+                        actor=actor,
+                        identity=identity,
+                    )
                 )
                 self.assertEqual(
                     recovered_envelope.to_public_dict(),
