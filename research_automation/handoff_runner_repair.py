@@ -346,11 +346,12 @@ def _apply_diff(
     lease: TaskExecutionLease,
     invocation: ExecutionInvocation,
     authority_reader: AuthorityReader,
+    repository_root: Path = PROJECT_ROOT,
 ) -> object:
     """Apply a repair diff only through the isolated authorized patch sink."""
     sink = AuthorizedPatchApplier(
         authority_reader=authority_reader,
-        repository_root=PROJECT_ROOT,
+        repository_root=repository_root,
         runner=lambda command, **kwargs: subprocess.run(
             command,
             timeout=60,
@@ -365,12 +366,17 @@ def _apply_diff(
     )
 
 
-def _stage_repair_workspace(files: list[str], *, output_dir: Path) -> Path:
+def _stage_repair_workspace(
+    files: list[str],
+    *,
+    output_dir: Path,
+    project_root: Path = PROJECT_ROOT,
+) -> Path:
     """Copy only repair targets into a disposable workspace."""
     workspace = output_dir / "workspace"
     workspace.mkdir(parents=True, exist_ok=False)
     for relative in files:
-        source = PROJECT_ROOT / relative
+        source = project_root / relative
         target = workspace / relative
         if source.exists():
             if source.is_symlink() or not source.is_file():
@@ -391,6 +397,7 @@ def _compile_changed(
     lease: TaskExecutionLease | None = None,
     invocation: ExecutionInvocation | None = None,
     authority_reader: AuthorityReader | None = None,
+    repository_root: Path = PROJECT_ROOT,
 ) -> tuple[bool, str]:
     py_files = [str(workspace / item) for item in files if item.endswith(".py")]
     if not py_files:
@@ -413,7 +420,7 @@ def _compile_changed(
     try:
         proc = AuthorizedSubprocess(
             authority_reader=authority_reader or AuthorityReader(),
-            repository_root=PROJECT_ROOT,
+            repository_root=repository_root,
             runner=_runner,
         ).run(lease, invocation)
     except Exception as exc:  # noqa: BLE001 - gate failures must trigger rollback.
@@ -429,6 +436,7 @@ def _run_changed_tests(
     lease: TaskExecutionLease | None = None,
     invocation: ExecutionInvocation | None = None,
     authority_reader: AuthorityReader | None = None,
+    repository_root: Path = PROJECT_ROOT,
 ) -> tuple[bool, str]:
     modules = [
         item.removesuffix(".py").replace("/", ".")
@@ -455,7 +463,7 @@ def _run_changed_tests(
     try:
         proc = AuthorizedSubprocess(
             authority_reader=authority_reader or AuthorityReader(),
-            repository_root=PROJECT_ROOT,
+            repository_root=repository_root,
             runner=_runner,
         ).run(lease, invocation)
     except Exception as exc:  # noqa: BLE001 - gate failures must trigger rollback.
@@ -556,6 +564,7 @@ def repair_handoff_runner(
 ) -> RepairResult:
     handoff = Path(handoff_path).resolve()
     out = Path(output_dir).resolve()
+    repair_root = Path(repository_root or PROJECT_ROOT).resolve()
     lease = lease if lease is not None else execution_lease
     invocation = invocation if invocation is not None else execution_invocation
     llm_lease = llm_lease if llm_lease is not None else execution_llm_lease
@@ -621,7 +630,7 @@ def repair_handoff_runner(
             reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
             guard = ExecutionSinkGuard(
                 authority_reader=reader,
-                repository_root=repository_root or PROJECT_ROOT,
+                repository_root=repair_root,
             )
             permit = guard.authorize(lease, invocation)
             if (
@@ -643,7 +652,7 @@ def repair_handoff_runner(
                 raise ExecutionAuthorizationError(
                     "runner repair handoff/output resources differ from execution intent"
                 )
-            if out == Path(repository_root or PROJECT_ROOT).resolve():
+            if out == repair_root:
                 raise ExecutionAuthorizationError(
                     "runner repair output must be isolated from repository root"
                 )
@@ -723,7 +732,7 @@ def repair_handoff_runner(
 
     llm_sink = AuthorizedSubprocess(
         authority_reader=reader,
-        repository_root=repository_root or PROJECT_ROOT,
+        repository_root=repair_root,
         runner=_authorized_llm_runner,
     )
     try:
@@ -820,7 +829,7 @@ def repair_handoff_runner(
         try:
             review_permit = ExecutionSinkGuard(
                 authority_reader=reader,
-                repository_root=repository_root or PROJECT_ROOT,
+                repository_root=repair_root,
             ).authorize(review_lease, review_invocation)
             if (
                 review_permit.operation != "REPAIR"
@@ -890,7 +899,11 @@ def repair_handoff_runner(
         return result
 
     try:
-        workspace = _stage_repair_workspace(files, output_dir=out)
+        workspace = _stage_repair_workspace(
+            files,
+            output_dir=out,
+            project_root=repair_root,
+        )
         diff_path = workspace / "repair.diff"
     except (ExecutionAuthorizationError, OSError, ValueError) as error:
         result = RepairResult(
@@ -918,6 +931,7 @@ def repair_handoff_runner(
             lease=patch_lease,
             invocation=patch_invocation,
             authority_reader=reader,
+            repository_root=repair_root,
         )
     except (ExecutionAuthorizationError, OSError, ValueError) as error:
         apply_proc = None
@@ -951,6 +965,7 @@ def repair_handoff_runner(
         lease=validation_lease,
         invocation=compile_invocation,
         authority_reader=reader,
+        repository_root=repair_root,
     )
     test_ok, test_output = (
         _run_changed_tests(
@@ -959,6 +974,7 @@ def repair_handoff_runner(
             lease=validation_lease,
             invocation=test_invocation,
             authority_reader=reader,
+            repository_root=repair_root,
         )
         if compile_ok
         else (False, "tests skipped: compile failed")
