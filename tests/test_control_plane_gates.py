@@ -396,6 +396,23 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.assertRaises(GateEvidenceError):
                 fixture.verifier.verify(invalid_report)
 
+    def test_verifier_binds_task_report_reference_to_its_contents(self) -> None:
+        cases = (
+            ("ticket_id", "ticket-forged"),
+            ("outcome", "FAIL"),
+        )
+        for field_name, forged_value in cases:
+            with self.subTest(field_name=field_name):
+                with self._trusted_gate_fixture() as fixture:
+                    forged_draft = dict(fixture.draft)
+                    task_report_ref = dict(fixture.draft["task_reports"][0])
+                    task_report_ref[field_name] = forged_value
+                    forged_draft["task_reports"] = [task_report_ref]
+                    forged_report = PhaseGateBuilder().build(forged_draft)
+
+                    with self.assertRaises(GateEvidenceError):
+                        fixture.verifier.verify(forged_report)
+
 
 if __name__ == "__main__":
     unittest.main()

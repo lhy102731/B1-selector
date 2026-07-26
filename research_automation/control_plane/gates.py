@@ -530,11 +530,18 @@ class PhaseGateVerifier:
             ):
                 raise GateEvidenceError("TaskReport evidence SHA-256 mismatch")
             try:
-                parse_task_report_v2_bytes(raw)
+                parsed = parse_task_report_v2_bytes(raw)
             except TaskReportValidationError as error:
                 raise GateEvidenceError(
                     "TaskReport evidence is not valid TaskReport V2"
                 ) from error
+            if (
+                parsed["ticket_id"] != task_report["ticket_id"]
+                or parsed["outcome"] != task_report["outcome"]
+            ):
+                raise GateEvidenceError(
+                    "TaskReport reference does not match its contents"
+                )
 
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)
