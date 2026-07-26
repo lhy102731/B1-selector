@@ -24,6 +24,9 @@ from research_automation.control_plane.sqlite_uow import (
 )
 
 
+ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
+
+
 class SqliteUnitOfWorkTests(unittest.TestCase):
     def test_read_snapshot_cannot_write_the_store(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -35,7 +38,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             before = hashlib.sha256(authority_path.read_bytes()).hexdigest()
             unit_of_work = _SqliteUnitOfWork(
@@ -68,7 +71,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             unit_of_work = _SqliteUnitOfWork(
                 _StoreSpec(
@@ -108,7 +111,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             unit_of_work = _SqliteUnitOfWork(
                 _StoreSpec(
@@ -180,7 +183,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
             connection = sqlite3.connect(authority_path)
             try:
                 connection.execute("PRAGMA user_version = 2")
@@ -211,7 +214,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             lock_connection = sqlite3.connect(
                 authority_path,
@@ -249,7 +252,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             unit_of_work = _SqliteUnitOfWork(
                 _StoreSpec(
@@ -295,7 +298,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             setup = sqlite3.connect(authority_path)
             try:
@@ -383,7 +386,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
             real_connection = sqlite3.connect(authority_path)
             failing_connection = FailingConfigurationConnection(real_connection)
             unit_of_work = _SqliteUnitOfWork(

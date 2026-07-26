@@ -32,6 +32,9 @@ from research_automation.control_plane.sqlite_uow import (
 from research_automation.control_plane.task_reports import build_task_report_v2
 
 
+ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
+
+
 class TrustedBootstrapTests(unittest.TestCase):
     def test_bootstrap_is_not_a_worker_visible_module_api(self) -> None:
         self.assertNotIn("trusted_bootstrap", stores_module.__all__)
@@ -52,6 +55,28 @@ class TrustedBootstrapTests(unittest.TestCase):
             self.assertFalse(attacker_authority.exists())
             self.assertFalse(attacker_operational.exists())
 
+    def test_public_identity_hashes_cannot_open_the_authority_writer(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                self.assertNotIn(ROOT_SECRET.encode(), authority_path.read_bytes())
+                self.assertNotIn(ROOT_SECRET.encode(), operational_path.read_bytes())
+
+                with self.assertRaises(stores_module.AuthorityRootError):
+                    stores_module._AuthorityStore(root_secret="a" * 64)
+
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET
+                )
+                self.assertIsInstance(authority, stores_module._AuthorityStore)
+
     def test_same_path_fails_before_a_store_is_created(self) -> None:
         with TemporaryDirectory() as tmp:
             shared_path = Path(tmp) / "control-plane.sqlite3"
@@ -65,7 +90,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                     _AUTHORITY_STORE_PATH=shared_path,
                     _OPERATIONAL_STORE_PATH=shared_path,
                 ):
-                    stores_module._trusted_bootstrap()
+                    stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             self.assertFalse(shared_path.exists())
 
@@ -80,7 +105,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                receipt = stores_module._trusted_bootstrap()
+                receipt = stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             self.assertEqual(receipt.authority_path, authority_path.resolve())
             self.assertEqual(receipt.operational_path, operational_path.resolve())
@@ -101,7 +126,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                receipt = stores_module._trusted_bootstrap()
+                receipt = stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
                 descriptor = read_store_pair_descriptor()
 
             self.assertIsInstance(descriptor, StorePairDescriptor)
@@ -163,7 +188,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                     stores_module.StoreBootstrapError,
                     "bootstrap failed",
                 ):
-                    stores_module._trusted_bootstrap()
+                    stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             self.assertFalse(authority_path.exists())
             self.assertFalse(operational_path.exists())
@@ -180,7 +205,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
                 before = {
                     path: (
                         hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -190,7 +215,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 }
 
                 with self.assertRaises(StoreAlreadyBootstrappedError):
-                    stores_module._trusted_bootstrap()
+                    stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
                 after = {
                     path: (
@@ -212,7 +237,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                receipt = stores_module._trusted_bootstrap()
+                receipt = stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
                 reader = AuthorityReader()
                 identity = reader.read_identity()
 
@@ -248,8 +273,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -308,8 +336,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                     "REPLAY_ATTEMPT_UNUSED_SECRET",
                 ),
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -372,7 +403,10 @@ class TrustedBootstrapTests(unittest.TestCase):
             def attempt_bootstrap():
                 start.wait(timeout=2)
                 try:
-                    return ("SUCCESS", stores_module._trusted_bootstrap())
+                    return (
+                        "SUCCESS",
+                        stores_module._trusted_bootstrap(root_secret=ROOT_SECRET),
+                    )
                 except stores_module.StoreError as error:
                     return ("REJECTED", error)
 
@@ -418,7 +452,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
                 drift = sqlite3.connect(authority_path)
                 try:
                     drift.execute("CREATE TABLE unreviewed_table(value TEXT)")
@@ -447,9 +481,15 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
-                journal = stores_module._OperationalJournal(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
+                journal = stores_module._OperationalJournal(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -497,8 +537,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_a,
                 _OPERATIONAL_STORE_PATH=operational_a,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -512,14 +555,17 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_b,
                 _OPERATIONAL_STORE_PATH=operational_b,
             ):
-                stores_module._trusted_bootstrap()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
 
             with patch.multiple(
                 stores_module,
                 _AUTHORITY_STORE_PATH=authority_a,
                 _OPERATIONAL_STORE_PATH=operational_b,
             ):
-                journal = stores_module._OperationalJournal(clock=lambda: now)
+                journal = stores_module._OperationalJournal(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 with self.assertRaisesRegex(
                     stores_module.StoreBootstrapError,
                     "pair identity mismatch",
@@ -550,8 +596,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -604,9 +653,15 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
-                journal = stores_module._OperationalJournal(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
+                journal = stores_module._OperationalJournal(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -704,9 +759,15 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
-                journal = stores_module._OperationalJournal(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
+                journal = stores_module._OperationalJournal(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -744,8 +805,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: clock[0])
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: clock[0],
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -798,8 +862,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=read_clock)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=read_clock,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -855,8 +922,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -950,8 +1020,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -1035,8 +1108,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -1139,8 +1215,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now[0])
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now[0],
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -1241,8 +1320,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now)
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",
@@ -1337,8 +1419,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                 _AUTHORITY_STORE_PATH=authority_path,
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
-                stores_module._trusted_bootstrap()
-                authority = stores_module._AuthorityStore(clock=lambda: now[0])
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now[0],
+                )
                 envelope = authority._provision_authorization(
                     phase=Phase.P0,
                     attempt_id="p0r2-attempt-001",

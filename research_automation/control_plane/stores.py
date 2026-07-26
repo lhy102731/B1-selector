@@ -191,6 +191,10 @@ class StoreBootstrapInProgressError(StoreBootstrapError):
     """Raised when another trusted bootstrap owns the publication lock."""
 
 
+class AuthorityRootError(StoreError):
+    """Raised when a trusted writer lacks the installation root capability."""
+
+
 class AuthorizationError(StoreError):
     """Base error for V2 authority-envelope operations."""
 
@@ -265,6 +269,16 @@ def _require_sha256(value: object, field_name: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
     return value
+
+
+def _root_secret_sha256(value: object) -> str:
+    try:
+        secret = _require_nonempty(value, "authority root capability")
+    except ValueError as error:
+        raise AuthorityRootError("authority root capability is invalid") from error
+    if len(secret) < 32:
+        raise AuthorityRootError("authority root capability is invalid")
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
 def _require_aware_datetime(value: object, field_name: str) -> datetime:
@@ -524,6 +538,7 @@ def _provision_store(
     store_kind: str,
     metadata_table: str,
     installation_id: str,
+    root_capability_sha256: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, isolation_level=None)
@@ -539,6 +554,7 @@ def _provision_store(
             f"INSERT INTO {metadata_table}(key, value) VALUES (?, ?)",
             (
                 ("installation_id", installation_id),
+                ("root_capability_sha256", root_capability_sha256),
                 ("schema_version", str(_STORE_SCHEMA_VERSION)),
                 ("store_kind", store_kind),
             ),
@@ -580,6 +596,8 @@ def _require_unprovisioned(authority_path: Path, operational_path: Path) -> None
 def _provision_store_pair_under_lock(
     resolved_authority: Path,
     resolved_operational: Path,
+    *,
+    root_capability_sha256: str,
 ) -> StoreBootstrapReceipt:
     installation_id = secrets.token_hex(32)
     staging_id = secrets.token_hex(16)
@@ -597,12 +615,14 @@ def _provision_store_pair_under_lock(
             store_kind="AUTHORITY_STORE",
             metadata_table="authority_meta",
             installation_id=installation_id,
+            root_capability_sha256=root_capability_sha256,
         )
         _provision_store(
             operational_staging,
             store_kind="OPERATIONAL_JOURNAL",
             metadata_table="operational_meta",
             installation_id=installation_id,
+            root_capability_sha256=root_capability_sha256,
         )
         if os.path.samefile(authority_staging, operational_staging):
             raise StoreConfigurationError(
@@ -665,15 +685,12 @@ def _acquire_bootstrap_lock(
         ) from error
 
 
-def _trusted_bootstrap_at_paths(
-    *,
-    authority_path: str | Path,
-    operational_path: str | Path,
-) -> StoreBootstrapReceipt:
-    """Private test seam for provisioning fixed production locations."""
+def _trusted_bootstrap(*, root_secret: str) -> StoreBootstrapReceipt:
+    """Provision the fixed store pair from the trusted composition root."""
 
-    resolved_authority = Path(authority_path).resolve(strict=False)
-    resolved_operational = Path(operational_path).resolve(strict=False)
+    root_capability_sha256 = _root_secret_sha256(root_secret)
+    resolved_authority = Path(_AUTHORITY_STORE_PATH).resolve(strict=False)
+    resolved_operational = Path(_OPERATIONAL_STORE_PATH).resolve(strict=False)
     if _path_identity(resolved_authority) == _path_identity(resolved_operational):
         raise StoreConfigurationError(
             "authority and operational stores must use different SQLite files"
@@ -688,18 +705,10 @@ def _trusted_bootstrap_at_paths(
         return _provision_store_pair_under_lock(
             resolved_authority,
             resolved_operational,
+            root_capability_sha256=root_capability_sha256,
         )
     finally:
         lock_path.unlink(missing_ok=True)
-
-
-def _trusted_bootstrap() -> StoreBootstrapReceipt:
-    """Provision the two fixed-path stores from a trusted entrypoint."""
-
-    return _trusted_bootstrap_at_paths(
-        authority_path=_AUTHORITY_STORE_PATH,
-        operational_path=_OPERATIONAL_STORE_PATH,
-    )
 
 
 def _read_store_identity(spec: _StoreSpec) -> StoreIdentity:
@@ -722,6 +731,24 @@ def _read_store_identity(spec: _StoreSpec) -> StoreIdentity:
         store_kind=spec.store_kind,
         schema_version=spec.schema_version,
     )
+
+
+def _require_store_root(spec: _StoreSpec, root_secret: str) -> None:
+    supplied_sha256 = _root_secret_sha256(root_secret)
+
+    def read_root(connection: sqlite3.Connection) -> str | None:
+        row = connection.execute(
+            f"SELECT value FROM {spec.metadata_table} WHERE key = ?",
+            ("root_capability_sha256",),
+        ).fetchone()
+        return None if row is None else str(row["value"])
+
+    stored_sha256 = _SqliteUnitOfWork(spec)._read(read_root)
+    if stored_sha256 is None or not hmac.compare_digest(
+        stored_sha256,
+        supplied_sha256,
+    ):
+        raise AuthorityRootError("authority root capability is invalid")
 
 
 class AuthorityReader:
@@ -1216,8 +1243,10 @@ class _AuthorityStore:
     def __init__(
         self,
         *,
+        root_secret: str,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        _require_store_root(_authority_spec(), root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _now(self) -> datetime:
@@ -2167,8 +2196,10 @@ class _OperationalJournal:
     def __init__(
         self,
         *,
+        root_secret: str,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        _require_store_root(_operational_spec(), root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def _now(self) -> datetime:
@@ -2284,6 +2315,7 @@ __all__ = [
     "AuthorityReader",
     "AuthorityGrant",
     "AuthorityIdentity",
+    "AuthorityRootError",
     "AuthorityOutboxEvent",
     "AuthorizationEnvelope",
     "AuthorizationError",
