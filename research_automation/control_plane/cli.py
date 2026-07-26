@@ -10,6 +10,15 @@ import tempfile
 from pathlib import Path
 from typing import Iterable, Sequence, TextIO
 
+from .artifact_semantics import (
+    ArtifactBindingError,
+    ArtifactSemanticError,
+    validate_code_freeze_manifest,
+    validate_final_inventory,
+    validate_implementation_baseline,
+    validate_reviewed_entry_policy,
+    validate_scheduler_inventory,
+)
 from .contracts import Phase, canonical_json
 from .gates import (
     GateAuthorityMismatchError,
@@ -74,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[phase.value for phase in Phase],
     )
     build.add_argument("--attempt-id", required=True)
+    build.add_argument("--baseline", required=True)
     build.add_argument("--freeze-manifest", required=True)
     build.add_argument("--inventory", required=True)
     build.add_argument("--entry-policy", required=True)
@@ -280,7 +290,9 @@ def _build_gate_candidate(
         )
 
     artifacts: dict[str, dict[str, str]] = {}
+    artifact_payloads: dict[str, bytes] = {}
     for option_name, field_name in (
+        ("baseline", "implementation_baseline"),
         ("freeze_manifest", "code_freeze_manifest"),
         ("inventory", "final_inventory"),
         ("entry_policy", "reviewed_entry_policy"),
@@ -303,13 +315,82 @@ def _build_gate_candidate(
             "ref": _repository_reference(path_text, repository_root),
             "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
         }
+        artifact_payloads[field_name] = artifact_bytes
+    artifact_refs = {artifact["ref"] for artifact in artifacts.values()}
+    if len(artifact_refs) != len(artifacts) or task_reference in artifact_refs:
+        raise GateEvidenceError("gate evidence references must be distinct")
+    policy_artifact = artifacts["reviewed_entry_policy"]
+    if policy_artifact["ref"] != (
+        "research_state/control_plane/policies/"
+        f"{policy_artifact['sha256']}.json"
+    ):
+        raise GateEvidenceError(
+            "reviewed entry policy is outside the immutable policy namespace"
+        )
+    identity_binding = task_report["identity_binding"]
+    if not isinstance(identity_binding, dict):
+        raise GateEvidenceError("TaskReport identity binding is invalid")
+    expected_identity = {
+        "plan_hash": str(identity_binding["plan_hash"]),
+        "scope_hash": str(identity_binding["scope_hash"]),
+        "instruction_policy_hash": str(
+            identity_binding["instruction_policy_hash"]
+        ),
+    }
+    try:
+        validate_implementation_baseline(
+            artifact_payloads["implementation_baseline"],
+            expected_plan_version=str(task_report["plan_version"]),
+            expected_phase=str(args.phase),
+            expected_attempt_id=str(args.attempt_id),
+            repository_root=repository_root,
+        )
+        freeze_manifest = validate_code_freeze_manifest(
+            artifact_payloads["code_freeze_manifest"],
+            expected_plan_version=str(task_report["plan_version"]),
+            expected_phase=str(args.phase),
+            expected_attempt_id=str(args.attempt_id),
+            expected_identity=expected_identity,
+            repository_root=repository_root,
+        )
+        final_inventory = validate_final_inventory(
+            artifact_payloads["final_inventory"],
+            expected_plan_version=str(task_report["plan_version"]),
+            expected_phase=str(args.phase),
+            expected_attempt_id=str(args.attempt_id),
+            expected_identity=expected_identity,
+            freeze_manifest=freeze_manifest,
+        )
+        validate_reviewed_entry_policy(
+            artifact_payloads["reviewed_entry_policy"],
+            expected_plan_version=str(task_report["plan_version"]),
+            expected_phase=str(args.phase),
+            expected_attempt_id=str(args.attempt_id),
+            expected_identity=expected_identity,
+            final_inventory=final_inventory,
+        )
+        _, scheduler_status = validate_scheduler_inventory(
+            artifact_payloads["scheduler_inventory"],
+            expected_phase=str(args.phase),
+            final_inventory=final_inventory,
+        )
+    except ArtifactBindingError as error:
+        raise GateAuthorityMismatchError(str(error)) from error
+    except ArtifactSemanticError as error:
+        raise GateEvidenceError(str(error)) from error
+    if (
+        task_report["baseline_ref"]
+        != artifacts["implementation_baseline"]["ref"]
+        or task_report["baseline_sha256"]
+        != artifacts["implementation_baseline"]["sha256"]
+    ):
+        raise GateAuthorityMismatchError(
+            "TaskReport baseline does not match the gate baseline"
+        )
     snapshot = authority_reader.phase_gate_snapshot(
         phase,
         args.attempt_id,
     )
-    identity_binding = task_report["identity_binding"]
-    if not isinstance(identity_binding, dict):
-        raise GateEvidenceError("TaskReport identity binding is invalid")
     draft: dict[str, object] = {
         "plan_version": str(task_report["plan_version"]),
         "phase": args.phase,
@@ -323,15 +404,13 @@ def _build_gate_candidate(
                 "outcome": task_report["outcome"],
             }
         ],
-        "implementation_baseline": dict(
-            artifacts["code_freeze_manifest"]
-        ),
+        "implementation_baseline": artifacts["implementation_baseline"],
         "code_freeze_manifest": artifacts["code_freeze_manifest"],
         "final_inventory": artifacts["final_inventory"],
         "reviewed_entry_policy": artifacts["reviewed_entry_policy"],
         "scheduler_inventory": {
             **artifacts["scheduler_inventory"],
-            "status": "UNKNOWN",
+            "status": scheduler_status,
         },
         "test_receipts": [],
         "authority_snapshot": snapshot.to_report_dict(),

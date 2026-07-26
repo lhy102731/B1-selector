@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Callable
 
 from .contracts import Phase, canonical_json
+from .artifact_semantics import (
+    ArtifactBindingError,
+    ArtifactSemanticError,
+    validate_code_freeze_manifest,
+    validate_final_inventory,
+    validate_implementation_baseline,
+    validate_reviewed_entry_policy,
+    validate_scheduler_inventory,
+)
 from .stores import (
     AuthorityIdentity,
     AuthorityReader,
@@ -627,10 +636,14 @@ class PhaseGateVerifier:
             )
         return raw
 
-    def _verify_task_report_files(self, report: Mapping[str, object]) -> None:
+    def _verify_task_report_files(
+        self,
+        report: Mapping[str, object],
+    ) -> list[dict[str, object]]:
         task_reports = report["task_reports"]
         if not isinstance(task_reports, list):
             raise GateEvidenceError("gate TaskReport references are invalid")
+        parsed_reports: list[dict[str, object]] = []
         for task_report in task_reports:
             if not isinstance(task_report, Mapping):
                 raise GateEvidenceError("gate TaskReport reference is invalid")
@@ -672,11 +685,21 @@ class PhaseGateVerifier:
                 raise GateAuthorityMismatchError(
                     "TaskReport does not match trusted authority"
                 ) from error
+            parsed_reports.append(parsed)
+        return parsed_reports
 
     def _verify_gate_artifact_files(
         self,
         report: Mapping[str, object],
-    ) -> None:
+    ) -> dict[str, dict[str, object]]:
+        artifacts: dict[str, dict[str, object]] = {}
+        raw_artifacts: dict[str, bytes] = {}
+        references: set[str] = set()
+        task_report_refs = {
+            str(item["report_ref"])
+            for item in report["task_reports"]
+            if isinstance(item, Mapping)
+        }
         for field_name in (
             "implementation_baseline",
             "code_freeze_manifest",
@@ -687,8 +710,14 @@ class PhaseGateVerifier:
             artifact = report[field_name]
             if not isinstance(artifact, Mapping):
                 raise GateEvidenceError(f"{field_name} reference is invalid")
+            reference = str(artifact["ref"])
+            if reference in references or reference in task_report_refs:
+                raise GateEvidenceError(
+                    "gate evidence artifact references must be distinct"
+                )
+            references.add(reference)
             raw = self._read_repository_bytes(
-                str(artifact["ref"]),
+                reference,
                 max_bytes=_MAX_GATE_ARTIFACT_BYTES,
                 evidence_name=field_name,
             )
@@ -698,6 +727,85 @@ class PhaseGateVerifier:
                 actual_sha256,
             ):
                 raise GateEvidenceError(f"{field_name} SHA-256 mismatch")
+            raw_artifacts[field_name] = raw
+
+        policy_reference = report["reviewed_entry_policy"]
+        if not isinstance(policy_reference, Mapping):
+            raise GateEvidenceError("reviewed entry policy reference is invalid")
+        expected_policy_ref = (
+            "research_state/control_plane/policies/"
+            f"{policy_reference['sha256']}.json"
+        )
+        if policy_reference["ref"] != expected_policy_ref:
+            raise GateEvidenceError(
+                "reviewed entry policy is outside the immutable policy namespace"
+            )
+
+        identity = report["identity_binding"]
+        if not isinstance(identity, Mapping):
+            raise GateAuthorityMismatchError("gate identity binding is invalid")
+        expected_identity = {
+            "plan_hash": str(identity["plan_hash"]),
+            "scope_hash": str(identity["scope_hash"]),
+            "instruction_policy_hash": str(identity["instruction_policy_hash"]),
+        }
+        try:
+            artifacts["implementation_baseline"] = validate_implementation_baseline(
+                raw_artifacts["implementation_baseline"],
+                expected_plan_version=str(report["plan_version"]),
+                expected_phase=str(report["phase"]),
+                expected_attempt_id=str(report["attempt_id"]),
+                repository_root=self._repository_root,
+            )
+            artifacts["code_freeze_manifest"] = validate_code_freeze_manifest(
+                raw_artifacts["code_freeze_manifest"],
+                expected_plan_version=str(report["plan_version"]),
+                expected_phase=str(report["phase"]),
+                expected_attempt_id=str(report["attempt_id"]),
+                expected_identity=expected_identity,
+                repository_root=self._repository_root,
+            )
+            if (
+                str(report["implementation_baseline"]["ref"])
+                == str(report["code_freeze_manifest"]["ref"])
+            ):
+                raise ArtifactSemanticError(
+                    "implementation baseline and code-freeze artifact must be distinct"
+                )
+            artifacts["final_inventory"] = validate_final_inventory(
+                raw_artifacts["final_inventory"],
+                expected_plan_version=str(report["plan_version"]),
+                expected_phase=str(report["phase"]),
+                expected_attempt_id=str(report["attempt_id"]),
+                expected_identity=expected_identity,
+                freeze_manifest=artifacts["code_freeze_manifest"],
+            )
+            artifacts["reviewed_entry_policy"] = validate_reviewed_entry_policy(
+                raw_artifacts["reviewed_entry_policy"],
+                expected_plan_version=str(report["plan_version"]),
+                expected_phase=str(report["phase"]),
+                expected_attempt_id=str(report["attempt_id"]),
+                expected_identity=expected_identity,
+                final_inventory=artifacts["final_inventory"],
+            )
+            _, scheduler_status = validate_scheduler_inventory(
+                raw_artifacts["scheduler_inventory"],
+                expected_phase=str(report["phase"]),
+                final_inventory=artifacts["final_inventory"],
+            )
+            scheduler_record = report["scheduler_inventory"]
+            if scheduler_record["status"] != scheduler_status:
+                raise ArtifactSemanticError(
+                    "GateReport scheduler status is not derived from evidence"
+                )
+            artifacts["scheduler_inventory"] = {
+                "status": scheduler_status,
+            }
+        except ArtifactBindingError as error:
+            raise GateAuthorityMismatchError(str(error)) from error
+        except ArtifactSemanticError as error:
+            raise GateEvidenceError(str(error)) from error
+        return artifacts
 
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)
@@ -712,8 +820,19 @@ class PhaseGateVerifier:
         self._verify_evidence(report)
 
     def _verify_evidence(self, report: Mapping[str, object]) -> None:
-        self._verify_task_report_files(report)
         self._verify_gate_artifact_files(report)
+        parsed_task_reports = self._verify_task_report_files(report)
+        baseline_ref = report["implementation_baseline"]
+        if not isinstance(baseline_ref, Mapping):
+            raise GateEvidenceError("implementation baseline reference is invalid")
+        for task_report in parsed_task_reports:
+            if (
+                task_report["baseline_ref"] != baseline_ref["ref"]
+                or task_report["baseline_sha256"] != baseline_ref["sha256"]
+            ):
+                raise GateAuthorityMismatchError(
+                    "TaskReport baseline does not match the gate baseline"
+                )
 
     def verify_evidence(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)

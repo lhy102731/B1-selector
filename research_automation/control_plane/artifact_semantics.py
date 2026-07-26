@@ -27,6 +27,10 @@ class ArtifactSemanticError(ValueError):
     """Raised when an artifact's bytes do not satisfy its role contract."""
 
 
+class ArtifactBindingError(ArtifactSemanticError):
+    """Raised when valid artifact semantics bind to another gate identity."""
+
+
 def _reject_duplicate_keys(
     pairs: list[tuple[str, object]],
 ) -> dict[str, object]:
@@ -294,15 +298,15 @@ def validate_implementation_baseline(
     if payload["schema_version"] != "control_plane.implementation_baseline.v2":
         raise ArtifactSemanticError("unsupported implementation baseline schema")
     if payload["plan_version"] != expected_plan_version:
-        raise ArtifactSemanticError("implementation baseline plan identity mismatch")
+        raise ArtifactBindingError("implementation baseline plan identity mismatch")
     if payload["phase"] != expected_phase:
-        raise ArtifactSemanticError("implementation baseline phase mismatch")
+        raise ArtifactBindingError("implementation baseline phase mismatch")
     if payload["baseline_payload_hash_algorithm"] != _BASELINE_HASH_ALGORITHM:
         raise ArtifactSemanticError("implementation baseline hash algorithm mismatch")
     _sha256(payload["baseline_payload_sha256"], "baseline_payload_sha256")
     baseline = _exact_mapping(payload["baseline"], _BASELINE_FIELDS, "baseline")
     if baseline["attempt_id"] != expected_attempt_id:
-        raise ArtifactSemanticError("implementation baseline attempt mismatch")
+        raise ArtifactBindingError("implementation baseline attempt mismatch")
     _sha256(
         baseline["tracked_user_status_sha256"],
         "baseline.tracked_user_status_sha256",
@@ -410,7 +414,7 @@ def _validate_identity(
         for key in sorted(_IDENTITY_FIELDS)
     }
     if result != dict(expected):
-        raise ArtifactSemanticError(f"{field_name} does not match gate identity")
+        raise ArtifactBindingError(f"{field_name} does not match gate identity")
     return result
 
 
@@ -442,11 +446,11 @@ def validate_code_freeze_manifest(
     if payload["schema_version"] != "control_plane.code_freeze_manifest.v1":
         raise ArtifactSemanticError("unsupported code-freeze manifest schema")
     if payload["plan_version"] != expected_plan_version:
-        raise ArtifactSemanticError("code-freeze plan identity mismatch")
+        raise ArtifactBindingError("code-freeze plan identity mismatch")
     if payload["phase"] != expected_phase:
-        raise ArtifactSemanticError("code-freeze phase mismatch")
+        raise ArtifactBindingError("code-freeze phase mismatch")
     if payload["attempt_id"] != expected_attempt_id:
-        raise ArtifactSemanticError("code-freeze attempt mismatch")
+        raise ArtifactBindingError("code-freeze attempt mismatch")
     _validate_identity(payload["identity_binding"], expected=expected_identity)
     files = payload["files"]
     if not isinstance(files, list):
@@ -637,11 +641,11 @@ def validate_final_inventory(
     if payload["schema_version"] != "control_plane.entry_inventory.v2":
         raise ArtifactSemanticError("unsupported final inventory schema")
     if payload["plan_version"] != expected_plan_version:
-        raise ArtifactSemanticError("final inventory plan identity mismatch")
+        raise ArtifactBindingError("final inventory plan identity mismatch")
     if payload["phase"] != expected_phase:
-        raise ArtifactSemanticError("final inventory phase mismatch")
+        raise ArtifactBindingError("final inventory phase mismatch")
     if payload["attempt_id"] != expected_attempt_id:
-        raise ArtifactSemanticError("final inventory attempt mismatch")
+        raise ArtifactBindingError("final inventory attempt mismatch")
     _validate_identity(payload["identity_binding"], expected=expected_identity)
     freeze_digest = _sha256(
         payload["freeze_payload_sha256"],
@@ -712,11 +716,11 @@ def validate_reviewed_entry_policy(
     if payload["schema_version"] != "control_plane.entry_policy.v1":
         raise ArtifactSemanticError("unsupported reviewed entry policy schema")
     if payload["plan_version"] != expected_plan_version:
-        raise ArtifactSemanticError("reviewed policy plan identity mismatch")
+        raise ArtifactBindingError("reviewed policy plan identity mismatch")
     if payload["phase"] != expected_phase:
-        raise ArtifactSemanticError("reviewed policy phase mismatch")
+        raise ArtifactBindingError("reviewed policy phase mismatch")
     if payload["attempt_id"] != expected_attempt_id:
-        raise ArtifactSemanticError("reviewed policy attempt mismatch")
+        raise ArtifactBindingError("reviewed policy attempt mismatch")
     _validate_identity(payload["identity_binding"], expected=expected_identity)
     if payload["review_state"] != "APPROVED":
         raise ArtifactSemanticError("reviewed policy is not APPROVED")
@@ -766,7 +770,7 @@ def validate_scheduler_inventory(
     if payload["schema_version"] != "control_plane.external_scheduler_inventory.v1":
         raise ArtifactSemanticError("unsupported scheduler inventory schema")
     if payload["phase"] != expected_phase:
-        raise ArtifactSemanticError("scheduler inventory phase mismatch")
+        raise ArtifactBindingError("scheduler inventory phase mismatch")
     observed_at = _string(payload["observed_at"], "scheduler.observed_at")
     try:
         parsed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
@@ -881,6 +885,7 @@ def validate_scheduler_inventory(
 
 
 __all__ = [
+    "ArtifactBindingError",
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
     "parse_strict_json",

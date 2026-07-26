@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -306,6 +307,264 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
+            artifact_paths: dict[str, Path] = {}
+            identity_dict = {
+                "plan_hash": identity.plan_hash,
+                "scope_hash": identity.scope_hash,
+                "instruction_policy_hash": identity.instruction_policy_hash,
+            }
+            baseline_member: dict[str, object] = {
+                "attempt_id": "p0r2-attempt-001",
+                "git_head": "0" * 40,
+                "branch": "codex/test-gate",
+                "tracked_user_status_sha256": "0" * 64,
+                "tracked_user_status_line_count": 0,
+                "protected_tracked_changes": [],
+                "file_state_count": 0,
+                "file_states": {},
+                "data_scan_policy": "Bounded test fixture; data is excluded.",
+                "large_data_scanned": False,
+                "production_or_research_task_started": False,
+            }
+            baseline_payload: dict[str, object] = {
+                "schema_version": "control_plane.implementation_baseline.v2",
+                "plan_version": "V3.4.2-P0R2",
+                "phase": "P0",
+                "baseline_payload_hash_algorithm": (
+                    "sha256(canonical UTF-8 JSON of the baseline member; "
+                    "sorted object keys; semantic array order preserved; "
+                    "compact separators)"
+                ),
+                "baseline_payload_sha256": hashlib.sha256(
+                    canonical_json(baseline_member).encode("utf-8")
+                ).hexdigest(),
+                "baseline": baseline_member,
+            }
+            baseline_ref = (
+                "research_state/control_plane/p0r2/"
+                "implementation_baseline.json"
+            )
+            baseline_path = root / baseline_ref
+            baseline_path.parent.mkdir(parents=True, exist_ok=True)
+            baseline_bytes = canonical_json(baseline_payload).encode("utf-8")
+            baseline_path.write_bytes(baseline_bytes)
+            baseline_sha256 = hashlib.sha256(baseline_bytes).hexdigest()
+            artifact_paths["implementation_baseline"] = baseline_path
+            task_spec = dict(task_spec)
+            task_spec["baseline_ref"] = baseline_ref
+            task_spec["baseline_sha256"] = baseline_sha256
+
+            seam_specs = (
+                (
+                    "research_automation/autonomous_runner.py",
+                    "callable:research_automation.autonomous_runner:"
+                    "AutonomousRunnerV1.run",
+                    "AutonomousRunnerV1.run",
+                ),
+                (
+                    "research_automation/discovery_execution_bridge.py",
+                    "callable:research_automation.discovery_execution_bridge:"
+                    "execute_plan",
+                    "execute_plan",
+                ),
+                (
+                    "research_automation/kbase_ag2_full_cycle.py",
+                    "callable:research_automation.kbase_ag2_full_cycle:"
+                    "run_kbase_ag2_full_cycle",
+                    "run_kbase_ag2_full_cycle",
+                ),
+            )
+            freeze_files: list[dict[str, object]] = []
+            seam_digests: dict[str, str] = {}
+            for path_text, _, _ in seam_specs:
+                source_path = root.joinpath(*path_text.split("/"))
+                source_path.parent.mkdir(parents=True, exist_ok=True)
+                source_bytes = f"# fixture {path_text}\n".encode("utf-8")
+                source_path.write_bytes(source_bytes)
+                digest = hashlib.sha256(source_bytes).hexdigest()
+                seam_digests[path_text] = digest
+                freeze_files.append(
+                    {
+                        "path": path_text,
+                        "sha256": digest,
+                        "bytes": len(source_bytes),
+                    }
+                )
+            freeze_files.sort(key=lambda item: str(item["path"]))
+            freeze_payload: dict[str, object] = {
+                "schema_version": "control_plane.code_freeze_manifest.v1",
+                "plan_version": "V3.4.2-P0R2",
+                "phase": "P0",
+                "attempt_id": "p0r2-attempt-001",
+                "identity_binding": identity_dict,
+                "files": freeze_files,
+                "file_count": len(freeze_files),
+            }
+            freeze_payload["freeze_payload_sha256"] = hashlib.sha256(
+                canonical_json(freeze_payload).encode("utf-8")
+            ).hexdigest()
+            freeze_ref = (
+                "research_state/control_plane/p0r2/evidence/"
+                "code_freeze_manifest.json"
+            )
+            freeze_path = root / freeze_ref
+            freeze_path.parent.mkdir(parents=True, exist_ok=True)
+            freeze_bytes = canonical_json(freeze_payload).encode("utf-8")
+            freeze_path.write_bytes(freeze_bytes)
+            artifact_paths["code_freeze_manifest"] = freeze_path
+
+            scheduler_metadata = {
+                "acl_summary": "owner=BUILTIN\\Administrators;sddl=O:BA",
+                "action": "D:/workspace/run_select.bat",
+                "principal": "Administrator|Interactive|Limited",
+                "state": "Ready",
+                "trigger": (
+                    "MSFT_TaskDailyTrigger|start=2026-03-16T20:00:00|"
+                    "days_interval=1|enabled=true"
+                ),
+            }
+            inventory_entries: list[dict[str, object]] = [
+                {
+                    "entry_id": "external:scheduler:/A\u80a1\u9009\u80a1",
+                    "path": "/A\u80a1\u9009\u80a1",
+                    "kind": "external_scheduler",
+                    "callable_name": "D:/workspace/run_select.bat",
+                    "actor_type": "scheduler",
+                    "content_sha256": "d" * 64,
+                    "disposition": "PRODUCTION_DAILY",
+                    "trust_state": "production_daily",
+                    "declared_side_effects": [],
+                    "declared_phase": None,
+                    "resource_roots": [],
+                    "external_metadata": scheduler_metadata,
+                    "source": "external_scheduler_inventory",
+                }
+            ]
+            for path_text, entry_id, callable_name in seam_specs:
+                inventory_entries.append(
+                    {
+                        "entry_id": entry_id,
+                        "path": path_text,
+                        "kind": "python_callable",
+                        "callable_name": callable_name,
+                        "actor_type": "legacy_runner",
+                        "content_sha256": seam_digests[path_text],
+                        "disposition": "LEGACY_UNAUDITED",
+                        "trust_state": "legacy_unaudited",
+                        "declared_side_effects": ["RUN_RESEARCH"],
+                        "declared_phase": None,
+                        "resource_roots": [],
+                        "external_metadata": {},
+                        "source": "required_import_seam",
+                    }
+                )
+            inventory_entries.sort(
+                key=lambda item: (
+                    str(item["kind"]),
+                    str(item["path"]),
+                    str(item["entry_id"]),
+                )
+            )
+            inventory_payload: dict[str, object] = {
+                "schema_version": "control_plane.entry_inventory.v2",
+                "plan_version": "V3.4.2-P0R2",
+                "phase": "P0",
+                "attempt_id": "p0r2-attempt-001",
+                "identity_binding": identity_dict,
+                "freeze_payload_sha256": freeze_payload[
+                    "freeze_payload_sha256"
+                ],
+                "entries": inventory_entries,
+                "entry_count": len(inventory_entries),
+            }
+            inventory_payload["inventory_payload_sha256"] = hashlib.sha256(
+                canonical_json(inventory_payload).encode("utf-8")
+            ).hexdigest()
+            inventory_ref = (
+                "research_state/control_plane/p0r2/evidence/"
+                "final_inventory.json"
+            )
+            inventory_path = root / inventory_ref
+            inventory_bytes = canonical_json(inventory_payload).encode("utf-8")
+            inventory_path.write_bytes(inventory_bytes)
+            artifact_paths["final_inventory"] = inventory_path
+
+            policy_payload: dict[str, object] = {
+                "schema_version": "control_plane.entry_policy.v1",
+                "plan_version": "V3.4.2-P0R2",
+                "phase": "P0",
+                "attempt_id": "p0r2-attempt-001",
+                "identity_binding": identity_dict,
+                "review_state": "APPROVED",
+                "reviewer_id": "independent-test-reviewer",
+                "review_receipt_sha256": "e" * 64,
+                "inventory_payload_sha256": inventory_payload[
+                    "inventory_payload_sha256"
+                ],
+                "entries": inventory_entries,
+                "entry_count": len(inventory_entries),
+            }
+            policy_payload["policy_payload_sha256"] = hashlib.sha256(
+                canonical_json(policy_payload).encode("utf-8")
+            ).hexdigest()
+            policy_bytes = canonical_json(policy_payload).encode("utf-8")
+            policy_sha256 = hashlib.sha256(policy_bytes).hexdigest()
+            policy_ref = (
+                "research_state/control_plane/policies/"
+                f"{policy_sha256}.json"
+            )
+            policy_path = root / policy_ref
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_bytes(policy_bytes)
+            artifact_paths["reviewed_entry_policy"] = policy_path
+
+            scheduler_payload = {
+                "schema_version": (
+                    "control_plane.external_scheduler_inventory.v1"
+                ),
+                "phase": "P0",
+                "observed_at": "2026-07-26T01:18:14+08:00",
+                "collection_mode": "READ_ONLY",
+                "task_path": "\\A\u80a1\u9009\u80a1",
+                "task_state": "Ready",
+                "operational_classification": "PRODUCTION_DAILY",
+                "task_xml": {
+                    "path": "C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1",
+                    "sha256": "d" * 64,
+                },
+                "action": {
+                    "execute": "D:/workspace/run_select.bat",
+                    "arguments": None,
+                    "working_directory": None,
+                    "content_sha256": "f" * 64,
+                },
+                "principal": {
+                    "user_id": "Administrator",
+                    "logon_type": "Interactive",
+                    "run_level": "Limited",
+                },
+                "trigger": {
+                    "type": "MSFT_TaskDailyTrigger",
+                    "start_boundary": "2026-03-16T20:00:00",
+                    "enabled": True,
+                    "days_interval": 1,
+                },
+                "acl": {
+                    "owner": "BUILTIN\\Administrators",
+                    "sddl": "O:BA",
+                },
+                "altered_by_p0": False,
+                "unresolved_risk": "Production scheduler evidence is explicit.",
+            }
+            scheduler_ref = (
+                "research_state/control_plane/p0r2/evidence/"
+                "scheduler_inventory.json"
+            )
+            scheduler_path = root / scheduler_ref
+            scheduler_bytes = canonical_json(scheduler_payload).encode("utf-8")
+            scheduler_path.write_bytes(scheduler_bytes)
+            artifact_paths["scheduler_inventory"] = scheduler_path
+
             authority_path = root / "authority.sqlite3"
             operational_path = root / "operational.sqlite3"
             with patch.multiple(
@@ -418,31 +677,22 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "outcome": "PASS",
                     }
                 ]
-                artifact_paths: dict[str, Path] = {}
-                for field_name in (
-                    "implementation_baseline",
-                    "code_freeze_manifest",
-                    "final_inventory",
-                    "reviewed_entry_policy",
-                    "scheduler_inventory",
-                ):
-                    artifact_ref = f"artifacts/{field_name}.json"
-                    artifact_path = root / artifact_ref
-                    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-                    artifact_bytes = canonical_json(
-                        {"artifact_type": field_name}
-                    ).encode("utf-8")
-                    artifact_path.write_bytes(artifact_bytes)
-                    artifact_paths[field_name] = artifact_path
+                artifact_refs = {
+                    "implementation_baseline": baseline_ref,
+                    "code_freeze_manifest": freeze_ref,
+                    "final_inventory": inventory_ref,
+                    "reviewed_entry_policy": policy_ref,
+                    "scheduler_inventory": scheduler_ref,
+                }
+                for field_name, artifact_ref in artifact_refs.items():
+                    artifact_bytes = artifact_paths[field_name].read_bytes()
                     draft[field_name] = {
                         "ref": artifact_ref,
-                        "sha256": hashlib.sha256(
-                            artifact_bytes
-                        ).hexdigest(),
+                        "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
                     }
-                scheduler_inventory = draft["scheduler_inventory"]
-                self.assertIsInstance(scheduler_inventory, dict)
-                scheduler_inventory["status"] = "VERIFIED"
+                scheduler_record = draft["scheduler_inventory"]
+                self.assertIsInstance(scheduler_record, dict)
+                scheduler_record["status"] = "VERIFIED"
                 draft["authority_snapshot"] = snapshot_dict
                 report = PhaseGateBuilder(clock=lambda: now).build(draft)
                 verifier = PhaseGateVerifier(
@@ -469,6 +719,43 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     task_report_bytes=task_report_bytes,
                     artifact_paths=artifact_paths,
                 )
+
+    def _gate_build_cli_args(
+        self,
+        fixture: _TrustedGateFixture,
+        output: str | Path,
+    ) -> list[str]:
+        def reference(field_name: str) -> str:
+            artifact = fixture.draft[field_name]
+            self.assertIsInstance(artifact, dict)
+            return str(artifact["ref"])
+
+        task_reports = fixture.draft["task_reports"]
+        self.assertIsInstance(task_reports, list)
+        task_report = task_reports[0]
+        self.assertIsInstance(task_report, dict)
+        return [
+            "gate",
+            "build",
+            "--phase",
+            "P0",
+            "--attempt-id",
+            "p0r2-attempt-001",
+            "--baseline",
+            reference("implementation_baseline"),
+            "--freeze-manifest",
+            reference("code_freeze_manifest"),
+            "--inventory",
+            reference("final_inventory"),
+            "--entry-policy",
+            reference("reviewed_entry_policy"),
+            "--scheduler-inventory",
+            reference("scheduler_inventory"),
+            "--task-report-id",
+            str(task_report["report_ref"]),
+            "--output",
+            str(output),
+        ]
 
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
         with self._trusted_gate_fixture() as fixture:
@@ -599,6 +886,85 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     with self.assertRaises(GateEvidenceError):
                         fixture.verifier.verify(fixture.report)
 
+    def test_verifier_rejects_semantically_invalid_gate_artifact(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            invalid_bytes = b'{"artifact_type":"final_inventory"}'
+            inventory_path = fixture.artifact_paths["final_inventory"]
+            inventory_path.write_bytes(invalid_bytes)
+            draft = dict(fixture.draft)
+            inventory_ref = dict(fixture.draft["final_inventory"])
+            inventory_ref["sha256"] = hashlib.sha256(invalid_bytes).hexdigest()
+            draft["final_inventory"] = inventory_ref
+            report = PhaseGateBuilder().build(draft)
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(report)
+
+    def test_verifier_derives_scheduler_status_from_artifact(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            scheduler_path = fixture.artifact_paths["scheduler_inventory"]
+            scheduler_payload = json.loads(
+                scheduler_path.read_text(encoding="utf-8")
+            )
+            scheduler_payload["collection_mode"] = "UNAVAILABLE"
+            scheduler_bytes = canonical_json(scheduler_payload).encode("utf-8")
+            scheduler_path.write_bytes(scheduler_bytes)
+            draft = dict(fixture.draft)
+            scheduler_ref = dict(fixture.draft["scheduler_inventory"])
+            scheduler_ref["sha256"] = hashlib.sha256(
+                scheduler_bytes
+            ).hexdigest()
+            scheduler_ref["status"] = "VERIFIED"
+            draft["scheduler_inventory"] = scheduler_ref
+            report = PhaseGateBuilder().build(draft)
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(report)
+
+    def test_verifier_rejects_source_tree_policy_masquerade(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            policy_bytes = fixture.artifact_paths[
+                "reviewed_entry_policy"
+            ].read_bytes()
+            source_policy = (
+                fixture.root
+                / "research_automation"
+                / "control_plane"
+                / "entry_policy.json"
+            )
+            source_policy.parent.mkdir(parents=True, exist_ok=True)
+            source_policy.write_bytes(policy_bytes)
+            draft = dict(fixture.draft)
+            draft["reviewed_entry_policy"] = {
+                "ref": "research_automation/control_plane/entry_policy.json",
+                "sha256": hashlib.sha256(policy_bytes).hexdigest(),
+            }
+            report = PhaseGateBuilder().build(draft)
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(report)
+
+    def test_task_report_must_bind_the_same_implementation_baseline(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            baseline_bytes = fixture.artifact_paths[
+                "implementation_baseline"
+            ].read_bytes() + b"\n"
+            copied_ref = (
+                "research_state/control_plane/p0r2/"
+                "implementation_baseline_copy.json"
+            )
+            copied_path = fixture.root / copied_ref
+            copied_path.write_bytes(baseline_bytes)
+            draft = dict(fixture.draft)
+            draft["implementation_baseline"] = {
+                "ref": copied_ref,
+                "sha256": hashlib.sha256(baseline_bytes).hexdigest(),
+            }
+            report = PhaseGateBuilder().build(draft)
+
+            with self.assertRaises(GateAuthorityMismatchError):
+                fixture.verifier.verify(report)
+
     def test_closer_atomically_records_a_passing_gate(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             closure = fixture.closer.close_bytes(
@@ -719,26 +1085,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
     def test_cli_builds_a_gate_candidate_from_hashed_inputs(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             output_path = fixture.root / "built-gate-report.json"
-            args = [
-                "gate",
-                "build",
-                "--phase",
-                "P0",
-                "--attempt-id",
-                "p0r2-attempt-001",
-                "--freeze-manifest",
-                "artifacts/code_freeze_manifest.json",
-                "--inventory",
-                "artifacts/final_inventory.json",
-                "--entry-policy",
-                "artifacts/reviewed_entry_policy.json",
-                "--scheduler-inventory",
-                "artifacts/scheduler_inventory.json",
-                "--task-report-id",
-                "reports/gate.json",
-                "--output",
-                str(output_path),
-            ]
+            args = self._gate_build_cli_args(fixture, output_path)
             stdout = StringIO()
             stderr = StringIO()
 
@@ -756,6 +1103,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(built["phase"], "P0")
             self.assertEqual(built["attempt_id"], "p0r2-attempt-001")
             self.assertEqual(built["task_reports"][0]["ticket_id"], fixture.ticket_id)
+            fixture.verifier.verify(built)
             self.assertIn('"status":"BUILT"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
@@ -769,34 +1117,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.subTest(size=size):
                 with self._trusted_gate_fixture() as fixture:
                     artifact_path = fixture.artifact_paths[
-                        "code_freeze_manifest"
+                        "scheduler_inventory"
                     ]
-                    artifact_path.write_bytes(b"x" * size)
+                    scheduler_payload = json.loads(
+                        artifact_path.read_text(encoding="utf-8")
+                    )
+                    scheduler_payload["unresolved_risk"] = "x" * size
+                    artifact_path.write_bytes(
+                        canonical_json(scheduler_payload).encode("utf-8")
+                    )
                     output_path = fixture.root / f"built-{size}.json"
                     stdout = StringIO()
                     stderr = StringIO()
 
                     exit_code = gate_cli_main(
-                        [
-                            "gate",
-                            "build",
-                            "--phase",
-                            "P0",
-                            "--attempt-id",
-                            "p0r2-attempt-001",
-                            "--freeze-manifest",
-                            "artifacts/code_freeze_manifest.json",
-                            "--inventory",
-                            "artifacts/final_inventory.json",
-                            "--entry-policy",
-                            "artifacts/reviewed_entry_policy.json",
-                            "--scheduler-inventory",
-                            "artifacts/scheduler_inventory.json",
-                            "--task-report-id",
-                            "reports/gate.json",
-                            "--output",
-                            str(output_path),
-                        ],
+                        self._gate_build_cli_args(fixture, output_path),
                         stdout=stdout,
                         stderr=stderr,
                         authority_reader=fixture.reader,
@@ -822,26 +1157,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     stdout = StringIO()
                     stderr = StringIO()
                     exit_code = gate_cli_main(
-                        [
-                            "gate",
-                            "build",
-                            "--phase",
-                            "P0",
-                            "--attempt-id",
-                            "p0r2-attempt-001",
-                            "--freeze-manifest",
-                            "artifacts/code_freeze_manifest.json",
-                            "--inventory",
-                            "artifacts/final_inventory.json",
-                            "--entry-policy",
-                            "artifacts/reviewed_entry_policy.json",
-                            "--scheduler-inventory",
-                            "artifacts/scheduler_inventory.json",
-                            "--task-report-id",
-                            "reports/gate.json",
-                            "--output",
-                            output_text,
-                        ],
+                        self._gate_build_cli_args(fixture, output_text),
                         stdout=stdout,
                         stderr=stderr,
                         authority_reader=fixture.reader,
@@ -860,26 +1176,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
             stderr = StringIO()
 
             exit_code = gate_cli_main(
-                [
-                    "gate",
-                    "build",
-                    "--phase",
-                    "P0",
-                    "--attempt-id",
-                    "p0r2-attempt-001",
-                    "--freeze-manifest",
-                    "artifacts/code_freeze_manifest.json",
-                    "--inventory",
-                    "artifacts/final_inventory.json",
-                    "--entry-policy",
-                    "artifacts/reviewed_entry_policy.json",
-                    "--scheduler-inventory",
-                    "artifacts/scheduler_inventory.json",
-                    "--task-report-id",
-                    "reports/gate.json",
-                    "--output",
-                    str(output_path),
-                ],
+                self._gate_build_cli_args(fixture, output_path),
                 stdout=stdout,
                 stderr=stderr,
                 authority_reader=fixture.reader,
@@ -898,26 +1195,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
             stderr = StringIO()
 
             exit_code = gate_cli_main(
-                [
-                    "gate",
-                    "build",
-                    "--phase",
-                    "P0",
-                    "--attempt-id",
-                    "p0r2-attempt-001",
-                    "--freeze-manifest",
-                    "artifacts/code_freeze_manifest.json",
-                    "--inventory",
-                    "artifacts/final_inventory.json",
-                    "--entry-policy",
-                    "artifacts/reviewed_entry_policy.json",
-                    "--scheduler-inventory",
-                    "artifacts/scheduler_inventory.json",
-                    "--task-report-id",
-                    "reports/gate.json",
-                    "--output",
-                    str(output_path),
-                ],
+                self._gate_build_cli_args(fixture, output_path),
                 stdout=stdout,
                 stderr=stderr,
                 authority_reader=fixture.reader,
