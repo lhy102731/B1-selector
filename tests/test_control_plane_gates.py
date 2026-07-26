@@ -445,6 +445,17 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.assertRaises(GateAuthorityMismatchError):
                 fixture.verifier.verify(gate_report)
 
+    def test_verifier_binds_gate_identity_to_task_reports(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            forged_draft = dict(fixture.draft)
+            forged_identity = dict(fixture.draft["identity_binding"])
+            forged_identity["plan_hash"] = "9" * 64
+            forged_draft["identity_binding"] = forged_identity
+            forged_report = PhaseGateBuilder().build(forged_draft)
+
+            with self.assertRaises(GateAuthorityMismatchError):
+                fixture.verifier.verify(forged_report)
+
 
 if __name__ == "__main__":
     unittest.main()

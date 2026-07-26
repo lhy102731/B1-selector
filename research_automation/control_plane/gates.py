@@ -542,6 +542,14 @@ class PhaseGateVerifier:
                 raise GateEvidenceError(
                     "TaskReport reference does not match its contents"
                 )
+            if (
+                parsed["phase"] != report["phase"]
+                or parsed["attempt_id"] != report["attempt_id"]
+                or parsed["identity_binding"] != report["identity_binding"]
+            ):
+                raise GateAuthorityMismatchError(
+                    "TaskReport does not match the gate identity"
+                )
             try:
                 self._authority_reader.verify_task_report_binding(parsed)
             except TaskReportAuthorityError as error:
