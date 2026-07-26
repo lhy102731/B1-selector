@@ -79,6 +79,7 @@ _ALLOWED_OPERATIONS = frozenset(
         "WEB_WRITE",
         "WEB_CONFIG_WRITE",
         "WEB_DELETE",
+        "CLI",
     }
 )
 _INTENT_NAMESPACE = "research_state/control_plane/p0r2/intents/"

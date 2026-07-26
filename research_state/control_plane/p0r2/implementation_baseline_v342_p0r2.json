@@ -3,7 +3,7 @@
   "plan_version": "V3.4.2-P0R2",
   "phase": "P0",
   "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)",
-  "baseline_payload_sha256": "6e193b08ac0b2a447753c71f9bb069c516e3d7cf0d2b483792f49707a64efb9a",
+  "baseline_payload_sha256": "28b8e9116014de371bb47032b1e1313b69ee5b19df210ad94fb2dbcf8c38b3ca",
   "baseline": {
     "attempt_id": "p0r2-attempt-001",
     "git_head": "0b7e0fdeac7060c1ce99999731c116157d1ddfbd",
@@ -63,7 +63,11 @@
       " M apps/web_server.py",
       " M research_automation/control_plane/sink_guard.py",
       " M research_automation/control_plane/web_guard.py",
-      " M tests/test_web_entry_guards.py"
+      " M tests/test_web_entry_guards.py",
+      " M run_research.py",
+      " M research_automation/control_plane/cli_registry.py",
+      " M tests/test_cli_entry_guards.py",
+      " M tests/test_ag2_cli_routing.py"
     ],
     "file_state_count": 56,
     "file_states": {
