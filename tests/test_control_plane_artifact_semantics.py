@@ -5,6 +5,7 @@ import hashlib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from research_automation.control_plane.artifact_semantics import (
     ArtifactSemanticError,
@@ -155,6 +156,24 @@ class CodeFreezeManifestTests(unittest.TestCase):
 
             with self.assertRaises(ArtifactSemanticError):
                 self._validate(payload, root)
+
+    def test_validation_rejects_a_reparse_parent_in_the_frozen_path(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = self._payload(root)
+            reparse_parent = root / "research_automation"
+
+            with patch.object(
+                Path,
+                "is_junction",
+                autospec=True,
+                side_effect=lambda path: path == reparse_parent,
+            ):
+                with self.assertRaisesRegex(
+                    ArtifactSemanticError,
+                    "reparse",
+                ):
+                    self._validate(payload, root)
 
     def test_freeze_rejects_data_paths_and_count_drift(self) -> None:
         with TemporaryDirectory() as tmp:

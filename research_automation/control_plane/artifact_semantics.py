@@ -21,6 +21,7 @@ from .contracts import ACTOR_TYPES, Phase, SideEffect, canonical_sha256
 MAX_ARTIFACT_JSON_DEPTH = 64
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 GIT_COMMIT_RE = re.compile(r"[0-9a-f]{40}\Z")
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 
 
 class ArtifactSemanticError(ValueError):
@@ -29,6 +30,29 @@ class ArtifactSemanticError(ValueError):
 
 class ArtifactBindingError(ArtifactSemanticError):
     """Raised when valid artifact semantics bind to another gate identity."""
+
+
+def _path_is_reparse_point(path: Path) -> bool:
+    try:
+        if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError as error:
+        raise ArtifactSemanticError(
+            f"unable to inspect freeze path for reparse points: {path}"
+        ) from error
+    return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _reject_reparse_components(root: Path, relative: str) -> Path:
+    candidate = root
+    for component in relative.split("/"):
+        candidate = candidate / component
+        if _path_is_reparse_point(candidate):
+            raise ArtifactSemanticError(
+                f"code-freeze path contains a reparse point: {relative}"
+            )
+    return candidate
 
 
 def _reject_duplicate_keys(
@@ -478,12 +502,13 @@ def validate_code_freeze_manifest(
         )
         if repository_root is not None:
             try:
-                root = Path(repository_root).resolve(strict=True)
-                candidate = root.joinpath(*path.split("/"))
-                if candidate.is_symlink():
+                candidate_root = Path(repository_root)
+                if _path_is_reparse_point(candidate_root):
                     raise ArtifactSemanticError(
-                        f"code-freeze file is a reparse/symlink: {path}"
+                        "code-freeze repository root is a reparse point"
                     )
+                root = candidate_root.resolve(strict=True)
+                candidate = _reject_reparse_components(root, path)
                 resolved = candidate.resolve(strict=True)
                 resolved.relative_to(root)
                 if not resolved.is_file():
