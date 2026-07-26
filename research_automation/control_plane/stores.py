@@ -151,6 +151,10 @@ class OutboxConflictError(StoreError):
     """Raised when one event_id is associated with different event content."""
 
 
+class PendingOutboxError(StoreError):
+    """Raised when phase close is attempted before authority mirroring drains."""
+
+
 class _BearerSecret:
     """Opaque in-memory secret whose normal renderings are always redacted."""
 
@@ -724,6 +728,12 @@ class _AuthorityStore:
     def _now(self) -> datetime:
         return _require_aware_datetime(self._clock(), "clock result")
 
+    def _assert_outbox_drained_for_phase_close(self) -> None:
+        if AuthorityReader().pending_outbox_count() != 0:
+            raise PendingOutboxError(
+                "pending authority outbox blocks phase closure"
+            )
+
     def _read_pending_outbox(
         self,
         *,
@@ -1158,6 +1168,7 @@ __all__ = [
     "OperationalReader",
     "OutboxConflictError",
     "OutboxMirrorResult",
+    "PendingOutboxError",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",

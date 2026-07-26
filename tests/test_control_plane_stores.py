@@ -581,6 +581,46 @@ class TrustedBootstrapTests(unittest.TestCase):
                 self.assertEqual(AuthorityReader().pending_outbox_count(), 1)
                 self.assertEqual(stores_module.OperationalReader().event_count(), 0)
 
+    def test_pending_outbox_blocks_phase_closure(self) -> None:
+        now = datetime(2026, 7, 26, 4, 0, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-pending-outbox")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                journal = stores_module._OperationalJournal(clock=lambda: now)
+                authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+
+                with self.assertRaises(stores_module.PendingOutboxError):
+                    authority._assert_outbox_drained_for_phase_close()
+
+                stores_module._mirror_authority_outbox(
+                    authority,
+                    journal,
+                    limit=10,
+                )
+                authority._assert_outbox_drained_for_phase_close()
+
 
 if __name__ == "__main__":
     unittest.main()
