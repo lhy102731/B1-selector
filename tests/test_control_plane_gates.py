@@ -6,11 +6,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
+from research_automation.control_plane.cli import main as gate_cli_main
 from research_automation.control_plane.contracts import (
     Actor,
     Phase,
@@ -44,6 +46,7 @@ ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
 
 @dataclass(frozen=True, slots=True)
 class _TrustedGateFixture:
+    root: Path
     snapshot: dict[str, object]
     active_grant_id: str
     ticket_id: str
@@ -409,6 +412,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     clock=lambda: now,
                 )
                 yield _TrustedGateFixture(
+                    root=root,
                     snapshot=snapshot_dict,
                     active_grant_id=grant.grant_id,
                     ticket_id=ticket.ticket_id,
@@ -600,6 +604,70 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
             with self.assertRaises(PhaseGateClosureConflictError):
                 fixture.closer.close(different_report)
+
+    def test_cli_verifies_a_passing_gate_read_only(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            report_path = fixture.root / "gate-report.json"
+            report_path.write_text(
+                canonical_json(fixture.report),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "verify",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--read-only",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn('"verdict":"PASS"', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            report_path = fixture.root / "gate-report.json"
+            report_path.write_text(
+                canonical_json(fixture.report),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "verify",
+                    "--phase",
+                    "P1",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--read-only",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 4)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("GateAuthorityMismatchError", stderr.getvalue())
 
 
 if __name__ == "__main__":
