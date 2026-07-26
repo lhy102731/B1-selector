@@ -70,7 +70,8 @@ class AutonomousRunnerV1:
                  keep_scratch: bool = False, memory_packet_recent_n: int = 8,
                  project_root: str | Path | None = None, workspace_mode: bool = True,
                  research_mode: str = "parameter", execution_lease=None,
-                 execution_invocation=None, authority_reader=None):
+                 execution_invocation=None, authority_reader=None,
+                 llm_lease=None, llm_invocation=None):
         self.strategy = strategy.lower()
         # validate selection up front: unsupported strategies (e.g. b3) raise with a reason
         self.profile = require_supported(self.strategy)
@@ -99,6 +100,8 @@ class AutonomousRunnerV1:
         self.execution_lease = execution_lease
         self.execution_invocation = execution_invocation
         self.authority_reader = authority_reader
+        self.llm_lease = llm_lease
+        self.llm_invocation = llm_invocation
 
     # ---- stop control -----------------------------------------------------
     def _stop_requested(self) -> bool:
@@ -176,6 +179,30 @@ class AutonomousRunnerV1:
                 )
         except (ExecutionAuthorizationError, OSError, ValueError) as error:
             raise AuthorizationError(f"AutonomousRunnerV1 authority rejected: {error}") from error
+        if not isinstance(getattr(self, "llm_lease", None), TaskExecutionLease) or not isinstance(
+            getattr(self, "llm_invocation", None), ExecutionInvocation
+        ):
+            raise AuthorizationError(
+                "AutonomousRunnerV1 requires an LLM execution lease and invocation"
+            )
+        try:
+            llm_permit = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root,
+            ).authorize(self.llm_lease, self.llm_invocation)
+            if (
+                llm_permit.operation != "AUTONOMOUS"
+                or llm_permit.effect is not SideEffect.NETWORK_EGRESS
+                or self.llm_invocation.runner.module
+                != "research_automation.autonomous_runner"
+                or self.llm_invocation.runner.callable_name
+                != "AutonomousRunnerV1.run"
+            ):
+                raise ExecutionAuthorizationError(
+                    "autonomous LLM requires a NETWORK_EGRESS AUTONOMOUS intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            raise AuthorizationError(f"AutonomousRunnerV1 LLM authority rejected: {error}") from error
         t0 = time.time()
         runs_root = authorized_runs_root
         runs_root.mkdir(parents=True, exist_ok=True)
