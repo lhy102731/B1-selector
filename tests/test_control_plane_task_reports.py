@@ -250,6 +250,11 @@ class TaskReportV2TracerTests(unittest.TestCase):
             }
         }
         draft["unexpected_changes"] = ["strategy/unified_b1_strategy.py"]
+        changed_files = draft["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["path"] = "strategy/unified_b1_strategy.py"
 
         report = build_task_report_v2(draft)
 
@@ -986,6 +991,228 @@ class TaskReportV2TracerTests(unittest.TestCase):
             r"review_findings\[0\] conflicts with PASS review receipt",
         ):
             validate_task_report_v2(report)
+
+    def test_changed_file_rejects_unknown_nested_fields(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["caller_note"] = "not part of the changed-file contract"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\] contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_changed_file_change_type_is_closed(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["change_type"] = "RENAME"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\]\.change_type must be ADD, MODIFY, or DELETE",
+        ):
+            validate_task_report_v2(report)
+
+    def test_added_file_requires_null_baseline_hash(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["baseline_sha256"] = "9" * 64
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\] ADD requires baseline_sha256 null",
+        ):
+            validate_task_report_v2(report)
+
+    def test_added_file_requires_a_current_sha256(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["current_sha256"] = None
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\]\.current_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_modified_file_requires_a_baseline_sha256(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["change_type"] = "MODIFY"
+        changed_file["baseline_sha256"] = None
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\]\.baseline_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_modified_file_requires_a_current_sha256(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["change_type"] = "MODIFY"
+        changed_file["baseline_sha256"] = "9" * 64
+        changed_file["current_sha256"] = None
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\]\.current_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_deleted_file_requires_a_baseline_sha256(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["change_type"] = "DELETE"
+        changed_file["baseline_sha256"] = None
+        changed_file["current_sha256"] = None
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\]\.baseline_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_deleted_file_requires_null_current_hash(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["change_type"] = "DELETE"
+        changed_file["baseline_sha256"] = "9" * 64
+        changed_file["current_sha256"] = "5" * 64
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"changed_files\[0\] DELETE requires current_sha256 null",
+        ):
+            validate_task_report_v2(report)
+
+    def test_changed_file_path_must_be_repository_relative_posix(self) -> None:
+        invalid_paths = [
+            "",
+            "research_automation\\control_plane\\task_reports.py",
+            "/absolute/file.py",
+            "//server/share/file.py",
+            "C:/repo/file.py",
+            "C:repo/file.py",
+            "dir/:stream",
+            "dir/*.py",
+            "dir/?.py",
+            "../escape.py",
+            "dir/../file.py",
+            "./file.py",
+            "dir//file.py",
+            "dir/",
+            "dir/\x00file.py",
+            "dir/\x1ffile.py",
+        ]
+        for invalid_path in invalid_paths:
+            with self.subTest(path=repr(invalid_path)):
+                report = self._complete_report()
+                changed_files = report["changed_files"]
+                self.assertIsInstance(changed_files, list)
+                changed_file = changed_files[0]
+                self.assertIsInstance(changed_file, dict)
+                changed_file["path"] = invalid_path
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    r"changed_files\[0\]\.path must be a repository-relative POSIX file path",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_duplicate_changed_file_paths_are_rejected(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_files.append(copy.deepcopy(changed_files[0]))
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "changed_files must not contain duplicate path values",
+        ):
+            validate_task_report_v2(report)
+
+    def test_rehash_cannot_hide_a_mechanically_unexpected_change(self) -> None:
+        report = self._complete_report()
+        changed_files = report["changed_files"]
+        self.assertIsInstance(changed_files, list)
+        changed_file = changed_files[0]
+        self.assertIsInstance(changed_file, dict)
+        changed_file["path"] = "strategy/unified_b1_strategy.py"
+        report["unexpected_changes"] = []
+        report["outcome"] = "PASS"
+        report["reason_codes"] = []
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "unexpected_changes do not match mechanical derivation",
+        ):
+            validate_task_report_v2(report)
+
+    def test_scope_file_rules_must_be_repository_relative_posix(self) -> None:
+        invalid_rules = [
+            "",
+            "dir\\file.py",
+            "/absolute",
+            "C:/repo",
+            "../escape",
+            "dir//",
+            "dir/*",
+            "dir/?",
+            "dir/\x1f",
+        ]
+        for field_name in ("allowed_files", "forbidden_files"):
+            for invalid_rule in invalid_rules:
+                with self.subTest(field=field_name, rule=repr(invalid_rule)):
+                    report = self._complete_report()
+                    report[field_name] = [invalid_rule]
+                    report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                        report
+                    )
+
+                    with self.assertRaisesRegex(
+                        TaskReportValidationError,
+                        rf"{field_name}\[0\] must be a repository-relative POSIX path or directory prefix",
+                    ):
+                        validate_task_report_v2(report)
 
 
 if __name__ == "__main__":

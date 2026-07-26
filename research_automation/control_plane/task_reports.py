@@ -55,6 +55,9 @@ _REVIEW_FINDING_FIELDS = frozenset(
         "resolution",
     }
 )
+_CHANGED_FILE_FIELDS = frozenset(
+    {"path", "change_type", "baseline_sha256", "current_sha256"}
+)
 _TASK_REPORT_V2_FIELDS = frozenset(
     {
         "schema_version",
@@ -120,6 +123,51 @@ def _require_exact_int(value: object, field_name: str) -> int:
     if type(value) is not int:
         raise TaskReportValidationError(
             f"{field_name} must be an exact integer"
+        )
+    return value
+
+
+def _is_repo_relative_posix_file_path(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    parts = value.split("/")
+    return not (
+        value.startswith("/")
+        or "\\" in value
+        or ":" in value
+        or any(character in '<>"|?*' for character in value)
+        or any(part in ("", ".", "..") for part in parts)
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    )
+
+
+def _require_repo_relative_posix_file_path(
+    value: object,
+    field_name: str,
+) -> str:
+    if not isinstance(value, str) or not _is_repo_relative_posix_file_path(value):
+        raise TaskReportValidationError(
+            f"{field_name} must be a repository-relative POSIX file path"
+        )
+    return value
+
+
+def _require_repo_relative_posix_scope_rule(
+    value: object,
+    field_name: str,
+) -> str:
+    candidate = value
+    if isinstance(value, str) and value.endswith("/"):
+        candidate = value[:-1]
+    if not isinstance(value, str) or not _is_repo_relative_posix_file_path(
+        candidate
+    ):
+        raise TaskReportValidationError(
+            f"{field_name} must be a repository-relative POSIX path or "
+            "directory prefix"
         )
     return value
 
@@ -349,6 +397,120 @@ def _validate_review_findings(
             )
 
 
+def _validate_changed_files(changed_files: object) -> None:
+    if not isinstance(changed_files, list):
+        raise TaskReportValidationError("changed_files must be a list")
+    changed_paths: set[str] = set()
+    for index, changed_file in enumerate(changed_files):
+        if not isinstance(changed_file, Mapping):
+            raise TaskReportValidationError(
+                f"changed_files[{index}] must be a mapping"
+            )
+        _require_closed_mapping(
+            changed_file,
+            f"changed_files[{index}]",
+            _CHANGED_FILE_FIELDS,
+        )
+        changed_path = _require_repo_relative_posix_file_path(
+            changed_file["path"],
+            f"changed_files[{index}].path",
+        )
+        if changed_path in changed_paths:
+            raise TaskReportValidationError(
+                "changed_files must not contain duplicate path values"
+            )
+        changed_paths.add(changed_path)
+        if changed_file["change_type"] not in ("ADD", "MODIFY", "DELETE"):
+            raise TaskReportValidationError(
+                f"changed_files[{index}].change_type must be ADD, MODIFY, or "
+                "DELETE"
+            )
+        if (
+            changed_file["change_type"] == "ADD"
+            and changed_file["baseline_sha256"] is not None
+        ):
+            raise TaskReportValidationError(
+                f"changed_files[{index}] ADD requires baseline_sha256 null"
+            )
+        if changed_file["change_type"] == "ADD":
+            _require_sha256(
+                changed_file["current_sha256"],
+                f"changed_files[{index}].current_sha256",
+            )
+        if changed_file["change_type"] == "MODIFY":
+            _require_sha256(
+                changed_file["baseline_sha256"],
+                f"changed_files[{index}].baseline_sha256",
+            )
+            _require_sha256(
+                changed_file["current_sha256"],
+                f"changed_files[{index}].current_sha256",
+            )
+        if changed_file["change_type"] == "DELETE":
+            _require_sha256(
+                changed_file["baseline_sha256"],
+                f"changed_files[{index}].baseline_sha256",
+            )
+            if changed_file["current_sha256"] is not None:
+                raise TaskReportValidationError(
+                    f"changed_files[{index}] DELETE requires current_sha256 null"
+                )
+
+
+def _path_matches_scope_rule(path: str, rule: str) -> bool:
+    if rule.endswith("/"):
+        return path.startswith(rule)
+    return path == rule
+
+
+def _derive_unexpected_changes(report: Mapping[str, object]) -> list[str]:
+    changed_files = report.get("changed_files")
+    allowed_files = report.get("allowed_files")
+    forbidden_files = report.get("forbidden_files")
+    if not isinstance(changed_files, list):
+        raise TaskReportValidationError("changed_files must be a list")
+    if not isinstance(allowed_files, list):
+        raise TaskReportValidationError("allowed_files must be a list")
+    if not isinstance(forbidden_files, list):
+        raise TaskReportValidationError("forbidden_files must be a list")
+    unexpected: list[str] = []
+    for changed_file in changed_files:
+        if not isinstance(changed_file, Mapping):
+            continue
+        path = changed_file.get("path")
+        if not isinstance(path, str):
+            continue
+        is_allowed = any(
+            isinstance(rule, str) and _path_matches_scope_rule(path, rule)
+            for rule in allowed_files
+        )
+        is_forbidden = any(
+            isinstance(rule, str) and _path_matches_scope_rule(path, rule)
+            for rule in forbidden_files
+        )
+        if is_forbidden or not is_allowed:
+            unexpected.append(path)
+    return sorted(unexpected)
+
+
+def _validate_scope_file_rules(report: Mapping[str, object]) -> None:
+    for field_name in ("allowed_files", "forbidden_files"):
+        rules = report.get(field_name)
+        if not isinstance(rules, list):
+            raise TaskReportValidationError(f"{field_name} must be a list")
+        seen_rules: set[str] = set()
+        for index, rule in enumerate(rules):
+            if isinstance(rule, str) and rule in seen_rules:
+                raise TaskReportValidationError(
+                    f"{field_name} must not contain duplicates"
+                )
+            _require_repo_relative_posix_scope_rule(
+                rule,
+                f"{field_name}[{index}]",
+            )
+            seen_rules.add(rule)
+
+
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
     review_results = _receipt_results(
@@ -357,6 +519,21 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     )
     _validate_evidence_refs(report.get("input_evidence_refs"))
     _validate_review_findings(report.get("review_findings"), review_results)
+    _validate_scope_file_rules(report)
+    _validate_changed_files(report.get("changed_files"))
+    claimed_unexpected = _require_unique_string_list(
+        report.get("unexpected_changes"),
+        "unexpected_changes",
+    )
+    for index, path in enumerate(claimed_unexpected):
+        _require_repo_relative_posix_file_path(
+            path,
+            f"unexpected_changes[{index}]",
+        )
+    if sorted(claimed_unexpected) != _derive_unexpected_changes(report):
+        raise TaskReportValidationError(
+            "unexpected_changes do not match mechanical derivation"
+        )
 
 
 def _derive_outcome(report: Mapping[str, object]) -> tuple[str, list[str]]:
