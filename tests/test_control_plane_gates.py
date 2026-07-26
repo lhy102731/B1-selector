@@ -215,6 +215,19 @@ class PhaseGateBuilderTests(unittest.TestCase):
         self.assertEqual(len(report["gate_report_sha256"]), 64)
         validate_gate_report(report)
 
+    def test_builder_rejects_oversized_serialized_gate_report(self) -> None:
+        draft = self._passing_draft()
+        draft["unresolved_risks"] = [
+            f"risk-{index:06d}-" + ("x" * 120)
+            for index in range(2_500)
+        ]
+
+        with self.assertRaisesRegex(
+            GateBuildError,
+            "gate report exceeds its byte limit",
+        ):
+            PhaseGateBuilder().build(draft)
+
     def test_gate_requires_exactly_one_active_grant(self) -> None:
         cases = (
             ([], "ACTIVE_GRANT_COUNT:0"),

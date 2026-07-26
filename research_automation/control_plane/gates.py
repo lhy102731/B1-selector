@@ -562,6 +562,9 @@ class PhaseGateBuilder:
             report["verdict"] = verdict
             report["reason_codes"] = reason_codes
             report["gate_report_sha256"] = gate_report_sha256(report)
+            serialized = canonical_json(report).encode("utf-8")
+            if len(serialized) > _MAX_GATE_REPORT_BYTES:
+                raise GateBuildError("gate report exceeds its byte limit")
             validate_gate_report(report)
         except (GateValidationError, TypeError, ValueError) as error:
             raise GateBuildError(str(error)) from error
