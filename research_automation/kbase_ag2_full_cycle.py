@@ -23,8 +23,13 @@ from ag2_research.discovery_handoff import save_discovery_handoff
 
 from .discovery_execution_bridge import DiscoveryExecutionPlan, build_execution_plan
 from .handoff_runner_repair import repair_handoff_runner
-from .control_plane.sink_guard import ExecutionInvocation
-from .control_plane.stores import TaskExecutionLease
+from .control_plane.contracts import SideEffect
+from .control_plane.sink_guard import (
+    ExecutionAuthorizationError,
+    ExecutionInvocation,
+    ExecutionSinkGuard,
+)
+from .control_plane.stores import AuthorityReader, TaskExecutionLease
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -261,6 +266,28 @@ def run_kbase_ag2_full_cycle(
         return {
             "status": "UNAUTHORIZED",
             "reason": "execution lease and invocation are required before full-cycle execution",
+            "cycle_dir": None if output_dir is None else str(Path(output_dir).resolve()),
+            "production_promotion_performed": False,
+            "kbase_write_performed": False,
+        }
+    try:
+        reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
+        guard = ExecutionSinkGuard(
+            authority_reader=reader,
+            repository_root=repository_root or PROJECT_ROOT,
+        )
+        permit = guard.authorize(lease, invocation)
+        if (
+            permit.operation != "FULL_CYCLE"
+            or permit.effect is not SideEffect.RUN_RESEARCH
+        ):
+            raise ExecutionAuthorizationError(
+                "full-cycle requires a RUN_RESEARCH FULL_CYCLE intent"
+            )
+    except (ExecutionAuthorizationError, OSError, ValueError) as error:
+        return {
+            "status": "UNAUTHORIZED",
+            "reason": str(error),
             "cycle_dir": None if output_dir is None else str(Path(output_dir).resolve()),
             "production_promotion_performed": False,
             "kbase_write_performed": False,
