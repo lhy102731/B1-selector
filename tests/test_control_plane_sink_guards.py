@@ -44,7 +44,7 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
         with_intent: bool = False,
         intent_kind: str = "subprocess",
     ) -> Iterator[tuple[object, ...]]:
-        if intent_kind not in {"subprocess", "patch"}:
+        if intent_kind not in {"subprocess", "patch", "patch_new"}:
             raise ValueError("unsupported test intent kind")
         now = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-sink-guard")
@@ -54,12 +54,14 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
             instruction_policy_hash="c" * 64,
         )
         task_id = (
-            "P0R2-T4-PATCH" if intent_kind == "patch" else "P0R2-T4-SUBPROCESS"
+            "P0R2-T4-PATCH"
+            if intent_kind in {"patch", "patch_new"}
+            else "P0R2-T4-SUBPROCESS"
         )
-        intent_name = "patch" if intent_kind == "patch" else "intent"
+        intent_name = "patch" if intent_kind in {"patch", "patch_new"} else "intent"
         authorized_effect = (
             SideEffect.GIT_MUTATION
-            if intent_kind == "patch"
+            if intent_kind in {"patch", "patch_new"}
             else SideEffect.START_SUBPROCESS
         )
         task_spec = {
@@ -99,11 +101,12 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                 runner_bytes = b"# authorized sink runner fixture\n"
                 runner_path.write_bytes(runner_bytes)
                 runner_sha256 = hashlib.sha256(runner_bytes).hexdigest()
-                if intent_kind == "patch":
+                if intent_kind in {"patch", "patch_new"}:
                     workspace = resource_root / "isolated-workspace"
                     target_path = workspace / "strategy" / "candidate.py"
                     target_path.parent.mkdir(parents=True)
-                    target_path.write_text("before\n", encoding="utf-8")
+                    if intent_kind == "patch":
+                        target_path.write_text("before\n", encoding="utf-8")
                     audit_path = workspace / "audit" / "candidate.diff"
                     audit_path.parent.mkdir()
                     entry_id = "callable:test:patch"
@@ -638,6 +641,57 @@ class ExecutionSinkTests(unittest.TestCase):
 
             self.assertFalse(audit_path.exists())
             self.assertEqual(calls, [])
+
+    def test_valid_patch_can_create_a_new_bound_file(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        with lease_tests._live_lease(
+            with_intent=True,
+            intent_kind="patch_new",
+        ) as (root, _, _, lease, intent_info):
+            workspace = Path(str(intent_info["workspace"]))
+            target_path = Path(str(intent_info["target_path"]))
+            audit_path = Path(str(intent_info["audit_path"]))
+            calls: list[list[str]] = []
+
+            def runner(argv: list[str], **kwargs: object) -> object:
+                calls.append(list(argv))
+                if "--check" not in argv:
+                    target_path.write_text("created\n", encoding="utf-8")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:patch",
+                effect=SideEffect.GIT_MUTATION,
+                operation="PATCH_APPLY",
+                argv=("git", "apply", str(audit_path)),
+                cwd=str(workspace),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedPatchApplier.apply",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(target_path), str(audit_path)),
+            )
+            sink = AuthorizedPatchApplier(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            sink.apply(
+                lease,
+                invocation,
+                "--- /dev/null\n"
+                "+++ b/strategy/candidate.py\n"
+                "@@ -0,0 +1 @@\n"
+                "+created\n",
+                audit_path=audit_path,
+            )
+
+            self.assertEqual(target_path.read_text(encoding="utf-8"), "created\n")
+            self.assertEqual(len(calls), 2)
 
 
 if __name__ == "__main__":

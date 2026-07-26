@@ -625,8 +625,21 @@ class AuthorizedPatchApplier:
             )
             if not _is_contained(target, permit.cwd):
                 raise ExecutionAuthorizationError("patch target escapes the workspace")
-            if not target.is_file():
-                raise ExecutionAuthorizationError("patch target must be an existing file")
+            if target.exists():
+                if not target.is_file():
+                    raise ExecutionAuthorizationError("patch target must be a regular file")
+            else:
+                if target.is_symlink():
+                    raise ExecutionAuthorizationError("new patch target may not be a symlink")
+                parent = _resolve_absolute_path(
+                    str(target.parent),
+                    field_name="patch_target_parent",
+                    require_directory=True,
+                )
+                if parent != target.parent:
+                    raise ExecutionAuthorizationError(
+                        "new patch target parent is not canonical"
+                    )
             target_paths.append(target)
         if not target_paths:
             raise ExecutionAuthorizationError("patch contains no target files")
@@ -687,9 +700,14 @@ def _parse_patch_target_paths(diff_text: str) -> tuple[str, ...]:
             raise ExecutionAuthorizationError("patch has an incomplete file header")
         old_name = _parse_patch_header_path(line[4:], prefix="a/")
         new_name = _parse_patch_header_path(lines[index + 1][4:], prefix="b/")
-        if old_name != new_name:
+        if old_name is None and new_name is None:
+            raise ExecutionAuthorizationError("patch file header cannot be /dev/null twice")
+        if old_name is not None and new_name is not None and old_name != new_name:
             raise ExecutionAuthorizationError("patch renames are not authorized")
-        targets.append(new_name)
+        target_name = new_name if new_name is not None else old_name
+        if target_name is None:
+            raise ExecutionAuthorizationError("patch target path is missing")
+        targets.append(target_name)
         index += 2
     if not targets:
         raise ExecutionAuthorizationError("patch has no unified file headers")
@@ -698,10 +716,12 @@ def _parse_patch_target_paths(diff_text: str) -> tuple[str, ...]:
     return tuple(targets)
 
 
-def _parse_patch_header_path(raw: str, *, prefix: str) -> str:
+def _parse_patch_header_path(raw: str, *, prefix: str) -> str | None:
     if "\t" in raw:
         raise ExecutionAuthorizationError("patch headers may not contain timestamps")
     value = raw.strip()
+    if value == "/dev/null":
+        return None
     if not value.startswith(prefix):
         raise ExecutionAuthorizationError("patch header path prefix is invalid")
     value = value[len(prefix) :]
