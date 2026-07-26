@@ -17,6 +17,12 @@ from research_automation.control_plane.stores import (
     AuthorityReader,
     TaskTicketError,
 )
+from research_automation.control_plane.sink_guard import (
+    AuthorizedSubprocess,
+    ExecutionAuthorizationError,
+    ExecutionInvocation,
+    RunnerIdentity,
+)
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
@@ -135,6 +141,41 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
 
             with self.assertRaises(TaskTicketError):
                 AuthorityReader().execution_lease_binding(lease)
+
+
+class SubprocessSinkTests(unittest.TestCase):
+    def test_unauthorized_subprocess_fails_before_runner_is_called(self) -> None:
+        calls: list[tuple[object, ...]] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            calls.append(args)
+            return object()
+
+        invocation = ExecutionInvocation(
+            intent_ref="research_state/control_plane/p0r2/intents/intent.json",
+            entry_id="callable:test:subprocess",
+            effect=SideEffect.START_SUBPROCESS,
+            operation="SUBPROCESS",
+            argv=("python", "-V"),
+            cwd=None,
+            runner=RunnerIdentity(
+                module="research_automation.control_plane.sink_guard",
+                callable_name="AuthorizedSubprocess.run",
+                source_ref="research_automation/control_plane/sink_guard.py",
+                source_sha256="a" * 64,
+            ),
+            resource_paths=(),
+        )
+        sink = AuthorizedSubprocess(
+            authority_reader=AuthorityReader(),
+            repository_root=Path.cwd(),
+            runner=runner,
+        )
+
+        with self.assertRaises(ExecutionAuthorizationError):
+            sink.run(None, invocation)
+
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":
