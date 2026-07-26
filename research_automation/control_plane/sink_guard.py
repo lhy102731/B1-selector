@@ -625,6 +625,7 @@ class AuthorizedPatchApplier:
 
         targets = _parse_patch_target_paths(diff_text)
         target_paths: list[Path] = []
+        target_states: dict[Path, tuple[bool, str | None]] = {}
         for relative in targets:
             target = _resolve_absolute_path(
                 str(permit.cwd / relative),
@@ -635,6 +636,10 @@ class AuthorizedPatchApplier:
             if target.exists():
                 if not target.is_file():
                     raise ExecutionAuthorizationError("patch target must be a regular file")
+                target_states[target] = (
+                    True,
+                    hashlib.sha256(target.read_bytes()).hexdigest(),
+                )
             else:
                 if target.is_symlink():
                     raise ExecutionAuthorizationError("new patch target may not be a symlink")
@@ -647,6 +652,7 @@ class AuthorizedPatchApplier:
                     raise ExecutionAuthorizationError(
                         "new patch target parent is not canonical"
                     )
+                target_states[target] = (False, None)
             target_paths.append(target)
         if not target_paths:
             raise ExecutionAuthorizationError("patch contains no target files")
@@ -674,6 +680,27 @@ class AuthorizedPatchApplier:
                 os.fsync(stream.fileno())
         except (OSError, ValueError) as error:
             raise ExecutionAuthorizationError("unable to persist patch audit") from error
+        audit_sha256 = hashlib.sha256(diff_bytes).hexdigest()
+
+        def _revalidate_state() -> None:
+            if not audit.is_file() or _is_reparse_point(audit):
+                raise ExecutionAuthorizationError("patch audit path changed before Git effect")
+            if hashlib.sha256(audit.read_bytes()).hexdigest() != audit_sha256:
+                raise ExecutionAuthorizationError("patch audit bytes changed before Git effect")
+            for target, (existed, before_hash) in target_states.items():
+                now_exists = target.exists()
+                if now_exists != existed:
+                    raise ExecutionAuthorizationError("patch target existence changed before Git effect")
+                if not now_exists:
+                    if target.is_symlink():
+                        raise ExecutionAuthorizationError("new patch target became a symlink")
+                    continue
+                if not target.is_file() or _is_reparse_point(target):
+                    raise ExecutionAuthorizationError("patch target changed to an unsafe file")
+                if hashlib.sha256(target.read_bytes()).hexdigest() != before_hash:
+                    raise ExecutionAuthorizationError("patch target bytes changed before Git effect")
+
+        _revalidate_state()
 
         common_kwargs: dict[str, object] = {
             "cwd": str(permit.cwd),
@@ -687,6 +714,7 @@ class AuthorizedPatchApplier:
         check_result = self._runner(check_argv, **common_kwargs)
         if getattr(check_result, "returncode", None) != 0:
             raise ExecutionAuthorizationError("git apply --check rejected the patch")
+        _revalidate_state()
         apply_result = self._runner(list(permit.argv), **common_kwargs)
         if getattr(apply_result, "returncode", None) != 0:
             raise ExecutionAuthorizationError("git apply rejected the authorized patch")

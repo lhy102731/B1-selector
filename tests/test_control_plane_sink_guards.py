@@ -693,6 +693,58 @@ class ExecutionSinkTests(unittest.TestCase):
             self.assertEqual(target_path.read_text(encoding="utf-8"), "created\n")
             self.assertEqual(len(calls), 2)
 
+    def test_patch_target_swap_after_check_never_reaches_apply(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        with lease_tests._live_lease(
+            with_intent=True,
+            intent_kind="patch",
+        ) as (root, _, _, lease, intent_info):
+            workspace = Path(str(intent_info["workspace"]))
+            target_path = Path(str(intent_info["target_path"]))
+            audit_path = Path(str(intent_info["audit_path"]))
+            calls: list[list[str]] = []
+
+            def runner(argv: list[str], **kwargs: object) -> object:
+                calls.append(list(argv))
+                if "--check" in argv:
+                    target_path.unlink()
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:patch",
+                effect=SideEffect.GIT_MUTATION,
+                operation="PATCH_APPLY",
+                argv=("git", "apply", str(audit_path)),
+                cwd=str(workspace),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedPatchApplier.apply",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(target_path), str(audit_path)),
+            )
+            sink = AuthorizedPatchApplier(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            with self.assertRaises(ExecutionAuthorizationError):
+                sink.apply(
+                    lease,
+                    invocation,
+                    "--- a/strategy/candidate.py\n"
+                    "+++ b/strategy/candidate.py\n"
+                    "@@ -1 +1 @@\n"
+                    "-before\n"
+                    "+after\n",
+                    audit_path=audit_path,
+                )
+
+            self.assertEqual(calls, [["git", "apply", "--check", str(audit_path)]])
+
 
 if __name__ == "__main__":
     unittest.main()
