@@ -45,6 +45,7 @@ class _TrustedGateFixture:
     verifier: PhaseGateVerifier
     task_report_path: Path
     task_report_bytes: bytes
+    artifact_paths: dict[str, Path]
 
 
 class PhaseGateBuilderTests(unittest.TestCase):
@@ -334,6 +335,31 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "outcome": "PASS",
                     }
                 ]
+                artifact_paths: dict[str, Path] = {}
+                for field_name in (
+                    "implementation_baseline",
+                    "code_freeze_manifest",
+                    "final_inventory",
+                    "reviewed_entry_policy",
+                    "scheduler_inventory",
+                ):
+                    artifact_ref = f"artifacts/{field_name}.json"
+                    artifact_path = root / artifact_ref
+                    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+                    artifact_bytes = canonical_json(
+                        {"artifact_type": field_name}
+                    ).encode("utf-8")
+                    artifact_path.write_bytes(artifact_bytes)
+                    artifact_paths[field_name] = artifact_path
+                    draft[field_name] = {
+                        "ref": artifact_ref,
+                        "sha256": hashlib.sha256(
+                            artifact_bytes
+                        ).hexdigest(),
+                    }
+                scheduler_inventory = draft["scheduler_inventory"]
+                self.assertIsInstance(scheduler_inventory, dict)
+                scheduler_inventory["status"] = "VERIFIED"
                 draft["authority_snapshot"] = snapshot_dict
                 report = PhaseGateBuilder(clock=lambda: now).build(draft)
                 verifier = PhaseGateVerifier(
@@ -349,6 +375,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     verifier=verifier,
                     task_report_path=task_report_path,
                     task_report_bytes=task_report_bytes,
+                    artifact_paths=artifact_paths,
                 )
 
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
@@ -455,6 +482,24 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
             with self.assertRaises(GateAuthorityMismatchError):
                 fixture.verifier.verify(forged_report)
+
+    def test_verifier_checks_every_gate_artifact_file_hash(self) -> None:
+        for field_name in (
+            "implementation_baseline",
+            "code_freeze_manifest",
+            "final_inventory",
+            "reviewed_entry_policy",
+            "scheduler_inventory",
+        ):
+            with self.subTest(field_name=field_name):
+                with self._trusted_gate_fixture() as fixture:
+                    artifact_path = fixture.artifact_paths[field_name]
+                    artifact_path.write_bytes(
+                        artifact_path.read_bytes() + b"\n"
+                    )
+
+                    with self.assertRaises(GateEvidenceError):
+                        fixture.verifier.verify(fixture.report)
 
 
 if __name__ == "__main__":

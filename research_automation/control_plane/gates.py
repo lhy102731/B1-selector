@@ -22,6 +22,7 @@ from .task_reports import (
 GATE_REPORT_V1 = "control_plane.gate_report.v1"
 _GATE_HASH_DOMAIN = b"control_plane.gate_report.v1\0"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_GATE_ARTIFACT_BYTES = 4 * 1024 * 1024
 _DRAFT_FIELDS = frozenset(
     {
         "plan_version",
@@ -496,23 +497,34 @@ class PhaseGateVerifier:
             raise GateEvidenceError("gate repository root is not a directory")
         self._repository_root = root
 
-    def _read_task_report_bytes(self, reference: str) -> bytes:
+    def _read_repository_bytes(
+        self,
+        reference: str,
+        *,
+        max_bytes: int,
+        evidence_name: str,
+    ) -> bytes:
         candidate = self._repository_root.joinpath(*reference.split("/"))
         try:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(self._repository_root)
             if not resolved.is_file():
-                raise GateEvidenceError("TaskReport reference is not a file")
+                raise GateEvidenceError(
+                    f"{evidence_name} reference is not a file"
+                )
             with resolved.open("rb") as stream:
-                raw = stream.read(MAX_TASK_REPORT_V2_BYTES + 1)
+                raw = stream.read(max_bytes + 1)
         except GateEvidenceError:
             raise
         except (OSError, ValueError) as error:
             raise GateEvidenceError(
-                "TaskReport reference is unavailable or outside the repository"
+                f"{evidence_name} reference is unavailable or outside "
+                "the repository"
             ) from error
-        if len(raw) > MAX_TASK_REPORT_V2_BYTES:
-            raise GateEvidenceError("TaskReport evidence exceeds its size limit")
+        if len(raw) > max_bytes:
+            raise GateEvidenceError(
+                f"{evidence_name} evidence exceeds its size limit"
+            )
         return raw
 
     def _verify_task_report_files(self, report: Mapping[str, object]) -> None:
@@ -522,7 +534,11 @@ class PhaseGateVerifier:
         for task_report in task_reports:
             if not isinstance(task_report, Mapping):
                 raise GateEvidenceError("gate TaskReport reference is invalid")
-            raw = self._read_task_report_bytes(str(task_report["report_ref"]))
+            raw = self._read_repository_bytes(
+                str(task_report["report_ref"]),
+                max_bytes=MAX_TASK_REPORT_V2_BYTES,
+                evidence_name="TaskReport",
+            )
             actual_sha256 = hashlib.sha256(raw).hexdigest()
             if not hmac.compare_digest(
                 str(task_report["report_sha256"]),
@@ -557,6 +573,32 @@ class PhaseGateVerifier:
                     "TaskReport does not match trusted authority"
                 ) from error
 
+    def _verify_gate_artifact_files(
+        self,
+        report: Mapping[str, object],
+    ) -> None:
+        for field_name in (
+            "implementation_baseline",
+            "code_freeze_manifest",
+            "final_inventory",
+            "reviewed_entry_policy",
+            "scheduler_inventory",
+        ):
+            artifact = report[field_name]
+            if not isinstance(artifact, Mapping):
+                raise GateEvidenceError(f"{field_name} reference is invalid")
+            raw = self._read_repository_bytes(
+                str(artifact["ref"]),
+                max_bytes=_MAX_GATE_ARTIFACT_BYTES,
+                evidence_name=field_name,
+            )
+            actual_sha256 = hashlib.sha256(raw).hexdigest()
+            if not hmac.compare_digest(
+                str(artifact["sha256"]),
+                actual_sha256,
+            ):
+                raise GateEvidenceError(f"{field_name} SHA-256 mismatch")
+
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)
         actual = self._authority_reader.phase_gate_snapshot(
@@ -568,6 +610,7 @@ class PhaseGateVerifier:
                 "gate authority snapshot does not match current authority"
             )
         self._verify_task_report_files(report)
+        self._verify_gate_artifact_files(report)
 
 
 __all__ = [
