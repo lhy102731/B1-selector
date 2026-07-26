@@ -22,7 +22,13 @@ from .gates import (
     parse_gate_report_v1_bytes,
 )
 from .sqlite_uow import SqliteUnitOfWorkError
-from .stores import AuthorityReader, AuthorityRootError, StoreError
+from .stores import (
+    AuthorityReader,
+    AuthorityRootError,
+    PendingOutboxError,
+    PhaseGateClosureError,
+    StoreError,
+)
 from .task_reports import (
     TaskReportValidationError,
     parse_task_report_v2_bytes,
@@ -393,6 +399,12 @@ def main(
     except AuthorityRootError as error:
         _emit_error(errors, error)
         return 4
+    except PhaseGateClosureError as error:
+        _emit_error(errors, error)
+        return 4
+    except PendingOutboxError as error:
+        _emit_error(errors, error)
+        return 5
     except (
         GateBuildError,
         GateValidationError,

@@ -1004,6 +1004,50 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(exit_code, 4)
             self.assertEqual(stdout.getvalue(), "")
 
+    def test_cli_maps_immutable_gate_conflict_to_exit_code_four(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fixture.closer.close(fixture.report)
+            different_report = PhaseGateBuilder(
+                clock=lambda: datetime(
+                    2026,
+                    7,
+                    26,
+                    8,
+                    16,
+                    tzinfo=timezone.utc,
+                )
+            ).build(fixture.draft)
+            report_path = fixture.root / "different-gate-report.json"
+            report_path.write_text(
+                canonical_json(different_report),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "close",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--capability-stdin",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=StringIO(ROOT_SECRET),
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 4)
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("PhaseGateClosureConflictError", stderr.getvalue())
+
     def test_cli_bounds_capability_stdin(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             class TrackingStdin(StringIO):
