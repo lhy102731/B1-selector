@@ -12,6 +12,7 @@ from .gates import (
     GateAuthorityMismatchError,
     GateEvidenceError,
     GateValidationError,
+    PhaseGateCloser,
     PhaseGateVerifier,
     parse_gate_report_v1_bytes,
 )
@@ -36,6 +37,19 @@ def _build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--attempt-id", required=True)
     verify.add_argument("--report", required=True)
     verify.add_argument("--read-only", action="store_true", required=True)
+    close = gate_commands.add_parser("close")
+    close.add_argument(
+        "--phase",
+        required=True,
+        choices=[phase.value for phase in Phase],
+    )
+    close.add_argument("--attempt-id", required=True)
+    close.add_argument("--report", required=True)
+    close.add_argument(
+        "--capability-stdin",
+        action="store_true",
+        required=True,
+    )
     return parser
 
 
@@ -81,6 +95,7 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
     authority_reader: AuthorityReader | None = None,
     repository_root: str | Path | None = None,
 ) -> int:
@@ -102,10 +117,36 @@ def main(
             raise GateAuthorityMismatchError(
                 "CLI phase or attempt does not match the GateReport"
             )
-        PhaseGateVerifier(
-            authority_reader=authority_reader,
-            repository_root=root,
-        ).verify(report)
+        if args.gate_command == "verify":
+            PhaseGateVerifier(
+                authority_reader=authority_reader,
+                repository_root=root,
+            ).verify(report)
+        else:
+            capability = (stdin or sys.stdin).read().rstrip("\r\n")
+            if not capability:
+                raise GateAuthorityMismatchError(
+                    "authority capability stdin is empty"
+                )
+            closure = PhaseGateCloser(
+                root_secret=capability,
+                authority_reader=authority_reader,
+                repository_root=root,
+            ).close_bytes(raw)
+            output.write(
+                canonical_json(
+                    {
+                        "attempt_id": closure.attempt_id,
+                        "closure_id": closure.closure_id,
+                        "gate_report_sha256": closure.gate_report_sha256,
+                        "phase": closure.phase.value,
+                        "status": "CLOSED",
+                        "verdict": closure.verdict,
+                    }
+                )
+                + "\n"
+            )
+            return 0 if closure.verdict == "PASS" else 2
     except GateAuthorityMismatchError as error:
         _emit_error(errors, error)
         return 4
