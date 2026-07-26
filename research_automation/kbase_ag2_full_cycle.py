@@ -325,6 +325,14 @@ def run_kbase_ag2_full_cycle(
             "production_promotion_performed": False,
             "kbase_write_performed": False,
         }
+    if output_dir is None:
+        return {
+            "status": "UNAUTHORIZED",
+            "reason": "an explicit intent-bound output_dir is required",
+            "cycle_dir": None,
+            "production_promotion_performed": False,
+            "kbase_write_performed": False,
+        }
     try:
         reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
         guard = ExecutionSinkGuard(
@@ -338,6 +346,15 @@ def run_kbase_ag2_full_cycle(
         ):
             raise ExecutionAuthorizationError(
                 "full-cycle requires a RUN_RESEARCH FULL_CYCLE intent"
+            )
+        cycle_resource = Path(output_dir).resolve()
+        if cycle_resource not in permit.resource_paths:
+            raise ExecutionAuthorizationError(
+                "full-cycle output directory is not bound by the execution intent"
+            )
+        if handoff_path is not None and Path(handoff_path).resolve() not in permit.resource_paths:
+            raise ExecutionAuthorizationError(
+                "full-cycle handoff is not bound by the execution intent"
             )
     except (ExecutionAuthorizationError, OSError, ValueError) as error:
         return {
