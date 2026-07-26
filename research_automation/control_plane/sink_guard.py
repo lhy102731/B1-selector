@@ -538,6 +538,13 @@ class AuthorizedSubprocess:
     ) -> object:
         if not isinstance(lease, TaskExecutionLease):
             raise ExecutionAuthorizationError("a live task lease is required")
+        if (
+            invocation.runner.module != __name__
+            or invocation.runner.callable_name != "AuthorizedSubprocess.run"
+        ):
+            raise ExecutionAuthorizationError(
+                "subprocess invocation entry identity is invalid"
+            )
         permit = self._guard.authorize(lease, invocation)
         if (
             permit.operation != "SUBPROCESS"
@@ -585,6 +592,13 @@ class AuthorizedPatchApplier:
     ) -> object:
         if not isinstance(lease, TaskExecutionLease):
             raise ExecutionAuthorizationError("a live task lease is required")
+        if (
+            invocation.runner.module != __name__
+            or invocation.runner.callable_name != "AuthorizedPatchApplier.apply"
+        ):
+            raise ExecutionAuthorizationError(
+                "patch invocation entry identity is invalid"
+            )
         permit = self._guard.authorize(lease, invocation)
         if (
             permit.operation != "PATCH_APPLY"
