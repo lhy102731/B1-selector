@@ -144,6 +144,21 @@ _AUTHORITY_SCHEMA = (
     ) WITHOUT ROWID
     """,
     """
+    CREATE TABLE phase_gate_closures_v1 (
+        closure_id TEXT PRIMARY KEY,
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        grant_id TEXT NOT NULL REFERENCES phase_grants_v2(grant_id),
+        gate_report_sha256 TEXT NOT NULL UNIQUE,
+        verdict TEXT NOT NULL CHECK(verdict IN ('PASS', 'FAIL')),
+        plan_hash TEXT NOT NULL,
+        scope_hash TEXT NOT NULL,
+        instruction_policy_hash TEXT NOT NULL,
+        closed_at TEXT NOT NULL,
+        UNIQUE(phase, attempt_id)
+    ) WITHOUT ROWID
+    """,
+    """
     CREATE TABLE authority_outbox (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -225,6 +240,14 @@ class OutboxConflictError(StoreError):
 
 class PendingOutboxError(StoreError):
     """Raised when phase close is attempted before authority mirroring drains."""
+
+
+class PhaseGateClosureError(StoreError):
+    """Raised when a phase gate cannot be closed safely."""
+
+
+class PhaseGateClosureConflictError(PhaseGateClosureError):
+    """Raised when an attempt already has a different immutable closure."""
 
 
 class TaskTicketError(StoreError):
@@ -466,6 +489,18 @@ class PhaseGateAuthoritySnapshot:
             "in_doubt_ticket_ids": list(self.in_doubt_ticket_ids),
             "pending_outbox_count": self.pending_outbox_count,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PhaseGateClosure:
+    closure_id: str
+    phase: Phase
+    attempt_id: str
+    grant_id: str
+    gate_report_sha256: str
+    verdict: str
+    identity: AuthorityIdentity
+    closed_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -854,6 +889,33 @@ def _read_phase_gate_authority_snapshot(
     )
 
 
+def _phase_gate_closure_from_row(row: sqlite3.Row) -> PhaseGateClosure:
+    try:
+        return PhaseGateClosure(
+            closure_id=_require_nonempty(row["closure_id"], "closure_id"),
+            phase=Phase(str(row["phase"])),
+            attempt_id=_require_nonempty(row["attempt_id"], "attempt_id"),
+            grant_id=_require_nonempty(row["grant_id"], "grant_id"),
+            gate_report_sha256=_require_sha256(
+                row["gate_report_sha256"],
+                "gate_report_sha256",
+            ),
+            verdict=_require_nonempty(row["verdict"], "verdict"),
+            identity=AuthorityIdentity(
+                plan_hash=str(row["plan_hash"]),
+                scope_hash=str(row["scope_hash"]),
+                instruction_policy_hash=str(
+                    row["instruction_policy_hash"]
+                ),
+            ),
+            closed_at=_parse_utc_text(str(row["closed_at"])),
+        )
+    except (TypeError, ValueError) as error:
+        raise PhaseGateClosureError(
+            "stored phase gate closure is invalid"
+        ) from error
+
+
 class AuthorityReader:
     """Read-only authority queries with no generic SQL surface."""
 
@@ -889,6 +951,29 @@ class AuthorityReader:
                 expected_attempt_id,
             )
         )
+
+    def phase_gate_closure(
+        self,
+        phase: Phase,
+        attempt_id: str,
+    ) -> PhaseGateClosure | None:
+        if not isinstance(phase, Phase):
+            raise ValueError("phase must be a Phase")
+        expected_attempt_id = _require_nonempty(attempt_id, "attempt_id")
+
+        def read_closure(
+            connection: sqlite3.Connection,
+        ) -> PhaseGateClosure | None:
+            row = connection.execute(
+                """
+                SELECT * FROM phase_gate_closures_v1
+                WHERE phase = ? AND attempt_id = ?
+                """,
+                (phase.value, expected_attempt_id),
+            ).fetchone()
+            return None if row is None else _phase_gate_closure_from_row(row)
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read_closure)
 
     def authorization_state(self, authorization_ref: str) -> str | None:
         _require_nonempty(authorization_ref, "authorization_ref")
@@ -1554,6 +1639,168 @@ class _AuthorityStore:
             raise PendingOutboxError(
                 "pending authority outbox blocks phase closure"
             )
+
+    def _close_phase_gate(
+        self,
+        *,
+        phase: Phase,
+        attempt_id: str,
+        identity: AuthorityIdentity,
+        authority_snapshot: Mapping[str, object],
+        gate_report_sha256: str,
+        verdict: str,
+    ) -> PhaseGateClosure:
+        if not isinstance(phase, Phase):
+            raise PhaseGateClosureError("phase gate phase is invalid")
+        expected_attempt_id = _require_nonempty(attempt_id, "attempt_id")
+        if not isinstance(identity, AuthorityIdentity):
+            raise PhaseGateClosureError("phase gate identity is invalid")
+        if not isinstance(authority_snapshot, Mapping):
+            raise PhaseGateClosureError(
+                "phase gate authority snapshot is invalid"
+            )
+        expected_snapshot = dict(authority_snapshot)
+        expected_gate_sha256 = _require_sha256(
+            gate_report_sha256,
+            "gate_report_sha256",
+        )
+        expected_verdict = _require_nonempty(verdict, "verdict")
+        if expected_verdict not in {"PASS", "FAIL"}:
+            raise PhaseGateClosureError("phase gate verdict is invalid")
+        closed_at = self._now()
+        closure_id = hashlib.sha256(
+            b"control_plane.phase_gate_closure.v1\0"
+            + phase.value.encode("ascii")
+            + b"\0"
+            + expected_attempt_id.encode("utf-8")
+            + b"\0"
+            + expected_gate_sha256.encode("ascii")
+        ).hexdigest()
+
+        def close(connection: sqlite3.Connection) -> PhaseGateClosure:
+            existing = connection.execute(
+                """
+                SELECT * FROM phase_gate_closures_v1
+                WHERE phase = ? AND attempt_id = ?
+                """,
+                (phase.value, expected_attempt_id),
+            ).fetchone()
+            if existing is not None:
+                raise PhaseGateClosureConflictError(
+                    "phase attempt already has an immutable gate closure"
+                )
+
+            actual_snapshot = _read_phase_gate_authority_snapshot(
+                connection,
+                phase,
+                expected_attempt_id,
+            )
+            if actual_snapshot.to_report_dict() != expected_snapshot:
+                raise PhaseGateClosureError(
+                    "phase gate authority changed before closure"
+                )
+            if actual_snapshot.pending_outbox_count != 0:
+                raise PendingOutboxError(
+                    "pending authority outbox blocks phase closure"
+                )
+            if len(actual_snapshot.active_grant_ids) != 1:
+                raise PhaseGateClosureError(
+                    "phase gate closure requires one active grant"
+                )
+            if actual_snapshot.open_ticket_ids:
+                raise PhaseGateClosureError(
+                    "open task tickets block phase gate closure"
+                )
+            if expected_verdict == "PASS" and (
+                actual_snapshot.failed_ticket_ids
+                or actual_snapshot.in_doubt_ticket_ids
+            ):
+                raise PhaseGateClosureError(
+                    "failed or IN_DOUBT tickets block PASS closure"
+                )
+
+            grant_id = actual_snapshot.active_grant_ids[0]
+            grant = connection.execute(
+                """
+                SELECT state, plan_hash, scope_hash, instruction_policy_hash
+                FROM phase_grants_v2 WHERE grant_id = ?
+                """,
+                (grant_id,),
+            ).fetchone()
+            if grant is None or (
+                grant["state"],
+                grant["plan_hash"],
+                grant["scope_hash"],
+                grant["instruction_policy_hash"],
+            ) != (
+                "ACTIVE",
+                identity.plan_hash,
+                identity.scope_hash,
+                identity.instruction_policy_hash,
+            ):
+                raise PhaseGateClosureError(
+                    "active phase grant does not match gate identity"
+                )
+
+            update = connection.execute(
+                """
+                UPDATE phase_grants_v2 SET state = 'CLOSED'
+                WHERE grant_id = ? AND state = 'ACTIVE'
+                """,
+                (grant_id,),
+            )
+            if update.rowcount != 1:
+                raise PhaseGateClosureError(
+                    "phase grant closure lost a concurrent race"
+                )
+            connection.execute(
+                """
+                INSERT INTO phase_gate_closures_v1
+                (closure_id, phase, attempt_id, grant_id,
+                 gate_report_sha256, verdict, plan_hash, scope_hash,
+                 instruction_policy_hash, closed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    closure_id,
+                    phase.value,
+                    expected_attempt_id,
+                    grant_id,
+                    expected_gate_sha256,
+                    expected_verdict,
+                    identity.plan_hash,
+                    identity.scope_hash,
+                    identity.instruction_policy_hash,
+                    _utc_text(closed_at),
+                ),
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="PHASE_GATE_CLOSED",
+                aggregate_id=closure_id,
+                payload={
+                    "closure_id": closure_id,
+                    "phase": phase.value,
+                    "attempt_id": expected_attempt_id,
+                    "grant_id": grant_id,
+                    "gate_report_sha256": expected_gate_sha256,
+                    "verdict": expected_verdict,
+                    "closed_at": _utc_text(closed_at),
+                },
+                created_at=closed_at,
+            )
+            return PhaseGateClosure(
+                closure_id=closure_id,
+                phase=phase,
+                attempt_id=expected_attempt_id,
+                grant_id=grant_id,
+                gate_report_sha256=expected_gate_sha256,
+                verdict=expected_verdict,
+                identity=identity,
+                closed_at=closed_at,
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._write(close)
 
     def _read_pending_outbox(
         self,
@@ -3026,6 +3273,9 @@ __all__ = [
     "OutboxMirrorResult",
     "PendingOutboxError",
     "PhaseGateAuthoritySnapshot",
+    "PhaseGateClosure",
+    "PhaseGateClosureConflictError",
+    "PhaseGateClosureError",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",

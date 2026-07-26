@@ -22,10 +22,14 @@ from research_automation.control_plane.gates import (
     GateBuildError,
     GateEvidenceError,
     PhaseGateBuilder,
+    PhaseGateCloser,
     PhaseGateVerifier,
     validate_gate_report,
 )
-from research_automation.control_plane.stores import AuthorityIdentity
+from research_automation.control_plane.stores import (
+    AuthorityIdentity,
+    AuthorityReader,
+)
 from research_automation.control_plane.task_reports import (
     build_task_report_v2,
     parse_task_report_v2_bytes,
@@ -42,7 +46,9 @@ class _TrustedGateFixture:
     ticket_id: str
     draft: dict[str, object]
     report: dict[str, object]
+    reader: AuthorityReader
     verifier: PhaseGateVerifier
+    closer: PhaseGateCloser
     task_report_path: Path
     task_report_bytes: bytes
     artifact_paths: dict[str, Path]
@@ -384,13 +390,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     authority_reader=reader,
                     repository_root=root,
                 )
+                closer = PhaseGateCloser(
+                    root_secret=ROOT_SECRET,
+                    authority_reader=reader,
+                    repository_root=root,
+                    clock=lambda: now,
+                )
                 yield _TrustedGateFixture(
                     snapshot=snapshot_dict,
                     active_grant_id=grant.grant_id,
                     ticket_id=ticket.ticket_id,
                     draft=draft,
                     report=report,
+                    reader=reader,
                     verifier=verifier,
+                    closer=closer,
                     task_report_path=task_report_path,
                     task_report_bytes=task_report_bytes,
                     artifact_paths=artifact_paths,
@@ -518,6 +532,31 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
                     with self.assertRaises(GateEvidenceError):
                         fixture.verifier.verify(fixture.report)
+
+    def test_closer_atomically_records_a_passing_gate(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            closure = fixture.closer.close(fixture.report)
+
+            self.assertEqual(closure.phase, Phase.P0)
+            self.assertEqual(closure.attempt_id, "p0r2-attempt-001")
+            self.assertEqual(
+                closure.gate_report_sha256,
+                fixture.report["gate_report_sha256"],
+            )
+            self.assertEqual(closure.verdict, "PASS")
+            self.assertEqual(
+                fixture.reader.phase_gate_closure(
+                    Phase.P0,
+                    "p0r2-attempt-001",
+                ),
+                closure,
+            )
+            after_close = fixture.reader.phase_gate_snapshot(
+                Phase.P0,
+                "p0r2-attempt-001",
+            )
+            self.assertEqual(after_close.active_grant_ids, ())
+            self.assertEqual(after_close.pending_outbox_count, 1)
 
 
 if __name__ == "__main__":

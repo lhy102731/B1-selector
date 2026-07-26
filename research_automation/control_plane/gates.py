@@ -11,7 +11,13 @@ from pathlib import Path
 from typing import Callable
 
 from .contracts import Phase, canonical_json
-from .stores import AuthorityReader, TaskReportAuthorityError
+from .stores import (
+    AuthorityIdentity,
+    AuthorityReader,
+    PhaseGateClosure,
+    TaskReportAuthorityError,
+    _AuthorityStore,
+)
 from .task_reports import (
     MAX_TASK_REPORT_V2_BYTES,
     TaskReportValidationError,
@@ -619,6 +625,56 @@ class PhaseGateVerifier:
         self._verify_gate_artifact_files(report)
 
 
+class PhaseGateCloser:
+    """Re-verify and atomically seal one immutable phase-gate result."""
+
+    __slots__ = ("_authority_store", "_verifier")
+
+    def __init__(
+        self,
+        *,
+        root_secret: str,
+        authority_reader: AuthorityReader | None = None,
+        repository_root: str | Path | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        reader = authority_reader or AuthorityReader()
+        self._verifier = PhaseGateVerifier(
+            authority_reader=reader,
+            repository_root=repository_root,
+        )
+        self._authority_store = _AuthorityStore(
+            root_secret=root_secret,
+            clock=clock,
+        )
+
+    def close(self, report: Mapping[str, object]) -> PhaseGateClosure:
+        self._verifier.verify(report)
+        identity_binding = report["identity_binding"]
+        if not isinstance(identity_binding, Mapping):
+            raise GateAuthorityMismatchError("gate identity is invalid")
+        identity = AuthorityIdentity(
+            plan_hash=str(identity_binding["plan_hash"]),
+            scope_hash=str(identity_binding["scope_hash"]),
+            instruction_policy_hash=str(
+                identity_binding["instruction_policy_hash"]
+            ),
+        )
+        authority_snapshot = report["authority_snapshot"]
+        if not isinstance(authority_snapshot, Mapping):
+            raise GateAuthorityMismatchError(
+                "gate authority snapshot is invalid"
+            )
+        return self._authority_store._close_phase_gate(
+            phase=Phase(str(report["phase"])),
+            attempt_id=str(report["attempt_id"]),
+            identity=identity,
+            authority_snapshot=authority_snapshot,
+            gate_report_sha256=str(report["gate_report_sha256"]),
+            verdict=str(report["verdict"]),
+        )
+
+
 __all__ = [
     "GateAuthorityMismatchError",
     "GateBuildError",
@@ -626,6 +682,7 @@ __all__ = [
     "GateError",
     "GateValidationError",
     "PhaseGateBuilder",
+    "PhaseGateCloser",
     "PhaseGateVerifier",
     "gate_report_sha256",
     "validate_gate_report",
