@@ -15,7 +15,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -390,20 +389,34 @@ def _compile_changed(
     files: list[str],
     *,
     workspace: Path = PROJECT_ROOT,
+    lease: TaskExecutionLease | None = None,
+    invocation: ExecutionInvocation | None = None,
+    authority_reader: AuthorityReader | None = None,
 ) -> tuple[bool, str]:
     py_files = [str(workspace / item) for item in files if item.endswith(".py")]
     if not py_files:
         return True, "no python files changed"
+    if not isinstance(lease, TaskExecutionLease) or not isinstance(
+        invocation, ExecutionInvocation
+    ):
+        return False, "compile execution authority is missing"
+    command = [sys.executable, "-m", "py_compile", *py_files]
+    if tuple(command) != invocation.argv or invocation.cwd is None:
+        return False, "compile command differs from execution intent"
+
+    def _runner(argv, **kwargs):
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+        return subprocess.run(argv, timeout=120, **kwargs)
+
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "py_compile", *py_files],
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-        )
+        proc = AuthorizedSubprocess(
+            authority_reader=authority_reader or AuthorityReader(),
+            repository_root=PROJECT_ROOT,
+            runner=_runner,
+        ).run(lease, invocation)
     except Exception as exc:  # noqa: BLE001 - gate failures must trigger rollback.
         return False, f"{type(exc).__name__}: {exc}"
     output = (proc.stdout or "") + (proc.stderr or "")
@@ -414,6 +427,9 @@ def _run_changed_tests(
     files: list[str],
     *,
     workspace: Path = PROJECT_ROOT,
+    lease: TaskExecutionLease | None = None,
+    invocation: ExecutionInvocation | None = None,
+    authority_reader: AuthorityReader | None = None,
 ) -> tuple[bool, str]:
     modules = [
         item.removesuffix(".py").replace("/", ".")
@@ -422,26 +438,32 @@ def _run_changed_tests(
     ]
     if not modules:
         return True, "no changed test modules"
-    logs: list[str] = []
-    for module in modules:
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "unittest", module],
-                cwd=str(workspace),
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=600,
-            )
-        except Exception as exc:  # noqa: BLE001 - gate failures must trigger rollback.
-            logs.append(f"[{module}] {type(exc).__name__}: {exc}")
-            return False, "\n\n".join(logs)
-        output = ((proc.stdout or "") + (proc.stderr or "")).strip()
-        logs.append(f"[{module}] returncode={proc.returncode}\n{output}")
-        if proc.returncode != 0:
-            return False, "\n\n".join(logs)
-    return True, "\n\n".join(logs)
+    if not isinstance(lease, TaskExecutionLease) or not isinstance(
+        invocation, ExecutionInvocation
+    ):
+        return False, "test execution authority is missing"
+    command = [sys.executable, "-m", "unittest", *modules]
+    if tuple(command) != invocation.argv or invocation.cwd is None:
+        return False, "test command differs from execution intent"
+
+    def _runner(argv, **kwargs):
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+        return subprocess.run(argv, timeout=600, **kwargs)
+
+    try:
+        proc = AuthorizedSubprocess(
+            authority_reader=authority_reader or AuthorityReader(),
+            repository_root=PROJECT_ROOT,
+            runner=_runner,
+        ).run(lease, invocation)
+    except Exception as exc:  # noqa: BLE001 - gate failures must trigger rollback.
+        return False, f"{type(exc).__name__}: {exc}"
+    output = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    log = f"modules={modules} returncode={proc.returncode}\n{output}"
+    return proc.returncode == 0, log
 
 
 def _snapshot_changed_files(
@@ -520,6 +542,16 @@ def repair_handoff_runner(
     patch_invocation=None,
     execution_patch_lease=None,
     execution_patch_invocation=None,
+    validation_lease=None,
+    compile_invocation=None,
+    test_invocation=None,
+    execution_validation_lease=None,
+    execution_compile_invocation=None,
+    execution_test_invocation=None,
+    review_lease=None,
+    review_invocation=None,
+    execution_review_lease=None,
+    execution_review_invocation=None,
     authority_reader=None,
     repository_root: str | Path | None = None,
 ) -> RepairResult:
@@ -538,6 +570,29 @@ def repair_handoff_runner(
         patch_invocation
         if patch_invocation is not None
         else execution_patch_invocation
+    )
+    validation_lease = (
+        validation_lease
+        if validation_lease is not None
+        else execution_validation_lease
+    )
+    if validation_lease is None:
+        validation_lease = patch_lease
+    compile_invocation = (
+        compile_invocation
+        if compile_invocation is not None
+        else execution_compile_invocation
+    )
+    test_invocation = (
+        test_invocation
+        if test_invocation is not None
+        else execution_test_invocation
+    )
+    review_lease = review_lease if review_lease is not None else execution_review_lease
+    review_invocation = (
+        review_invocation
+        if review_invocation is not None
+        else execution_review_invocation
     )
     if not dry_run and (
         not isinstance(lease, TaskExecutionLease)
@@ -727,6 +782,56 @@ def repair_handoff_runner(
         return result
 
     if not skip_code_review:
+        if not isinstance(review_lease, TaskExecutionLease) or not isinstance(
+            review_invocation, ExecutionInvocation
+        ):
+            result = RepairResult(
+                ok=False,
+                status="unauthorized",
+                handoff_path=str(handoff),
+                output_dir=str(out),
+                factor_names=names,
+                allowed_files=sorted(allowed),
+                changed_files=files,
+                prompt_path=str(prompt_path),
+                error="review execution lease and invocation are required before LLM review",
+                logs=["control-plane sink guard: missing review authority"],
+            )
+            (out / "repair_result.json").write_text(
+                json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return result
+        try:
+            review_permit = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root or PROJECT_ROOT,
+            ).authorize(review_lease, review_invocation)
+            if (
+                review_permit.operation != "REPAIR"
+                or review_permit.effect is not SideEffect.NETWORK_EGRESS
+            ):
+                raise ExecutionAuthorizationError(
+                    "review requires a NETWORK_EGRESS REPAIR intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            result = RepairResult(
+                ok=False,
+                status="unauthorized",
+                handoff_path=str(handoff),
+                output_dir=str(out),
+                factor_names=names,
+                allowed_files=sorted(allowed),
+                changed_files=files,
+                prompt_path=str(prompt_path),
+                error=str(error),
+                logs=["control-plane sink guard: review intent rejected"],
+            )
+            (out / "repair_result.json").write_text(
+                json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            return result
         review_ok, review_text = _run_code_reviewer(diff, prompt, out)
         if not review_ok:
             result = RepairResult(
@@ -825,9 +930,21 @@ def repair_handoff_runner(
         )
         return result
 
-    compile_ok, compile_output = _compile_changed(files, workspace=workspace)
+    compile_ok, compile_output = _compile_changed(
+        files,
+        workspace=workspace,
+        lease=validation_lease,
+        invocation=compile_invocation,
+        authority_reader=reader,
+    )
     test_ok, test_output = (
-        _run_changed_tests(files, workspace=workspace)
+        _run_changed_tests(
+            files,
+            workspace=workspace,
+            lease=validation_lease,
+            invocation=test_invocation,
+            authority_reader=reader,
+        )
         if compile_ok
         else (False, "tests skipped: compile failed")
     )
