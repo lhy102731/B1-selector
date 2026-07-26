@@ -22,6 +22,13 @@ from pathlib import Path
 from .experiment import Experiment
 from .experiment_runner import CodeChangeExecutor, CodeChangeResult
 from .safety import assert_safe_path
+from .control_plane.contracts import SideEffect
+from .control_plane.sink_guard import (
+    ExecutionAuthorizationError,
+    ExecutionInvocation,
+    ExecutionSinkGuard,
+)
+from .control_plane.stores import AuthorityReader, TaskExecutionLease
 
 # ============================================================
 # Constants
@@ -359,6 +366,34 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                 ok=False,
                 error="execution lease and invocation are required before patch execution",
                 logs=["control-plane sink guard: missing execution authority"],
+            )
+        if not isinstance(lease, TaskExecutionLease) or not isinstance(
+            invocation, ExecutionInvocation
+        ):
+            return CodeChangeResult(
+                ok=False,
+                error="execution lease and invocation are malformed",
+                logs=["control-plane sink guard: malformed execution authority"],
+            )
+        try:
+            reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
+            guard = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root or Path(__file__).resolve().parent.parent,
+            )
+            permit = guard.authorize(lease, invocation)
+            if (
+                permit.operation != "PATCH_APPLY"
+                or permit.effect is not SideEffect.GIT_MUTATION
+            ):
+                raise ExecutionAuthorizationError(
+                    "patch execution requires a GIT_MUTATION PATCH_APPLY intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            return CodeChangeResult(
+                ok=False,
+                error=f"execution authorization rejected: {error}",
+                logs=["control-plane sink guard: patch intent rejected"],
             )
         # 1. read task
         task_md = task_path.read_text(encoding="utf-8") if task_path.exists() else "# no task"
