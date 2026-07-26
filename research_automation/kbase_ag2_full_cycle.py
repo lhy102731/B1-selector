@@ -25,6 +25,7 @@ from .discovery_execution_bridge import DiscoveryExecutionPlan, build_execution_
 from .handoff_runner_repair import repair_handoff_runner
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
+    AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
     ExecutionSinkGuard,
@@ -187,19 +188,34 @@ def _execute_with_logs(
     *,
     stdout_path: Path,
     stderr_path: Path,
+    lease: TaskExecutionLease,
+    invocation: ExecutionInvocation,
+    authority_reader: AuthorityReader,
 ) -> subprocess.CompletedProcess[Any]:
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        stdout_path.open("w", encoding="utf-8", newline="\n") as stdout_handle,
-        stderr_path.open("w", encoding="utf-8", newline="\n") as stderr_handle,
-    ):
-        return subprocess.run(
-            plan.command,
-            cwd=str(PROJECT_ROOT),
-            stdout=stdout_handle,
-            stderr=stderr_handle,
-            check=False,
-        )
+    if tuple(plan.command) != invocation.argv:
+        raise ExecutionAuthorizationError("full-cycle command differs from execution intent")
+    if invocation.cwd is None or Path(invocation.cwd).resolve() != PROJECT_ROOT.resolve():
+        raise ExecutionAuthorizationError("full-cycle cwd differs from execution intent")
+
+    def _runner(command, **kwargs):
+        stdout_path.parent.mkdir(parents=True, exist_ok=True)
+        with (
+            stdout_path.open("w", encoding="utf-8", newline="\n") as stdout_handle,
+            stderr_path.open("w", encoding="utf-8", newline="\n") as stderr_handle,
+        ):
+            return subprocess.run(
+                command,
+                cwd=kwargs.get("cwd", str(PROJECT_ROOT)),
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                check=False,
+            )
+
+    return AuthorizedSubprocess(
+        authority_reader=authority_reader,
+        repository_root=PROJECT_ROOT,
+        runner=_runner,
+    ).run(lease, invocation)
 
 
 def _read_runner_status(output_dir: Path) -> dict[str, Any] | None:
@@ -254,12 +270,26 @@ def run_kbase_ag2_full_cycle(
     invocation=None,
     execution_lease=None,
     execution_invocation=None,
+    subprocess_lease=None,
+    subprocess_invocation=None,
+    execution_subprocess_lease=None,
+    execution_subprocess_invocation=None,
     authority_reader=None,
     repository_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run one complete archived research cycle without production promotion."""
     lease = lease if lease is not None else execution_lease
     invocation = invocation if invocation is not None else execution_invocation
+    subprocess_lease = (
+        subprocess_lease
+        if subprocess_lease is not None
+        else execution_subprocess_lease
+    )
+    subprocess_invocation = (
+        subprocess_invocation
+        if subprocess_invocation is not None
+        else execution_subprocess_invocation
+    )
     if not isinstance(lease, TaskExecutionLease) or not isinstance(
         invocation, ExecutionInvocation
     ):
@@ -455,11 +485,31 @@ def run_kbase_ag2_full_cycle(
         _record_stage(manifest, manifest_path, "research_execution", "RUNNING")
         stdout_path = cycle_dir / "execute.stdout.log"
         stderr_path = cycle_dir / "execute.stderr.log"
-        process = _execute_with_logs(
-            plan,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-        )
+        if not isinstance(subprocess_lease, TaskExecutionLease) or not isinstance(
+            subprocess_invocation, ExecutionInvocation
+        ):
+            return _finish_cycle(
+                manifest,
+                manifest_path,
+                "EXECUTION_UNAUTHORIZED",
+                reason="subprocess lease and invocation are required",
+            )
+        try:
+            process = _execute_with_logs(
+                plan,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                lease=subprocess_lease,
+                invocation=subprocess_invocation,
+                authority_reader=reader,
+            )
+        except ExecutionAuthorizationError as error:
+            return _finish_cycle(
+                manifest,
+                manifest_path,
+                "EXECUTION_UNAUTHORIZED",
+                reason=str(error),
+            )
         runner_status = _read_runner_status(Path(plan.output_dir))
         _record_stage(
             manifest,
