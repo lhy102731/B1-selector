@@ -21,9 +21,11 @@ from research_automation.control_plane.gates import (
     GateAuthorityMismatchError,
     GateBuildError,
     GateEvidenceError,
+    GateValidationError,
     PhaseGateBuilder,
     PhaseGateCloser,
     PhaseGateVerifier,
+    parse_gate_report_v1_bytes,
     validate_gate_report,
 )
 from research_automation.control_plane.stores import (
@@ -138,6 +140,15 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
         with self.assertRaises(GateBuildError):
             PhaseGateBuilder().build(draft)
+
+    def test_gate_report_byte_parser_rejects_duplicate_keys(self) -> None:
+        raw = b'{"schema_version":"first","schema_version":"second"}'
+
+        with self.assertRaisesRegex(
+            GateValidationError,
+            "duplicate JSON key: schema_version",
+        ):
+            parse_gate_report_v1_bytes(raw)
 
     def test_gate_artifact_refs_reject_windows_path_ambiguity(self) -> None:
         for invalid_ref in (

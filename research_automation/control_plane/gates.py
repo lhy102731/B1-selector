@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -29,6 +30,8 @@ from .task_reports import (
 GATE_REPORT_V1 = "control_plane.gate_report.v1"
 _GATE_HASH_DOMAIN = b"control_plane.gate_report.v1\0"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_MAX_GATE_REPORT_BYTES = 256 * 1024
+_MAX_GATE_REPORT_DEPTH = 32
 _MAX_GATE_ARTIFACT_BYTES = 4 * 1024 * 1024
 _DRAFT_FIELDS = frozenset(
     {
@@ -161,6 +164,59 @@ def gate_report_sha256(report: Mapping[str, object]) -> str:
     return hashlib.sha256(
         _GATE_HASH_DOMAIN + canonical_json(payload).encode("utf-8")
     ).hexdigest()
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise GateValidationError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _require_bounded_gate_depth(value: object) -> None:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > _MAX_GATE_REPORT_DEPTH:
+            raise GateValidationError(
+                f"gate report exceeds {_MAX_GATE_REPORT_DEPTH} level "
+                "nesting limit"
+            )
+        if isinstance(current, Mapping):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+
+
+def parse_gate_report_v1_bytes(raw: bytes) -> dict[str, object]:
+    """Parse exact GateReport V1 bytes without last-write-wins keys."""
+    if not isinstance(raw, bytes):
+        raise GateValidationError("gate report input must be bytes")
+    if len(raw) > _MAX_GATE_REPORT_BYTES:
+        raise GateValidationError("gate report exceeds its byte limit")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise GateValidationError("gate report must be strict UTF-8") from error
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except GateValidationError:
+        raise
+    except RecursionError as error:
+        raise GateValidationError(
+            "gate report exceeds its nesting limit"
+        ) from error
+    except json.JSONDecodeError as error:
+        raise GateValidationError("gate report must be valid JSON") from error
+    _require_bounded_gate_depth(payload)
+    if not isinstance(payload, dict):
+        raise GateValidationError("gate report JSON must be an object")
+    validate_gate_report(payload)
+    return payload
 
 
 def _derive_gate_verdict(
@@ -707,5 +763,6 @@ __all__ = [
     "PhaseGateCloser",
     "PhaseGateVerifier",
     "gate_report_sha256",
+    "parse_gate_report_v1_bytes",
     "validate_gate_report",
 ]
