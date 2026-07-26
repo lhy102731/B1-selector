@@ -407,7 +407,13 @@ def _compile_changed(
     ):
         return False, "compile execution authority is missing"
     command = [sys.executable, "-m", "py_compile", *py_files]
-    if tuple(command) != invocation.argv or invocation.cwd is None:
+    if (
+        tuple(command) != invocation.argv
+        or invocation.cwd is None
+        or Path(invocation.cwd).resolve() != workspace.resolve()
+        or invocation.runner.module != "research_automation.handoff_runner_repair"
+        or invocation.runner.callable_name != "repair_handoff_runner"
+    ):
         return False, "compile command differs from execution intent"
 
     def _runner(argv, **kwargs):
@@ -450,7 +456,13 @@ def _run_changed_tests(
     ):
         return False, "test execution authority is missing"
     command = [sys.executable, "-m", "unittest", *modules]
-    if tuple(command) != invocation.argv or invocation.cwd is None:
+    if (
+        tuple(command) != invocation.argv
+        or invocation.cwd is None
+        or Path(invocation.cwd).resolve() != workspace.resolve()
+        or invocation.runner.module != "research_automation.handoff_runner_repair"
+        or invocation.runner.callable_name != "repair_handoff_runner"
+    ):
         return False, "test command differs from execution intent"
 
     def _runner(argv, **kwargs):
@@ -715,6 +727,30 @@ def repair_handoff_runner(
             allowed_files=sorted(allowed),
             prompt_path=str(prompt_path),
             logs=["dry run: prompt written; no model called"],
+        )
+        (out / "repair_result.json").write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return result
+
+    if (
+        llm_invocation.argv != (claude_binary, "-p", prompt)
+        or llm_invocation.cwd is None
+        or Path(llm_invocation.cwd).resolve() != repair_root
+        or llm_invocation.runner.module
+        != "research_automation.handoff_runner_repair"
+        or llm_invocation.runner.callable_name != "repair_handoff_runner"
+    ):
+        result = RepairResult(
+            ok=False,
+            status="unauthorized",
+            handoff_path=str(handoff),
+            output_dir=str(out),
+            factor_names=names,
+            allowed_files=sorted(allowed),
+            prompt_path=str(prompt_path),
+            error="LLM command or entry identity differs from immutable intent",
         )
         (out / "repair_result.json").write_text(
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2),

@@ -735,6 +735,24 @@ class RealBacktestExecutor(BacktestExecutor):
             if not script_path.exists():
                 return {"success": False, "error": f"entrypoint not found: {spec.script}",
                         "requires_manual_integration": False}
+        try:
+            declared_runner = (
+                Path(repository_root or self.root) / invocation.runner.source_ref
+            ).resolve(strict=True)
+        except (OSError, ValueError) as error:
+            return {
+                "success": False,
+                "error": f"backtest runner identity is unavailable: {error}",
+                "requires_manual_integration": False,
+                "command": None,
+            }
+        if declared_runner != script_path.resolve(strict=True):
+            return {
+                "success": False,
+                "error": "backtest runner identity differs from selected entrypoint",
+                "requires_manual_integration": False,
+                "command": None,
+            }
 
         # detect params that cannot be passed via CLI
         unmapped = {k: v for k, v in params.items()

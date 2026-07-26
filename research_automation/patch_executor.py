@@ -471,6 +471,20 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         prompt = self._build_patch_prompt(task_md, target_content, rel_file)
         self.last_prompt = prompt
 
+        expected_llm_argv = (self.binary, "-p", prompt)
+        if (
+            llm_invocation.argv != expected_llm_argv
+            or llm_invocation.cwd is None
+            or Path(llm_invocation.cwd).resolve() != Path(workspace).resolve()
+            or llm_invocation.runner.module != "research_automation.patch_executor"
+            or llm_invocation.runner.callable_name != "ClaudePatchExecutor.apply"
+        ):
+            return CodeChangeResult(
+                ok=False,
+                error="LLM command or entry identity differs from immutable intent",
+                logs=["control-plane sink guard: LLM invocation mismatch"],
+            )
+
         # 4. call Claude CLI through the shared subprocess sink
         def _authorized_llm_runner(command, **kwargs):
             kwargs.setdefault("capture_output", True)
@@ -617,7 +631,14 @@ class ClaudePatchExecutor(CodeChangeExecutor):
 
         def _compile_runner(command, *, cwd):
             expected = [sys.executable, "-m", "compileall", "-q", *compile_targets]
-            if tuple(command) != tuple(expected) or Path(cwd).resolve() != Path(workspace).resolve():
+            if (
+                tuple(command) != tuple(expected)
+                or Path(cwd).resolve() != Path(workspace).resolve()
+                or compile_invocation.runner.module
+                != "research_automation.patch_executor"
+                or compile_invocation.runner.callable_name
+                != "ClaudePatchExecutor.apply"
+            ):
                 raise ExecutionAuthorizationError(
                     "compile command differs from immutable execution intent"
                 )

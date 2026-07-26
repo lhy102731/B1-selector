@@ -191,14 +191,21 @@ def _execute_with_logs(
     lease: TaskExecutionLease,
     invocation: ExecutionInvocation,
     authority_reader: AuthorityReader,
+    repository_root: Path = PROJECT_ROOT,
 ) -> subprocess.CompletedProcess[Any]:
     if tuple(plan.command) != invocation.argv:
         raise ExecutionAuthorizationError("full-cycle command differs from execution intent")
-    if invocation.cwd is None or Path(invocation.cwd).resolve() != PROJECT_ROOT.resolve():
+    root = repository_root.resolve(strict=True)
+    if invocation.cwd is None or Path(invocation.cwd).resolve() != root:
         raise ExecutionAuthorizationError("full-cycle cwd differs from execution intent")
+    declared_runner = (root / invocation.runner.source_ref).resolve(strict=True)
+    if declared_runner != Path(plan.runner_script).resolve(strict=True):
+        raise ExecutionAuthorizationError(
+            "full-cycle runner identity differs from execution plan"
+        )
     permit = ExecutionSinkGuard(
         authority_reader=authority_reader,
-        repository_root=PROJECT_ROOT,
+        repository_root=root,
     ).authorize(lease, invocation)
     if (
         permit.operation != "SUBPROCESS"
@@ -230,7 +237,7 @@ def _execute_with_logs(
         ):
             return subprocess.run(
                 command,
-                cwd=kwargs.get("cwd", str(PROJECT_ROOT)),
+                cwd=kwargs.get("cwd", str(root)),
                 stdout=stdout_handle,
                 stderr=stderr_handle,
                 check=False,
@@ -238,7 +245,7 @@ def _execute_with_logs(
 
     return AuthorizedSubprocess(
         authority_reader=authority_reader,
-        repository_root=PROJECT_ROOT,
+        repository_root=root,
         runner=_runner,
     ).run(lease, invocation)
 
@@ -597,6 +604,7 @@ def run_kbase_ag2_full_cycle(
                 lease=subprocess_lease,
                 invocation=subprocess_invocation,
                 authority_reader=reader,
+                repository_root=Path(repository_root or PROJECT_ROOT),
             )
         except ExecutionAuthorizationError as error:
             return _finish_cycle(
