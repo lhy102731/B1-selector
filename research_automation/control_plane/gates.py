@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from .contracts import Phase, canonical_json
-from .stores import AuthorityReader
+from .stores import AuthorityReader, TaskReportAuthorityError
 from .task_reports import (
     MAX_TASK_REPORT_V2_BYTES,
     TaskReportValidationError,
@@ -542,6 +542,12 @@ class PhaseGateVerifier:
                 raise GateEvidenceError(
                     "TaskReport reference does not match its contents"
                 )
+            try:
+                self._authority_reader.verify_task_report_binding(parsed)
+            except TaskReportAuthorityError as error:
+                raise GateAuthorityMismatchError(
+                    "TaskReport does not match trusted authority"
+                ) from error
 
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)

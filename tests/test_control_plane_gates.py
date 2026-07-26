@@ -26,7 +26,10 @@ from research_automation.control_plane.gates import (
     validate_gate_report,
 )
 from research_automation.control_plane.stores import AuthorityIdentity
-from research_automation.control_plane.task_reports import build_task_report_v2
+from research_automation.control_plane.task_reports import (
+    build_task_report_v2,
+    parse_task_report_v2_bytes,
+)
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
@@ -412,6 +415,35 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
                     with self.assertRaises(GateEvidenceError):
                         fixture.verifier.verify(forged_report)
+
+    def test_verifier_cross_checks_task_report_against_authority(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            forged_draft = parse_task_report_v2_bytes(
+                fixture.task_report_bytes
+            )
+            for computed_field in (
+                "schema_version",
+                "unexpected_changes",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            ):
+                forged_draft.pop(computed_field)
+            forged_draft["objective"] = "Forged gate task objective."
+            forged_task_report = build_task_report_v2(forged_draft)
+            forged_bytes = canonical_json(forged_task_report).encode("utf-8")
+            fixture.task_report_path.write_bytes(forged_bytes)
+
+            gate_draft = dict(fixture.draft)
+            task_report_ref = dict(fixture.draft["task_reports"][0])
+            task_report_ref["report_sha256"] = hashlib.sha256(
+                forged_bytes
+            ).hexdigest()
+            gate_draft["task_reports"] = [task_report_ref]
+            gate_report = PhaseGateBuilder().build(gate_draft)
+
+            with self.assertRaises(GateAuthorityMismatchError):
+                fixture.verifier.verify(gate_report)
 
 
 if __name__ == "__main__":
