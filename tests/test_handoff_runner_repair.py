@@ -77,6 +77,29 @@ class HandoffRunnerRepairTests(unittest.TestCase):
             self.assertFalse(output.exists())
             run.assert_not_called()
 
+    def test_malformed_execution_authority_fails_before_directory_or_model(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            handoff = root / "handoff.yaml"
+            output = root / "repair"
+            handoff.write_text(
+                yaml.safe_dump(_mechanism_document(), allow_unicode=True),
+                encoding="utf-8",
+            )
+
+            with patch("research_automation.handoff_runner_repair.subprocess.run") as run:
+                result = repair_handoff_runner(
+                    handoff_path=handoff,
+                    output_dir=output,
+                    lease=object(),
+                    invocation=object(),
+                )
+
+            self.assertFalse(result.ok)
+            self.assertEqual("unauthorized", result.status)
+            self.assertFalse(output.exists())
+            run.assert_not_called()
+
     def test_mechanism_only_handoff_builds_dedicated_dry_run_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

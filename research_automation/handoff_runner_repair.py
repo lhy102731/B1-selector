@@ -31,6 +31,8 @@ from .discovery_execution_bridge import (
     extract_factor_output,
     load_handoff_document,
 )
+from .control_plane.sink_guard import ExecutionInvocation
+from .control_plane.stores import TaskExecutionLease
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -519,7 +521,10 @@ def repair_handoff_runner(
     out = Path(output_dir).resolve()
     lease = lease if lease is not None else execution_lease
     invocation = invocation if invocation is not None else execution_invocation
-    if not dry_run and (lease is None or invocation is None):
+    if not dry_run and (
+        not isinstance(lease, TaskExecutionLease)
+        or not isinstance(invocation, ExecutionInvocation)
+    ):
         return RepairResult(
             ok=False,
             status="unauthorized",
