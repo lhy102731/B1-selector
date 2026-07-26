@@ -425,6 +425,54 @@ class TrustedBootstrapTests(unittest.TestCase):
                 with self.assertRaises(SqliteSchemaError):
                     AuthorityReader().read_identity()
 
+    def test_outbox_replay_after_mirror_before_ack_is_idempotent(self) -> None:
+        now = datetime(2026, 7, 26, 2, 30, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-outbox-replay")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                journal = stores_module._OperationalJournal(clock=lambda: now)
+                authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                pending = authority._read_pending_outbox(limit=1)
+
+                # Simulated crash boundary: journal commit succeeds, authority ack does not run.
+                inserted = journal._mirror_event(pending[0])
+                self.assertTrue(inserted)
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 1)
+                self.assertEqual(stores_module.OperationalReader().event_count(), 1)
+
+                replay = stores_module._mirror_authority_outbox(
+                    authority,
+                    journal,
+                    limit=10,
+                )
+
+                self.assertEqual(replay.inserted_events, 0)
+                self.assertEqual(replay.acknowledged_events, 1)
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 0)
+                self.assertEqual(stores_module.OperationalReader().event_count(), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

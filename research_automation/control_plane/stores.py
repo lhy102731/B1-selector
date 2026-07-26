@@ -147,6 +147,10 @@ class AuthorizationExpiredError(AuthorizationError):
     """Raised when an envelope is no longer valid."""
 
 
+class OutboxConflictError(StoreError):
+    """Raised when one event_id is associated with different event content."""
+
+
 class _BearerSecret:
     """Opaque in-memory secret whose normal renderings are always redacted."""
 
@@ -318,6 +322,24 @@ class StoreIdentity:
     installation_id: str
     store_kind: str
     schema_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityOutboxEvent:
+    sequence: int
+    event_id: str
+    event_type: str
+    aggregate_id: str
+    payload_json: str
+    payload_sha256: str
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxMirrorResult:
+    scanned_events: int
+    inserted_events: int
+    acknowledged_events: int
 
 
 def _path_identity(path: str | Path) -> str:
@@ -570,6 +592,18 @@ class AuthorityReader:
     def read_identity(self) -> StoreIdentity:
         return _read_store_identity(_authority_spec())
 
+    def pending_outbox_count(self) -> int:
+        return int(
+            _SqliteUnitOfWork(_authority_spec())._read(
+                lambda connection: connection.execute(
+                    """
+                    SELECT COUNT(*) FROM authority_outbox
+                    WHERE mirrored_at IS NULL
+                    """
+                ).fetchone()[0]
+            )
+        )
+
 
 class OperationalReader:
     """Read-only journal queries with no generic SQL surface."""
@@ -578,6 +612,15 @@ class OperationalReader:
 
     def read_identity(self) -> StoreIdentity:
         return _read_store_identity(_operational_spec())
+
+    def event_count(self) -> int:
+        return int(
+            _SqliteUnitOfWork(_operational_spec())._read(
+                lambda connection: connection.execute(
+                    "SELECT COUNT(*) FROM journal_events"
+                ).fetchone()[0]
+            )
+        )
 
 
 def _authority_spec() -> _StoreSpec:
@@ -665,6 +708,66 @@ class _AuthorityStore:
 
     def _now(self) -> datetime:
         return _require_aware_datetime(self._clock(), "clock result")
+
+    def _read_pending_outbox(
+        self,
+        *,
+        limit: int,
+    ) -> tuple[AuthorityOutboxEvent, ...]:
+        if type(limit) is not int or not 1 <= limit <= 1_000:
+            raise ValueError("outbox limit must be between 1 and 1000")
+
+        def read(connection: sqlite3.Connection) -> tuple[AuthorityOutboxEvent, ...]:
+            rows = connection.execute(
+                """
+                SELECT sequence, event_id, event_type, aggregate_id,
+                       payload_json, payload_sha256, created_at
+                FROM authority_outbox
+                WHERE mirrored_at IS NULL
+                ORDER BY sequence
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            return tuple(
+                AuthorityOutboxEvent(
+                    sequence=int(row["sequence"]),
+                    event_id=str(row["event_id"]),
+                    event_type=str(row["event_type"]),
+                    aggregate_id=str(row["aggregate_id"]),
+                    payload_json=str(row["payload_json"]),
+                    payload_sha256=str(row["payload_sha256"]),
+                    created_at=_parse_utc_text(str(row["created_at"])),
+                )
+                for row in rows
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read)
+
+    def _acknowledge_outbox(self, event_id: str) -> bool:
+        _require_nonempty(event_id, "event_id")
+        mirrored_at = _utc_text(self._now())
+
+        def acknowledge(connection: sqlite3.Connection) -> bool:
+            update = connection.execute(
+                """
+                UPDATE authority_outbox
+                SET mirrored_at = ?
+                WHERE event_id = ? AND mirrored_at IS NULL
+                """,
+                (mirrored_at, event_id),
+            )
+            if update.rowcount == 1:
+                return True
+            existing = connection.execute(
+                "SELECT mirrored_at FROM authority_outbox WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if existing is None:
+                raise OutboxConflictError("authority outbox event is missing")
+            return False
+
+        return _SqliteUnitOfWork(_authority_spec())._write(acknowledge)
 
     def _provision_authorization(
         self,
@@ -896,6 +999,98 @@ class _AuthorityStore:
         )
 
 
+class _OperationalJournal:
+    """Typed OperationalJournal writer with event_id idempotency."""
+
+    __slots__ = ("_clock",)
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _now(self) -> datetime:
+        return _require_aware_datetime(self._clock(), "clock result")
+
+    def _mirror_event(self, event: AuthorityOutboxEvent) -> bool:
+        if not isinstance(event, AuthorityOutboxEvent):
+            raise TypeError("event must be an AuthorityOutboxEvent")
+        mirrored_at = _utc_text(self._now())
+
+        def mirror(connection: sqlite3.Connection) -> bool:
+            existing = connection.execute(
+                """
+                SELECT event_type, aggregate_id, payload_json, payload_sha256,
+                       created_at
+                FROM journal_events
+                WHERE event_id = ?
+                """,
+                (event.event_id,),
+            ).fetchone()
+            expected = (
+                event.event_type,
+                event.aggregate_id,
+                event.payload_json,
+                event.payload_sha256,
+                _utc_text(event.created_at),
+            )
+            if existing is not None:
+                observed = tuple(str(value) for value in existing)
+                if observed != expected:
+                    raise OutboxConflictError(
+                        "journal event_id content conflict"
+                    )
+                return False
+            connection.execute(
+                """
+                INSERT INTO journal_events
+                (event_id, event_type, aggregate_id, payload_json,
+                 payload_sha256, created_at, mirrored_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.event_id,
+                    event.event_type,
+                    event.aggregate_id,
+                    event.payload_json,
+                    event.payload_sha256,
+                    _utc_text(event.created_at),
+                    mirrored_at,
+                ),
+            )
+            return True
+
+        return _SqliteUnitOfWork(_operational_spec())._write(mirror)
+
+
+def _mirror_authority_outbox(
+    authority: _AuthorityStore,
+    journal: _OperationalJournal,
+    *,
+    limit: int,
+) -> OutboxMirrorResult:
+    if not isinstance(authority, _AuthorityStore) or not isinstance(
+        journal,
+        _OperationalJournal,
+    ):
+        raise TypeError("trusted authority and operational journal are required")
+    events = authority._read_pending_outbox(limit=limit)
+    inserted = 0
+    acknowledged = 0
+    for event in events:
+        if journal._mirror_event(event):
+            inserted += 1
+        if authority._acknowledge_outbox(event.event_id):
+            acknowledged += 1
+    return OutboxMirrorResult(
+        scanned_events=len(events),
+        inserted_events=inserted,
+        acknowledged_events=acknowledged,
+    )
+
+
 def read_store_pair_descriptor() -> StorePairDescriptor:
     """Read only the fixed pair identity; never return a SQL connection."""
 
@@ -914,12 +1109,15 @@ __all__ = [
     "AuthorityReader",
     "AuthorityGrant",
     "AuthorityIdentity",
+    "AuthorityOutboxEvent",
     "AuthorizationEnvelope",
     "AuthorizationError",
     "AuthorizationExpiredError",
     "AuthorizationRejectedError",
     "AuthorizationReplayError",
     "OperationalReader",
+    "OutboxConflictError",
+    "OutboxMirrorResult",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",
