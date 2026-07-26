@@ -216,19 +216,16 @@ class OutputOwnershipTests(unittest.TestCase):
             old.parent.mkdir(parents=True)
             old.write_text("old-output", encoding="utf-8")
             result = root / "result"
-            proc = type("Proc", (), {"returncode": 1, "stdout": "", "stderr": "failed"})()
             ex = RealBacktestExecutor(project_root=root, keep_scratch=False)
-            def overwrite_then_fail(*args, **kwargs):
-                old.write_text("failed-run-output", encoding="utf-8")
-                return proc
-            with patch("research_automation.experiment_runner.subprocess.run", side_effect=overwrite_then_fail):
+            with patch("research_automation.experiment_runner.subprocess.run") as run:
                 res = ex.execute({"strategy": "B1", "params": {}}, result_dir=result)
             self.assertFalse(res["success"])
+            self.assertIn("execution lease", res["error"].lower())
             self.assertEqual(old.read_text(encoding="utf-8"), "old-output")
             self.assertFalse((result / "equity.csv").exists())
-            self.assertEqual(res["scratch_cleaned"], [])
+            run.assert_not_called()
 
-    def test_success_archives_new_output_then_restores_preexisting_file(self):
+    def test_unauthorized_run_cannot_overwrite_preexisting_output(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "run_b1_v3.py").write_text("pass", encoding="utf-8")
@@ -236,17 +233,13 @@ class OutputOwnershipTests(unittest.TestCase):
             shared.parent.mkdir(parents=True)
             shared.write_text("old-output", encoding="utf-8")
             result = root / "result"
-            proc = type("Proc", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-            def overwrite_then_succeed(*args, **kwargs):
-                shared.write_text("new-output", encoding="utf-8")
-                return proc
             ex = RealBacktestExecutor(project_root=root, keep_scratch=False)
-            with patch("research_automation.experiment_runner.subprocess.run", side_effect=overwrite_then_succeed):
+            with patch("research_automation.experiment_runner.subprocess.run") as run:
                 res = ex.execute({"strategy": "B1", "params": {}}, result_dir=result)
-            self.assertTrue(res["success"])
-            self.assertEqual((result / "equity.csv").read_text(encoding="utf-8"), "new-output")
+            self.assertFalse(res["success"])
+            self.assertIn("execution lease", res["error"].lower())
             self.assertEqual(shared.read_text(encoding="utf-8"), "old-output")
-            self.assertEqual(res["scratch_cleaned"], [])
+            run.assert_not_called()
 
 
 if __name__ == "__main__":
