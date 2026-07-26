@@ -381,6 +381,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.assertRaises(GateEvidenceError):
                 fixture.verifier.verify(fixture.report)
 
+    def test_verifier_parses_task_report_v2_bytes(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            invalid_bytes = b"{not-json"
+            fixture.task_report_path.write_bytes(invalid_bytes)
+            invalid_draft = dict(fixture.draft)
+            task_report_ref = dict(fixture.draft["task_reports"][0])
+            task_report_ref["report_sha256"] = hashlib.sha256(
+                invalid_bytes
+            ).hexdigest()
+            invalid_draft["task_reports"] = [task_report_ref]
+            invalid_report = PhaseGateBuilder().build(invalid_draft)
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(invalid_report)
+
 
 if __name__ == "__main__":
     unittest.main()

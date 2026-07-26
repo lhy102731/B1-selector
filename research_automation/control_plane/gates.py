@@ -12,7 +12,11 @@ from typing import Callable
 
 from .contracts import Phase, canonical_json
 from .stores import AuthorityReader
-from .task_reports import MAX_TASK_REPORT_V2_BYTES
+from .task_reports import (
+    MAX_TASK_REPORT_V2_BYTES,
+    TaskReportValidationError,
+    parse_task_report_v2_bytes,
+)
 
 
 GATE_REPORT_V1 = "control_plane.gate_report.v1"
@@ -525,6 +529,12 @@ class PhaseGateVerifier:
                 actual_sha256,
             ):
                 raise GateEvidenceError("TaskReport evidence SHA-256 mismatch")
+            try:
+                parse_task_report_v2_bytes(raw)
+            except TaskReportValidationError as error:
+                raise GateEvidenceError(
+                    "TaskReport evidence is not valid TaskReport V2"
+                ) from error
 
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)
