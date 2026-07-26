@@ -299,6 +299,10 @@ def run_kbase_ag2_full_cycle(
     subprocess_invocation=None,
     execution_subprocess_lease=None,
     execution_subprocess_invocation=None,
+    discovery_lease=None,
+    discovery_invocation=None,
+    execution_discovery_lease=None,
+    execution_discovery_invocation=None,
     authority_reader=None,
     repository_root: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -314,6 +318,16 @@ def run_kbase_ag2_full_cycle(
         subprocess_invocation
         if subprocess_invocation is not None
         else execution_subprocess_invocation
+    )
+    discovery_lease = (
+        discovery_lease
+        if discovery_lease is not None
+        else execution_discovery_lease
+    )
+    discovery_invocation = (
+        discovery_invocation
+        if discovery_invocation is not None
+        else execution_discovery_invocation
     )
     if not isinstance(lease, TaskExecutionLease) or not isinstance(
         invocation, ExecutionInvocation
@@ -396,6 +410,38 @@ def run_kbase_ag2_full_cycle(
         if handoff_path is None:
             if not topic:
                 raise ValueError("topic is required when handoff_path is omitted")
+            if not isinstance(discovery_lease, TaskExecutionLease) or not isinstance(
+                discovery_invocation, ExecutionInvocation
+            ):
+                return _finish_cycle(
+                    manifest,
+                    manifest_path,
+                    "DISCOVERY_UNAUTHORIZED",
+                    reason="discovery lease and invocation are required",
+                )
+            try:
+                discovery_permit = ExecutionSinkGuard(
+                    authority_reader=reader,
+                    repository_root=repository_root or PROJECT_ROOT,
+                ).authorize(discovery_lease, discovery_invocation)
+                if (
+                    discovery_permit.operation != "FULL_CYCLE"
+                    or discovery_permit.effect is not SideEffect.NETWORK_EGRESS
+                    or discovery_invocation.runner.module
+                    != "research_automation.kbase_ag2_full_cycle"
+                    or discovery_invocation.runner.callable_name
+                    != "run_kbase_ag2_full_cycle"
+                ):
+                    raise ExecutionAuthorizationError(
+                        "discovery requires a NETWORK_EGRESS FULL_CYCLE intent"
+                    )
+            except (ExecutionAuthorizationError, OSError, ValueError) as error:
+                return _finish_cycle(
+                    manifest,
+                    manifest_path,
+                    "DISCOVERY_UNAUTHORIZED",
+                    reason=str(error),
+                )
             _record_stage(manifest, manifest_path, "discovery", "RUNNING")
             orchestrator = Orchestrator(profile=profile)
             discovery_result = orchestrator.run_workflow(
