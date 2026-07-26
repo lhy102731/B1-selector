@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 import secrets
+from typing import Callable
 
+from .contracts import Actor, Phase, SideEffect
 from .sqlite_uow import _SqliteUnitOfWork, _StoreSpec
 
 
@@ -25,6 +32,73 @@ _OPERATIONAL_STORE_PATH = (
     / "control_plane"
     / "operational"
     / "operational.sqlite3"
+)
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_AUTHORITY_SCHEMA = (
+    """
+    CREATE TABLE authorizations_v2 (
+        authorization_ref TEXT PRIMARY KEY,
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        plan_hash TEXT NOT NULL,
+        scope_hash TEXT NOT NULL,
+        instruction_policy_hash TEXT NOT NULL,
+        secret_sha256 TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        allowed_effects_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('PENDING', 'CLAIMED', 'EXPIRED')),
+        created_at TEXT NOT NULL,
+        claimed_at TEXT
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE phase_grants_v2 (
+        grant_id TEXT PRIMARY KEY,
+        authorization_ref TEXT NOT NULL UNIQUE
+            REFERENCES authorizations_v2(authorization_ref),
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        plan_hash TEXT NOT NULL,
+        scope_hash TEXT NOT NULL,
+        instruction_policy_hash TEXT NOT NULL,
+        secret_sha256 TEXT NOT NULL,
+        allowed_effects_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('ACTIVE', 'CLOSED', 'REVOKED')),
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE authority_outbox (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        mirrored_at TEXT
+    )
+    """,
+)
+_OPERATIONAL_SCHEMA = (
+    """
+    CREATE TABLE journal_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        event_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        mirrored_at TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -46,6 +120,147 @@ class StoreAlreadyBootstrappedError(StoreBootstrapError):
 
 class StoreBootstrapIncompleteError(StoreBootstrapError):
     """Raised when only one fixed store is present."""
+
+
+class AuthorizationError(StoreError):
+    """Base error for V2 authority-envelope operations."""
+
+
+class AuthorizationRejectedError(AuthorizationError):
+    """Raised when an envelope binding or bearer proof is invalid."""
+
+
+class AuthorizationReplayError(AuthorizationError):
+    """Raised when an authentic one-time envelope was already claimed."""
+
+
+class AuthorizationExpiredError(AuthorizationError):
+    """Raised when an envelope is no longer valid."""
+
+
+def _require_nonempty(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field_name} must be a non-empty canonical string")
+    return value
+
+
+def _require_sha256(value: object, field_name: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
+    return value
+
+
+def _require_aware_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value.astimezone(timezone.utc)
+
+
+def _utc_text(value: datetime) -> str:
+    return _require_aware_datetime(value, "timestamp").isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def _parse_utc_text(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return _require_aware_datetime(parsed, "stored timestamp")
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityIdentity:
+    """Exact P0R2 authority identity; never aliases legacy policy_hash."""
+
+    plan_hash: str
+    scope_hash: str
+    instruction_policy_hash: str
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "plan_hash",
+            "scope_hash",
+            "instruction_policy_hash",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _require_sha256(getattr(self, field_name), field_name),
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizationEnvelope:
+    """One-time bearer envelope issued only by the trusted authority broker."""
+
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    actor: Actor
+    identity: AuthorityIdentity
+    expires_at: datetime
+    allowed_side_effects: tuple[SideEffect, ...]
+    _bearer_secret: str = field(repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.authorization_ref, "authorization_ref")
+        _require_nonempty(self.attempt_id, "attempt_id")
+        _require_nonempty(self._bearer_secret, "bearer secret")
+        if not isinstance(self.phase, Phase):
+            raise ValueError("phase must be a Phase")
+        if not isinstance(self.actor, Actor):
+            raise ValueError("actor must be an Actor")
+        if not isinstance(self.identity, AuthorityIdentity):
+            raise ValueError("identity must be an AuthorityIdentity")
+        object.__setattr__(
+            self,
+            "expires_at",
+            _require_aware_datetime(self.expires_at, "expires_at"),
+        )
+        if (
+            not self.allowed_side_effects
+            or not all(
+                isinstance(effect, SideEffect)
+                for effect in self.allowed_side_effects
+            )
+            or len(set(self.allowed_side_effects)) != len(self.allowed_side_effects)
+        ):
+            raise ValueError("allowed_side_effects must be unique SideEffect values")
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "authorization_ref": self.authorization_ref,
+            "phase": self.phase.value,
+            "attempt_id": self.attempt_id,
+            "actor_id": self.actor.actor_id,
+            "actor_type": self.actor.actor_type,
+            "invocation_id": self.actor.invocation_id,
+            "identity": {
+                "plan_hash": self.identity.plan_hash,
+                "scope_hash": self.identity.scope_hash,
+                "instruction_policy_hash": (
+                    self.identity.instruction_policy_hash
+                ),
+            },
+            "expires_at": _utc_text(self.expires_at),
+            "allowed_side_effects": [
+                effect.value for effect in self.allowed_side_effects
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorityGrant:
+    """In-memory grant produced by one successful V2 envelope claim."""
+
+    grant_id: str
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    actor: Actor
+    identity: AuthorityIdentity
+    allowed_side_effects: tuple[SideEffect, ...]
+    _bearer_secret: str = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -106,6 +321,13 @@ def _provision_store(
                 ("store_kind", store_kind),
             ),
         )
+        schema = (
+            _AUTHORITY_SCHEMA
+            if store_kind == "AUTHORITY_STORE"
+            else _OPERATIONAL_SCHEMA
+        )
+        for statement in schema:
+            connection.execute(statement)
         connection.execute("PRAGMA user_version = 1")
         connection.commit()
     finally:
@@ -268,6 +490,305 @@ class OperationalReader:
         )
 
 
+def _authority_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_AUTHORITY_STORE_PATH,
+        store_kind="AUTHORITY_STORE",
+        metadata_table="authority_meta",
+        schema_version=1,
+    )
+
+
+def _canonical_payload(payload: dict[str, object]) -> tuple[str, str]:
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return payload_json, hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+
+def _insert_authority_outbox(
+    connection: sqlite3.Connection,
+    *,
+    event_type: str,
+    aggregate_id: str,
+    payload: dict[str, object],
+    created_at: datetime,
+) -> None:
+    payload_json, payload_sha256 = _canonical_payload(payload)
+    connection.execute(
+        """
+        INSERT INTO authority_outbox
+        (event_id, event_type, aggregate_id, payload_json, payload_sha256,
+         created_at, mirrored_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL)
+        """,
+        (
+            f"evt_{secrets.token_hex(16)}",
+            event_type,
+            aggregate_id,
+            payload_json,
+            payload_sha256,
+            _utc_text(created_at),
+        ),
+    )
+
+
+def _effects_json(effects: tuple[SideEffect, ...]) -> str:
+    return json.dumps(
+        [effect.value for effect in effects],
+        separators=(",", ":"),
+    )
+
+
+class _AuthorityStore:
+    """Trusted V2 authority mutations; never exported to ordinary workers."""
+
+    __slots__ = ("_clock",)
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _now(self) -> datetime:
+        return _require_aware_datetime(self._clock(), "clock result")
+
+    def _provision_authorization(
+        self,
+        *,
+        phase: Phase,
+        attempt_id: str,
+        actor: Actor,
+        identity: AuthorityIdentity,
+        expires_at: datetime,
+        allowed_side_effects: tuple[SideEffect, ...],
+    ) -> AuthorizationEnvelope:
+        now = self._now()
+        expiry = _require_aware_datetime(expires_at, "expires_at")
+        if expiry <= now:
+            raise AuthorizationExpiredError(
+                "authorization expiry must be later than issuance"
+            )
+        authorization_ref = f"auth_{secrets.token_hex(16)}"
+        bearer_secret = secrets.token_urlsafe(32)
+        envelope = AuthorizationEnvelope(
+            authorization_ref=authorization_ref,
+            phase=phase,
+            attempt_id=attempt_id,
+            actor=actor,
+            identity=identity,
+            expires_at=expiry,
+            allowed_side_effects=allowed_side_effects,
+            _bearer_secret=bearer_secret,
+        )
+        allowed_effects_json = _effects_json(envelope.allowed_side_effects)
+        secret_sha256 = hashlib.sha256(
+            bearer_secret.encode("utf-8")
+        ).hexdigest()
+
+        def provision(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO authorizations_v2
+                (authorization_ref, phase, attempt_id, actor_id, actor_type,
+                 invocation_id, plan_hash, scope_hash, instruction_policy_hash,
+                 secret_sha256, expires_at, allowed_effects_json, state,
+                 created_at, claimed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, NULL)
+                """,
+                (
+                    envelope.authorization_ref,
+                    envelope.phase.value,
+                    envelope.attempt_id,
+                    envelope.actor.actor_id,
+                    envelope.actor.actor_type,
+                    envelope.actor.invocation_id,
+                    envelope.identity.plan_hash,
+                    envelope.identity.scope_hash,
+                    envelope.identity.instruction_policy_hash,
+                    secret_sha256,
+                    _utc_text(envelope.expires_at),
+                    allowed_effects_json,
+                    _utc_text(now),
+                ),
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="AUTHORIZATION_PROVISIONED",
+                aggregate_id=envelope.authorization_ref,
+                payload=envelope.to_public_dict(),
+                created_at=now,
+            )
+
+        _SqliteUnitOfWork(_authority_spec())._write(provision)
+        return envelope
+
+    def claim_authorization(
+        self,
+        envelope: AuthorizationEnvelope,
+        *,
+        expected_phase: Phase,
+        expected_attempt_id: str,
+        actor: Actor,
+        identity: AuthorityIdentity,
+    ) -> AuthorityGrant:
+        if not isinstance(envelope, AuthorizationEnvelope):
+            raise AuthorizationRejectedError("authorization envelope is invalid")
+        _require_nonempty(expected_attempt_id, "expected_attempt_id")
+        if (
+            not isinstance(expected_phase, Phase)
+            or not isinstance(actor, Actor)
+            or not isinstance(identity, AuthorityIdentity)
+        ):
+            raise AuthorizationRejectedError("authorization binding is invalid")
+        now = self._now()
+        grant_id = f"grant_{secrets.token_hex(16)}"
+        grant_secret = secrets.token_urlsafe(32)
+        grant_secret_sha256 = hashlib.sha256(
+            grant_secret.encode("utf-8")
+        ).hexdigest()
+        envelope_secret_sha256 = hashlib.sha256(
+            envelope._bearer_secret.encode("utf-8")
+        ).hexdigest()
+
+        def claim(connection: sqlite3.Connection) -> None:
+            row = connection.execute(
+                """
+                SELECT * FROM authorizations_v2
+                WHERE authorization_ref = ?
+                """,
+                (envelope.authorization_ref,),
+            ).fetchone()
+            expected_effects_json = _effects_json(envelope.allowed_side_effects)
+            if row is None or not hmac.compare_digest(
+                str(row["secret_sha256"]),
+                envelope_secret_sha256,
+            ):
+                raise AuthorizationRejectedError(
+                    "authorization envelope is invalid"
+                )
+            stored_binding = (
+                row["phase"],
+                row["attempt_id"],
+                row["actor_id"],
+                row["actor_type"],
+                row["invocation_id"],
+                row["plan_hash"],
+                row["scope_hash"],
+                row["instruction_policy_hash"],
+                row["expires_at"],
+                row["allowed_effects_json"],
+            )
+            requested_binding = (
+                expected_phase.value,
+                expected_attempt_id,
+                actor.actor_id,
+                actor.actor_type,
+                actor.invocation_id,
+                identity.plan_hash,
+                identity.scope_hash,
+                identity.instruction_policy_hash,
+                _utc_text(envelope.expires_at),
+                expected_effects_json,
+            )
+            envelope_binding = (
+                envelope.phase,
+                envelope.attempt_id,
+                envelope.actor,
+                envelope.identity,
+            )
+            if (
+                stored_binding != requested_binding
+                or envelope_binding
+                != (expected_phase, expected_attempt_id, actor, identity)
+            ):
+                raise AuthorizationRejectedError(
+                    "authorization envelope is invalid"
+                )
+            if row["state"] != "PENDING":
+                raise AuthorizationReplayError(
+                    "authorization envelope was already claimed"
+                )
+            if now >= _parse_utc_text(str(row["expires_at"])):
+                raise AuthorizationExpiredError("authorization envelope expired")
+            update = connection.execute(
+                """
+                UPDATE authorizations_v2
+                SET state = 'CLAIMED', claimed_at = ?
+                WHERE authorization_ref = ? AND state = 'PENDING'
+                """,
+                (_utc_text(now), envelope.authorization_ref),
+            )
+            if update.rowcount != 1:
+                raise AuthorizationReplayError(
+                    "authorization envelope was already claimed"
+                )
+            connection.execute(
+                """
+                INSERT INTO phase_grants_v2
+                (grant_id, authorization_ref, phase, attempt_id, actor_id,
+                 actor_type, invocation_id, plan_hash, scope_hash,
+                 instruction_policy_hash, secret_sha256, allowed_effects_json,
+                 state, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
+                """,
+                (
+                    grant_id,
+                    envelope.authorization_ref,
+                    expected_phase.value,
+                    expected_attempt_id,
+                    actor.actor_id,
+                    actor.actor_type,
+                    actor.invocation_id,
+                    identity.plan_hash,
+                    identity.scope_hash,
+                    identity.instruction_policy_hash,
+                    grant_secret_sha256,
+                    expected_effects_json,
+                    _utc_text(now),
+                ),
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="AUTHORIZATION_CLAIMED",
+                aggregate_id=envelope.authorization_ref,
+                payload={
+                    "authorization_ref": envelope.authorization_ref,
+                    "grant_id": grant_id,
+                    "phase": expected_phase.value,
+                    "attempt_id": expected_attempt_id,
+                    "actor_id": actor.actor_id,
+                    "invocation_id": actor.invocation_id,
+                    "identity": {
+                        "plan_hash": identity.plan_hash,
+                        "scope_hash": identity.scope_hash,
+                        "instruction_policy_hash": (
+                            identity.instruction_policy_hash
+                        ),
+                    },
+                },
+                created_at=now,
+            )
+
+        _SqliteUnitOfWork(_authority_spec())._write(claim)
+        return AuthorityGrant(
+            grant_id=grant_id,
+            authorization_ref=envelope.authorization_ref,
+            phase=expected_phase,
+            attempt_id=expected_attempt_id,
+            actor=actor,
+            identity=identity,
+            allowed_side_effects=envelope.allowed_side_effects,
+            _bearer_secret=grant_secret,
+        )
+
+
 def read_store_pair_descriptor() -> StorePairDescriptor:
     """Read only the fixed pair identity; never return a SQL connection."""
 
@@ -284,6 +805,13 @@ def read_store_pair_descriptor() -> StorePairDescriptor:
 
 __all__ = [
     "AuthorityReader",
+    "AuthorityGrant",
+    "AuthorityIdentity",
+    "AuthorizationEnvelope",
+    "AuthorizationError",
+    "AuthorizationExpiredError",
+    "AuthorizationRejectedError",
+    "AuthorizationReplayError",
     "OperationalReader",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",

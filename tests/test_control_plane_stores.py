@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
 import sqlite3
@@ -9,8 +10,11 @@ import unittest
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
+from research_automation.control_plane.contracts import Actor, Phase, SideEffect
 from research_automation.control_plane.stores import (
     AuthorityReader,
+    AuthorityIdentity,
+    AuthorizationReplayError,
     StoreAlreadyBootstrappedError,
     StorePairDescriptor,
     StoreConfigurationError,
@@ -215,6 +219,56 @@ class TrustedBootstrapTests(unittest.TestCase):
             ):
                 with self.subTest(generic_api=generic_api):
                     self.assertFalse(hasattr(reader, generic_api))
+
+    def test_authorization_envelope_can_be_claimed_exactly_once(self) -> None:
+        now = datetime(2026, 7, 26, 1, 30, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-p0r2")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                with self.assertRaises(AuthorizationReplayError):
+                    authority.claim_authorization(
+                        envelope,
+                        expected_phase=Phase.P0,
+                        expected_attempt_id="p0r2-attempt-001",
+                        actor=actor,
+                        identity=identity,
+                    )
+
+            self.assertEqual(grant.phase, Phase.P0)
+            self.assertEqual(grant.attempt_id, "p0r2-attempt-001")
+            self.assertEqual(grant.actor, actor)
+            self.assertEqual(grant.identity, identity)
 
 
 if __name__ == "__main__":
