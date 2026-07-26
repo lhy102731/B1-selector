@@ -121,6 +121,19 @@ _AUTHORITY_SCHEMA = (
     ) WITHOUT ROWID
     """,
     """
+    CREATE TABLE trusted_task_receipts_v2 (
+        ticket_id TEXT NOT NULL REFERENCES task_tickets_v2(ticket_id),
+        receipt_kind TEXT NOT NULL CHECK(
+            receipt_kind IN ('TEST', 'REVIEW', 'EVIDENCE')
+        ),
+        receipt_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(ticket_id, receipt_kind, receipt_id)
+    ) WITHOUT ROWID
+    """,
+    """
     CREATE TABLE authority_outbox (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -207,6 +220,10 @@ class TaskTicketIdempotencyError(TaskTicketError):
 
 class TaskTicketStateError(TaskTicketError):
     """Raised when a ticket transition does not match its expected state."""
+
+
+class TrustedReceiptConflictError(TaskTicketError):
+    """Raised when one trusted receipt identity changes content."""
 
 
 class _BearerSecret:
@@ -727,6 +744,20 @@ class AuthorityReader:
             return None if row is None else str(row["state"])
 
         return _SqliteUnitOfWork(_authority_spec())._read(read_state)
+
+    def trusted_receipt_count(self, ticket_id: str) -> int:
+        _require_nonempty(ticket_id, "ticket_id")
+        return int(
+            _SqliteUnitOfWork(_authority_spec())._read(
+                lambda connection: connection.execute(
+                    """
+                    SELECT COUNT(*) FROM trusted_task_receipts_v2
+                    WHERE ticket_id = ?
+                    """,
+                    (ticket_id,),
+                ).fetchone()[0]
+            )
+        )
 
 
 class OperationalReader:
@@ -1331,6 +1362,155 @@ class _AuthorityStore:
             _bearer_secret=_BearerSecret(lease_secret_value),
         )
 
+    @staticmethod
+    def _require_task_lease(
+        connection: sqlite3.Connection,
+        lease: TaskExecutionLease,
+    ) -> sqlite3.Row:
+        if not isinstance(lease, TaskExecutionLease):
+            raise TaskTicketError("task execution lease is invalid")
+        row = connection.execute(
+            """
+            SELECT ticket.*,
+                   grant.authorization_ref AS grant_authorization_ref,
+                   grant.actor_id AS grant_actor_id,
+                   grant.actor_type AS grant_actor_type,
+                   grant.invocation_id AS grant_invocation_id,
+                   grant.plan_hash AS grant_plan_hash,
+                   grant.scope_hash AS grant_scope_hash,
+                   grant.instruction_policy_hash AS grant_instruction_policy_hash,
+                   grant.state AS grant_state
+            FROM task_tickets_v2 AS ticket
+            JOIN phase_grants_v2 AS grant ON grant.grant_id = ticket.grant_id
+            WHERE ticket.ticket_id = ?
+            """,
+            (lease.ticket_id,),
+        ).fetchone()
+        if row is None or row["state"] != "IN_PROGRESS":
+            raise TaskTicketStateError("task ticket is not IN_PROGRESS")
+        supplied_secret_sha256 = hashlib.sha256(
+            lease._bearer_secret._reveal_for_authority_check().encode("utf-8")
+        ).hexdigest()
+        stored_binding = (
+            row["lease_id"],
+            row["grant_id"],
+            row["grant_authorization_ref"],
+            row["phase"],
+            row["attempt_id"],
+            row["task_id"],
+            row["grant_actor_id"],
+            row["grant_actor_type"],
+            row["grant_invocation_id"],
+            row["grant_plan_hash"],
+            row["grant_scope_hash"],
+            row["grant_instruction_policy_hash"],
+            row["grant_state"],
+        )
+        supplied_binding = (
+            lease.lease_id,
+            lease.grant_id,
+            lease.authorization_ref,
+            lease.phase.value,
+            lease.attempt_id,
+            lease.task_id,
+            lease.actor.actor_id,
+            lease.actor.actor_type,
+            lease.actor.invocation_id,
+            lease.identity.plan_hash,
+            lease.identity.scope_hash,
+            lease.identity.instruction_policy_hash,
+            "ACTIVE",
+        )
+        if stored_binding != supplied_binding or not hmac.compare_digest(
+            str(row["lease_secret_sha256"]),
+            supplied_secret_sha256,
+        ):
+            raise TaskTicketError("task execution lease is invalid")
+        return row
+
+    def _record_task_receipt(
+        self,
+        lease: TaskExecutionLease,
+        *,
+        receipt_kind: str,
+        payload: Mapping[str, object],
+    ) -> bool:
+        kind = _require_nonempty(receipt_kind, "receipt_kind").upper()
+        if kind not in {"TEST", "REVIEW", "EVIDENCE"}:
+            raise TaskTicketError("receipt_kind is invalid")
+        if not isinstance(payload, Mapping):
+            raise TaskTicketError("trusted receipt payload must be a mapping")
+        identity_field = "evidence_id" if kind == "EVIDENCE" else "receipt_id"
+        try:
+            receipt_id = _require_nonempty(payload.get(identity_field), identity_field)
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise TaskTicketError("trusted receipt payload is invalid") from error
+        payload_sha256 = hashlib.sha256(
+            payload_json.encode("utf-8")
+        ).hexdigest()
+        now = self._now()
+
+        def record(connection: sqlite3.Connection) -> bool:
+            self._require_task_lease(connection, lease)
+            existing = connection.execute(
+                """
+                SELECT payload_json, payload_sha256
+                FROM trusted_task_receipts_v2
+                WHERE ticket_id = ? AND receipt_kind = ? AND receipt_id = ?
+                """,
+                (lease.ticket_id, kind, receipt_id),
+            ).fetchone()
+            if existing is not None:
+                if (
+                    str(existing["payload_json"]) != payload_json
+                    or not hmac.compare_digest(
+                        str(existing["payload_sha256"]),
+                        payload_sha256,
+                    )
+                ):
+                    raise TrustedReceiptConflictError(
+                        "trusted receipt identity changed content"
+                    )
+                return False
+            connection.execute(
+                """
+                INSERT INTO trusted_task_receipts_v2
+                (ticket_id, receipt_kind, receipt_id, payload_json,
+                 payload_sha256, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lease.ticket_id,
+                    kind,
+                    receipt_id,
+                    payload_json,
+                    payload_sha256,
+                    _utc_text(now),
+                ),
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="TRUSTED_RECEIPT_RECORDED",
+                aggregate_id=lease.ticket_id,
+                payload={
+                    "ticket_id": lease.ticket_id,
+                    "receipt_kind": kind,
+                    "receipt_id": receipt_id,
+                    "payload_sha256": payload_sha256,
+                },
+                created_at=now,
+            )
+            return True
+
+        return _SqliteUnitOfWork(_authority_spec())._write(record)
+
     def _finish_task(
         self,
         lease: TaskExecutionLease,
@@ -1761,5 +1941,6 @@ __all__ = [
     "TaskTicketError",
     "TaskTicketIdempotencyError",
     "TaskTicketStateError",
+    "TrustedReceiptConflictError",
     "read_store_pair_descriptor",
 ]

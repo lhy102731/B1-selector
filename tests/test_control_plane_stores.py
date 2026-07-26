@@ -975,6 +975,92 @@ class TrustedBootstrapTests(unittest.TestCase):
                     "SUCCEEDED",
                 )
 
+    def test_trusted_task_receipt_is_idempotent_by_content(self) -> None:
+        now = datetime(2026, 7, 26, 7, 0, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-receipt")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        task_spec = {
+            "task_id": "P0R2-T1-RECEIPT",
+            "objective": "Record one trusted receipt.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-receipt-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/receipt.json",
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": ["store-tests"],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_automation/control_plane/stores.py"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
+            "baseline_sha256": "e" * 64,
+            "input_evidence_refs": [],
+        }
+        receipt = {
+            "receipt_id": "store-tests",
+            "command": "python -m unittest tests.test_control_plane_stores -v",
+            "exit_code": 0,
+            "result": "PASS",
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                ticket = authority._issue_task_ticket(grant, task_spec)
+                lease = authority._begin_task(ticket)
+
+                authority._record_task_receipt(
+                    lease,
+                    receipt_kind="TEST",
+                    payload=receipt,
+                )
+                authority._record_task_receipt(
+                    lease,
+                    receipt_kind="TEST",
+                    payload=receipt,
+                )
+                changed = dict(receipt)
+                changed["result"] = "FAIL"
+                with self.assertRaises(stores_module.TrustedReceiptConflictError):
+                    authority._record_task_receipt(
+                        lease,
+                        receipt_kind="TEST",
+                        payload=changed,
+                    )
+
+                self.assertEqual(
+                    AuthorityReader().trusted_receipt_count(ticket.ticket_id),
+                    1,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
