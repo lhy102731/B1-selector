@@ -11,7 +11,11 @@ from research_automation.autonomous_runner import AutonomousRunnerV1, _kbase_wri
 from research_automation.automation_controller import AutomationController
 from research_automation.experiment import StandardMetrics
 from research_automation.experiment_runner import RealBacktestExecutor
-from research_automation.patch_executor import ClaudePatchExecutor, _apply_patch_to_workspace
+from research_automation.patch_executor import (
+    ClaudePatchExecutor,
+    _apply_patch_to_workspace,
+    compile_gate,
+)
 from research_automation.safety import UnsafeWriteError, assert_safe_path
 from research_automation.control_plane.entry_guard import AuthorizationError
 
@@ -177,6 +181,16 @@ class BaselineFailFastTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertIn("authorized", result["error"].lower())
             self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+
+    def test_compile_gate_without_authorized_runner_fails_closed(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td)
+            (workspace / "strategy").mkdir()
+
+            result = compile_gate(workspace)
+
+            self.assertFalse(result["ok"])
+            self.assertIn("authorized", result["output"].lower())
 
 
 class OutputOwnershipTests(unittest.TestCase):

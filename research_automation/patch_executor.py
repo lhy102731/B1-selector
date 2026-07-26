@@ -22,7 +22,6 @@ from pathlib import Path
 
 from .experiment import Experiment
 from .experiment_runner import CodeChangeExecutor, CodeChangeResult
-from .safety import assert_safe_path
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
     AuthorizedPatchApplier,
@@ -189,22 +188,31 @@ def _apply_one_hunk(lines: list[str], hunk: dict) -> list[str]:
 # ============================================================
 # Compile & Backtest Gates
 # ============================================================
-def compile_gate(workspace: Path) -> dict:
+def compile_gate(workspace: Path, *, runner=None) -> dict:
     """Run compileall on workspace strategy/ and utils/ — cwd=workspace so
     ``from utils.technical`` inside strategy/unified_b1_strategy.py resolves."""
-    errors = []
+    targets = []
     for sub in ["strategy", "utils"]:
         target = workspace / sub
         if not target.exists():
             continue
-        proc = subprocess.run(
-            [sys.executable, "-m", "compileall", "-q", str(target)],
-            capture_output=True, text=True, timeout=30, cwd=str(workspace),
-        )
-        if proc.returncode != 0:
-            errors.append(proc.stderr or proc.stdout or "")
-    ok = len(errors) == 0
-    return {"ok": ok, "output": "; ".join(errors) if errors else "compileall clean"}
+        targets.append(str(target))
+    if not targets:
+        return {"ok": True, "output": "compileall clean"}
+    if runner is None:
+        return {
+            "ok": False,
+            "output": "authorized compile subprocess runner required",
+        }
+    proc = runner(
+        [sys.executable, "-m", "compileall", "-q", *targets],
+        cwd=str(workspace),
+    )
+    output = (getattr(proc, "stderr", "") or "") + (getattr(proc, "stdout", "") or "")
+    return {
+        "ok": getattr(proc, "returncode", 1) == 0,
+        "output": output.strip() or "compileall clean",
+    }
 
 
 def backtest_gate(backtest_result: dict) -> dict:
@@ -321,6 +329,10 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         patch_invocation=None,
         execution_patch_lease=None,
         execution_patch_invocation=None,
+        compile_lease=None,
+        compile_invocation=None,
+        execution_compile_lease=None,
+        execution_compile_invocation=None,
         authority_reader=None,
         repository_root: str | Path | None = None,
     ) -> CodeChangeResult:
@@ -346,6 +358,16 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             patch_lease = lease
         if patch_invocation is None:
             patch_invocation = invocation
+        compile_lease = (
+            compile_lease
+            if compile_lease is not None
+            else execution_compile_lease
+        )
+        compile_invocation = (
+            compile_invocation
+            if compile_invocation is not None
+            else execution_compile_invocation
+        )
         if lease is None or invocation is None:
             return CodeChangeResult(
                 ok=False,
@@ -565,7 +587,45 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             changes_log.append(detail)
 
         # 7. compile gate — verify the patched file compiles
-        _cg = compile_gate(workspace)
+        compile_targets = [
+            str(workspace / sub)
+            for sub in ("strategy", "utils")
+            if (workspace / sub).exists()
+        ]
+        if compile_targets and (
+            not isinstance(compile_lease, TaskExecutionLease)
+            or not isinstance(compile_invocation, ExecutionInvocation)
+        ):
+            return CodeChangeResult(
+                ok=False,
+                error="compile execution lease and invocation are required",
+                logs=["discard the isolated workspace to roll back"],
+            )
+
+        def _compile_runner(command, *, cwd):
+            expected = [sys.executable, "-m", "compileall", "-q", *compile_targets]
+            if tuple(command) != tuple(expected) or Path(cwd).resolve() != Path(workspace).resolve():
+                raise ExecutionAuthorizationError(
+                    "compile command differs from immutable execution intent"
+                )
+            return AuthorizedSubprocess(
+                authority_reader=reader,
+                repository_root=repository_root or Path(__file__).resolve().parent.parent,
+                runner=lambda argv, **kwargs: subprocess.run(
+                    argv,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                    **kwargs,
+                ),
+            ).run(compile_lease, compile_invocation)
+
+        _cg = compile_gate(
+            workspace,
+            runner=_compile_runner if compile_targets else None,
+        )
         if not _cg["ok"]:
             # Rollback is performed by discarding the isolated workspace.
             return CodeChangeResult(ok=False, error=f"compile gate failed: {_cg['output'][:200]}",
