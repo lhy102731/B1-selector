@@ -30,6 +30,7 @@ from .task_reports import (
 
 
 _MAX_GATE_REPORT_BYTES = 256 * 1024
+_MAX_AUTHORITY_CAPABILITY_CHARS = 4096
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -346,7 +347,14 @@ def main(
                 repository_root=root,
             ).verify(report)
         else:
-            capability = (stdin or sys.stdin).read().rstrip("\r\n")
+            capability_input = (stdin or sys.stdin).read(
+                _MAX_AUTHORITY_CAPABILITY_CHARS + 1
+            )
+            if len(capability_input) > _MAX_AUTHORITY_CAPABILITY_CHARS:
+                raise GateAuthorityMismatchError(
+                    "authority capability stdin exceeds its size limit"
+                )
+            capability = capability_input.rstrip("\r\n")
             if not capability:
                 raise GateAuthorityMismatchError(
                     "authority capability stdin is empty"
