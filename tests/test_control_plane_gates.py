@@ -128,6 +128,37 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 self.assertEqual(report["verdict"], "FAIL")
                 self.assertIn(expected_reason, report["reason_codes"])
 
+    def test_gate_closes_task_reports_over_known_authority_tickets(self) -> None:
+        cases = (
+            ([], ["ticket-001"], "MISSING_TASK_REPORT:ticket-001"),
+            (
+                [
+                    {
+                        "report_ref": "reports/unknown.json",
+                        "report_sha256": "1" * 64,
+                        "ticket_id": "ticket-unknown",
+                        "outcome": "PASS",
+                    }
+                ],
+                [],
+                "UNKNOWN_TASK_REPORT:ticket-unknown",
+            ),
+        )
+        for task_reports, succeeded_ticket_ids, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason):
+                draft = self._passing_draft()
+                draft["task_reports"] = task_reports
+                authority_snapshot = dict(draft["authority_snapshot"])
+                authority_snapshot["succeeded_ticket_ids"] = (
+                    succeeded_ticket_ids
+                )
+                draft["authority_snapshot"] = authority_snapshot
+
+                report = PhaseGateBuilder().build(draft)
+
+                self.assertEqual(report["verdict"], "FAIL")
+                self.assertIn(expected_reason, report["reason_codes"])
+
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")

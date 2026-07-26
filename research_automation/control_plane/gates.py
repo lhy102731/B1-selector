@@ -181,6 +181,12 @@ def _derive_gate_verdict(
         raise GateValidationError("authority_snapshot.active_grant_ids invalid")
     if len(active_grant_ids) != 1:
         reasons.append(f"ACTIVE_GRANT_COUNT:{len(active_grant_ids)}")
+    succeeded_ticket_ids = authority["succeeded_ticket_ids"]
+    if not isinstance(succeeded_ticket_ids, list):
+        raise GateValidationError(
+            "authority_snapshot.succeeded_ticket_ids invalid"
+        )
+    known_ticket_ids = set(succeeded_ticket_ids)
     for field_name, reason_prefix in (
         ("open_ticket_ids", "OPEN_TICKET"),
         ("failed_ticket_ids", "FAILED_TICKET"),
@@ -189,7 +195,19 @@ def _derive_gate_verdict(
         values = authority[field_name]
         if not isinstance(values, list):
             raise GateValidationError(f"authority_snapshot.{field_name} invalid")
+        known_ticket_ids.update(values)
         reasons.extend(f"{reason_prefix}:{value}" for value in sorted(values))
+    reported_ticket_ids = {
+        str(task_report["ticket_id"]) for task_report in task_reports
+    }
+    reasons.extend(
+        f"MISSING_TASK_REPORT:{ticket_id}"
+        for ticket_id in sorted(set(succeeded_ticket_ids) - reported_ticket_ids)
+    )
+    reasons.extend(
+        f"UNKNOWN_TASK_REPORT:{ticket_id}"
+        for ticket_id in sorted(reported_ticket_ids - known_ticket_ids)
+    )
     pending_count = authority["pending_outbox_count"]
     if type(pending_count) is not int or pending_count < 0:
         raise GateValidationError("pending_outbox_count must be non-negative")
