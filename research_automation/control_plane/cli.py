@@ -15,6 +15,7 @@ from .gates import (
     PhaseGateVerifier,
     parse_gate_report_v1_bytes,
 )
+from .sqlite_uow import SqliteUnitOfWorkError
 from .stores import AuthorityReader, StoreError
 
 
@@ -111,7 +112,7 @@ def main(
     except (GateValidationError, GateEvidenceError, OSError) as error:
         _emit_error(errors, error)
         return 3
-    except StoreError as error:
+    except (StoreError, SqliteUnitOfWorkError) as error:
         _emit_error(errors, error)
         return 5
 

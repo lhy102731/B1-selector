@@ -733,6 +733,38 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(stdout.getvalue(), "")
             self.assertIn("GateValidationError", stderr.getvalue())
 
+    def test_cli_returns_exit_code_five_for_unavailable_authority_store(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            report_path = fixture.root / "gate-report.json"
+            report_path.write_text(
+                canonical_json(fixture.report),
+                encoding="utf-8",
+            )
+            (fixture.root / "authority.sqlite3").unlink()
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "verify",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--read-only",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 5)
+            self.assertEqual(stdout.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
