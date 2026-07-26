@@ -48,7 +48,13 @@ _TEST_RECEIPT_FIELDS = frozenset(
     {"receipt_id", "command", "exit_code", "result"}
 )
 _REVIEW_RECEIPT_FIELDS = frozenset(
-    {"receipt_id", "reviewer_id", "exit_code", "result"}
+    {
+        "receipt_id",
+        "reviewer_id",
+        "exit_code",
+        "result",
+        "findings_sha256",
+    }
 )
 _EVIDENCE_REF_FIELDS = frozenset(
     {"evidence_id", "evidence_ref", "evidence_sha256", "status"}
@@ -313,6 +319,37 @@ def _validate_receipt_common(
         )
 
 
+def review_findings_sha256(
+    review_receipt_id: str,
+    findings: object,
+) -> str:
+    """Hash the exact findings attributed to one trusted review receipt."""
+    receipt_id = _require_non_empty_string(
+        review_receipt_id,
+        "review_receipt_id",
+    )
+    if not isinstance(findings, list):
+        raise TaskReportValidationError("review_findings must be a list")
+    selected: list[dict[str, object]] = []
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, Mapping):
+            raise TaskReportValidationError(
+                f"review_findings[{index}] must be a mapping"
+            )
+        if finding.get("review_receipt_id") == receipt_id:
+            selected.append(dict(finding))
+    selected.sort(
+        key=lambda finding: _require_non_empty_string(
+            finding.get("finding_id"),
+            "review_findings.finding_id",
+        )
+    )
+    payload = canonical_json(selected).encode("utf-8")
+    return hashlib.sha256(
+        b"control_plane.review_findings.v1\0" + payload
+    ).hexdigest()
+
+
 def task_report_v2_payload_sha256(report: Mapping[str, object]) -> str:
     """Return the domain-separated hash of all fields except the hash field."""
     if not isinstance(report, Mapping):
@@ -372,6 +409,10 @@ def _receipt_results(
             _require_non_empty_string(
                 receipt["reviewer_id"],
                 f"{field_name}[{index}].reviewer_id",
+            )
+            _require_sha256(
+                receipt["findings_sha256"],
+                f"{field_name}[{index}].findings_sha256",
             )
         receipt_id = receipt.get("receipt_id")
         if isinstance(receipt_id, str) and receipt_id:
@@ -713,12 +754,32 @@ def _validate_external_invocations(value: object) -> None:
 
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
+    review_receipts = report.get("review_receipts")
     review_results = _receipt_results(
-        report.get("review_receipts"),
+        review_receipts,
         "review_receipts",
     )
     _validate_evidence_refs(report.get("input_evidence_refs"))
-    _validate_review_findings(report.get("review_findings"), review_results)
+    review_findings = report.get("review_findings")
+    _validate_review_findings(review_findings, review_results)
+    if not isinstance(review_receipts, list):
+        raise TaskReportValidationError("review_receipts must be a list")
+    for index, receipt in enumerate(review_receipts):
+        if not isinstance(receipt, Mapping):
+            raise TaskReportValidationError(
+                f"review_receipts[{index}] must be a mapping"
+            )
+        expected_findings_sha256 = review_findings_sha256(
+            str(receipt["receipt_id"]),
+            review_findings,
+        )
+        if not hmac.compare_digest(
+            str(receipt["findings_sha256"]),
+            expected_findings_sha256,
+        ):
+            raise TaskReportValidationError(
+                f"review_receipts[{index}].findings_sha256 mismatch"
+            )
     _validate_scope_file_rules(report)
     _validate_changed_files(report.get("changed_files"))
     _validate_side_effect_summary(report.get("side_effect_summary"))

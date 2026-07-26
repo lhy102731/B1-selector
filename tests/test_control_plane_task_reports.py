@@ -63,6 +63,10 @@ class TaskReportV2TracerTests(unittest.TestCase):
                     "reviewer_id": "primary-codex",
                     "result": "PASS",
                     "exit_code": 0,
+                    "findings_sha256": (
+                        "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357"
+                        "dab54fb43b3377b"
+                    ),
                 }
             ],
             "review_findings": [],
@@ -118,6 +122,27 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "report_payload_sha256 mismatch",
         ):
             validate_task_report_v2(tampered)
+
+    def test_review_receipt_binds_its_exact_findings(self) -> None:
+        report = self._complete_report()
+        validate_task_report_v2(report)
+        report["review_findings"] = [
+            {
+                "finding_id": "finding-001",
+                "review_receipt_id": "task-report-controller-review",
+                "severity": "NON_BLOCKING",
+                "status": "RESOLVED",
+                "summary": "A resolved review observation.",
+                "resolution": "Verified by the trusted reviewer.",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "findings_sha256",
+        ):
+            validate_task_report_v2(report)
 
     def test_unknown_top_level_field_is_rejected_even_with_a_valid_hash(self) -> None:
         report = self._complete_report()
