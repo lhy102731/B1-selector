@@ -56,6 +56,7 @@ _TASK_SPEC_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_STORE_SCHEMA_VERSION = 1
 _AUTHORITY_SCHEMA = (
     """
     CREATE TABLE authorizations_v2 (
@@ -141,6 +142,7 @@ _AUTHORITY_SCHEMA = (
         aggregate_id TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         payload_sha256 TEXT NOT NULL,
+        event_sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL,
         mirrored_at TEXT
     )
@@ -155,6 +157,7 @@ _OPERATIONAL_SCHEMA = (
         aggregate_id TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         payload_sha256 TEXT NOT NULL,
+        event_sha256 TEXT NOT NULL,
         created_at TEXT NOT NULL,
         mirrored_at TEXT NOT NULL
     )
@@ -450,6 +453,7 @@ class AuthorityOutboxEvent:
     aggregate_id: str
     payload_json: str
     payload_sha256: str
+    event_sha256: str
     created_at: datetime
 
 
@@ -530,11 +534,11 @@ def _provision_store(
             f"INSERT INTO {metadata_table}(key, value) VALUES (?, ?)",
             (
                 ("installation_id", installation_id),
-                ("schema_version", "1"),
+                ("schema_version", str(_STORE_SCHEMA_VERSION)),
                 ("store_kind", store_kind),
             ),
         )
-        connection.execute("PRAGMA user_version = 1")
+        connection.execute(f"PRAGMA user_version = {_STORE_SCHEMA_VERSION}")
         connection.commit()
     finally:
         connection.close()
@@ -828,7 +832,7 @@ def _authority_spec() -> _StoreSpec:
         path=_AUTHORITY_STORE_PATH,
         store_kind="AUTHORITY_STORE",
         metadata_table="authority_meta",
-        schema_version=1,
+        schema_version=_STORE_SCHEMA_VERSION,
         expected_schema_sha256=_expected_schema_sha256(
             "AUTHORITY_STORE",
             "authority_meta",
@@ -841,7 +845,7 @@ def _operational_spec() -> _StoreSpec:
         path=_OPERATIONAL_STORE_PATH,
         store_kind="OPERATIONAL_JOURNAL",
         metadata_table="operational_meta",
-        schema_version=1,
+        schema_version=_STORE_SCHEMA_VERSION,
         expected_schema_sha256=_expected_schema_sha256(
             "OPERATIONAL_JOURNAL",
             "operational_meta",
@@ -860,6 +864,33 @@ def _canonical_payload(payload: dict[str, object]) -> tuple[str, str]:
     return payload_json, hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
 
+def _event_envelope_sha256(
+    *,
+    event_id: str,
+    event_type: str,
+    aggregate_id: str,
+    payload_sha256: str,
+    created_at: str,
+) -> str:
+    envelope = json.dumps(
+        {
+            "aggregate_id": _require_nonempty(aggregate_id, "aggregate_id"),
+            "created_at": _require_nonempty(created_at, "created_at"),
+            "event_id": _require_nonempty(event_id, "event_id"),
+            "event_type": _require_nonempty(event_type, "event_type"),
+            "payload_sha256": _require_sha256(
+                payload_sha256,
+                "payload_sha256",
+            ),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(
+        b"control_plane.authority_event.v1\0" + envelope
+    ).hexdigest()
+
+
 def _insert_authority_outbox(
     connection: sqlite3.Connection,
     *,
@@ -869,20 +900,30 @@ def _insert_authority_outbox(
     created_at: datetime,
 ) -> None:
     payload_json, payload_sha256 = _canonical_payload(payload)
+    event_id = f"evt_{secrets.token_hex(16)}"
+    created_at_text = _utc_text(created_at)
+    event_sha256 = _event_envelope_sha256(
+        event_id=event_id,
+        event_type=event_type,
+        aggregate_id=aggregate_id,
+        payload_sha256=payload_sha256,
+        created_at=created_at_text,
+    )
     connection.execute(
         """
         INSERT INTO authority_outbox
         (event_id, event_type, aggregate_id, payload_json, payload_sha256,
-         created_at, mirrored_at)
-        VALUES (?, ?, ?, ?, ?, ?, NULL)
+         event_sha256, created_at, mirrored_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
         """,
         (
-            f"evt_{secrets.token_hex(16)}",
+            event_id,
             event_type,
             aggregate_id,
             payload_json,
             payload_sha256,
-            _utc_text(created_at),
+            event_sha256,
+            created_at_text,
         ),
     )
 
@@ -1152,7 +1193,7 @@ class _AuthorityStore:
             rows = connection.execute(
                 """
                 SELECT sequence, event_id, event_type, aggregate_id,
-                       payload_json, payload_sha256, created_at
+                       payload_json, payload_sha256, event_sha256, created_at
                 FROM authority_outbox
                 WHERE mirrored_at IS NULL
                 ORDER BY sequence
@@ -1169,19 +1210,33 @@ class _AuthorityStore:
                     if not isinstance(payload, dict):
                         raise ValueError("outbox payload must be an object")
                     canonical_json, canonical_sha256 = _canonical_payload(payload)
+                    created_at = _parse_utc_text(str(row["created_at"]))
+                    canonical_created_at = _utc_text(created_at)
+                    event_sha256 = _event_envelope_sha256(
+                        event_id=str(row["event_id"]),
+                        event_type=str(row["event_type"]),
+                        aggregate_id=str(row["aggregate_id"]),
+                        payload_sha256=payload_sha256,
+                        created_at=canonical_created_at,
+                    )
                 except (TypeError, ValueError) as error:
                     raise OutboxConflictError(
-                        "authority outbox payload is invalid"
+                        "authority outbox event is invalid"
                     ) from error
                 if (
                     canonical_json != payload_json
+                    or canonical_created_at != str(row["created_at"])
                     or not hmac.compare_digest(
                         canonical_sha256,
                         payload_sha256,
                     )
+                    or not hmac.compare_digest(
+                        event_sha256,
+                        str(row["event_sha256"]),
+                    )
                 ):
                     raise OutboxConflictError(
-                        "authority outbox payload integrity mismatch"
+                        "authority outbox event integrity mismatch"
                     )
                 events.append(
                     AuthorityOutboxEvent(
@@ -1191,7 +1246,8 @@ class _AuthorityStore:
                         aggregate_id=str(row["aggregate_id"]),
                         payload_json=payload_json,
                         payload_sha256=payload_sha256,
-                        created_at=_parse_utc_text(str(row["created_at"])),
+                        event_sha256=event_sha256,
+                        created_at=created_at,
                     )
                 )
             return tuple(events)
@@ -2030,13 +2086,22 @@ class _OperationalJournal:
     def _mirror_event(self, event: AuthorityOutboxEvent) -> bool:
         if not isinstance(event, AuthorityOutboxEvent):
             raise TypeError("event must be an AuthorityOutboxEvent")
+        expected_event_sha256 = _event_envelope_sha256(
+            event_id=event.event_id,
+            event_type=event.event_type,
+            aggregate_id=event.aggregate_id,
+            payload_sha256=event.payload_sha256,
+            created_at=_utc_text(event.created_at),
+        )
+        if not hmac.compare_digest(event.event_sha256, expected_event_sha256):
+            raise OutboxConflictError("authority outbox event integrity mismatch")
         mirrored_at = _utc_text(self._now())
 
         def mirror(connection: sqlite3.Connection) -> bool:
             existing = connection.execute(
                 """
                 SELECT event_type, aggregate_id, payload_json, payload_sha256,
-                       created_at
+                       event_sha256, created_at
                 FROM journal_events
                 WHERE event_id = ?
                 """,
@@ -2047,6 +2112,7 @@ class _OperationalJournal:
                 event.aggregate_id,
                 event.payload_json,
                 event.payload_sha256,
+                event.event_sha256,
                 _utc_text(event.created_at),
             )
             if existing is not None:
@@ -2060,8 +2126,8 @@ class _OperationalJournal:
                 """
                 INSERT INTO journal_events
                 (event_id, event_type, aggregate_id, payload_json,
-                 payload_sha256, created_at, mirrored_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 payload_sha256, event_sha256, created_at, mirrored_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.event_id,
@@ -2069,6 +2135,7 @@ class _OperationalJournal:
                     event.aggregate_id,
                     event.payload_json,
                     event.payload_sha256,
+                    event.event_sha256,
                     _utc_text(event.created_at),
                     mirrored_at,
                 ),

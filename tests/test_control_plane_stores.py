@@ -586,7 +586,7 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 self.assertEqual(reader.pending_outbox_count(), 1)
 
-    def test_tampered_outbox_payload_is_not_mirrored(self) -> None:
+    def test_tampered_outbox_content_is_not_mirrored(self) -> None:
         now = datetime(2026, 7, 26, 3, 30, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-outbox-integrity")
         identity = AuthorityIdentity(
@@ -617,11 +617,37 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 tamper = sqlite3.connect(authority_path)
                 try:
+                    original_payload = tamper.execute(
+                        "SELECT payload_json FROM authority_outbox"
+                    ).fetchone()[0]
                     tamper.execute(
                         """
                         UPDATE authority_outbox
                         SET payload_json = payload_json || 'tampered'
                         """
+                    )
+                    tamper.commit()
+                finally:
+                    tamper.close()
+
+                with self.assertRaises(stores_module.OutboxConflictError):
+                    stores_module._mirror_authority_outbox(
+                        authority,
+                        journal,
+                        limit=10,
+                    )
+
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 1)
+                self.assertEqual(stores_module.OperationalReader().event_count(), 0)
+
+                tamper = sqlite3.connect(authority_path)
+                try:
+                    tamper.execute(
+                        """
+                        UPDATE authority_outbox
+                        SET payload_json = ?, event_type = 'FORGED_PHASE_CLOSED'
+                        """,
+                        (original_payload,),
                     )
                     tamper.commit()
                 finally:
