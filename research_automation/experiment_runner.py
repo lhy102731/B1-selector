@@ -26,6 +26,7 @@ from .result_parser import BacktestResultParser
 from .safety import assert_safe_path
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
+    AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
     ExecutionSinkGuard,
@@ -590,7 +591,8 @@ class RealBacktestExecutor(BacktestExecutor):
 
     def __init__(self, project_root: str | Path | None = None, output_root: str | Path = "research_automation/_output",
                  timeout: int = 3600, python_exe: str | None = None, keep_scratch: bool = False,
-                 workspace_mode: bool = False, workspace_manager=None):
+                 workspace_mode: bool = False, workspace_manager=None,
+                 subprocess_sink=None):
         self.root = Path(project_root) if project_root else _PROJECT_ROOT
         self.output_root = Path(output_root)
         self.timeout = timeout
@@ -604,6 +606,7 @@ class RealBacktestExecutor(BacktestExecutor):
         # hit production. Production strategy/ + script are never written.
         self.workspace_mode = workspace_mode
         self.workspace_manager = workspace_manager
+        self.subprocess_sink = subprocess_sink
 
     # ---- discovery (for audit / selection) --------------------------------
     def discover_entrypoints(self) -> dict:
@@ -769,6 +772,21 @@ class RealBacktestExecutor(BacktestExecutor):
             elif k.startswith("q_"):
                 argv += ["--" + k.replace("_", "-"), self._fmt(v, False)]
 
+        if tuple(argv) != permit.argv:
+            return {
+                "success": False,
+                "error": "backtest command differs from immutable execution intent",
+                "requires_manual_integration": False,
+                "command": None,
+            }
+        if invocation.cwd is None or Path(invocation.cwd).resolve() != self.root.resolve():
+            return {
+                "success": False,
+                "error": "backtest working directory differs from immutable execution intent",
+                "requires_manual_integration": False,
+                "command": None,
+            }
+
         if dry_run:
             return {"success": True, "dry_run": True, "command": argv,
                     "entrypoint": spec.script, "requires_manual_integration": False,
@@ -802,13 +820,33 @@ class RealBacktestExecutor(BacktestExecutor):
                 shutil.copy2(backup, original)
             shutil.rmtree(backup_dir, ignore_errors=True)
 
+        def _authorized_runner(command, **kwargs):
+            kwargs.setdefault("capture_output", True)
+            kwargs.setdefault("text", True)
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+            return subprocess.run(
+                command,
+                timeout=self.timeout,
+                env=run_env,
+                **kwargs,
+            )
+
+        sink = self.subprocess_sink or AuthorizedSubprocess(
+            authority_reader=reader,
+            repository_root=repository_root or self.root,
+            runner=_authorized_runner,
+        )
         try:
-            proc = subprocess.run(argv, cwd=str(self.root), capture_output=True,
-                                  text=True, timeout=self.timeout, env=run_env)
+            proc = sink.run(lease, invocation)
         except subprocess.TimeoutExpired as e:
             restore_preexisting()
             return {"success": False, "error": f"timeout after {self.timeout}s",
                     "command": argv, "stdout": e.stdout or "", "stderr": e.stderr or ""}
+        except ExecutionAuthorizationError as e:
+            restore_preexisting()
+            return {"success": False, "error": f"execution authorization rejected: {e}",
+                    "command": argv}
         except Exception as e:
             restore_preexisting()
             return {"success": False, "error": f"subprocess error: {e}", "command": argv}
