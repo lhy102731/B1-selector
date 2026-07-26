@@ -834,6 +834,10 @@ def repair_handoff_runner(
             if (
                 review_permit.operation != "REPAIR"
                 or review_permit.effect is not SideEffect.NETWORK_EGRESS
+                or review_invocation.runner.module
+                != "research_automation.handoff_runner_repair"
+                or review_invocation.runner.callable_name
+                != "repair_handoff_runner"
             ):
                 raise ExecutionAuthorizationError(
                     "review requires a NETWORK_EGRESS REPAIR intent"

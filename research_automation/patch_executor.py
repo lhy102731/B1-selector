@@ -679,6 +679,10 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                 if (
                     review_permit.operation != "PATCH_APPLY"
                     or review_permit.effect is not SideEffect.NETWORK_EGRESS
+                    or review_invocation.runner.module
+                    != "research_automation.patch_executor"
+                    or review_invocation.runner.callable_name
+                    != "ClaudePatchExecutor.apply"
                 ):
                     raise ExecutionAuthorizationError(
                         "code review requires a NETWORK_EGRESS PATCH_APPLY intent"
