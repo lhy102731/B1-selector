@@ -333,6 +333,10 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         compile_invocation=None,
         execution_compile_lease=None,
         execution_compile_invocation=None,
+        review_lease=None,
+        review_invocation=None,
+        execution_review_lease=None,
+        execution_review_invocation=None,
         authority_reader=None,
         repository_root: str | Path | None = None,
     ) -> CodeChangeResult:
@@ -367,6 +371,12 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             compile_invocation
             if compile_invocation is not None
             else execution_compile_invocation
+        )
+        review_lease = review_lease if review_lease is not None else execution_review_lease
+        review_invocation = (
+            review_invocation
+            if review_invocation is not None
+            else execution_review_invocation
         )
         if lease is None or invocation is None:
             return CodeChangeResult(
@@ -650,6 +660,32 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                 cc_for_cr = None
 
         if not disable_cr:
+            if not isinstance(review_lease, TaskExecutionLease) or not isinstance(
+                review_invocation, ExecutionInvocation
+            ):
+                return CodeChangeResult(
+                    ok=False,
+                    error="review execution lease and invocation are required",
+                    logs=["discard the isolated workspace to roll back"],
+                )
+            try:
+                review_permit = ExecutionSinkGuard(
+                    authority_reader=reader,
+                    repository_root=repository_root or Path(__file__).resolve().parent.parent,
+                ).authorize(review_lease, review_invocation)
+                if (
+                    review_permit.operation != "PATCH_APPLY"
+                    or review_permit.effect is not SideEffect.NETWORK_EGRESS
+                ):
+                    raise ExecutionAuthorizationError(
+                        "code review requires a NETWORK_EGRESS PATCH_APPLY intent"
+                    )
+            except (ExecutionAuthorizationError, OSError, ValueError) as error:
+                return CodeChangeResult(
+                    ok=False,
+                    error=f"review execution authorization rejected: {error}",
+                    logs=["discard the isolated workspace to roll back"],
+                )
             try:
                 from ag2_research.config import ResearchConfig
                 from ag2_research.agents import create_agents
