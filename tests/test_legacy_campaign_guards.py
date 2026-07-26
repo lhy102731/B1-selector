@@ -13,6 +13,26 @@ from research_automation.handoff_updater import HandoffUpdater
 
 
 class AuthorityWriterGuardTests(unittest.TestCase):
+    def test_registry_merge_without_lease_fails_before_file_change(self) -> None:
+        router = MagicMock()
+        router.strategy_id = "brick"
+        router.registry_entries = []
+        updater = RegistryUpdater(router=router)
+        entry = {
+            "id": "brick-exp-unauthorized",
+            "title": "must not merge",
+            "status": "FAILED",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            registry = Path(directory) / "registry_brick_v2.yaml"
+            original = "registry:\n  experiments: []\n"
+            registry.write_text(original, encoding="utf-8")
+            with self.assertRaises(ExecutionAuthorizationError):
+                updater.merge_entry(entry, registry_path=registry)
+
+            self.assertEqual(original, registry.read_text(encoding="utf-8"))
+
     def test_registry_delta_without_lease_fails_before_directory_or_state_change(self) -> None:
         router = MagicMock()
         router.strategy_id = "brick"
