@@ -22,7 +22,7 @@ from .gates import (
     parse_gate_report_v1_bytes,
 )
 from .sqlite_uow import SqliteUnitOfWorkError
-from .stores import AuthorityReader, StoreError
+from .stores import AuthorityReader, AuthorityRootError, StoreError
 from .task_reports import (
     TaskReportValidationError,
     parse_task_report_v2_bytes,
@@ -371,6 +371,9 @@ def main(
             )
             return 0 if closure.verdict == "PASS" else 2
     except GateAuthorityMismatchError as error:
+        _emit_error(errors, error)
+        return 4
+    except AuthorityRootError as error:
         _emit_error(errors, error)
         return 4
     except (

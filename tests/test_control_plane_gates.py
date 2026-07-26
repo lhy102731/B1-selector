@@ -867,6 +867,38 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn(fixture.report["gate_report_sha256"], stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_maps_invalid_close_capability_to_exit_code_four(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            report_path = fixture.root / "gate-report.json"
+            report_path.write_text(
+                canonical_json(fixture.report),
+                encoding="utf-8",
+            )
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "close",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                    "--report",
+                    str(report_path),
+                    "--capability-stdin",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                stdin=StringIO("wrong-authority-capability-0123456789"),
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 4)
+            self.assertEqual(stdout.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()
