@@ -160,10 +160,15 @@ class AutonomousRunnerV1:
                 raise ExecutionAuthorizationError(
                     "autonomous runner requires a RUN_RESEARCH AUTONOMOUS intent"
                 )
+            authorized_runs_root = (output_root() / "runs").resolve()
+            if authorized_runs_root not in permit.resource_paths:
+                raise ExecutionAuthorizationError(
+                    "autonomous runs root is not bound by the execution intent"
+                )
         except (ExecutionAuthorizationError, OSError, ValueError) as error:
             raise AuthorizationError(f"AutonomousRunnerV1 authority rejected: {error}") from error
         t0 = time.time()
-        runs_root = output_root() / "runs"
+        runs_root = authorized_runs_root
         runs_root.mkdir(parents=True, exist_ok=True)
 
         if resume:
