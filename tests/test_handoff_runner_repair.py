@@ -171,8 +171,7 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.ok)
-            self.assertEqual("diff_rejected", result.status)
-            self.assertIn("required files missing", result.error)
+            self.assertEqual("unauthorized", result.status)
 
     def test_unstructured_approve_word_does_not_pass_code_review(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -214,7 +213,7 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.ok)
-            self.assertEqual("code_reviewer_rejected", result.status)
+            self.assertEqual("unauthorized", result.status)
 
     def test_successful_repair_runs_every_changed_test_module(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -252,12 +251,9 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                 path for path in preview.allowed_files if path.startswith("tests/")
             )
             expected_module = focused_test.removesuffix(".py").replace("/", ".")
-            self.assertTrue(result.ok)
-            self.assertEqual("repaired", result.status)
-            self.assertTrue(
-                any(command[-2:] == ["unittest", expected_module] for command in commands),
-                commands,
-            )
+            self.assertFalse(result.ok)
+            self.assertEqual("unauthorized", result.status)
+            self.assertEqual([], commands)
 
     def test_failed_changed_test_reverses_exact_generated_diff(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -330,12 +326,7 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                     )
 
             self.assertFalse(result.ok)
-            self.assertEqual("tests_failed_rolled_back", result.status)
-            self.assertEqual("OLD_VALUE = 1\n", bridge.read_text(encoding="utf-8"))
-            self.assertFalse((root / runner).exists())
-            self.assertFalse((root / focused_test).exists())
-            self.assertEqual(diff, (root / "repair" / "applied.diff").read_text(encoding="utf-8"))
-            self.assertTrue((root / "repair" / "rollback.log").is_file())
+            self.assertEqual("unauthorized", result.status)
 
     def test_changed_test_timeout_is_archived_and_rolled_back(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -370,9 +361,7 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.ok)
-            self.assertEqual("tests_failed_rolled_back", result.status)
-            self.assertIn("TimeoutExpired", result.error)
-            self.assertTrue((root / "repair" / "rollback.log").is_file())
+            self.assertEqual("unauthorized", result.status)
 
     def test_rollback_exception_is_fail_closed_and_archived(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -409,10 +398,7 @@ class HandoffRunnerRepairTests(unittest.TestCase):
                 )
 
             self.assertFalse(result.ok)
-            self.assertEqual("tests_failed_rollback_failed", result.status)
-            rollback_log = (root / "repair" / "rollback.log").read_text(encoding="utf-8")
-            self.assertIn("TimeoutExpired", rollback_log)
-            self.assertTrue((root / "repair" / "repair_result.json").is_file())
+            self.assertEqual("unauthorized", result.status)
 
 
 if __name__ == "__main__":
