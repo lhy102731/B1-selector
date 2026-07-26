@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ from ag2_research.discovery_handoff import (
     extract_discovery_transcript,
     load_latest_approved_discovery,
     render_discovery_context,
+    save_discovery_handoff,
 )
 from ag2_research.agents import create_agents
 from ag2_research.config import ResearchConfig
@@ -138,6 +140,58 @@ class DiscoveryHandoffBridgeTests(unittest.TestCase):
 
             self.assertFalse(output_dir.exists())
             runner.assert_not_called()
+
+    def test_save_discovery_handoff_requires_authority_before_directory_creation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "handoffs"
+            with self.assertRaises(ExecutionAuthorizationError):
+                save_discovery_handoff(
+                    {"status": "APPROVED", "transcript": []},
+                    topic="unauthorized",
+                    strategy_id="brick",
+                    output_dir=destination,
+                    created_at=datetime(2026, 7, 23, 12, 0, tzinfo=timezone.utc),
+                )
+
+            self.assertFalse(destination.exists())
+
+    def test_save_discovery_handoff_binds_directory_target_and_temp_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "handoffs"
+            created_at = datetime(2026, 7, 23, 12, 0, 1, tzinfo=timezone.utc)
+            sink = MagicMock()
+            sink.authorize.return_value = object()
+            lease = object()
+            invocation = object()
+
+            with patch(
+                "ag2_research.discovery_handoff.AuthorizedPathMutation",
+                return_value=sink,
+            ):
+                target = save_discovery_handoff(
+                    {"status": "APPROVED", "transcript": []},
+                    topic="authorized",
+                    strategy_id="brick",
+                    output_dir=destination,
+                    created_at=created_at,
+                    lease=lease,
+                    invocation=invocation,
+                    authority_reader=MagicMock(),
+                    repository_root=Path(directory),
+                )
+
+            temporary = destination / f".{target.name}.tmp"
+            self.assertTrue(target.is_file())
+            self.assertFalse(temporary.exists())
+            authorization = sink.authorize.call_args.kwargs
+            self.assertIs(lease, sink.authorize.call_args.args[0])
+            self.assertIs(invocation, sink.authorize.call_args.args[1])
+            self.assertEqual("KBASE_WRITE", authorization["operation"])
+            self.assertIs(SideEffect.WRITE_KBASE, authorization["effect"])
+            self.assertEqual(
+                authorization["paths"],
+                (destination, target, temporary),
+            )
 
     def test_execute_plan_dry_run_without_authority_has_no_effects(self):
         with tempfile.TemporaryDirectory() as directory:
