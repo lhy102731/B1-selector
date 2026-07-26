@@ -171,6 +171,37 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 with self.assertRaises(GateBuildError):
                     PhaseGateBuilder().build(draft)
 
+    def test_gate_rejects_unhashable_phase_as_validation_error(self) -> None:
+        report = PhaseGateBuilder().build(self._passing_draft())
+        report["phase"] = []
+
+        with self.assertRaises(GateValidationError):
+            validate_gate_report(report)
+
+    def test_gate_rejects_unhashable_nested_enums_as_validation_errors(self) -> None:
+        for field_name in (
+            "task_reports",
+            "scheduler_inventory",
+            "test_receipts",
+        ):
+            with self.subTest(field_name=field_name):
+                draft = self._passing_draft()
+                if field_name == "task_reports":
+                    task_reports = [dict(draft["task_reports"][0])]
+                    task_reports[0]["outcome"] = []
+                    draft[field_name] = task_reports
+                elif field_name == "scheduler_inventory":
+                    scheduler = dict(draft[field_name])
+                    scheduler["status"] = {}
+                    draft[field_name] = scheduler
+                else:
+                    receipts = [dict(draft["test_receipts"][0])]
+                    receipts[0]["result"] = []
+                    draft[field_name] = receipts
+
+                with self.assertRaises(GateBuildError):
+                    PhaseGateBuilder().build(draft)
+
     def test_builder_computes_a_hashed_non_advancing_pass_candidate(self) -> None:
         now = datetime(2026, 7, 26, 8, 0, tzinfo=timezone.utc)
         report = PhaseGateBuilder(clock=lambda: now).build(

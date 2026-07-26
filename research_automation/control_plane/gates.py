@@ -98,6 +98,22 @@ def _require_sha256(value: object, field_name: str) -> str:
     return value
 
 
+def _require_enum(
+    value: object,
+    field_name: str,
+    allowed: frozenset[str],
+) -> str:
+    """Require a hashable, canonical string before membership checks.
+
+    JSON arrays/objects are unhashable.  Checking the type explicitly keeps
+    malformed untrusted reports on the controlled validation-error path
+    instead of leaking a ``TypeError`` from set membership.
+    """
+    if not isinstance(value, str) or value not in allowed:
+        raise GateValidationError(f"{field_name} is invalid")
+    return value
+
+
 def _require_closed_mapping(
     value: object,
     field_name: str,
@@ -347,8 +363,11 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
             task["report_sha256"],
             f"task_reports[{index}].report_sha256",
         )
-        if task["outcome"] not in {"PASS", "FAIL", "BLOCKED", "IN_DOUBT"}:
-            raise GateValidationError("task report outcome is invalid")
+        _require_enum(
+            task["outcome"],
+            f"task_reports[{index}].outcome",
+            frozenset({"PASS", "FAIL", "BLOCKED", "IN_DOUBT"}),
+        )
         if ticket_id in seen_tickets or report_ref in seen_refs:
             raise GateValidationError("task report references must be unique")
         seen_tickets.add(ticket_id)
@@ -368,8 +387,11 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     )
     _require_repo_ref(scheduler["ref"], "scheduler_inventory.ref")
     _require_sha256(scheduler["sha256"], "scheduler_inventory.sha256")
-    if scheduler["status"] not in {"VERIFIED", "UNKNOWN", "INVALID"}:
-        raise GateValidationError("scheduler_inventory.status is invalid")
+    _require_enum(
+        scheduler["status"],
+        "scheduler_inventory.status",
+        frozenset({"VERIFIED", "UNKNOWN", "INVALID"}),
+    )
 
     receipts = report["test_receipts"]
     if not isinstance(receipts, list):
@@ -388,8 +410,11 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
         _require_nonempty(receipt["command"], f"test_receipts[{index}].command")
         if type(receipt["exit_code"]) is not int:
             raise GateValidationError("gate test exit_code must be an integer")
-        if receipt["result"] not in {"PASS", "FAIL"}:
-            raise GateValidationError("gate test result is invalid")
+        _require_enum(
+            receipt["result"],
+            f"test_receipts[{index}].result",
+            frozenset({"PASS", "FAIL"}),
+        )
         if receipt["result"] == "PASS" and receipt["exit_code"] != 0:
             raise GateValidationError("PASS gate test requires exit_code zero")
         if receipt_id in receipt_ids:
@@ -476,8 +501,11 @@ def validate_gate_report(report: Mapping[str, object]) -> None:
     if report["schema_version"] != GATE_REPORT_V1:
         raise GateValidationError("unsupported gate report schema")
     _require_nonempty(report["plan_version"], "plan_version")
-    if report["phase"] not in {phase.value for phase in Phase}:
-        raise GateValidationError("phase must be P0 through P8")
+    _require_enum(
+        report["phase"],
+        "phase",
+        frozenset(phase.value for phase in Phase),
+    )
     _require_nonempty(report["attempt_id"], "attempt_id")
     _validate_nested_contracts(report)
     if report["auto_advance"] is not False:
