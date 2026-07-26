@@ -21,6 +21,7 @@ from .control_plane.sink_guard import (
     ExecutionSinkGuard,
 )
 from .control_plane.stores import AuthorityReader, TaskExecutionLease
+from .control_plane.provenance import stamp_legacy_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,7 +50,10 @@ VOLUME_AUTHENTICITY_TASK = (
 
 
 def _write_status(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(stamp_legacy_result(payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def run_backlog(

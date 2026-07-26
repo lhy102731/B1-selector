@@ -27,6 +27,7 @@ from research_automation.control_plane.sink_guard import (
     ExecutionSinkGuard,
 )
 from research_automation.control_plane.stores import AuthorityReader, TaskExecutionLease
+from research_automation.control_plane.provenance import stamp_legacy_result
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,14 +43,17 @@ def iso_now() -> str:
 
 
 def append_event(path: Path, event: dict[str, Any]) -> None:
-    event = {"ts": iso_now(), **event}
+    event = stamp_legacy_result({"ts": iso_now(), **event})
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(stamp_legacy_result(data), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     tmp.replace(path)
 
 

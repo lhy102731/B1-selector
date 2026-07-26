@@ -40,6 +40,7 @@ from .control_plane.sink_guard import (
     ExecutionSinkGuard,
 )
 from .control_plane.stores import AuthorityReader, TaskExecutionLease
+from .control_plane.provenance import stamp_legacy_result
 
 
 def _now_stamp() -> str:
@@ -71,7 +72,8 @@ class AutonomousRunnerV1:
                  project_root: str | Path | None = None, workspace_mode: bool = True,
                  research_mode: str = "parameter", execution_lease=None,
                  execution_invocation=None, authority_reader=None,
-                 llm_lease=None, llm_invocation=None):
+                 llm_lease=None, llm_invocation=None,
+                 writeback_lease=None, writeback_invocation=None):
         self.strategy = strategy.lower()
         # validate selection up front: unsupported strategies (e.g. b3) raise with a reason
         self.profile = require_supported(self.strategy)
@@ -102,6 +104,8 @@ class AutonomousRunnerV1:
         self.authority_reader = authority_reader
         self.llm_lease = llm_lease
         self.llm_invocation = llm_invocation
+        self.writeback_lease = writeback_lease
+        self.writeback_invocation = writeback_invocation
 
     # ---- stop control -----------------------------------------------------
     def _stop_requested(self) -> bool:
@@ -203,6 +207,42 @@ class AutonomousRunnerV1:
                 )
         except (ExecutionAuthorizationError, OSError, ValueError) as error:
             raise AuthorizationError(f"AutonomousRunnerV1 LLM authority rejected: {error}") from error
+        if not isinstance(getattr(self, "writeback_lease", None), TaskExecutionLease) or not isinstance(
+            getattr(self, "writeback_invocation", None), ExecutionInvocation
+        ):
+            raise AuthorizationError(
+                "AutonomousRunnerV1 requires a writeback execution lease and invocation"
+            )
+        try:
+            writeback_permit = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root,
+            ).authorize(self.writeback_lease, self.writeback_invocation)
+            if (
+                writeback_permit.operation != "WRITEBACK"
+                or writeback_permit.effect is not SideEffect.WRITE_CONTROL_PLANE
+                or self.writeback_invocation.runner.module
+                != "research_automation.autonomous_runner"
+                or self.writeback_invocation.runner.callable_name
+                != "AutonomousRunnerV1.run"
+            ):
+                raise ExecutionAuthorizationError(
+                    "autonomous writeback requires a WRITE_CONTROL_PLANE WRITEBACK intent"
+                )
+            required_write_roots = {
+                authorized_runs_root,
+                (repository_root / "research_state").resolve()
+                if isinstance(repository_root, Path)
+                else (Path(repository_root) / "research_state").resolve(),
+            }
+            if not required_write_roots.issubset(set(writeback_permit.resource_paths)):
+                raise ExecutionAuthorizationError(
+                    "autonomous writeback resources differ from execution intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            raise AuthorizationError(
+                f"AutonomousRunnerV1 writeback authority rejected: {error}"
+            ) from error
         t0 = time.time()
         runs_root = authorized_runs_root
         runs_root.mkdir(parents=True, exist_ok=True)
@@ -303,33 +343,46 @@ class AutonomousRunnerV1:
             print("\n  KeyboardInterrupt -> finishing cleanly, writing report")
 
         report_path = self.reporter.generate(
-            {"cycle_id": cycle_id, "strategy": self.strategy, "rounds": max_rounds,
-             "baseline": {"sharpe": baseline.sharpe, "max_drawdown": baseline.max_drawdown,
-                          "win_rate": baseline.win_rate, "trades": baseline.trades,
-                          "total_return": (baseline.extra or {}).get("total_return")},
-             "candidates": candidates},
-            _today())
+            stamp_legacy_result(
+                {
+                    "cycle_id": cycle_id,
+                    "strategy": self.strategy,
+                    "rounds": max_rounds,
+                    "baseline": {
+                        "sharpe": baseline.sharpe,
+                        "max_drawdown": baseline.max_drawdown,
+                        "win_rate": baseline.win_rate,
+                        "trades": baseline.trades,
+                        "total_return": (baseline.extra or {}).get("total_return"),
+                    },
+                    "candidates": candidates,
+                }
+            ),
+            _today(),
+        )
         # ---- per-cycle lineage tree (aggregates all experiment parent/child edges) ---
         from .lineage import build_lineage_tree
         build_lineage_tree(candidates, cycle_dir / "lineage_tree.json")
 
         # ---- campaign summary (stability tracking for Champion Pool) ----
-        _campaign_summary = {
-            "rounds": len(candidates),
-            "completed": sum(1 for c in candidates
-                             if c.get("_experiment_status") == "COMPLETED"),
-            "failed": sum(1 for c in candidates
-                          if c.get("_experiment_status") == "FAILED"),
-            "rejected": len(candidates) - sum(1 for c in candidates
-                                                if c.get("_experiment_status") == "COMPLETED")
-                        - sum(1 for c in candidates
+        _campaign_summary = stamp_legacy_result(
+            {
+                "rounds": len(candidates),
+                "completed": sum(1 for c in candidates
+                                 if c.get("_experiment_status") == "COMPLETED"),
+                "failed": sum(1 for c in candidates
                               if c.get("_experiment_status") == "FAILED"),
-            "best_return": max(((c.get("metrics") or {}).get("total_return") or 0)
-                               for c in candidates) if candidates else 0,
-            "best_experiment": max(candidates, key=lambda c:
-                                   ((c.get("metrics") or {}).get("total_return") or 0))["experiment_id"]
-            if candidates else None,
-        }
+                "rejected": len(candidates) - sum(1 for c in candidates
+                                                    if c.get("_experiment_status") == "COMPLETED")
+                            - sum(1 for c in candidates
+                                  if c.get("_experiment_status") == "FAILED"),
+                "best_return": max(((c.get("metrics") or {}).get("total_return") or 0)
+                                   for c in candidates) if candidates else 0,
+                "best_experiment": max(candidates, key=lambda c:
+                                       ((c.get("metrics") or {}).get("total_return") or 0))["experiment_id"]
+                if candidates else None,
+            }
+        )
         from .safety import assert_safe_path
         _cs_path = assert_safe_path(cycle_dir / "campaign_summary.json")
         _cs_path.write_text(
@@ -340,8 +393,14 @@ class AutonomousRunnerV1:
 
         self._clear_stop()
         print(f"  done: {len(candidates)} experiments -> {report_path}")
-        return {"cycle_id": cycle_id, "candidates": candidates, "report": str(report_path),
-                "stopped": self._stop_requested()}
+        return stamp_legacy_result(
+            {
+                "cycle_id": cycle_id,
+                "candidates": candidates,
+                "report": str(report_path),
+                "stopped": self._stop_requested(),
+            }
+        )
 
     # ---- helpers ----------------------------------------------------------
     def _time_up(self, t0: float, max_minutes: int | None) -> bool:
@@ -820,12 +879,14 @@ class AutonomousRunnerV1:
                     existing = yaml.safe_load(decisions_path.read_text(encoding="utf-8")) or []
                 except Exception:
                     existing = []
-            entry = {
-                "at": datetime.now(timezone.utc).isoformat(),
-                "round": round_n,
-                "triggers": reasons,
-                "raw_result": res if isinstance(res, dict) else {"text": str(res)},
-            }
+            entry = stamp_legacy_result(
+                {
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "round": round_n,
+                    "triggers": reasons,
+                    "raw_result": res if isinstance(res, dict) else {"text": str(res)},
+                }
+            )
             existing.append(entry)
             decisions_path.write_text(
                 yaml.safe_dump(existing[-20:], sort_keys=False, allow_unicode=True),
@@ -919,7 +980,9 @@ class AutonomousRunnerV1:
         print(f"[dry-run] cycle={cycle_id} would run {len(printed)} task(s):")
         for p in printed:
             print(f"  ({p['priority']}) {p['task_id']}  {p['params']}\n      {' '.join(p['command'])}")
-        return {"cycle_id": cycle_id, "dry_run": True, "tasks": printed}
+        return stamp_legacy_result(
+            {"cycle_id": cycle_id, "dry_run": True, "tasks": printed}
+        )
 
     @staticmethod
     def _peek_queue(queue: TaskQueue) -> list:

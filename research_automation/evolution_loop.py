@@ -30,6 +30,7 @@ from .workspace_manager import WorkspaceManager
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import ExecutionAuthorizationError, ExecutionInvocation, ExecutionSinkGuard
 from .control_plane.stores import AuthorityReader, TaskExecutionLease
+from .control_plane.provenance import stamp_legacy_result
 
 
 def _now_iso() -> str:
@@ -48,6 +49,7 @@ class EvolutionResult:
     champion_metrics: dict = field(default_factory=dict)
     generations: list[dict] = field(default_factory=list)
     summary_path: str | None = None
+    provenance: dict = field(default_factory=stamp_legacy_result)
 
 
 class EvolutionLoop:
@@ -221,14 +223,22 @@ class EvolutionLoop:
         # lineage_tree.json
         nodes = [{"id": e.experiment_id, "parent": e.parent_experiment_id}
                  for e in all_exps]
-        tree = {"root": root_experiment.experiment_id, "nodes": nodes}
+        tree = stamp_legacy_result(
+            {"root": root_experiment.experiment_id, "nodes": nodes}
+        )
         tree_path = evolution_dir / "lineage_tree.json"
         assert_safe_path(tree_path)
         tree_path.write_text(json.dumps(tree, ensure_ascii=False, indent=2), encoding="utf-8")
 
         # champion.json
-        champ = {"best_experiment_id": champion_id, "score": champion_score,
-                 "metrics": champion_metrics, "generation_count": n_gens}
+        champ = stamp_legacy_result(
+            {
+                "best_experiment_id": champion_id,
+                "score": champion_score,
+                "metrics": champion_metrics,
+                "generation_count": n_gens,
+            }
+        )
         champ_path = evolution_dir / "champion.json"
         assert_safe_path(champ_path)
         champ_path.write_text(json.dumps(champ, ensure_ascii=False, indent=2), encoding="utf-8")

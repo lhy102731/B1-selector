@@ -3,7 +3,7 @@
   "plan_version": "V3.4.2-P0R2",
   "phase": "P0",
   "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)",
-  "baseline_payload_sha256": "5aa8855a62d801f03f74b2f091265f75456af063e8d5bfe2d32fb011cd3d5702",
+  "baseline_payload_sha256": "ddd31b2f6e6290a4565a5ccd383457f12e1e994cd70c466e968dc8fd797da0e8",
   "baseline": {
     "attempt_id": "p0r2-attempt-001",
     "git_head": "0b7e0fdeac7060c1ce99999731c116157d1ddfbd",
@@ -57,7 +57,8 @@
       " M tests/test_knowledge_bridge.py",
       " M research_automation/evolution_loop.py",
       " M research_automation/run_brick_sqnav_backlog.py",
-      " M research/brick_ag2_kbase_sqnav_autorun.py"
+      " M research/brick_ag2_kbase_sqnav_autorun.py",
+      " M research_automation/control_plane/provenance.py"
     ],
     "file_state_count": 56,
     "file_states": {

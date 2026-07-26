@@ -31,6 +31,7 @@ from .control_plane.sink_guard import (
     ExecutionSinkGuard,
 )
 from .control_plane.stores import AuthorityReader, TaskExecutionLease
+from .control_plane.provenance import stamp_legacy_result
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -270,15 +271,17 @@ def _finish_cycle(
     after = fingerprint_production_boundary()
     unchanged = manifest.get("production_boundary_before") == after
     manifest.update(
-        {
-            "status": status if unchanged else "PRODUCTION_BOUNDARY_CHANGED",
-            "completed_at": _utc_now(),
-            "production_boundary_after": after,
-            "production_boundary_unchanged": unchanged,
-            "production_promotion_performed": False,
-            "kbase_write_performed": False,
-            **details,
-        }
+        stamp_legacy_result(
+            {
+                "status": status if unchanged else "PRODUCTION_BOUNDARY_CHANGED",
+                "completed_at": _utc_now(),
+                "production_boundary_after": after,
+                "production_boundary_unchanged": unchanged,
+                "production_promotion_performed": False,
+                "kbase_write_performed": False,
+                **details,
+            }
+        )
     )
     _write_json_atomic(manifest_path, manifest)
     return manifest
@@ -339,21 +342,21 @@ def run_kbase_ag2_full_cycle(
     if not isinstance(lease, TaskExecutionLease) or not isinstance(
         invocation, ExecutionInvocation
     ):
-        return {
+        return stamp_legacy_result({
             "status": "UNAUTHORIZED",
             "reason": "execution lease and invocation are required before full-cycle execution",
             "cycle_dir": None if output_dir is None else str(Path(output_dir).resolve()),
             "production_promotion_performed": False,
             "kbase_write_performed": False,
-        }
+        })
     if output_dir is None:
-        return {
+        return stamp_legacy_result({
             "status": "UNAUTHORIZED",
             "reason": "an explicit intent-bound output_dir is required",
             "cycle_dir": None,
             "production_promotion_performed": False,
             "kbase_write_performed": False,
-        }
+        })
     try:
         reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
         guard = ExecutionSinkGuard(
@@ -385,17 +388,17 @@ def run_kbase_ag2_full_cycle(
                 "full-cycle handoff is not bound by the execution intent"
             )
     except (ExecutionAuthorizationError, OSError, ValueError) as error:
-        return {
+        return stamp_legacy_result({
             "status": "UNAUTHORIZED",
             "reason": str(error),
             "cycle_dir": None if output_dir is None else str(Path(output_dir).resolve()),
             "production_promotion_performed": False,
             "kbase_write_performed": False,
-        }
+        })
     strategy = _safe_strategy_id(strategy_id)
     cycle_dir = _cycle_directory(strategy, output_dir=output_dir, timestamp=timestamp)
     manifest_path = cycle_dir / "cycle_manifest.json"
-    manifest: dict[str, Any] = {
+    manifest: dict[str, Any] = stamp_legacy_result({
         "schema_version": 1,
         "cycle_id": cycle_dir.name,
         "created_at": _utc_now(),
@@ -410,7 +413,7 @@ def run_kbase_ag2_full_cycle(
         "kbase_write_allowed": False,
         "production_boundary_before": fingerprint_production_boundary(),
         "stages": [],
-    }
+    })
     _write_json_atomic(manifest_path, manifest)
 
     try:
