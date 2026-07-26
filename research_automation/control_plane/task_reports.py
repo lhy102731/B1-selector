@@ -11,6 +11,7 @@ import hmac
 import json
 import re
 from collections.abc import Mapping
+from datetime import datetime
 
 from .contracts import Phase, canonical_json
 
@@ -24,6 +25,7 @@ _IDENTITY_BINDING_FIELDS = frozenset(
     {"plan_hash", "scope_hash", "instruction_policy_hash"}
 )
 _TASK_OUTCOMES = frozenset({"PASS", "FAIL", "BLOCKED", "IN_DOUBT"})
+_TICKET_STATES = frozenset({"SUCCEEDED", "FAILED", "IN_DOUBT"})
 _PHASES = frozenset(phase.value for phase in Phase)
 _COMPUTED_FIELDS = frozenset(
     {"schema_version", "outcome", "reason_codes", "report_payload_sha256"}
@@ -112,9 +114,15 @@ def _require_sha256(value: object, field_name: str) -> str:
 
 
 def _require_non_empty_string(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or not value:
+    if (
+        not isinstance(value, str)
+        or not value
+        or not value.strip()
+        or value != value.strip()
+    ):
         raise TaskReportValidationError(
-            f"{field_name} must be a non-empty string"
+            f"{field_name} must be a non-empty string without surrounding "
+            "whitespace"
         )
     return value
 
@@ -127,12 +135,50 @@ def _require_exact_int(value: object, field_name: str) -> int:
     return value
 
 
+def _require_aware_timestamp(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise TaskReportValidationError(
+            f"{field_name} must be a timezone-aware ISO-8601 timestamp"
+        )
+    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError as error:
+        raise TaskReportValidationError(
+            f"{field_name} must be a timezone-aware ISO-8601 timestamp"
+        ) from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TaskReportValidationError(
+            f"{field_name} must be a timezone-aware ISO-8601 timestamp"
+        )
+    return parsed
+
+
+def _reject_float_values(value: object) -> None:
+    stack: list[tuple[object, str]] = [(value, "")]
+    while stack:
+        current, field_name = stack.pop()
+        if isinstance(current, float):
+            label = field_name or "task report"
+            raise TaskReportValidationError(
+                f"{label} must not be a floating-point value"
+            )
+        if isinstance(current, Mapping):
+            for key, item in current.items():
+                child_name = str(key) if not field_name else f"{field_name}.{key}"
+                stack.append((item, child_name))
+        elif isinstance(current, (list, tuple)):
+            for index, item in enumerate(current):
+                stack.append((item, f"{field_name}[{index}]"))
+
+
 def _is_repo_relative_posix_file_path(value: object) -> bool:
     if not isinstance(value, str) or not value:
         return False
     parts = value.split("/")
     return not (
         value.startswith("/")
+        or value != value.strip()
         or "\\" in value
         or ":" in value
         or any(character in '<>"|?*' for character in value)
@@ -222,7 +268,11 @@ def task_report_v2_payload_sha256(report: Mapping[str, object]) -> str:
 
 def _require_unique_string_list(value: object, field_name: str) -> list[str]:
     if not isinstance(value, list) or any(
-        not isinstance(item, str) or not item for item in value
+        not isinstance(item, str)
+        or not item
+        or not item.strip()
+        or item != item.strip()
+        for item in value
     ):
         raise TaskReportValidationError(
             f"{field_name} must be a list of non-empty strings"
@@ -320,6 +370,10 @@ def _validate_evidence_refs(evidence_refs: object) -> None:
             )
         evidence_ids.add(evidence_id)
         _require_non_empty_string(
+            evidence["evidence_ref"],
+            f"input_evidence_refs[{index}].evidence_ref",
+        )
+        _require_repo_relative_posix_file_path(
             evidence["evidence_ref"],
             f"input_evidence_refs[{index}].evidence_ref",
         )
@@ -511,6 +565,22 @@ def _validate_scope_file_rules(report: Mapping[str, object]) -> None:
             seen_rules.add(rule)
 
 
+def _validate_side_effect_summary(value: object) -> None:
+    summary = _require_closed_mapping(
+        value,
+        "side_effect_summary",
+        _SIDE_EFFECT_SUMMARY_FIELDS,
+    )
+    _require_unique_string_list(
+        summary["observed"],
+        "side_effect_summary.observed",
+    )
+    _require_unique_string_list(
+        summary["unauthorized"],
+        "side_effect_summary.unauthorized",
+    )
+
+
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _receipt_results(report.get("test_receipts"), "test_receipts")
     review_results = _receipt_results(
@@ -521,6 +591,7 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     _validate_review_findings(report.get("review_findings"), review_results)
     _validate_scope_file_rules(report)
     _validate_changed_files(report.get("changed_files"))
+    _validate_side_effect_summary(report.get("side_effect_summary"))
     claimed_unexpected = _require_unique_string_list(
         report.get("unexpected_changes"),
         "unexpected_changes",
@@ -726,6 +797,7 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
     """Validate TaskReport V2 identity and payload integrity without side effects."""
     if not isinstance(report, Mapping):
         raise TaskReportValidationError("task report must be a mapping")
+    _reject_float_values(report)
     if report.get("schema_version") != TASK_REPORT_V2:
         raise TaskReportValidationError(
             "schema_version must be control_plane.task_report.v2"
@@ -743,6 +815,7 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
     if not isinstance(report["review_receipts"], list):
         raise TaskReportValidationError("review_receipts must be a list")
     _require_sha256(report["task_spec_sha256"], "task_spec_sha256")
+    _require_sha256(report["baseline_sha256"], "baseline_sha256")
     identity_binding = report["identity_binding"]
     if not isinstance(identity_binding, Mapping):
         raise TaskReportValidationError("identity_binding must be a mapping")
@@ -756,11 +829,42 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
             identity_binding[field_name],
             f"identity_binding.{field_name}",
         )
-    if report["phase"] not in _PHASES:
+    if not isinstance(report["phase"], str) or report["phase"] not in _PHASES:
         raise TaskReportValidationError("phase must be P0 through P8")
-    if report["outcome"] not in _TASK_OUTCOMES:
+    if (
+        not isinstance(report["outcome"], str)
+        or report["outcome"] not in _TASK_OUTCOMES
+    ):
         raise TaskReportValidationError(
             "outcome must be PASS, FAIL, BLOCKED, or IN_DOUBT"
+        )
+    if (
+        not isinstance(report["ticket_state"], str)
+        or report["ticket_state"] not in _TICKET_STATES
+    ):
+        raise TaskReportValidationError(
+            "ticket_state must be SUCCEEDED, FAILED, or IN_DOUBT"
+        )
+    for field_name in (
+        "plan_version",
+        "task_id",
+        "attempt_id",
+        "authorization_ref",
+        "objective",
+        "idempotency_key",
+    ):
+        _require_non_empty_string(report[field_name], field_name)
+    _require_unique_string_list(report["dependencies"], "dependencies")
+    for field_name in ("task_spec_ref", "baseline_ref"):
+        _require_repo_relative_posix_file_path(
+            report[field_name],
+            field_name,
+        )
+    started_at = _require_aware_timestamp(report["started_at"], "started_at")
+    completed_at = _require_aware_timestamp(report["completed_at"], "completed_at")
+    if completed_at < started_at:
+        raise TaskReportValidationError(
+            "completed_at must not precede started_at"
         )
     _validate_nested_contracts(report)
     derived_outcome, derived_reasons = _derive_outcome(report)

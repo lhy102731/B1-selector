@@ -1130,6 +1130,8 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "dir/:stream",
             "dir/*.py",
             "dir/?.py",
+            " dir/file.py",
+            "dir/file.py ",
             "../escape.py",
             "dir/../file.py",
             "./file.py",
@@ -1197,6 +1199,8 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "dir//",
             "dir/*",
             "dir/?",
+            " dir/file.py",
+            "dir/file.py ",
             "dir/\x1f",
         ]
         for field_name in ("allowed_files", "forbidden_files"):
@@ -1213,6 +1217,197 @@ class TaskReportV2TracerTests(unittest.TestCase):
                         rf"{field_name}\[0\] must be a repository-relative POSIX path or directory prefix",
                     ):
                         validate_task_report_v2(report)
+
+    def test_task_report_timestamps_must_be_timezone_aware(self) -> None:
+        for field_name in ("started_at", "completed_at"):
+            with self.subTest(field=field_name):
+                report = self._complete_report()
+                report[field_name] = "2026-07-26T06:40:00"
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    rf"{field_name} must be a timezone-aware ISO-8601 timestamp",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_task_report_completion_cannot_precede_start(self) -> None:
+        report = self._complete_report()
+        report["started_at"] = "2026-07-26T07:00:00+08:00"
+        report["completed_at"] = "2026-07-26T06:59:59+08:00"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "completed_at must not precede started_at",
+        ):
+            validate_task_report_v2(report)
+
+    def test_top_level_artifact_refs_must_be_repository_relative_posix(self) -> None:
+        for field_name in ("task_spec_ref", "baseline_ref"):
+            with self.subTest(field=field_name):
+                report = self._complete_report()
+                report[field_name] = "../outside.json"
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    rf"{field_name} must be a repository-relative POSIX file path",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_evidence_artifact_ref_must_be_repository_relative_posix(self) -> None:
+        report = self._complete_report()
+        report["input_evidence_refs"] = [
+            {
+                "evidence_id": "implementation-baseline",
+                "evidence_ref": "../outside.json",
+                "evidence_sha256": "8" * 64,
+                "status": "VERIFIED",
+            }
+        ]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"input_evidence_refs\[0\]\.evidence_ref must be a repository-relative POSIX file path",
+        ):
+            validate_task_report_v2(report)
+
+    def test_baseline_hash_must_be_a_strict_sha256(self) -> None:
+        report = self._complete_report()
+        report["baseline_sha256"] = "NOT-A-DIGEST"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "baseline_sha256 must be a lowercase SHA-256 digest",
+        ):
+            validate_task_report_v2(report)
+
+    def test_top_level_identity_and_objective_fields_must_be_non_empty(self) -> None:
+        field_names = (
+            "plan_version",
+            "task_id",
+            "attempt_id",
+            "authorization_ref",
+            "objective",
+            "idempotency_key",
+        )
+        for field_name in field_names:
+            with self.subTest(field=field_name):
+                report = self._complete_report()
+                report[field_name] = ""
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    rf"{field_name} must be a non-empty string",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_ticket_state_is_closed_to_terminal_values(self) -> None:
+        report = self._complete_report()
+        report["ticket_state"] = "PENDING"
+        report["outcome"] = "BLOCKED"
+        report["reason_codes"] = ["TICKET_NOT_SUCCEEDED"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "ticket_state must be SUCCEEDED, FAILED, or IN_DOUBT",
+        ):
+            validate_task_report_v2(report)
+
+    def test_dependencies_must_be_a_unique_string_array(self) -> None:
+        report = self._complete_report()
+        report["dependencies"] = ["P0R2-T0", "P0R2-T0"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "dependencies must not contain duplicates",
+        ):
+            validate_task_report_v2(report)
+
+    def test_side_effect_summary_is_validated_before_ticket_precedence(self) -> None:
+        report = self._complete_report()
+        report["ticket_state"] = "IN_DOUBT"
+        report["outcome"] = "IN_DOUBT"
+        report["reason_codes"] = ["TICKET_IN_DOUBT"]
+        side_effect_summary = report["side_effect_summary"]
+        self.assertIsInstance(side_effect_summary, dict)
+        side_effect_summary["caller_note"] = "not part of the summary contract"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "side_effect_summary contains unknown fields: caller_note",
+        ):
+            validate_task_report_v2(report)
+
+    def test_floating_point_values_are_rejected_everywhere(self) -> None:
+        report = self._complete_report()
+        report["external_invocations"] = [{"latency_seconds": 1.5}]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"external_invocations\[0\]\.latency_seconds must not be a floating-point value",
+        ):
+            validate_task_report_v2(report)
+
+    def test_closed_scalar_fields_translate_wrong_types(self) -> None:
+        cases = (
+            ("phase", "phase must be P0 through P8"),
+            ("outcome", "outcome must be PASS, FAIL, BLOCKED, or IN_DOUBT"),
+            (
+                "ticket_state",
+                "ticket_state must be SUCCEEDED, FAILED, or IN_DOUBT",
+            ),
+        )
+        for field_name, message in cases:
+            with self.subTest(field=field_name):
+                report = self._complete_report()
+                report[field_name] = []
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(TaskReportValidationError, message):
+                    validate_task_report_v2(report)
+
+    def test_identity_strings_reject_blank_or_surrounding_whitespace(self) -> None:
+        for value in ("   ", " task-id", "task-id "):
+            with self.subTest(value=repr(value)):
+                report = self._complete_report()
+                report["task_id"] = value
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    "task_id must be a non-empty string without surrounding whitespace",
+                ):
+                    validate_task_report_v2(report)
+
+    def test_string_arrays_reject_whitespace_only_items(self) -> None:
+        report = self._complete_report()
+        report["dependencies"] = ["   "]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "dependencies must be a list of non-empty strings",
+        ):
+            validate_task_report_v2(report)
 
 
 if __name__ == "__main__":
