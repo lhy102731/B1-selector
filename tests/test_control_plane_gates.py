@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,6 +30,18 @@ from research_automation.control_plane.task_reports import build_task_report_v2
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
+
+
+@dataclass(frozen=True, slots=True)
+class _TrustedGateFixture:
+    snapshot: dict[str, object]
+    active_grant_id: str
+    ticket_id: str
+    draft: dict[str, object]
+    report: dict[str, object]
+    verifier: PhaseGateVerifier
+    task_report_path: Path
+    task_report_bytes: bytes
 
 
 class PhaseGateBuilderTests(unittest.TestCase):
@@ -174,7 +189,8 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 self.assertEqual(report["verdict"], "FAIL")
                 self.assertIn(expected_reason, report["reason_codes"])
 
-    def test_verifier_requeries_the_authority_snapshot(self) -> None:
+    @contextmanager
+    def _trusted_gate_fixture(self) -> Iterator[_TrustedGateFixture]:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")
         identity = AuthorityIdentity(
@@ -256,17 +272,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     Phase.P0,
                     "p0r2-attempt-001",
                 )
-                self.assertEqual(
-                    snapshot.to_report_dict(),
-                    {
-                        "active_grant_ids": [grant.grant_id],
-                        "open_ticket_ids": [],
-                        "succeeded_ticket_ids": [ticket.ticket_id],
-                        "failed_ticket_ids": [],
-                        "in_doubt_ticket_ids": [],
-                        "pending_outbox_count": 0,
-                    },
-                )
+                snapshot_dict = snapshot.to_report_dict()
                 draft = self._passing_draft()
                 task_report = build_task_report_v2(
                     {
@@ -325,28 +331,55 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "outcome": "PASS",
                     }
                 ]
-                draft["authority_snapshot"] = snapshot.to_report_dict()
+                draft["authority_snapshot"] = snapshot_dict
                 report = PhaseGateBuilder(clock=lambda: now).build(draft)
-                self.assertEqual(report["verdict"], "PASS")
                 verifier = PhaseGateVerifier(
                     authority_reader=reader,
                     repository_root=root,
                 )
-                verifier.verify(report)
-
-                forged_draft = dict(draft)
-                forged_snapshot = snapshot.to_report_dict()
-                forged_snapshot["active_grant_ids"] = ["grant-forged"]
-                forged_draft["authority_snapshot"] = forged_snapshot
-                forged_report = PhaseGateBuilder(clock=lambda: now).build(
-                    forged_draft
+                yield _TrustedGateFixture(
+                    snapshot=snapshot_dict,
+                    active_grant_id=grant.grant_id,
+                    ticket_id=ticket.ticket_id,
+                    draft=draft,
+                    report=report,
+                    verifier=verifier,
+                    task_report_path=task_report_path,
+                    task_report_bytes=task_report_bytes,
                 )
-                with self.assertRaises(GateAuthorityMismatchError):
-                    verifier.verify(forged_report)
 
-                task_report_path.write_bytes(task_report_bytes + b"\n")
-                with self.assertRaises(GateEvidenceError):
-                    verifier.verify(report)
+    def test_verifier_requeries_the_authority_snapshot(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            self.assertEqual(
+                fixture.snapshot,
+                {
+                    "active_grant_ids": [fixture.active_grant_id],
+                    "open_ticket_ids": [],
+                    "succeeded_ticket_ids": [fixture.ticket_id],
+                    "failed_ticket_ids": [],
+                    "in_doubt_ticket_ids": [],
+                    "pending_outbox_count": 0,
+                },
+            )
+            self.assertEqual(fixture.report["verdict"], "PASS")
+            fixture.verifier.verify(fixture.report)
+
+            forged_draft = dict(fixture.draft)
+            forged_snapshot = dict(fixture.snapshot)
+            forged_snapshot["active_grant_ids"] = ["grant-forged"]
+            forged_draft["authority_snapshot"] = forged_snapshot
+            forged_report = PhaseGateBuilder().build(forged_draft)
+            with self.assertRaises(GateAuthorityMismatchError):
+                fixture.verifier.verify(forged_report)
+
+    def test_verifier_checks_task_report_file_hash(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fixture.task_report_path.write_bytes(
+                fixture.task_report_bytes + b"\n"
+            )
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
 
 
 if __name__ == "__main__":
