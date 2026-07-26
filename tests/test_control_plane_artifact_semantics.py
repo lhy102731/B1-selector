@@ -13,6 +13,7 @@ from research_automation.control_plane.artifact_semantics import (
     validate_final_inventory,
     validate_implementation_baseline,
     validate_reviewed_entry_policy,
+    validate_scheduler_inventory,
 )
 from research_automation.control_plane.contracts import (
     canonical_json,
@@ -252,7 +253,16 @@ class FinalInventoryTests(unittest.TestCase):
                 "declared_side_effects": [],
                 "declared_phase": None,
                 "resource_roots": [],
-                "external_metadata": {"state": "Ready"},
+                "external_metadata": {
+                    "acl_summary": "owner=BUILTIN\\Administrators;sddl=O:BA",
+                    "action": "D:/workspace/run_select.bat",
+                    "principal": "Administrator|Interactive|Limited",
+                    "state": "Ready",
+                    "trigger": (
+                        "MSFT_TaskDailyTrigger|start=2026-03-16T20:00:00|"
+                        "days_interval=1|enabled=true"
+                    ),
+                },
                 "source": "external_scheduler_inventory",
             }
         ]
@@ -450,6 +460,98 @@ class ReviewedEntryPolicyTests(unittest.TestCase):
                 expected_identity=self.identity,
                 final_inventory={"entries": [], "inventory_payload_sha256": "f" * 64},
             )
+
+
+class SchedulerInventoryTests(unittest.TestCase):
+    def _inventory(self, root: Path) -> dict[str, object]:
+        helper = FinalInventoryTests()
+        freeze = helper._freeze(root)
+        inventory = helper._inventory(freeze)
+        validate_final_inventory(
+            canonical_json(inventory).encode("utf-8"),
+            expected_plan_version="V3.4.2-P0R2",
+            expected_phase="P0",
+            expected_attempt_id="p0r2-attempt-001",
+            expected_identity=FinalInventoryTests.identity,
+            freeze_manifest=freeze,
+        )
+        return inventory
+
+    def _payload(self) -> dict[str, object]:
+        return {
+            "schema_version": "control_plane.external_scheduler_inventory.v1",
+            "phase": "P0",
+            "observed_at": "2026-07-26T01:18:14+08:00",
+            "collection_mode": "READ_ONLY",
+            "task_path": "\\A\u80a1\u9009\u80a1",
+            "task_state": "Ready",
+            "operational_classification": "PRODUCTION_DAILY",
+            "task_xml": {
+                "path": "C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1",
+                "sha256": "d" * 64,
+            },
+            "action": {
+                "execute": "D:/workspace/run_select.bat",
+                "arguments": None,
+                "working_directory": None,
+                "content_sha256": "f" * 64,
+            },
+            "principal": {
+                "user_id": "Administrator",
+                "logon_type": "Interactive",
+                "run_level": "Limited",
+            },
+            "trigger": {
+                "type": "MSFT_TaskDailyTrigger",
+                "start_boundary": "2026-03-16T20:00:00",
+                "enabled": True,
+                "days_interval": 1,
+            },
+            "acl": {
+                "owner": "BUILTIN\\Administrators",
+                "sddl": "O:BA",
+            },
+            "altered_by_p0": False,
+            "unresolved_risk": "Writable production chain remains explicit.",
+        }
+
+    def test_scheduler_status_is_derived_from_bound_evidence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            inventory = self._inventory(Path(tmp))
+            _, status = validate_scheduler_inventory(
+                canonical_json(self._payload()).encode("utf-8"),
+                expected_phase="P0",
+                final_inventory=inventory,
+            )
+            self.assertEqual(status, "VERIFIED")
+
+    def test_unavailable_scheduler_evidence_derives_unknown(self) -> None:
+        with TemporaryDirectory() as tmp:
+            inventory = self._inventory(Path(tmp))
+            payload = self._payload()
+            payload["collection_mode"] = "UNAVAILABLE"
+
+            _, status = validate_scheduler_inventory(
+                canonical_json(payload).encode("utf-8"),
+                expected_phase="P0",
+                final_inventory=inventory,
+            )
+            self.assertEqual(status, "UNKNOWN")
+
+    def test_scheduler_inventory_must_match_final_inventory(self) -> None:
+        with TemporaryDirectory() as tmp:
+            inventory = self._inventory(Path(tmp))
+            payload = self._payload()
+            action = payload["action"]
+            self.assertIsInstance(action, dict)
+            action["execute"] = "D:/workspace/forged.bat"
+
+            with self.assertRaises(ArtifactSemanticError):
+                validate_scheduler_inventory(
+                    canonical_json(payload).encode("utf-8"),
+                    expected_phase="P0",
+                    final_inventory=inventory,
+                )
 
 if __name__ == "__main__":
     unittest.main()

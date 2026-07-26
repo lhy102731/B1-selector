@@ -12,6 +12,7 @@ import json
 import hashlib
 import re
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 
 from .contracts import ACTOR_TYPES, Phase, SideEffect, canonical_sha256
@@ -241,6 +242,35 @@ _REQUIRED_IMPORT_SEAM_IDS = frozenset(
     }
 )
 _REQUIRED_SCHEDULER_ENTRY_ID = "external:scheduler:/A\u80a1\u9009\u80a1"
+_SCHEDULER_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "phase",
+        "observed_at",
+        "collection_mode",
+        "task_path",
+        "task_state",
+        "operational_classification",
+        "task_xml",
+        "action",
+        "principal",
+        "trigger",
+        "acl",
+        "altered_by_p0",
+        "unresolved_risk",
+    }
+)
+_SCHEDULER_TASK_XML_FIELDS = frozenset({"path", "sha256"})
+_SCHEDULER_ACTION_FIELDS = frozenset(
+    {"execute", "arguments", "working_directory", "content_sha256"}
+)
+_SCHEDULER_PRINCIPAL_FIELDS = frozenset(
+    {"user_id", "logon_type", "run_level"}
+)
+_SCHEDULER_TRIGGER_FIELDS = frozenset(
+    {"type", "start_boundary", "enabled", "days_interval"}
+)
+_SCHEDULER_ACL_FIELDS = frozenset({"owner", "sddl"})
 _BASELINE_HASH_ALGORITHM = (
     "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; "
     "semantic array order preserved; compact separators)"
@@ -715,6 +745,141 @@ def validate_reviewed_entry_policy(
     return payload
 
 
+def _optional_string(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _string(value, field_name)
+
+
+def validate_scheduler_inventory(
+    raw: bytes,
+    *,
+    expected_phase: str,
+    final_inventory: Mapping[str, object],
+) -> tuple[dict[str, object], str]:
+    """Validate scheduler evidence and derive VERIFIED/UNKNOWN/INVALID."""
+    payload = parse_strict_json(raw, artifact_name="scheduler_inventory")
+    if set(payload) != _SCHEDULER_TOP_LEVEL_FIELDS:
+        raise ArtifactSemanticError(
+            "scheduler_inventory has an invalid top-level contract"
+        )
+    if payload["schema_version"] != "control_plane.external_scheduler_inventory.v1":
+        raise ArtifactSemanticError("unsupported scheduler inventory schema")
+    if payload["phase"] != expected_phase:
+        raise ArtifactSemanticError("scheduler inventory phase mismatch")
+    observed_at = _string(payload["observed_at"], "scheduler.observed_at")
+    try:
+        parsed_at = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ArtifactSemanticError("scheduler observed_at is invalid") from error
+    if parsed_at.tzinfo is None or parsed_at.utcoffset() is None:
+        raise ArtifactSemanticError("scheduler observed_at must include timezone")
+    collection_mode = _string(
+        payload["collection_mode"],
+        "scheduler.collection_mode",
+    )
+    if collection_mode not in {"READ_ONLY", "UNAVAILABLE"}:
+        raise ArtifactSemanticError("scheduler collection_mode is invalid")
+    task_path = _string(payload["task_path"], "scheduler.task_path").replace(
+        "\\", "/"
+    )
+    if task_path != "/A\u80a1\u9009\u80a1":
+        raise ArtifactSemanticError("scheduler task_path is not the required task")
+    task_state = _string(payload["task_state"], "scheduler.task_state")
+    classification = _string(
+        payload["operational_classification"],
+        "scheduler.operational_classification",
+    )
+    task_xml = _exact_mapping(
+        payload["task_xml"],
+        _SCHEDULER_TASK_XML_FIELDS,
+        "scheduler.task_xml",
+    )
+    _string(task_xml["path"], "scheduler.task_xml.path")
+    task_xml_sha = _sha256(task_xml["sha256"], "scheduler.task_xml.sha256")
+    action = _exact_mapping(
+        payload["action"],
+        _SCHEDULER_ACTION_FIELDS,
+        "scheduler.action",
+    )
+    action_execute = _string(action["execute"], "scheduler.action.execute")
+    _optional_string(action["arguments"], "scheduler.action.arguments")
+    _optional_string(
+        action["working_directory"],
+        "scheduler.action.working_directory",
+    )
+    _sha256(action["content_sha256"], "scheduler.action.content_sha256")
+    principal = _exact_mapping(
+        payload["principal"],
+        _SCHEDULER_PRINCIPAL_FIELDS,
+        "scheduler.principal",
+    )
+    for field_name in sorted(_SCHEDULER_PRINCIPAL_FIELDS):
+        _string(principal[field_name], f"scheduler.principal.{field_name}")
+    trigger = _exact_mapping(
+        payload["trigger"],
+        _SCHEDULER_TRIGGER_FIELDS,
+        "scheduler.trigger",
+    )
+    _string(trigger["type"], "scheduler.trigger.type")
+    _string(trigger["start_boundary"], "scheduler.trigger.start_boundary")
+    _exact_bool(trigger["enabled"], "scheduler.trigger.enabled")
+    days_interval = _exact_nonnegative_int(
+        trigger["days_interval"],
+        "scheduler.trigger.days_interval",
+    )
+    if days_interval < 1:
+        raise ArtifactSemanticError("scheduler trigger days_interval must be positive")
+    acl = _exact_mapping(
+        payload["acl"],
+        _SCHEDULER_ACL_FIELDS,
+        "scheduler.acl",
+    )
+    for field_name in sorted(_SCHEDULER_ACL_FIELDS):
+        _string(acl[field_name], f"scheduler.acl.{field_name}")
+    altered = _exact_bool(payload["altered_by_p0"], "scheduler.altered_by_p0")
+    _string(payload["unresolved_risk"], "scheduler.unresolved_risk")
+
+    inventory_entries = _validate_entry_records(final_inventory.get("entries"))
+    scheduler_entries = [
+        entry
+        for entry in inventory_entries
+        if entry["entry_id"] == _REQUIRED_SCHEDULER_ENTRY_ID
+    ]
+    if len(scheduler_entries) != 1:
+        raise ArtifactSemanticError("scheduler inventory entry is not unique")
+    inventory_scheduler = scheduler_entries[0]
+    expected_metadata = {
+        "acl_summary": f"owner={acl['owner']};sddl={acl['sddl']}",
+        "action": action_execute,
+        "principal": (
+            f"{principal['user_id']}|{principal['logon_type']}|"
+            f"{principal['run_level']}"
+        ),
+        "state": task_state,
+        "trigger": (
+            f"{trigger['type']}|start={trigger['start_boundary']}|"
+            f"days_interval={days_interval}|"
+            f"enabled={str(trigger['enabled']).lower()}"
+        ),
+    }
+    if (
+        inventory_scheduler["content_sha256"] != task_xml_sha
+        or inventory_scheduler["callable_name"] != action_execute
+        or inventory_scheduler["external_metadata"] != expected_metadata
+    ):
+        raise ArtifactSemanticError(
+            "scheduler evidence differs from the final inventory"
+        )
+    if collection_mode == "UNAVAILABLE" or task_state == "UNKNOWN":
+        status = "UNKNOWN"
+    elif altered or classification != "PRODUCTION_DAILY":
+        status = "INVALID"
+    else:
+        status = "VERIFIED"
+    return payload, status
+
+
 __all__ = [
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
@@ -722,5 +887,6 @@ __all__ = [
     "validate_code_freeze_manifest",
     "validate_final_inventory",
     "validate_reviewed_entry_policy",
+    "validate_scheduler_inventory",
     "validate_implementation_baseline",
 ]
