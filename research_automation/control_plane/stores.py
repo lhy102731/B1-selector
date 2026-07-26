@@ -917,7 +917,7 @@ class _AuthorityStore:
             envelope._bearer_secret._reveal_for_authority_check().encode("utf-8")
         ).hexdigest()
 
-        def claim(connection: sqlite3.Connection) -> None:
+        def claim(connection: sqlite3.Connection) -> str:
             row = connection.execute(
                 """
                 SELECT * FROM authorizations_v2
@@ -976,7 +976,31 @@ class _AuthorityStore:
                     "authorization envelope was already claimed"
                 )
             if now >= _parse_utc_text(str(row["expires_at"])):
-                raise AuthorizationExpiredError("authorization envelope expired")
+                expired = connection.execute(
+                    """
+                    UPDATE authorizations_v2
+                    SET state = 'EXPIRED'
+                    WHERE authorization_ref = ? AND state = 'PENDING'
+                    """,
+                    (envelope.authorization_ref,),
+                )
+                if expired.rowcount != 1:
+                    raise AuthorizationReplayError(
+                        "authorization envelope was already claimed"
+                    )
+                _insert_authority_outbox(
+                    connection,
+                    event_type="AUTHORIZATION_EXPIRED",
+                    aggregate_id=envelope.authorization_ref,
+                    payload={
+                        "authorization_ref": envelope.authorization_ref,
+                        "phase": expected_phase.value,
+                        "attempt_id": expected_attempt_id,
+                        "expired_at": _utc_text(now),
+                    },
+                    created_at=now,
+                )
+                return "EXPIRED"
             update = connection.execute(
                 """
                 UPDATE authorizations_v2
@@ -1035,8 +1059,11 @@ class _AuthorityStore:
                 },
                 created_at=now,
             )
+            return "CLAIMED"
 
-        _SqliteUnitOfWork(_authority_spec())._write(claim)
+        outcome = _SqliteUnitOfWork(_authority_spec())._write(claim)
+        if outcome == "EXPIRED":
+            raise AuthorizationExpiredError("authorization envelope expired")
         return AuthorityGrant(
             grant_id=grant_id,
             authorization_ref=envelope.authorization_ref,

@@ -621,6 +621,52 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 authority._assert_outbox_drained_for_phase_close()
 
+    def test_expired_authorization_is_closed_and_audited_atomically(self) -> None:
+        clock = [datetime(2026, 7, 26, 4, 30, tzinfo=timezone.utc)]
+        actor = Actor("operator", "human", "invocation-expired-envelope")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: clock[0])
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=clock[0] + timedelta(minutes=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                clock[0] += timedelta(minutes=2)
+
+                with self.assertRaises(stores_module.AuthorizationExpiredError):
+                    authority.claim_authorization(
+                        envelope,
+                        expected_phase=Phase.P0,
+                        expected_attempt_id="p0r2-attempt-001",
+                        actor=actor,
+                        identity=identity,
+                    )
+
+                reader = AuthorityReader()
+                self.assertEqual(
+                    reader.authorization_state(envelope.authorization_ref),
+                    "EXPIRED",
+                )
+                self.assertEqual(reader.pending_outbox_count(), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
