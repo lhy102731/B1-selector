@@ -33,6 +33,7 @@ from .discovery_execution_bridge import (
 )
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
+    AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
     ExecutionSinkGuard,
@@ -519,6 +520,10 @@ def repair_handoff_runner(
     invocation=None,
     execution_lease=None,
     execution_invocation=None,
+    llm_lease=None,
+    llm_invocation=None,
+    execution_llm_lease=None,
+    execution_llm_invocation=None,
     authority_reader=None,
     repository_root: str | Path | None = None,
 ) -> RepairResult:
@@ -526,6 +531,12 @@ def repair_handoff_runner(
     out = Path(output_dir).resolve()
     lease = lease if lease is not None else execution_lease
     invocation = invocation if invocation is not None else execution_invocation
+    llm_lease = llm_lease if llm_lease is not None else execution_llm_lease
+    llm_invocation = (
+        llm_invocation
+        if llm_invocation is not None
+        else execution_llm_invocation
+    )
     if not dry_run and (
         not isinstance(lease, TaskExecutionLease)
         or not isinstance(invocation, ExecutionInvocation)
@@ -539,6 +550,17 @@ def repair_handoff_runner(
             logs=["control-plane sink guard: missing execution authority"],
         )
     if not dry_run:
+        if not isinstance(llm_lease, TaskExecutionLease) or not isinstance(
+            llm_invocation, ExecutionInvocation
+        ):
+            return RepairResult(
+                ok=False,
+                status="unauthorized",
+                handoff_path=str(handoff),
+                output_dir=str(out),
+                error="LLM execution lease and invocation are required before runner repair",
+                logs=["control-plane sink guard: missing LLM authority"],
+            )
         try:
             reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
             guard = ExecutionSinkGuard(
@@ -620,16 +642,20 @@ def repair_handoff_runner(
         return result
 
     started = time.time()
+    def _authorized_llm_runner(command, **kwargs):
+        kwargs.setdefault("capture_output", True)
+        kwargs.setdefault("text", True)
+        kwargs.setdefault("encoding", "utf-8")
+        kwargs.setdefault("errors", "replace")
+        return subprocess.run(command, timeout=timeout, **kwargs)
+
+    llm_sink = AuthorizedSubprocess(
+        authority_reader=reader,
+        repository_root=repository_root or PROJECT_ROOT,
+        runner=_authorized_llm_runner,
+    )
     try:
-        proc = subprocess.run(
-            [claude_binary, "-p", prompt],
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        proc = llm_sink.run(llm_lease, llm_invocation)
     except Exception as exc:  # noqa: BLE001
         result = RepairResult(
             ok=False,
