@@ -132,6 +132,24 @@ class PhaseGateBuilderTests(unittest.TestCase):
         with self.assertRaises(GateBuildError):
             PhaseGateBuilder().build(draft)
 
+    def test_gate_artifact_refs_reject_windows_path_ambiguity(self) -> None:
+        for invalid_ref in (
+            "C:/outside.json",
+            "C:drive-relative.json",
+            "artifacts/policy.json:stream",
+            "artifacts/*.json",
+            "artifacts/policy?.json",
+            "artifacts/policy\x1f.json",
+        ):
+            with self.subTest(invalid_ref=repr(invalid_ref)):
+                draft = self._passing_draft()
+                artifact = dict(draft["implementation_baseline"])
+                artifact["ref"] = invalid_ref
+                draft["implementation_baseline"] = artifact
+
+                with self.assertRaises(GateBuildError):
+                    PhaseGateBuilder().build(draft)
+
     def test_builder_computes_a_hashed_non_advancing_pass_candidate(self) -> None:
         now = datetime(2026, 7, 26, 8, 0, tzinfo=timezone.utc)
         report = PhaseGateBuilder(clock=lambda: now).build(

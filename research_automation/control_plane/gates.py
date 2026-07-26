@@ -118,7 +118,13 @@ def _require_repo_ref(value: object, field_name: str) -> str:
     if (
         reference.startswith("/")
         or "\\" in reference
+        or ":" in reference
+        or any(character in '<>"|?*' for character in reference)
         or any(part in ("", ".", "..") for part in reference.split("/"))
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in reference
+        )
     ):
         raise GateValidationError(f"{field_name} must be repository-relative")
     return reference
