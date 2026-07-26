@@ -931,9 +931,17 @@ def _canonical_task_spec(task_spec: Mapping[str, object]) -> str:
         "dependencies",
         "allowed_files",
         "forbidden_files",
-        "input_evidence_refs",
     ):
         _require_unique_string_array(task_spec[field_name], field_name)
+    try:
+        from .task_reports import (
+            TaskReportValidationError,
+            _validate_evidence_refs,
+        )
+
+        _validate_evidence_refs(task_spec["input_evidence_refs"])
+    except TaskReportValidationError as error:
+        raise TaskTicketError(str(error)) from error
     requirements = task_spec["requirements"]
     required_fields = {
         "required_test_receipt_ids",

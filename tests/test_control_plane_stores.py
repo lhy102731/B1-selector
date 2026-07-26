@@ -1076,6 +1076,12 @@ class TrustedBootstrapTests(unittest.TestCase):
             "exit_code": 0,
             "result": "PASS",
         }
+        input_evidence = {
+            "evidence_id": "p0r2-baseline",
+            "evidence_ref": "research_state/control_plane/p0r2/baseline.json",
+            "evidence_sha256": "f" * 64,
+            "status": "VERIFIED",
+        }
         task_spec = {
             "task_id": "P0R2-T1-REPORT-BINDING",
             "objective": "Cross-check TaskReport against trusted authority.",
@@ -1086,13 +1092,13 @@ class TrustedBootstrapTests(unittest.TestCase):
             "requirements": {
                 "required_test_receipt_ids": ["store-tests"],
                 "required_review_receipt_ids": [],
-                "required_evidence_ids": [],
+                "required_evidence_ids": ["p0r2-baseline"],
             },
             "allowed_files": ["research_automation/control_plane/stores.py"],
             "forbidden_files": ["data/"],
             "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
             "baseline_sha256": "e" * 64,
-            "input_evidence_refs": [],
+            "input_evidence_refs": [input_evidence],
         }
 
         with TemporaryDirectory() as tmp:
@@ -1127,6 +1133,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                     lease,
                     receipt_kind="TEST",
                     payload=test_receipt,
+                )
+                authority._record_task_receipt(
+                    lease,
+                    receipt_kind="EVIDENCE",
+                    payload=input_evidence,
                 )
                 started_at = now[0]
                 now[0] += timedelta(minutes=1)
