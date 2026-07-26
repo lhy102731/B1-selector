@@ -617,9 +617,9 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 tamper = sqlite3.connect(authority_path)
                 try:
-                    original_payload = tamper.execute(
-                        "SELECT payload_json FROM authority_outbox"
-                    ).fetchone()[0]
+                    original_payload, original_event_type = tamper.execute(
+                        "SELECT payload_json, event_type FROM authority_outbox"
+                    ).fetchone()
                     tamper.execute(
                         """
                         UPDATE authority_outbox
@@ -648,6 +648,29 @@ class TrustedBootstrapTests(unittest.TestCase):
                         SET payload_json = ?, event_type = 'FORGED_PHASE_CLOSED'
                         """,
                         (original_payload,),
+                    )
+                    tamper.commit()
+                finally:
+                    tamper.close()
+
+                with self.assertRaises(stores_module.OutboxConflictError):
+                    stores_module._mirror_authority_outbox(
+                        authority,
+                        journal,
+                        limit=10,
+                    )
+
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 1)
+                self.assertEqual(stores_module.OperationalReader().event_count(), 0)
+
+                tamper = sqlite3.connect(authority_path)
+                try:
+                    tamper.execute(
+                        """
+                        UPDATE authority_outbox
+                        SET event_type = ?, sequence = sequence + 10
+                        """,
+                        (original_event_type,),
                     )
                     tamper.commit()
                 finally:

@@ -152,6 +152,7 @@ _OPERATIONAL_SCHEMA = (
     """
     CREATE TABLE journal_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        authority_sequence INTEGER NOT NULL UNIQUE,
         event_id TEXT NOT NULL UNIQUE,
         event_type TEXT NOT NULL,
         aggregate_id TEXT NOT NULL,
@@ -866,15 +867,19 @@ def _canonical_payload(payload: dict[str, object]) -> tuple[str, str]:
 
 def _event_envelope_sha256(
     *,
+    authority_sequence: int,
     event_id: str,
     event_type: str,
     aggregate_id: str,
     payload_sha256: str,
     created_at: str,
 ) -> str:
+    if type(authority_sequence) is not int or authority_sequence < 1:
+        raise ValueError("authority_sequence must be a positive integer")
     envelope = json.dumps(
         {
             "aggregate_id": _require_nonempty(aggregate_id, "aggregate_id"),
+            "authority_sequence": authority_sequence,
             "created_at": _require_nonempty(created_at, "created_at"),
             "event_id": _require_nonempty(event_id, "event_id"),
             "event_type": _require_nonempty(event_type, "event_type"),
@@ -902,14 +907,8 @@ def _insert_authority_outbox(
     payload_json, payload_sha256 = _canonical_payload(payload)
     event_id = f"evt_{secrets.token_hex(16)}"
     created_at_text = _utc_text(created_at)
-    event_sha256 = _event_envelope_sha256(
-        event_id=event_id,
-        event_type=event_type,
-        aggregate_id=aggregate_id,
-        payload_sha256=payload_sha256,
-        created_at=created_at_text,
-    )
-    connection.execute(
+    placeholder_sha256 = "0" * 64
+    insert = connection.execute(
         """
         INSERT INTO authority_outbox
         (event_id, event_type, aggregate_id, payload_json, payload_sha256,
@@ -922,10 +921,29 @@ def _insert_authority_outbox(
             aggregate_id,
             payload_json,
             payload_sha256,
-            event_sha256,
+            placeholder_sha256,
             created_at_text,
         ),
     )
+    authority_sequence = int(insert.lastrowid)
+    event_sha256 = _event_envelope_sha256(
+        authority_sequence=authority_sequence,
+        event_id=event_id,
+        event_type=event_type,
+        aggregate_id=aggregate_id,
+        payload_sha256=payload_sha256,
+        created_at=created_at_text,
+    )
+    update = connection.execute(
+        """
+        UPDATE authority_outbox
+        SET event_sha256 = ?
+        WHERE sequence = ? AND event_sha256 = ?
+        """,
+        (event_sha256, authority_sequence, placeholder_sha256),
+    )
+    if update.rowcount != 1:
+        raise StoreError("authority outbox sequence allocation failed")
 
 
 def _effects_json(effects: tuple[SideEffect, ...]) -> str:
@@ -1213,6 +1231,7 @@ class _AuthorityStore:
                     created_at = _parse_utc_text(str(row["created_at"]))
                     canonical_created_at = _utc_text(created_at)
                     event_sha256 = _event_envelope_sha256(
+                        authority_sequence=int(row["sequence"]),
                         event_id=str(row["event_id"]),
                         event_type=str(row["event_type"]),
                         aggregate_id=str(row["aggregate_id"]),
@@ -2087,6 +2106,7 @@ class _OperationalJournal:
         if not isinstance(event, AuthorityOutboxEvent):
             raise TypeError("event must be an AuthorityOutboxEvent")
         expected_event_sha256 = _event_envelope_sha256(
+            authority_sequence=event.sequence,
             event_id=event.event_id,
             event_type=event.event_type,
             aggregate_id=event.aggregate_id,
@@ -2100,14 +2120,15 @@ class _OperationalJournal:
         def mirror(connection: sqlite3.Connection) -> bool:
             existing = connection.execute(
                 """
-                SELECT event_type, aggregate_id, payload_json, payload_sha256,
-                       event_sha256, created_at
+                SELECT authority_sequence, event_type, aggregate_id,
+                       payload_json, payload_sha256, event_sha256, created_at
                 FROM journal_events
                 WHERE event_id = ?
                 """,
                 (event.event_id,),
             ).fetchone()
             expected = (
+                str(event.sequence),
                 event.event_type,
                 event.aggregate_id,
                 event.payload_json,
@@ -2125,11 +2146,12 @@ class _OperationalJournal:
             connection.execute(
                 """
                 INSERT INTO journal_events
-                (event_id, event_type, aggregate_id, payload_json,
+                (authority_sequence, event_id, event_type, aggregate_id, payload_json,
                  payload_sha256, event_sha256, created_at, mirrored_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    event.sequence,
                     event.event_id,
                     event.event_type,
                     event.aggregate_id,
