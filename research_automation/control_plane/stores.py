@@ -574,6 +574,25 @@ class TaskReportAuthorityBinding:
     report_payload_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutionLeaseAuthorityBinding:
+    """Read-only facts revalidated immediately before a task side effect."""
+
+    lease_id: str
+    ticket_id: str
+    grant_id: str
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    task_id: str
+    task_spec_ref: str
+    task_spec_sha256: str
+    task_spec_payload_json: str
+    allowed_side_effects: tuple[SideEffect, ...]
+    actor: Actor
+    identity: AuthorityIdentity
+
+
 def _path_identity(path: str | Path) -> str:
     return os.path.normcase(str(Path(path).resolve(strict=False)))
 
@@ -1001,6 +1020,34 @@ class AuthorityReader:
             return None if row is None else str(row["state"])
 
         return _SqliteUnitOfWork(_authority_spec())._read(read_state)
+
+    def execution_lease_binding(
+        self,
+        lease: TaskExecutionLease,
+    ) -> ExecutionLeaseAuthorityBinding:
+        """Revalidate one live fenced lease through the fixed read-only store."""
+
+        def read_binding(
+            connection: sqlite3.Connection,
+        ) -> ExecutionLeaseAuthorityBinding:
+            row = _AuthorityStore._require_task_lease(connection, lease)
+            return ExecutionLeaseAuthorityBinding(
+                lease_id=lease.lease_id,
+                ticket_id=lease.ticket_id,
+                grant_id=lease.grant_id,
+                authorization_ref=lease.authorization_ref,
+                phase=lease.phase,
+                attempt_id=lease.attempt_id,
+                task_id=lease.task_id,
+                task_spec_ref=str(row["task_spec_ref"]),
+                task_spec_sha256=str(row["task_spec_sha256"]),
+                task_spec_payload_json=str(row["task_spec_payload_json"]),
+                allowed_side_effects=lease.allowed_side_effects,
+                actor=lease.actor,
+                identity=lease.identity,
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read_binding)
 
     def trusted_receipt_count(self, ticket_id: str) -> int:
         _require_nonempty(ticket_id, "ticket_id")
@@ -3267,6 +3314,7 @@ def read_store_pair_descriptor() -> StorePairDescriptor:
 
 __all__ = [
     "AuthorityReader",
+    "ExecutionLeaseAuthorityBinding",
     "AuthorityGrant",
     "AuthorityIdentity",
     "AuthorityRootError",
