@@ -38,6 +38,14 @@ class StoreBootstrapError(StoreError):
     """Raised when trusted first-time provisioning cannot complete."""
 
 
+class StoreAlreadyBootstrappedError(StoreBootstrapError):
+    """Raised when a complete store pair already exists."""
+
+
+class StoreBootstrapIncompleteError(StoreBootstrapError):
+    """Raised when only one fixed store is present."""
+
+
 @dataclass(frozen=True)
 class StoreBootstrapReceipt:
     """Resolved locations created by one trusted bootstrap operation."""
@@ -108,6 +116,19 @@ def _cleanup_bootstrap_artifacts(paths: tuple[Path, ...]) -> None:
         _remove_owned_sqlite_artifacts(path)
 
 
+def _require_unprovisioned(authority_path: Path, operational_path: Path) -> None:
+    authority_exists = os.path.lexists(authority_path)
+    operational_exists = os.path.lexists(operational_path)
+    if authority_exists and operational_exists:
+        raise StoreAlreadyBootstrappedError(
+            "control-plane stores are already provisioned"
+        )
+    if authority_exists or operational_exists:
+        raise StoreBootstrapIncompleteError(
+            "control-plane store bootstrap is incomplete"
+        )
+
+
 def _trusted_bootstrap_at_paths(
     *,
     authority_path: str | Path,
@@ -121,8 +142,7 @@ def _trusted_bootstrap_at_paths(
         raise StoreConfigurationError(
             "authority and operational stores must use different SQLite files"
         )
-    if resolved_authority.exists() or resolved_operational.exists():
-        raise StoreBootstrapError("control-plane stores are already provisioned")
+    _require_unprovisioned(resolved_authority, resolved_operational)
 
     installation_id = secrets.token_hex(32)
     staging_id = secrets.token_hex(16)
@@ -151,8 +171,7 @@ def _trusted_bootstrap_at_paths(
             raise StoreConfigurationError(
                 "authority and operational stores must use different SQLite files"
             )
-        if resolved_authority.exists() or resolved_operational.exists():
-            raise StoreBootstrapError("control-plane stores are already provisioned")
+        _require_unprovisioned(resolved_authority, resolved_operational)
         os.replace(authority_staging, resolved_authority)
         published.append(resolved_authority)
         os.replace(operational_staging, resolved_operational)
@@ -231,7 +250,9 @@ def read_store_pair_descriptor() -> StorePairDescriptor:
 
 
 __all__ = [
+    "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
+    "StoreBootstrapIncompleteError",
     "StoreBootstrapReceipt",
     "StoreConfigurationError",
     "StoreError",

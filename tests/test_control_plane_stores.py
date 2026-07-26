@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.stores import (
+    StoreAlreadyBootstrappedError,
     StorePairDescriptor,
     StoreConfigurationError,
     read_store_pair_descriptor,
@@ -148,6 +150,39 @@ class TrustedBootstrapTests(unittest.TestCase):
             self.assertFalse(authority_path.exists())
             self.assertFalse(operational_path.exists())
             self.assertEqual(tuple(root.iterdir()), ())
+
+    def test_successful_bootstrap_cannot_modify_stores_on_replay(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                trusted_bootstrap()
+                before = {
+                    path: (
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                        path.stat().st_mtime_ns,
+                    )
+                    for path in (authority_path, operational_path)
+                }
+
+                with self.assertRaises(StoreAlreadyBootstrappedError):
+                    trusted_bootstrap()
+
+                after = {
+                    path: (
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                        path.stat().st_mtime_ns,
+                    )
+                    for path in (authority_path, operational_path)
+                }
+
+            self.assertEqual(after, before)
 
 
 if __name__ == "__main__":
