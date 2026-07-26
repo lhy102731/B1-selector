@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
@@ -9,6 +10,7 @@ import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
+from threading import Barrier, BrokenBarrierError
 import unittest
 from unittest.mock import patch
 
@@ -344,6 +346,62 @@ class TrustedBootstrapTests(unittest.TestCase):
                 for output in rendered:
                     with self.subTest(secret=secret, output=output[:40]):
                         self.assertNotIn(secret, output)
+
+    def test_concurrent_bootstrap_has_exactly_one_winner(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            start = Barrier(2)
+            publish_race = Barrier(2)
+            real_replace = os.replace
+
+            def racing_replace(source, destination) -> None:
+                if Path(destination) == authority_path:
+                    try:
+                        publish_race.wait(timeout=0.2)
+                    except BrokenBarrierError:
+                        pass
+                real_replace(source, destination)
+
+            def attempt_bootstrap():
+                start.wait(timeout=2)
+                try:
+                    return ("SUCCESS", stores_module._trusted_bootstrap())
+                except stores_module.StoreError as error:
+                    return ("REJECTED", error)
+
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ), patch.object(
+                stores_module.os,
+                "replace",
+                side_effect=racing_replace,
+            ):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    results = tuple(executor.map(lambda _index: attempt_bootstrap(), range(2)))
+                descriptor = read_store_pair_descriptor()
+
+            successes = [value for status, value in results if status == "SUCCESS"]
+            rejections = [
+                value for status, value in results if status == "REJECTED"
+            ]
+            self.assertEqual(len(successes), 1, results)
+            self.assertEqual(len(rejections), 1, results)
+            self.assertNotIsInstance(
+                rejections[0],
+                stores_module.StoreBootstrapIncompleteError,
+            )
+            self.assertEqual(
+                descriptor.installation_id,
+                successes[0].installation_id,
+            )
+            self.assertEqual(
+                tuple(root.glob(".*.bootstrap")),
+                (),
+            )
 
 
 if __name__ == "__main__":

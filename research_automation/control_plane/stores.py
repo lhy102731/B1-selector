@@ -122,6 +122,10 @@ class StoreBootstrapIncompleteError(StoreBootstrapError):
     """Raised when only one fixed store is present."""
 
 
+class StoreBootstrapInProgressError(StoreBootstrapError):
+    """Raised when another trusted bootstrap owns the publication lock."""
+
+
 class AuthorizationError(StoreError):
     """Base error for V2 authority-envelope operations."""
 
@@ -383,21 +387,10 @@ def _require_unprovisioned(authority_path: Path, operational_path: Path) -> None
         )
 
 
-def _trusted_bootstrap_at_paths(
-    *,
-    authority_path: str | Path,
-    operational_path: str | Path,
+def _provision_store_pair_under_lock(
+    resolved_authority: Path,
+    resolved_operational: Path,
 ) -> StoreBootstrapReceipt:
-    """Private test seam for provisioning fixed production locations."""
-
-    resolved_authority = Path(authority_path).resolve(strict=False)
-    resolved_operational = Path(operational_path).resolve(strict=False)
-    if _path_identity(resolved_authority) == _path_identity(resolved_operational):
-        raise StoreConfigurationError(
-            "authority and operational stores must use different SQLite files"
-        )
-    _require_unprovisioned(resolved_authority, resolved_operational)
-
     installation_id = secrets.token_hex(32)
     staging_id = secrets.token_hex(16)
     authority_staging = resolved_authority.with_name(
@@ -446,6 +439,68 @@ def _trusted_bootstrap_at_paths(
         operational_path=resolved_operational,
         installation_id=installation_id,
     )
+
+
+def _acquire_bootstrap_lock(
+    authority_path: Path,
+    operational_path: Path,
+) -> Path:
+    try:
+        common_root = Path(
+            os.path.commonpath(
+                (str(authority_path.parent), str(operational_path.parent))
+            )
+        )
+    except ValueError as error:
+        raise StoreConfigurationError(
+            "control-plane stores must share one local bootstrap root"
+        ) from error
+    try:
+        common_root.mkdir(parents=True, exist_ok=True)
+        lock_path = common_root / ".control-plane-bootstrap.lock"
+        descriptor = os.open(
+            lock_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
+        os.close(descriptor)
+        return lock_path
+    except FileExistsError as error:
+        raise StoreBootstrapInProgressError(
+            "control-plane store bootstrap is already in progress"
+        ) from error
+    except OSError as error:
+        raise StoreBootstrapError(
+            "control-plane bootstrap lock is unavailable"
+        ) from error
+
+
+def _trusted_bootstrap_at_paths(
+    *,
+    authority_path: str | Path,
+    operational_path: str | Path,
+) -> StoreBootstrapReceipt:
+    """Private test seam for provisioning fixed production locations."""
+
+    resolved_authority = Path(authority_path).resolve(strict=False)
+    resolved_operational = Path(operational_path).resolve(strict=False)
+    if _path_identity(resolved_authority) == _path_identity(resolved_operational):
+        raise StoreConfigurationError(
+            "authority and operational stores must use different SQLite files"
+        )
+    _require_unprovisioned(resolved_authority, resolved_operational)
+    lock_path = _acquire_bootstrap_lock(
+        resolved_authority,
+        resolved_operational,
+    )
+    try:
+        _require_unprovisioned(resolved_authority, resolved_operational)
+        return _provision_store_pair_under_lock(
+            resolved_authority,
+            resolved_operational,
+        )
+    finally:
+        lock_path.unlink(missing_ok=True)
 
 
 def _trusted_bootstrap() -> StoreBootstrapReceipt:
@@ -837,6 +892,7 @@ __all__ = [
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",
+    "StoreBootstrapInProgressError",
     "StoreBootstrapReceipt",
     "StoreConfigurationError",
     "StoreError",
