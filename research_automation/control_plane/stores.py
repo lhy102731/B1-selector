@@ -1031,6 +1031,40 @@ class AuthorityReader:
             connection: sqlite3.Connection,
         ) -> ExecutionLeaseAuthorityBinding:
             row = _AuthorityStore._require_task_lease(connection, lease)
+            try:
+                task_spec_payload = json.loads(
+                    str(row["task_spec_payload_json"])
+                )
+                canonical_task_spec = _canonical_task_spec(task_spec_payload)
+            except (TaskTicketError, TypeError, ValueError, json.JSONDecodeError) as error:
+                raise TaskTicketError(
+                    "stored task spec payload is invalid"
+                ) from error
+            if canonical_task_spec != str(row["task_spec_payload_json"]):
+                raise TaskTicketError("stored task spec payload is not canonical")
+            if not isinstance(task_spec_payload, Mapping):
+                raise TaskTicketError("stored task spec payload is invalid")
+            if any(
+                task_spec_payload[field_name] != row[row_field]
+                for field_name, row_field in (
+                    ("task_id", "task_id"),
+                    ("idempotency_key", "idempotency_key"),
+                    ("task_spec_ref", "task_spec_ref"),
+                    ("task_spec_sha256", "task_spec_sha256"),
+                )
+            ):
+                raise TaskTicketError("stored task spec binding is inconsistent")
+            expected_request_sha256 = hashlib.sha256(
+                b"control_plane.task_spec_binding.v2\0"
+                + canonical_task_spec.encode("utf-8")
+                + b"\0"
+                + str(row["allowed_effects_json"]).encode("utf-8")
+            ).hexdigest()
+            if not hmac.compare_digest(
+                expected_request_sha256,
+                str(row["request_sha256"]),
+            ):
+                raise TaskTicketError("stored task spec request binding is invalid")
             return ExecutionLeaseAuthorityBinding(
                 lease_id=lease.lease_id,
                 ticket_id=lease.ticket_id,
