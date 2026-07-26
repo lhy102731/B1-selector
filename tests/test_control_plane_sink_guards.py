@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import unittest
 from collections.abc import Iterator
@@ -11,7 +12,12 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
-from research_automation.control_plane.contracts import Actor, Phase, SideEffect
+from research_automation.control_plane.contracts import (
+    Actor,
+    Phase,
+    SideEffect,
+    canonical_json,
+)
 from research_automation.control_plane.stores import (
     AuthorityIdentity,
     AuthorityReader,
@@ -32,7 +38,9 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
     @contextmanager
     def _live_lease(
         self,
-    ) -> Iterator[tuple[Path, dict[str, object], object, object]]:
+        *,
+        with_intent: bool = False,
+    ) -> Iterator[tuple[object, ...]]:
         now = datetime(2026, 7, 26, 10, 0, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-sink-guard")
         identity = AuthorityIdentity(
@@ -68,6 +76,58 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
 
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
+            intent_info: dict[str, object] | None = None
+            if with_intent:
+                resource_root = root / "allowed"
+                resource_root.mkdir(parents=True)
+                runner_path = root / "research_automation" / "control_plane" / "sink_guard.py"
+                runner_path.parent.mkdir(parents=True, exist_ok=True)
+                runner_bytes = b"# authorized sink runner fixture\n"
+                runner_path.write_bytes(runner_bytes)
+                runner_sha256 = hashlib.sha256(runner_bytes).hexdigest()
+                intent_payload: dict[str, object] = {
+                    "schema_version": "control_plane.execution_intent.v1",
+                    "intent_id": "intent-subprocess-001",
+                    "plan_version": "V3.4.2-P0R2",
+                    "phase": "P0",
+                    "attempt_id": "p0r2-attempt-001",
+                    "task_id": task_spec["task_id"],
+                    "identity_binding": {
+                        "plan_hash": identity.plan_hash,
+                        "scope_hash": identity.scope_hash,
+                        "instruction_policy_hash": identity.instruction_policy_hash,
+                    },
+                    "entry_id": "callable:test:subprocess",
+                    "operation": "SUBPROCESS",
+                    "effect": SideEffect.START_SUBPROCESS.value,
+                    "argv": ["python", "-V"],
+                    "cwd": str(resource_root),
+                    "runner": {
+                        "module": "research_automation.control_plane.sink_guard",
+                        "callable_name": "AuthorizedSubprocess.run",
+                        "source_ref": "research_automation/control_plane/sink_guard.py",
+                        "source_sha256": runner_sha256,
+                    },
+                    "resource_roots": [str(resource_root)],
+                    "resource_paths": [str(resource_root)],
+                }
+                intent_payload["intent_payload_sha256"] = hashlib.sha256(
+                    canonical_json(intent_payload).encode("utf-8")
+                ).hexdigest()
+                intent_ref = "research_state/control_plane/p0r2/intents/intent.json"
+                intent_path = root / intent_ref
+                intent_path.parent.mkdir(parents=True, exist_ok=True)
+                intent_bytes = canonical_json(intent_payload).encode("utf-8")
+                intent_path.write_bytes(intent_bytes)
+                task_spec["input_evidence_refs"][0]["evidence_sha256"] = (
+                    hashlib.sha256(intent_bytes).hexdigest()
+                )
+                intent_info = {
+                    "intent_ref": intent_ref,
+                    "resource_root": str(resource_root),
+                    "runner_source_ref": "research_automation/control_plane/sink_guard.py",
+                    "runner_source_sha256": runner_sha256,
+                }
             with patch.multiple(
                 stores_module,
                 _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
@@ -106,7 +166,10 @@ class ExecutionLeaseBindingTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.START_SUBPROCESS,),
                 )
                 lease = authority._begin_task(ticket)
-                yield root, task_spec, ticket, lease
+                if intent_info is None:
+                    yield root, task_spec, ticket, lease
+                else:
+                    yield root, task_spec, ticket, lease, intent_info
 
     def test_reader_verifies_live_lease_and_returns_frozen_task_spec(self) -> None:
         with self._live_lease() as (_, task_spec, ticket, lease):
@@ -174,6 +237,144 @@ class SubprocessSinkTests(unittest.TestCase):
 
         with self.assertRaises(ExecutionAuthorizationError):
             sink.run(None, invocation)
+
+        self.assertEqual(calls, [])
+
+    def test_valid_intent_allows_runner_only_after_lease_validation(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        calls: list[tuple[object, ...]] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return "completed"
+
+        with lease_tests._live_lease(with_intent=True) as (
+            root,
+            _,
+            _,
+            lease,
+            intent_info,
+        ):
+            self.assertIsInstance(intent_info, dict)
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:subprocess",
+                effect=SideEffect.START_SUBPROCESS,
+                operation="SUBPROCESS",
+                argv=("python", "-V"),
+                cwd=str(intent_info["resource_root"]),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedSubprocess.run",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(intent_info["resource_root"]),),
+            )
+            sink = AuthorizedSubprocess(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            result = sink.run(lease, invocation)
+
+        self.assertEqual(result, "completed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][0], ["python", "-V"])
+
+    def test_intent_byte_tampering_is_rejected_before_runner(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        calls: list[tuple[object, ...]] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return "must-not-run"
+
+        with lease_tests._live_lease(with_intent=True) as (
+            root,
+            _,
+            _,
+            lease,
+            intent_info,
+        ):
+            intent_path = root / str(intent_info["intent_ref"])
+            payload = json.loads(intent_path.read_text(encoding="utf-8"))
+            payload["argv"] = ["python", "-c", "forged"]
+            payload["intent_payload_sha256"] = hashlib.sha256(
+                canonical_json(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key != "intent_payload_sha256"
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+            intent_path.write_bytes(canonical_json(payload).encode("utf-8"))
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:subprocess",
+                effect=SideEffect.START_SUBPROCESS,
+                operation="SUBPROCESS",
+                argv=("python", "-V"),
+                cwd=str(intent_info["resource_root"]),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedSubprocess.run",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(intent_info["resource_root"]),),
+            )
+            sink = AuthorizedSubprocess(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            with self.assertRaises(ExecutionAuthorizationError):
+                sink.run(lease, invocation)
+
+        self.assertEqual(calls, [])
+
+    def test_resource_escape_is_rejected_before_runner(self) -> None:
+        lease_tests = ExecutionLeaseBindingTests()
+        calls: list[tuple[object, ...]] = []
+
+        def runner(*args: object, **kwargs: object) -> object:
+            calls.append((args, kwargs))
+            return "must-not-run"
+
+        with lease_tests._live_lease(with_intent=True) as (
+            root,
+            _,
+            _,
+            lease,
+            intent_info,
+        ):
+            invocation = ExecutionInvocation(
+                intent_ref=str(intent_info["intent_ref"]),
+                entry_id="callable:test:subprocess",
+                effect=SideEffect.START_SUBPROCESS,
+                operation="SUBPROCESS",
+                argv=("python", "-V"),
+                cwd=str(intent_info["resource_root"]),
+                runner=RunnerIdentity(
+                    module="research_automation.control_plane.sink_guard",
+                    callable_name="AuthorizedSubprocess.run",
+                    source_ref=str(intent_info["runner_source_ref"]),
+                    source_sha256=str(intent_info["runner_source_sha256"]),
+                ),
+                resource_paths=(str(root.parent),),
+            )
+            sink = AuthorizedSubprocess(
+                authority_reader=AuthorityReader(),
+                repository_root=root,
+                runner=runner,
+            )
+
+            with self.assertRaises(ExecutionAuthorizationError):
+                sink.run(lease, invocation)
 
         self.assertEqual(calls, [])
 
