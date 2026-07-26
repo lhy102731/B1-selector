@@ -151,6 +151,32 @@ _BASELINE_TOP_LEVEL_FIELDS = frozenset(
     }
 )
 _FILE_STATE_FIELDS = frozenset({"sha256", "bytes"})
+_IDENTITY_FIELDS = frozenset(
+    {"plan_hash", "scope_hash", "instruction_policy_hash"}
+)
+_FREEZE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "files",
+        "file_count",
+        "freeze_payload_sha256",
+    }
+)
+_FREEZE_FILE_FIELDS = frozenset({"path", "sha256", "bytes"})
+_FORBIDDEN_FREEZE_ROOTS = frozenset(
+    {
+        ".git",
+        "archive",
+        "artifacts",
+        "data",
+        "research_state",
+        "tmp",
+    }
+)
 _BASELINE_HASH_ALGORITHM = (
     "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; "
     "semantic array order preserved; compact separators)"
@@ -278,9 +304,117 @@ def validate_implementation_baseline(
     return payload
 
 
+def _validate_identity(
+    value: object,
+    *,
+    expected: Mapping[str, str],
+    field_name: str = "identity_binding",
+) -> dict[str, str]:
+    identity = _exact_mapping(value, _IDENTITY_FIELDS, field_name)
+    result = {
+        key: _sha256(identity[key], f"{field_name}.{key}")
+        for key in sorted(_IDENTITY_FIELDS)
+    }
+    if result != dict(expected):
+        raise ArtifactSemanticError(f"{field_name} does not match gate identity")
+    return result
+
+
+def _freeze_path(value: object, field_name: str) -> str:
+    path = _repo_path(value, field_name)
+    first = path.split("/", 1)[0].casefold()
+    if first in _FORBIDDEN_FREEZE_ROOTS or path.casefold().startswith(
+        "research_automation/_output/"
+    ):
+        raise ArtifactSemanticError(f"{field_name} is outside the freeze scope")
+    return path
+
+
+def validate_code_freeze_manifest(
+    raw: bytes,
+    *,
+    expected_plan_version: str,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_identity: Mapping[str, str],
+    repository_root: str | Path | None = None,
+) -> dict[str, object]:
+    """Validate a source/test code-freeze manifest and current file bytes."""
+    payload = parse_strict_json(raw, artifact_name="code_freeze_manifest")
+    if set(payload) != _FREEZE_TOP_LEVEL_FIELDS:
+        raise ArtifactSemanticError(
+            "code_freeze_manifest has an invalid top-level contract"
+        )
+    if payload["schema_version"] != "control_plane.code_freeze_manifest.v1":
+        raise ArtifactSemanticError("unsupported code-freeze manifest schema")
+    if payload["plan_version"] != expected_plan_version:
+        raise ArtifactSemanticError("code-freeze plan identity mismatch")
+    if payload["phase"] != expected_phase:
+        raise ArtifactSemanticError("code-freeze phase mismatch")
+    if payload["attempt_id"] != expected_attempt_id:
+        raise ArtifactSemanticError("code-freeze attempt mismatch")
+    _validate_identity(payload["identity_binding"], expected=expected_identity)
+    files = payload["files"]
+    if not isinstance(files, list):
+        raise ArtifactSemanticError("code-freeze files must be a list")
+    _exact_nonnegative_int(payload["file_count"], "code-freeze file_count")
+    if payload["file_count"] != len(files):
+        raise ArtifactSemanticError("code-freeze file_count does not match files")
+    seen_paths: set[str] = set()
+    previous_path: str | None = None
+    normalized_files: list[dict[str, object]] = []
+    for index, item in enumerate(files):
+        entry = _exact_mapping(item, _FREEZE_FILE_FIELDS, f"code-freeze files[{index}]")
+        path = _freeze_path(entry["path"], f"code-freeze files[{index}].path")
+        if path in seen_paths or (previous_path is not None and path < previous_path):
+            raise ArtifactSemanticError("code-freeze file paths must be unique and sorted")
+        previous_path = path
+        seen_paths.add(path)
+        entry_sha = _sha256(entry["sha256"], f"code-freeze files[{index}].sha256")
+        entry_bytes = _exact_nonnegative_int(
+            entry["bytes"],
+            f"code-freeze files[{index}].bytes",
+        )
+        normalized_files.append(
+            {"path": path, "sha256": entry_sha, "bytes": entry_bytes}
+        )
+        if repository_root is not None:
+            try:
+                root = Path(repository_root).resolve(strict=True)
+                candidate = root.joinpath(*path.split("/"))
+                if candidate.is_symlink():
+                    raise ArtifactSemanticError(
+                        f"code-freeze file is a reparse/symlink: {path}"
+                    )
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(root)
+                if not resolved.is_file():
+                    raise ArtifactSemanticError(
+                        f"code-freeze file is not a regular file: {path}"
+                    )
+                current = resolved.read_bytes()
+            except ArtifactSemanticError:
+                raise
+            except (OSError, ValueError) as error:
+                raise ArtifactSemanticError(
+                    f"code-freeze file is unavailable: {path}"
+                ) from error
+            if len(current) != entry_bytes or hashlib.sha256(current).hexdigest() != entry_sha:
+                raise ArtifactSemanticError(
+                    f"code-freeze file changed after freeze: {path}"
+                )
+    payload_without_hash = dict(payload)
+    payload_without_hash["files"] = normalized_files
+    payload_without_hash.pop("freeze_payload_sha256", None)
+    if payload["freeze_payload_sha256"] != canonical_sha256(payload_without_hash):
+        raise ArtifactSemanticError("code-freeze payload hash mismatch")
+    return payload
+
+
 __all__ = [
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
     "parse_strict_json",
+    "validate_code_freeze_manifest",
     "validate_implementation_baseline",
 ]
