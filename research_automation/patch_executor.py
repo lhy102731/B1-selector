@@ -110,55 +110,13 @@ class PatchValidator:
 # ApplyPatch — applies unified diff to workspace copy
 # ============================================================
 def _apply_patch_to_workspace(diff_text: str, workspace: Path) -> dict:
-    """Apply a unified diff to files in the workspace.
-
-    Tries ``git apply`` first (robust context matching for LLM-generated diffs),
-    then falls back to custom hunk parser if git is unavailable.
-    Returns {ok, files, before_hash, after_hash}.
-    """
-    files = _parse_diff_files(diff_text)
-    results = {}
-    _GIT_APPLY_OK = False
-
-    # Option A: git apply (handles line-offset diffs well)
-    try:
-        _pf = (workspace / "_git_temp.diff")
-        _pf.write_text(diff_text, encoding="utf-8")
-        _proc = subprocess.run(
-            ["git", "apply", "--unsafe-path", "--directory", str(workspace),
-             str(workspace / "_git_temp.diff")],
-            capture_output=True, text=True, timeout=30, cwd=str(workspace),
-        )
-        _pf.unlink(missing_ok=True)
-        if _proc.returncode == 0:
-            _GIT_APPLY_OK = True
-    except Exception:
-        pass
-
-    if not _GIT_APPLY_OK:
-        # Option B: custom hunk parser (fallback)
-        for rel_path in files:
-            target = workspace / rel_path
-            assert_safe_path(target)
-            if not target.exists():
-                return {"ok": False, "files": list(files),
-                        "error": f"target not found in workspace: {rel_path}"}
-            before_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-            original = target.read_text(encoding="utf-8").splitlines(keepends=True)
-            patched = _apply_hunks(original, diff_text, rel_path)
-            target.write_text("".join(patched), encoding="utf-8")
-            after_hash = hashlib.sha256(target.read_bytes()).hexdigest()
-            results[rel_path] = {"before_hash": before_hash, "after_hash": after_hash,
-                                 "changed": before_hash != after_hash}
-    else:
-        for rel_path in files:
-            target = workspace / rel_path
-            if target.exists():
-                results[rel_path] = {"changed": True, "method": "git_apply"}
-
-    return {"ok": True, "files": list(files), "results": results}
-
-    return {"ok": True, "files": list(files), "results": results}
+    """Compatibility shim; unbound patch application is deliberately disabled."""
+    return {
+        "ok": False,
+        "files": [],
+        "results": {},
+        "error": "authorized patch sink required; legacy helper is disabled",
+    }
 
 
 def _apply_hunks(original_lines: list[str], diff_text: str, target_file: str) -> list[str]:

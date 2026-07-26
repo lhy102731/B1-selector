@@ -10,7 +10,7 @@ from research_automation.task_queue import ExperimentTask, QueuePersistenceError
 from research_automation.autonomous_runner import AutonomousRunnerV1, _kbase_writeback_enabled
 from research_automation.experiment import StandardMetrics
 from research_automation.experiment_runner import RealBacktestExecutor
-from research_automation.patch_executor import ClaudePatchExecutor
+from research_automation.patch_executor import ClaudePatchExecutor, _apply_patch_to_workspace
 from research_automation.safety import UnsafeWriteError, assert_safe_path
 from research_automation.control_plane.entry_guard import AuthorizationError
 
@@ -143,6 +143,26 @@ class BaselineFailFastTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("execution lease", (result.error or "").lower())
             run.assert_not_called()
+
+    def test_legacy_patch_helper_fails_closed_without_authorized_sink(self):
+        with tempfile.TemporaryDirectory() as td:
+            workspace = Path(td) / "workspace"
+            target = workspace / "strategy" / "candidate.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("before\n", encoding="utf-8")
+            diff = (
+                "--- a/strategy/candidate.py\n"
+                "+++ b/strategy/candidate.py\n"
+                "@@ -1 +1 @@\n"
+                "-before\n"
+                "+after\n"
+            )
+
+            result = _apply_patch_to_workspace(diff, workspace)
+
+            self.assertFalse(result["ok"])
+            self.assertIn("authorized", result["error"].lower())
+            self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
 
 
 class OutputOwnershipTests(unittest.TestCase):
