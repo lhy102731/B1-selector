@@ -136,7 +136,12 @@ class _SqliteUnitOfWork:
         except sqlite3.DatabaseError as error:
             raise _translate_sqlite_error(error, read_only=read_only) from error
 
-    def _validate_schema(self, connection: sqlite3.Connection) -> None:
+    def _validate_schema(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        read_only: bool,
+    ) -> None:
         try:
             user_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
@@ -148,7 +153,7 @@ class _SqliteUnitOfWork:
                 )
             }
         except sqlite3.DatabaseError as error:
-            raise _translate_sqlite_error(error, read_only=True) from error
+            raise _translate_sqlite_error(error, read_only=read_only) from error
         if user_version > self._spec.schema_version:
             raise SqliteFutureSchemaError("future store schema is not supported")
         if (
@@ -164,7 +169,7 @@ class _SqliteUnitOfWork:
     ) -> _T:
         connection = self._connect(read_only=True)
         try:
-            self._validate_schema(connection)
+            self._validate_schema(connection, read_only=True)
             return operation(connection)
         except SqliteUnitOfWorkError:
             raise
@@ -172,6 +177,42 @@ class _SqliteUnitOfWork:
             raise _translate_sqlite_error(error, read_only=True) from error
         finally:
             connection.close()
+
+    def _write(
+        self,
+        operation: Callable[[sqlite3.Connection], _T],
+    ) -> _T:
+        connection = self._connect(read_only=False)
+        transaction_started = False
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            transaction_started = True
+            self._validate_schema(connection, read_only=False)
+            result = operation(connection)
+            connection.commit()
+            transaction_started = False
+            return result
+        except SqliteUnitOfWorkError:
+            if transaction_started:
+                self._rollback_without_masking(connection)
+            raise
+        except sqlite3.DatabaseError as error:
+            if transaction_started:
+                self._rollback_without_masking(connection)
+            raise _translate_sqlite_error(error, read_only=False) from error
+        except Exception:
+            if transaction_started:
+                self._rollback_without_masking(connection)
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _rollback_without_masking(connection: sqlite3.Connection) -> None:
+        try:
+            connection.rollback()
+        except sqlite3.DatabaseError:
+            pass
 
 
 __all__ = [
