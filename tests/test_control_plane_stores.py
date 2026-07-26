@@ -1166,7 +1166,19 @@ class TrustedBootstrapTests(unittest.TestCase):
                     lease.allowed_side_effects,
                     (SideEffect.WRITE_CONTROL_PLANE,),
                 )
-                now[0] += timedelta(minutes=1)
+                now[0] -= timedelta(minutes=1)
+                with self.assertRaises(stores_module.TaskTicketStateError):
+                    authority._finish_task(
+                        lease,
+                        outcome="SUCCEEDED",
+                        evidence_ref="evidence/task-finish.json",
+                    )
+                self.assertEqual(
+                    AuthorityReader().task_ticket_state(ticket.ticket_id),
+                    "IN_PROGRESS",
+                )
+
+                now[0] += timedelta(minutes=2)
                 snapshot = authority._finish_task(
                     lease,
                     outcome="SUCCEEDED",

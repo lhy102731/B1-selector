@@ -1861,12 +1861,13 @@ class _AuthorityStore:
         if terminal_state not in {"SUCCEEDED", "FAILED", "IN_DOUBT"}:
             raise TaskTicketError("task outcome is invalid")
         evidence = _require_nonempty(evidence_ref, "evidence_ref")
-        now = self._now()
         lease_secret_sha256 = hashlib.sha256(
             lease._bearer_secret._reveal_for_authority_check().encode("utf-8")
         ).hexdigest()
 
-        def finish(connection: sqlite3.Connection) -> datetime:
+        def finish(
+            connection: sqlite3.Connection,
+        ) -> tuple[datetime, datetime]:
             row = connection.execute(
                 """
                 SELECT ticket.*,
@@ -1923,13 +1924,24 @@ class _AuthorityStore:
                 lease_secret_sha256,
             ):
                 raise TaskTicketError("task execution lease is invalid")
+            started_at = _parse_utc_text(str(row["started_at"]))
+            completed_at = self._now()
+            if completed_at < started_at:
+                raise TaskTicketStateError(
+                    "task completion time precedes its start"
+                )
             update = connection.execute(
                 """
                 UPDATE task_tickets_v2
                 SET state = ?, completed_at = ?, evidence_ref = ?
                 WHERE ticket_id = ? AND state = 'IN_PROGRESS'
                 """,
-                (terminal_state, _utc_text(now), evidence, lease.ticket_id),
+                (
+                    terminal_state,
+                    _utc_text(completed_at),
+                    evidence,
+                    lease.ticket_id,
+                ),
             )
             if update.rowcount != 1:
                 raise TaskTicketStateError("task finish lost a concurrent race")
@@ -1943,19 +1955,21 @@ class _AuthorityStore:
                     "attempt_id": lease.attempt_id,
                     "state": terminal_state,
                     "evidence_ref": evidence,
-                    "completed_at": _utc_text(now),
+                    "completed_at": _utc_text(completed_at),
                 },
-                created_at=now,
+                created_at=completed_at,
             )
-            return _parse_utc_text(str(row["started_at"]))
+            return started_at, completed_at
 
-        started_at = _SqliteUnitOfWork(_authority_spec())._write(finish)
+        started_at, completed_at = _SqliteUnitOfWork(_authority_spec())._write(
+            finish
+        )
         return TaskTicketSnapshot(
             ticket_id=lease.ticket_id,
             state=terminal_state,
             evidence_ref=evidence,
             started_at=started_at,
-            completed_at=now,
+            completed_at=completed_at,
         )
 
     def claim_authorization(
