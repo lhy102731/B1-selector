@@ -25,6 +25,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
             "task_id": "P0R2-T1-TASK-REPORT-TRACER",
             "attempt_id": "p0r2-attempt-001",
             "authorization_ref": "p0r2-natural-20260726-001",
+            "ticket_id": "ticket-p0r2-t1-task-report-001",
             "identity_binding": {
                 "plan_hash": "1" * 64,
                 "scope_hash": "2" * 64,
@@ -189,6 +190,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -211,6 +213,14 @@ class TaskReportV2TracerTests(unittest.TestCase):
         with self.assertRaisesRegex(TaskReportBuildError, "computed fields"):
             build_task_report_v2(caller_selected)
 
+        caller_selected = dict(draft)
+        caller_selected["unexpected_changes"] = []
+        with self.assertRaisesRegex(
+            TaskReportBuildError,
+            "computed fields: unexpected_changes",
+        ):
+            build_task_report_v2(caller_selected)
+
         report = build_task_report_v2(draft)
 
         self.assertEqual(report["outcome"], "BLOCKED")
@@ -230,6 +240,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -259,10 +270,10 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
-        draft["unexpected_changes"] = ["strategy/unified_b1_strategy.py"]
         changed_files = draft["changed_files"]
         self.assertIsInstance(changed_files, list)
         changed_file = changed_files[0]
@@ -288,6 +299,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -314,6 +326,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -718,6 +731,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -751,6 +765,7 @@ class TaskReportV2TracerTests(unittest.TestCase):
                 "schema_version",
                 "outcome",
                 "reason_codes",
+                "unexpected_changes",
                 "report_payload_sha256",
             }
         }
@@ -1596,6 +1611,94 @@ class TaskReportV2TracerTests(unittest.TestCase):
         report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
 
         validate_task_report_v2(report)
+
+    def test_task_report_carries_ticket_identity_for_authority_lookup(self) -> None:
+        report = self._complete_report()
+        report["ticket_id"] = "ticket-p0r2-t1-task-report-001"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        validate_task_report_v2(report)
+
+    def test_builder_translates_malformed_drafts_to_build_errors(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "unexpected_changes",
+                "report_payload_sha256",
+            }
+        }
+        draft["external_invocations"] = {}
+
+        with self.assertRaisesRegex(
+            TaskReportBuildError,
+            "external_invocations must be a list",
+        ):
+            build_task_report_v2(draft)
+
+    def test_builder_cannot_emit_a_report_larger_than_the_parser_limit(self) -> None:
+        complete = self._complete_report()
+        draft = {
+            key: copy.deepcopy(value)
+            for key, value in complete.items()
+            if key
+            not in {
+                "schema_version",
+                "outcome",
+                "reason_codes",
+                "unexpected_changes",
+                "report_payload_sha256",
+            }
+        }
+        draft["objective"] = "x" * MAX_TASK_REPORT_V2_BYTES
+
+        with self.assertRaisesRegex(
+            TaskReportBuildError,
+            "task report exceeds 65536 byte limit",
+        ):
+            build_task_report_v2(draft)
+
+    def test_direct_mapping_validator_rejects_cycles_without_recursing(self) -> None:
+        report = self._complete_report()
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        report["dependencies"] = cyclic
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "task report must not contain cyclic containers",
+        ):
+            validate_task_report_v2(report)
+
+    def test_direct_mapping_uses_the_same_depth_limit_as_byte_parser(self) -> None:
+        report = self._complete_report()
+        nested: object = None
+        for _ in range(MAX_TASK_REPORT_V2_DEPTH - 1):
+            nested = [nested]
+        report["dependencies"] = nested
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "task report exceeds 64 level nesting limit",
+        ):
+            validate_task_report_v2(report)
+
+    def test_direct_mapping_rejects_non_string_keys_with_a_typed_error(self) -> None:
+        report = self._complete_report()
+        side_effect_summary = report["side_effect_summary"]
+        self.assertIsInstance(side_effect_summary, dict)
+        side_effect_summary[1] = "invalid JSON key"
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "task report mappings require string keys",
+        ):
+            validate_task_report_v2(report)
 
 
 if __name__ == "__main__":

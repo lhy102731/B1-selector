@@ -28,7 +28,13 @@ _TASK_OUTCOMES = frozenset({"PASS", "FAIL", "BLOCKED", "IN_DOUBT"})
 _TICKET_STATES = frozenset({"SUCCEEDED", "FAILED", "IN_DOUBT"})
 _PHASES = frozenset(phase.value for phase in Phase)
 _COMPUTED_FIELDS = frozenset(
-    {"schema_version", "outcome", "reason_codes", "report_payload_sha256"}
+    {
+        "schema_version",
+        "unexpected_changes",
+        "outcome",
+        "reason_codes",
+        "report_payload_sha256",
+    }
 )
 _REQUIREMENT_FIELDS = frozenset(
     {
@@ -74,6 +80,7 @@ _TASK_REPORT_V2_FIELDS = frozenset(
         "task_id",
         "attempt_id",
         "authorization_ref",
+        "ticket_id",
         "identity_binding",
         "objective",
         "dependencies",
@@ -169,21 +176,57 @@ def _require_aware_timestamp(value: object, field_name: str) -> datetime:
 
 
 def _reject_float_values(value: object) -> None:
-    stack: list[tuple[object, str]] = [(value, "")]
+    stack: list[tuple[object, str, int, bool]] = [(value, "", 1, False)]
+    active_containers: set[int] = set()
     while stack:
-        current, field_name = stack.pop()
+        current, field_name, depth, exiting = stack.pop()
+        if exiting:
+            active_containers.remove(id(current))
+            continue
+        if depth > MAX_TASK_REPORT_V2_DEPTH:
+            raise TaskReportValidationError(
+                f"task report exceeds {MAX_TASK_REPORT_V2_DEPTH} level nesting limit"
+            )
         if isinstance(current, float):
             label = field_name or "task report"
             raise TaskReportValidationError(
                 f"{label} must not be a floating-point value"
             )
+        if not isinstance(current, (Mapping, list, tuple)):
+            continue
+        container_id = id(current)
+        if container_id in active_containers:
+            raise TaskReportValidationError(
+                "task report must not contain cyclic containers"
+            )
+        active_containers.add(container_id)
+        stack.append((current, field_name, depth, True))
         if isinstance(current, Mapping):
             for key, item in current.items():
-                child_name = str(key) if not field_name else f"{field_name}.{key}"
-                stack.append((item, child_name))
-        elif isinstance(current, (list, tuple)):
+                if not isinstance(key, str):
+                    raise TaskReportValidationError(
+                        "task report mappings require string keys"
+                    )
+                child_name = key if not field_name else f"{field_name}.{key}"
+                stack.append((item, child_name, depth + 1, False))
+        else:
             for index, item in enumerate(current):
-                stack.append((item, f"{field_name}[{index}]"))
+                stack.append(
+                    (item, f"{field_name}[{index}]", depth + 1, False)
+                )
+
+
+def _require_bounded_canonical_size(report: Mapping[str, object]) -> None:
+    try:
+        canonical_bytes = canonical_json(report).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as error:
+        raise TaskReportValidationError(
+            "task report must be canonical JSON data"
+        ) from error
+    if len(canonical_bytes) > MAX_TASK_REPORT_V2_BYTES:
+        raise TaskReportValidationError(
+            f"task report exceeds {MAX_TASK_REPORT_V2_BYTES} byte limit"
+        )
 
 
 def _is_repo_relative_posix_file_path(value: object) -> bool:
@@ -817,13 +860,19 @@ def build_task_report_v2(draft: Mapping[str, object]) -> dict[str, object]:
     report = dict(draft)
     report["schema_version"] = TASK_REPORT_V2
     try:
+        report["unexpected_changes"] = _derive_unexpected_changes(report)
         outcome, reason_codes = _derive_outcome(report)
-    except TaskReportValidationError as error:
+        report["outcome"] = outcome
+        report["reason_codes"] = reason_codes
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+        validate_task_report_v2(report)
+    except (
+        TaskReportValidationError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ) as error:
         raise TaskReportBuildError(str(error)) from error
-    report["outcome"] = outcome
-    report["reason_codes"] = reason_codes
-    report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
-    validate_task_report_v2(report)
     return report
 
 
@@ -938,6 +987,7 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
         "task_id",
         "attempt_id",
         "authorization_ref",
+        "ticket_id",
         "objective",
         "idempotency_key",
     ):
@@ -962,6 +1012,8 @@ def validate_task_report_v2(report: Mapping[str, object]) -> None:
         raise TaskReportValidationError(
             "reason_codes do not match mechanical derivation"
         )
+
+    _require_bounded_canonical_size(report)
 
     claimed_hash = _require_sha256(
         report.get("report_payload_sha256"),
