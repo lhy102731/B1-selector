@@ -1138,6 +1138,11 @@ class TrustedBootstrapTests(unittest.TestCase):
                     actor=actor,
                     identity=identity,
                 )
+                recovered_grant = authority._recover_claimed_grant(
+                    envelope.authorization_ref
+                )
+                self.assertEqual(recovered_grant, grant)
+                grant = recovered_grant
 
                 with self.assertRaises(stores_module.TaskTicketError):
                     authority._issue_task_ticket(

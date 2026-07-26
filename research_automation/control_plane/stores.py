@@ -1224,6 +1224,36 @@ def _authorization_secret_payload(
     }
 
 
+def _grant_secret_payload(
+    *,
+    grant_id: str,
+    authorization_ref: str,
+    phase: Phase,
+    attempt_id: str,
+    actor: Actor,
+    identity: AuthorityIdentity,
+    allowed_side_effects: tuple[SideEffect, ...],
+) -> dict[str, object]:
+    return {
+        "grant_id": _require_nonempty(grant_id, "grant_id"),
+        "authorization_ref": _require_nonempty(
+            authorization_ref,
+            "authorization_ref",
+        ),
+        "phase": phase.value,
+        "attempt_id": _require_nonempty(attempt_id, "attempt_id"),
+        "actor_id": actor.actor_id,
+        "actor_type": actor.actor_type,
+        "invocation_id": actor.invocation_id,
+        "plan_hash": identity.plan_hash,
+        "scope_hash": identity.scope_hash,
+        "instruction_policy_hash": identity.instruction_policy_hash,
+        "allowed_side_effects": [
+            effect.value for effect in allowed_side_effects
+        ],
+    }
+
+
 def _require_independent_receipt_issuer(
     receipt_kind: str,
     issuer: Actor,
@@ -1685,6 +1715,86 @@ class _AuthorityStore:
             expires_at=expires_at,
             allowed_side_effects=allowed_side_effects,
             _bearer_secret=_BearerSecret(bearer_secret),
+        )
+
+    def _recover_claimed_grant(
+        self,
+        authorization_ref: str,
+    ) -> AuthorityGrant:
+        reference = _require_nonempty(
+            authorization_ref,
+            "authorization_ref",
+        )
+
+        def read(connection: sqlite3.Connection) -> sqlite3.Row | None:
+            return connection.execute(
+                """
+                SELECT grant.*, authorization.state AS authorization_state
+                FROM phase_grants_v2 AS grant
+                JOIN authorizations_v2 AS authorization
+                  ON authorization.authorization_ref = grant.authorization_ref
+                WHERE grant.authorization_ref = ?
+                """,
+                (reference,),
+            ).fetchone()
+
+        row = _SqliteUnitOfWork(_authority_spec())._read(read)
+        if (
+            row is None
+            or row["authorization_state"] != "CLAIMED"
+            or row["state"] != "ACTIVE"
+        ):
+            raise AuthorizationRejectedError(
+                "active claimed authority grant is unavailable"
+            )
+        try:
+            allowed_side_effects = _effects_from_json(
+                row["allowed_effects_json"]
+            )
+            phase = Phase(str(row["phase"]))
+            actor = Actor(
+                actor_id=str(row["actor_id"]),
+                actor_type=str(row["actor_type"]),
+                invocation_id=str(row["invocation_id"]),
+            )
+            identity = AuthorityIdentity(
+                plan_hash=str(row["plan_hash"]),
+                scope_hash=str(row["scope_hash"]),
+                instruction_policy_hash=str(row["instruction_policy_hash"]),
+            )
+            grant_secret = _derive_root_capability_secret(
+                self._root_secret,
+                domain=b"control_plane.authority_grant.v2",
+                payload=_grant_secret_payload(
+                    grant_id=str(row["grant_id"]),
+                    authorization_ref=reference,
+                    phase=phase,
+                    attempt_id=str(row["attempt_id"]),
+                    actor=actor,
+                    identity=identity,
+                    allowed_side_effects=allowed_side_effects,
+                ),
+            )
+        except (TaskTicketError, TypeError, ValueError) as error:
+            raise AuthorizationRejectedError(
+                "stored authority grant is invalid"
+            ) from error
+        if not hmac.compare_digest(
+            str(row["secret_sha256"]),
+            hashlib.sha256(grant_secret.encode("utf-8")).hexdigest(),
+        ):
+            raise AuthorizationRejectedError(
+                "stored authority grant integrity mismatch"
+            )
+        return AuthorityGrant(
+            grant_id=str(row["grant_id"]),
+            authorization_ref=reference,
+            phase=phase,
+            attempt_id=str(row["attempt_id"]),
+            actor=actor,
+            identity=identity,
+            allowed_side_effects=allowed_side_effects,
+            _bearer_secret=_BearerSecret(grant_secret),
         )
 
     @staticmethod
@@ -2363,7 +2473,19 @@ class _AuthorityStore:
         ):
             raise AuthorizationRejectedError("authorization binding is invalid")
         grant_id = f"grant_{secrets.token_hex(16)}"
-        grant_secret = secrets.token_urlsafe(32)
+        grant_secret = _derive_root_capability_secret(
+            self._root_secret,
+            domain=b"control_plane.authority_grant.v2",
+            payload=_grant_secret_payload(
+                grant_id=grant_id,
+                authorization_ref=envelope.authorization_ref,
+                phase=expected_phase,
+                attempt_id=expected_attempt_id,
+                actor=actor,
+                identity=identity,
+                allowed_side_effects=envelope.allowed_side_effects,
+            ),
+        )
         grant_secret_sha256 = hashlib.sha256(
             grant_secret.encode("utf-8")
         ).hexdigest()
