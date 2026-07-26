@@ -558,6 +558,19 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(after_close.active_grant_ids, ())
             self.assertEqual(after_close.pending_outbox_count, 1)
 
+    def test_closer_replays_the_same_gate_idempotently(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            first = fixture.closer.close(fixture.report)
+
+            replay = fixture.closer.close(fixture.report)
+
+            self.assertEqual(replay, first)
+            after_replay = fixture.reader.phase_gate_snapshot(
+                Phase.P0,
+                "p0r2-attempt-001",
+            )
+            self.assertEqual(after_replay.pending_outbox_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

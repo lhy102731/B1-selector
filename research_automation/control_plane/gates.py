@@ -15,6 +15,7 @@ from .stores import (
     AuthorityIdentity,
     AuthorityReader,
     PhaseGateClosure,
+    PhaseGateClosureConflictError,
     TaskReportAuthorityError,
     _AuthorityStore,
 )
@@ -628,7 +629,7 @@ class PhaseGateVerifier:
 class PhaseGateCloser:
     """Re-verify and atomically seal one immutable phase-gate result."""
 
-    __slots__ = ("_authority_store", "_verifier")
+    __slots__ = ("_authority_reader", "_authority_store", "_verifier")
 
     def __init__(
         self,
@@ -639,6 +640,7 @@ class PhaseGateCloser:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         reader = authority_reader or AuthorityReader()
+        self._authority_reader = reader
         self._verifier = PhaseGateVerifier(
             authority_reader=reader,
             repository_root=repository_root,
@@ -649,7 +651,9 @@ class PhaseGateCloser:
         )
 
     def close(self, report: Mapping[str, object]) -> PhaseGateClosure:
-        self._verifier.verify(report)
+        validate_gate_report(report)
+        phase = Phase(str(report["phase"]))
+        attempt_id = str(report["attempt_id"])
         identity_binding = report["identity_binding"]
         if not isinstance(identity_binding, Mapping):
             raise GateAuthorityMismatchError("gate identity is invalid")
@@ -660,18 +664,36 @@ class PhaseGateCloser:
                 identity_binding["instruction_policy_hash"]
             ),
         )
+        gate_report_digest = str(report["gate_report_sha256"])
+        verdict = str(report["verdict"])
+        existing = self._authority_reader.phase_gate_closure(
+            phase,
+            attempt_id,
+        )
+        if existing is not None:
+            if (
+                existing.gate_report_sha256 == gate_report_digest
+                and existing.verdict == verdict
+                and existing.identity == identity
+            ):
+                return existing
+            raise PhaseGateClosureConflictError(
+                "phase attempt already has a different immutable closure"
+            )
+
+        self._verifier.verify(report)
         authority_snapshot = report["authority_snapshot"]
         if not isinstance(authority_snapshot, Mapping):
             raise GateAuthorityMismatchError(
                 "gate authority snapshot is invalid"
             )
         return self._authority_store._close_phase_gate(
-            phase=Phase(str(report["phase"])),
-            attempt_id=str(report["attempt_id"]),
+            phase=phase,
+            attempt_id=attempt_id,
             identity=identity,
             authority_snapshot=authority_snapshot,
-            gate_report_sha256=str(report["gate_report_sha256"]),
-            verdict=str(report["verdict"]),
+            gate_report_sha256=gate_report_digest,
+            verdict=verdict,
         )
 
 

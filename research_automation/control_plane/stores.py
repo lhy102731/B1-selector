@@ -1686,8 +1686,16 @@ class _AuthorityStore:
                 (phase.value, expected_attempt_id),
             ).fetchone()
             if existing is not None:
+                existing_closure = _phase_gate_closure_from_row(existing)
+                if (
+                    existing_closure.gate_report_sha256
+                    == expected_gate_sha256
+                    and existing_closure.verdict == expected_verdict
+                    and existing_closure.identity == identity
+                ):
+                    return existing_closure
                 raise PhaseGateClosureConflictError(
-                    "phase attempt already has an immutable gate closure"
+                    "phase attempt already has a different immutable closure"
                 )
 
             actual_snapshot = _read_phase_gate_authority_snapshot(
