@@ -662,6 +662,49 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn('"pending_outbox_count":0', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_builds_a_gate_candidate_from_hashed_inputs(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            output_path = fixture.root / "built-gate-report.json"
+            args = [
+                "gate",
+                "build",
+                "--phase",
+                "P0",
+                "--attempt-id",
+                "p0r2-attempt-001",
+                "--freeze-manifest",
+                "artifacts/code_freeze_manifest.json",
+                "--inventory",
+                "artifacts/final_inventory.json",
+                "--entry-policy",
+                "artifacts/reviewed_entry_policy.json",
+                "--scheduler-inventory",
+                "artifacts/scheduler_inventory.json",
+                "--task-report-id",
+                "reports/gate.json",
+                "--output",
+                str(output_path),
+            ]
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                args,
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(output_path.is_file())
+            built = parse_gate_report_v1_bytes(output_path.read_bytes())
+            self.assertEqual(built["phase"], "P0")
+            self.assertEqual(built["attempt_id"], "p0r2-attempt-001")
+            self.assertEqual(built["task_reports"][0]["ticket_id"], fixture.ticket_id)
+            self.assertIn('"status":"BUILT"', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             report_path = fixture.root / "gate-report.json"

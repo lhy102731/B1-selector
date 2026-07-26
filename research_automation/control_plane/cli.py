@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Sequence, TextIO
 
 from .contracts import Phase, canonical_json
 from .gates import (
     GateAuthorityMismatchError,
+    GateBuildError,
     GateEvidenceError,
+    PhaseGateBuilder,
     GateValidationError,
     PhaseGateCloser,
     PhaseGateVerifier,
@@ -18,6 +23,10 @@ from .gates import (
 )
 from .sqlite_uow import SqliteUnitOfWorkError
 from .stores import AuthorityReader, StoreError
+from .task_reports import (
+    TaskReportValidationError,
+    parse_task_report_v2_bytes,
+)
 
 
 _MAX_GATE_REPORT_BYTES = 256 * 1024
@@ -35,6 +44,19 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=[phase.value for phase in Phase],
     )
     preflight.add_argument("--attempt-id", required=True)
+    build = gate_commands.add_parser("build")
+    build.add_argument(
+        "--phase",
+        required=True,
+        choices=[phase.value for phase in Phase],
+    )
+    build.add_argument("--attempt-id", required=True)
+    build.add_argument("--freeze-manifest", required=True)
+    build.add_argument("--inventory", required=True)
+    build.add_argument("--entry-policy", required=True)
+    build.add_argument("--scheduler-inventory", required=True)
+    build.add_argument("--task-report-id", required=True)
+    build.add_argument("--output", required=True)
     verify = gate_commands.add_parser("verify")
     verify.add_argument(
         "--phase",
@@ -83,6 +105,163 @@ def _read_repository_file(
     if len(raw) > _MAX_GATE_REPORT_BYTES:
         raise GateEvidenceError("gate report exceeds its byte limit")
     return raw
+
+
+def _repository_reference(path_text: str, repository_root: Path) -> str:
+    root = repository_root.resolve(strict=True)
+    requested = Path(path_text)
+    candidate = requested if requested.is_absolute() else root / requested
+    try:
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise GateEvidenceError(
+            "repository reference is unavailable or outside the repository"
+        ) from error
+    reference = relative.as_posix()
+    if not reference or reference == ".":
+        raise GateEvidenceError("repository reference is invalid")
+    return reference
+
+
+def _write_repository_bytes(
+    path_text: str,
+    repository_root: Path,
+    raw: bytes,
+) -> Path:
+    root = repository_root.resolve(strict=True)
+    requested = Path(path_text)
+    candidate = requested if requested.is_absolute() else root / requested
+    try:
+        resolved = candidate.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, ValueError) as error:
+        raise GateEvidenceError(
+            "output path is outside the repository"
+        ) from error
+    if not resolved.parent.is_dir():
+        raise GateEvidenceError("output directory does not exist")
+    temporary_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=resolved.parent,
+            prefix=f".{resolved.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary_path = stream.name
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, resolved)
+    except OSError as error:
+        if temporary_path is not None:
+            try:
+                Path(temporary_path).unlink()
+            except OSError:
+                pass
+        raise GateEvidenceError("unable to publish gate candidate") from error
+    return resolved
+
+
+def _build_gate_candidate(
+    args: argparse.Namespace,
+    *,
+    repository_root: Path,
+    authority_reader: AuthorityReader,
+    stdout: TextIO,
+) -> int:
+    task_reference = _repository_reference(
+        args.task_report_id,
+        repository_root,
+    )
+    task_bytes = _read_repository_file(args.task_report_id, repository_root)
+    try:
+        task_report = parse_task_report_v2_bytes(task_bytes)
+    except TaskReportValidationError as error:
+        raise GateEvidenceError("TaskReport input is invalid") from error
+    if (
+        task_report["phase"] != args.phase
+        or task_report["attempt_id"] != args.attempt_id
+    ):
+        raise GateAuthorityMismatchError(
+            "TaskReport input does not match the requested gate"
+        )
+
+    artifacts: dict[str, dict[str, str]] = {}
+    for option_name, field_name in (
+        ("freeze_manifest", "code_freeze_manifest"),
+        ("inventory", "final_inventory"),
+        ("entry_policy", "reviewed_entry_policy"),
+        ("scheduler_inventory", "scheduler_inventory"),
+    ):
+        path_text = str(getattr(args, option_name))
+        artifact_bytes = _read_repository_file(path_text, repository_root)
+        artifacts[field_name] = {
+            "ref": _repository_reference(path_text, repository_root),
+            "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        }
+    snapshot = authority_reader.phase_gate_snapshot(
+        Phase(str(args.phase)),
+        args.attempt_id,
+    )
+    identity_binding = task_report["identity_binding"]
+    if not isinstance(identity_binding, dict):
+        raise GateEvidenceError("TaskReport identity binding is invalid")
+    draft: dict[str, object] = {
+        "plan_version": str(task_report["plan_version"]),
+        "phase": args.phase,
+        "attempt_id": args.attempt_id,
+        "identity_binding": dict(identity_binding),
+        "task_reports": [
+            {
+                "report_ref": task_reference,
+                "report_sha256": hashlib.sha256(task_bytes).hexdigest(),
+                "ticket_id": task_report["ticket_id"],
+                "outcome": task_report["outcome"],
+            }
+        ],
+        "implementation_baseline": dict(
+            artifacts["code_freeze_manifest"]
+        ),
+        "code_freeze_manifest": artifacts["code_freeze_manifest"],
+        "final_inventory": artifacts["final_inventory"],
+        "reviewed_entry_policy": artifacts["reviewed_entry_policy"],
+        "scheduler_inventory": {
+            **artifacts["scheduler_inventory"],
+            "status": "UNKNOWN",
+        },
+        "test_receipts": [],
+        "authority_snapshot": snapshot.to_report_dict(),
+        "side_effect_summary": {"observed": [], "unauthorized": []},
+        "file_delta_summary": {
+            "changed_files": [],
+            "unexpected_changes": [],
+        },
+        "unresolved_risks": [],
+    }
+    candidate = PhaseGateBuilder().build(draft)
+    output_path = _write_repository_bytes(
+        args.output,
+        repository_root,
+        canonical_json(candidate).encode("utf-8"),
+    )
+    stdout.write(
+        canonical_json(
+            {
+                "attempt_id": candidate["attempt_id"],
+                "output": output_path.relative_to(
+                    repository_root.resolve(strict=True)
+                ).as_posix(),
+                "phase": candidate["phase"],
+                "status": "BUILT",
+                "verdict": candidate["verdict"],
+            }
+        )
+        + "\n"
+    )
+    return 0
 
 
 def _emit_error(stderr: TextIO, error: Exception) -> None:
@@ -145,6 +324,13 @@ def main(
                 + "\n"
             )
             return 4 if closure is not None else (2 if blocked else 0)
+        if args.gate_command == "build":
+            return _build_gate_candidate(
+                args,
+                repository_root=root,
+                authority_reader=reader,
+                stdout=output,
+            )
         raw = _read_repository_file(args.report, root)
         report = parse_gate_report_v1_bytes(raw)
         if (
@@ -187,7 +373,12 @@ def main(
     except GateAuthorityMismatchError as error:
         _emit_error(errors, error)
         return 4
-    except (GateValidationError, GateEvidenceError, OSError) as error:
+    except (
+        GateBuildError,
+        GateValidationError,
+        GateEvidenceError,
+        OSError,
+    ) as error:
         _emit_error(errors, error)
         return 3
     except (StoreError, SqliteUnitOfWorkError) as error:
