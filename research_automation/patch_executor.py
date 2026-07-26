@@ -358,10 +358,6 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             if patch_invocation is not None
             else execution_patch_invocation
         )
-        if patch_lease is None:
-            patch_lease = lease
-        if patch_invocation is None:
-            patch_invocation = invocation
         compile_lease = (
             compile_lease
             if compile_lease is not None
@@ -405,6 +401,13 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             ):
                 raise ExecutionAuthorizationError(
                     "patch execution requires a GIT_MUTATION PATCH_APPLY intent"
+                )
+            if (
+                invocation.runner.module != "research_automation.patch_executor"
+                or invocation.runner.callable_name != "ClaudePatchExecutor.apply"
+            ):
+                raise ExecutionAuthorizationError(
+                    "patch executor entry identity is invalid"
                 )
         except (ExecutionAuthorizationError, OSError, ValueError) as error:
             return CodeChangeResult(

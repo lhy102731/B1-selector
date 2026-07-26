@@ -101,6 +101,16 @@ class AutomationController:
             raise ExecutionAuthorizationError(
                 "controller requires a RUN_RESEARCH AUTONOMOUS intent"
             )
+        if (
+            self.execution_invocation.runner.module
+            != "research_automation.automation_controller"
+            or self.execution_invocation.runner.callable_name
+            not in {
+                "AutomationController.run_from_proposal",
+                "AutomationController.drain_queue",
+            }
+        ):
+            raise ExecutionAuthorizationError("controller entry identity is invalid")
         if self.output_root.resolve() not in permit.resource_paths:
             raise ExecutionAuthorizationError(
                 "controller output root is not bound by the execution intent"

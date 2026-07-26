@@ -160,6 +160,15 @@ class AutonomousRunnerV1:
                 raise ExecutionAuthorizationError(
                     "autonomous runner requires a RUN_RESEARCH AUTONOMOUS intent"
                 )
+            if (
+                execution_invocation.runner.module
+                != "research_automation.autonomous_runner"
+                or execution_invocation.runner.callable_name
+                != "AutonomousRunnerV1.run"
+            ):
+                raise ExecutionAuthorizationError(
+                    "autonomous runner entry identity is invalid"
+                )
             authorized_runs_root = (output_root() / "runs").resolve()
             if authorized_runs_root not in permit.resource_paths:
                 raise ExecutionAuthorizationError(

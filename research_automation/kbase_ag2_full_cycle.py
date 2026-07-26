@@ -347,6 +347,13 @@ def run_kbase_ag2_full_cycle(
             raise ExecutionAuthorizationError(
                 "full-cycle requires a RUN_RESEARCH FULL_CYCLE intent"
             )
+        if (
+            invocation.runner.module != "research_automation.kbase_ag2_full_cycle"
+            or invocation.runner.callable_name != "run_kbase_ag2_full_cycle"
+        ):
+            raise ExecutionAuthorizationError(
+                "full-cycle entry identity is invalid"
+            )
         cycle_resource = Path(output_dir).resolve()
         if cycle_resource not in permit.resource_paths:
             raise ExecutionAuthorizationError(

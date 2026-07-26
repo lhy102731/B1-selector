@@ -631,6 +631,13 @@ def repair_handoff_runner(
                 raise ExecutionAuthorizationError(
                     "runner repair requires a RUN_RESEARCH REPAIR intent"
                 )
+            if (
+                invocation.runner.module != "research_automation.handoff_runner_repair"
+                or invocation.runner.callable_name != "repair_handoff_runner"
+            ):
+                raise ExecutionAuthorizationError(
+                    "runner repair entry identity is invalid"
+                )
             required_resources = {handoff, out}
             if not required_resources.issubset(set(permit.resource_paths)):
                 raise ExecutionAuthorizationError(
