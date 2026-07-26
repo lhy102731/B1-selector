@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
+from threading import Event, Thread
 import time
 import unittest
 from unittest.mock import patch
@@ -282,6 +283,71 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 ).fetchone()[0]
             )
             self.assertEqual(created_tables, 0)
+
+    def test_schema_check_and_read_share_one_consistent_snapshot(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+
+            setup = sqlite3.connect(authority_path)
+            try:
+                setup.execute("PRAGMA journal_mode = WAL")
+                setup.execute(
+                    "CREATE TABLE snapshot_value(value TEXT NOT NULL)"
+                )
+                setup.execute(
+                    "INSERT INTO snapshot_value(value) VALUES ('before')"
+                )
+                setup.commit()
+            finally:
+                setup.close()
+
+            begin_write = Event()
+            write_finished = Event()
+
+            def write_after_schema_check() -> None:
+                begin_write.wait(timeout=2)
+                writer = sqlite3.connect(authority_path)
+                try:
+                    writer.execute(
+                        "UPDATE snapshot_value SET value = 'after'"
+                    )
+                    writer.commit()
+                finally:
+                    writer.close()
+                    write_finished.set()
+
+            writer_thread = Thread(target=write_after_schema_check)
+            writer_thread.start()
+            unit_of_work = _SqliteUnitOfWork(
+                _StoreSpec(
+                    path=authority_path,
+                    store_kind="AUTHORITY_STORE",
+                    metadata_table="authority_meta",
+                    schema_version=1,
+                ),
+                busy_timeout_ms=500,
+            )
+
+            def read_after_concurrent_commit(connection) -> str:
+                begin_write.set()
+                self.assertTrue(write_finished.wait(timeout=2))
+                return connection.execute(
+                    "SELECT value FROM snapshot_value"
+                ).fetchone()[0]
+
+            observed = unit_of_work._read(read_after_concurrent_commit)
+            writer_thread.join(timeout=2)
+
+            self.assertEqual(observed, "before")
+            self.assertFalse(writer_thread.is_alive())
 
 
 if __name__ == "__main__":

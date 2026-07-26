@@ -168,13 +168,27 @@ class _SqliteUnitOfWork:
         operation: Callable[[sqlite3.Connection], _T],
     ) -> _T:
         connection = self._connect(read_only=True)
+        transaction_started = False
         try:
+            connection.execute("BEGIN")
+            transaction_started = True
             self._validate_schema(connection, read_only=True)
-            return operation(connection)
+            result = operation(connection)
+            connection.rollback()
+            transaction_started = False
+            return result
         except SqliteUnitOfWorkError:
+            if transaction_started:
+                self._rollback_without_masking(connection)
             raise
         except sqlite3.DatabaseError as error:
+            if transaction_started:
+                self._rollback_without_masking(connection)
             raise _translate_sqlite_error(error, read_only=True) from error
+        except Exception:
+            if transaction_started:
+                self._rollback_without_masking(connection)
+            raise
         finally:
             connection.close()
 
