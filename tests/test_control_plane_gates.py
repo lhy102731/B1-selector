@@ -446,6 +446,12 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.assertRaises(GateAuthorityMismatchError):
                 fixture.verifier.verify(forged_report)
 
+    def test_verifier_accepts_a_canonical_gate_report_bytes(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            raw = canonical_json(fixture.report).encode("utf-8")
+
+            fixture.verifier.verify_bytes(raw)
+
     def test_verifier_checks_task_report_file_hash(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             fixture.task_report_path.write_bytes(

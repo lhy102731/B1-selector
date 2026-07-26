@@ -681,6 +681,9 @@ class PhaseGateVerifier:
         self._verify_task_report_files(report)
         self._verify_gate_artifact_files(report)
 
+    def verify_bytes(self, raw: bytes) -> None:
+        self.verify(parse_gate_report_v1_bytes(raw))
+
 
 class PhaseGateCloser:
     """Re-verify and atomically seal one immutable phase-gate result."""
