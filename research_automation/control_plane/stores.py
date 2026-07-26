@@ -1169,6 +1169,61 @@ def _receipt_attestation_sha256(
     ).hexdigest()
 
 
+def _derive_root_capability_secret(
+    root_secret: _BearerSecret,
+    *,
+    domain: bytes,
+    payload: Mapping[str, object],
+) -> str:
+    if not isinstance(root_secret, _BearerSecret) or not isinstance(
+        payload,
+        Mapping,
+    ):
+        raise AuthorizationRejectedError("authority capability derivation failed")
+    canonical_payload = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hmac.new(
+        root_secret._reveal_for_authority_check().encode("utf-8"),
+        domain + b"\0" + canonical_payload,
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _authorization_secret_payload(
+    *,
+    authorization_ref: str,
+    phase: Phase,
+    attempt_id: str,
+    actor: Actor,
+    identity: AuthorityIdentity,
+    expires_at: datetime,
+    allowed_side_effects: tuple[SideEffect, ...],
+) -> dict[str, object]:
+    return {
+        "authorization_ref": _require_nonempty(
+            authorization_ref,
+            "authorization_ref",
+        ),
+        "phase": phase.value,
+        "attempt_id": _require_nonempty(attempt_id, "attempt_id"),
+        "actor_id": actor.actor_id,
+        "actor_type": actor.actor_type,
+        "invocation_id": actor.invocation_id,
+        "plan_hash": identity.plan_hash,
+        "scope_hash": identity.scope_hash,
+        "instruction_policy_hash": identity.instruction_policy_hash,
+        "expires_at": _utc_text(expires_at),
+        "allowed_side_effects": [
+            effect.value for effect in allowed_side_effects
+        ],
+    }
+
+
 def _require_independent_receipt_issuer(
     receipt_kind: str,
     issuer: Actor,
@@ -1482,10 +1537,9 @@ class _AuthorityStore:
         if expiry <= now:
             raise AuthorizationExpiredError(
                 "authorization expiry must be later than issuance"
-            )
+        )
         authorization_ref = f"auth_{secrets.token_hex(16)}"
-        bearer_secret = secrets.token_urlsafe(32)
-        envelope = AuthorizationEnvelope(
+        envelope_draft = AuthorizationEnvelope(
             authorization_ref=authorization_ref,
             phase=phase,
             attempt_id=attempt_id,
@@ -1493,6 +1547,29 @@ class _AuthorityStore:
             identity=identity,
             expires_at=expiry,
             allowed_side_effects=allowed_side_effects,
+            _bearer_secret=_BearerSecret("validation-placeholder"),
+        )
+        bearer_secret = _derive_root_capability_secret(
+            self._root_secret,
+            domain=b"control_plane.authorization_envelope.v2",
+            payload=_authorization_secret_payload(
+                authorization_ref=envelope_draft.authorization_ref,
+                phase=envelope_draft.phase,
+                attempt_id=envelope_draft.attempt_id,
+                actor=envelope_draft.actor,
+                identity=envelope_draft.identity,
+                expires_at=envelope_draft.expires_at,
+                allowed_side_effects=envelope_draft.allowed_side_effects,
+            ),
+        )
+        envelope = AuthorizationEnvelope(
+            authorization_ref=envelope_draft.authorization_ref,
+            phase=envelope_draft.phase,
+            attempt_id=envelope_draft.attempt_id,
+            actor=envelope_draft.actor,
+            identity=envelope_draft.identity,
+            expires_at=envelope_draft.expires_at,
+            allowed_side_effects=envelope_draft.allowed_side_effects,
             _bearer_secret=_BearerSecret(bearer_secret),
         )
         allowed_effects_json = _effects_json(envelope.allowed_side_effects)
@@ -1536,6 +1613,79 @@ class _AuthorityStore:
 
         _SqliteUnitOfWork(_authority_spec())._write(provision)
         return envelope
+
+    def _recover_pending_authorization(
+        self,
+        authorization_ref: str,
+    ) -> AuthorizationEnvelope:
+        reference = _require_nonempty(
+            authorization_ref,
+            "authorization_ref",
+        )
+
+        def read(connection: sqlite3.Connection) -> sqlite3.Row | None:
+            return connection.execute(
+                "SELECT * FROM authorizations_v2 WHERE authorization_ref = ?",
+                (reference,),
+            ).fetchone()
+
+        row = _SqliteUnitOfWork(_authority_spec())._read(read)
+        if row is None:
+            raise AuthorizationRejectedError("authorization envelope is unknown")
+        if row["state"] != "PENDING":
+            raise AuthorizationReplayError(
+                "only a pending authorization can be recovered"
+            )
+        try:
+            allowed_side_effects = _effects_from_json(
+                row["allowed_effects_json"]
+            )
+            phase = Phase(str(row["phase"]))
+            actor = Actor(
+                actor_id=str(row["actor_id"]),
+                actor_type=str(row["actor_type"]),
+                invocation_id=str(row["invocation_id"]),
+            )
+            identity = AuthorityIdentity(
+                plan_hash=str(row["plan_hash"]),
+                scope_hash=str(row["scope_hash"]),
+                instruction_policy_hash=str(row["instruction_policy_hash"]),
+            )
+            expires_at = _parse_utc_text(str(row["expires_at"]))
+            bearer_secret = _derive_root_capability_secret(
+                self._root_secret,
+                domain=b"control_plane.authorization_envelope.v2",
+                payload=_authorization_secret_payload(
+                    authorization_ref=reference,
+                    phase=phase,
+                    attempt_id=str(row["attempt_id"]),
+                    actor=actor,
+                    identity=identity,
+                    expires_at=expires_at,
+                    allowed_side_effects=allowed_side_effects,
+                ),
+            )
+        except (TaskTicketError, TypeError, ValueError) as error:
+            raise AuthorizationRejectedError(
+                "stored authorization envelope is invalid"
+            ) from error
+        if not hmac.compare_digest(
+            str(row["secret_sha256"]),
+            hashlib.sha256(bearer_secret.encode("utf-8")).hexdigest(),
+        ):
+            raise AuthorizationRejectedError(
+                "stored authorization envelope integrity mismatch"
+            )
+        return AuthorizationEnvelope(
+            authorization_ref=reference,
+            phase=phase,
+            attempt_id=str(row["attempt_id"]),
+            actor=actor,
+            identity=identity,
+            expires_at=expires_at,
+            allowed_side_effects=allowed_side_effects,
+            _bearer_secret=_BearerSecret(bearer_secret),
+        )
 
     @staticmethod
     def _require_active_grant(
