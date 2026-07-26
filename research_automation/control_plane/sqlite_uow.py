@@ -167,6 +167,7 @@ class _SqliteUnitOfWork:
             raise SqliteStoreMissingError("pre-provisioned store is required")
         mode = "ro" if read_only else "rw"
         database_uri = self._spec.path.as_uri()
+        connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(
                 f"{database_uri}?mode={mode}",
@@ -182,6 +183,11 @@ class _SqliteUnitOfWork:
                 connection.execute("PRAGMA query_only = ON")
             return connection
         except sqlite3.DatabaseError as error:
+            if connection is not None:
+                try:
+                    connection.close()
+                except sqlite3.DatabaseError:
+                    pass
             raise _translate_sqlite_error(error, read_only=read_only) from error
 
     def _validate_schema(

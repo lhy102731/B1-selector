@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
+from research_automation.control_plane import sqlite_uow as sqlite_uow_module
 from research_automation.control_plane.sqlite_uow import (
     SqliteFutureSchemaError,
     SqliteReadOnlyError,
@@ -348,6 +349,62 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
 
             self.assertEqual(observed, "before")
             self.assertFalse(writer_thread.is_alive())
+
+    def test_connection_is_closed_when_runtime_configuration_fails(self) -> None:
+        class FailingConfigurationConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                object.__setattr__(self, "_connection", connection)
+                object.__setattr__(self, "closed", False)
+
+            def __setattr__(self, name: str, value: object) -> None:
+                if name in {"_connection", "closed"}:
+                    object.__setattr__(self, name, value)
+                else:
+                    setattr(self._connection, name, value)
+
+            def set_authorizer(self, callback) -> None:
+                self._connection.set_authorizer(callback)
+
+            def execute(self, statement: str, *args: object):
+                if statement == "PRAGMA foreign_keys = ON":
+                    raise sqlite3.OperationalError("simulated pragma failure")
+                return self._connection.execute(statement, *args)
+
+            def close(self) -> None:
+                object.__setattr__(self, "closed", True)
+                self._connection.close()
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+            real_connection = sqlite3.connect(authority_path)
+            failing_connection = FailingConfigurationConnection(real_connection)
+            unit_of_work = _SqliteUnitOfWork(
+                _StoreSpec(
+                    path=authority_path,
+                    store_kind="AUTHORITY_STORE",
+                    metadata_table="authority_meta",
+                    schema_version=1,
+                ),
+                busy_timeout_ms=50,
+            )
+
+            with patch.object(
+                sqlite_uow_module.sqlite3,
+                "connect",
+                return_value=failing_connection,
+            ):
+                with self.assertRaises(SqliteUnitOfWorkError):
+                    unit_of_work._read(lambda _connection: None)
+
+            self.assertTrue(failing_connection.closed)
 
 
 if __name__ == "__main__":
