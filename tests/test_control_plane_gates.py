@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,15 +8,22 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
-from research_automation.control_plane.contracts import Actor, Phase, SideEffect
+from research_automation.control_plane.contracts import (
+    Actor,
+    Phase,
+    SideEffect,
+    canonical_json,
+)
 from research_automation.control_plane.gates import (
     GateAuthorityMismatchError,
     GateBuildError,
+    GateEvidenceError,
     PhaseGateBuilder,
     PhaseGateVerifier,
     validate_gate_report,
 )
 from research_automation.control_plane.stores import AuthorityIdentity
+from research_automation.control_plane.task_reports import build_task_report_v2
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
@@ -228,7 +236,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
                 lease = authority._begin_task(ticket)
-                authority._finish_task(
+                finished = authority._finish_task(
                     lease,
                     outcome="SUCCEEDED",
                     evidence_ref="evidence/gate-verify.json",
@@ -260,12 +268,59 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     },
                 )
                 draft = self._passing_draft()
+                task_report = build_task_report_v2(
+                    {
+                        "plan_version": "V3.4.2-P0R2",
+                        "phase": "P0",
+                        "task_id": task_spec["task_id"],
+                        "attempt_id": "p0r2-attempt-001",
+                        "authorization_ref": envelope.authorization_ref,
+                        "ticket_id": ticket.ticket_id,
+                        "identity_binding": {
+                            "plan_hash": identity.plan_hash,
+                            "scope_hash": identity.scope_hash,
+                            "instruction_policy_hash": (
+                                identity.instruction_policy_hash
+                            ),
+                        },
+                        "objective": task_spec["objective"],
+                        "dependencies": task_spec["dependencies"],
+                        "idempotency_key": task_spec["idempotency_key"],
+                        "task_spec_ref": task_spec["task_spec_ref"],
+                        "task_spec_sha256": task_spec["task_spec_sha256"],
+                        "requirements": task_spec["requirements"],
+                        "allowed_files": task_spec["allowed_files"],
+                        "forbidden_files": task_spec["forbidden_files"],
+                        "baseline_ref": task_spec["baseline_ref"],
+                        "baseline_sha256": task_spec["baseline_sha256"],
+                        "input_evidence_refs": task_spec[
+                            "input_evidence_refs"
+                        ],
+                        "test_receipts": [],
+                        "review_receipts": [],
+                        "review_findings": [],
+                        "changed_files": [],
+                        "external_invocations": [],
+                        "side_effect_summary": {
+                            "observed": [],
+                            "unauthorized": [],
+                        },
+                        "ticket_state": "SUCCEEDED",
+                        "started_at": finished.started_at.isoformat(),
+                        "completed_at": finished.completed_at.isoformat(),
+                    }
+                )
+                task_report_bytes = canonical_json(task_report).encode("utf-8")
+                task_report_ref = "reports/gate.json"
+                task_report_path = root / task_report_ref
+                task_report_path.parent.mkdir(parents=True)
+                task_report_path.write_bytes(task_report_bytes)
                 draft["task_reports"] = [
                     {
-                        "report_ref": (
-                            "research_state/control_plane/p0r2/reports/gate.json"
-                        ),
-                        "report_sha256": "1" * 64,
+                        "report_ref": task_report_ref,
+                        "report_sha256": hashlib.sha256(
+                            task_report_bytes
+                        ).hexdigest(),
                         "ticket_id": ticket.ticket_id,
                         "outcome": "PASS",
                     }
@@ -273,7 +328,11 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 draft["authority_snapshot"] = snapshot.to_report_dict()
                 report = PhaseGateBuilder(clock=lambda: now).build(draft)
                 self.assertEqual(report["verdict"], "PASS")
-                PhaseGateVerifier(authority_reader=reader).verify(report)
+                verifier = PhaseGateVerifier(
+                    authority_reader=reader,
+                    repository_root=root,
+                )
+                verifier.verify(report)
 
                 forged_draft = dict(draft)
                 forged_snapshot = snapshot.to_report_dict()
@@ -283,9 +342,11 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     forged_draft
                 )
                 with self.assertRaises(GateAuthorityMismatchError):
-                    PhaseGateVerifier(authority_reader=reader).verify(
-                        forged_report
-                    )
+                    verifier.verify(forged_report)
+
+                task_report_path.write_bytes(task_report_bytes + b"\n")
+                with self.assertRaises(GateEvidenceError):
+                    verifier.verify(report)
 
 
 if __name__ == "__main__":

@@ -7,10 +7,12 @@ import hmac
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from .contracts import Phase, canonical_json
 from .stores import AuthorityReader
+from .task_reports import MAX_TASK_REPORT_V2_BYTES
 
 
 GATE_REPORT_V1 = "control_plane.gate_report.v1"
@@ -63,6 +65,10 @@ class GateValidationError(GateError):
 
 class GateAuthorityMismatchError(GateError):
     """Raised when a gate report disagrees with current trusted authority."""
+
+
+class GateEvidenceError(GateError):
+    """Raised when referenced gate evidence is missing or corrupt."""
 
 
 def _require_nonempty(value: object, field_name: str) -> str:
@@ -463,14 +469,62 @@ class PhaseGateBuilder:
 class PhaseGateVerifier:
     """Verify report integrity against a fresh consistent authority snapshot."""
 
-    __slots__ = ("_authority_reader",)
+    __slots__ = ("_authority_reader", "_repository_root")
 
     def __init__(
         self,
         *,
         authority_reader: AuthorityReader | None = None,
+        repository_root: str | Path | None = None,
     ) -> None:
         self._authority_reader = authority_reader or AuthorityReader()
+        try:
+            root = Path(
+                repository_root
+                if repository_root is not None
+                else Path(__file__).resolve().parents[2]
+            ).resolve(strict=True)
+        except OSError as error:
+            raise GateEvidenceError(
+                "gate repository root is unavailable"
+            ) from error
+        if not root.is_dir():
+            raise GateEvidenceError("gate repository root is not a directory")
+        self._repository_root = root
+
+    def _read_task_report_bytes(self, reference: str) -> bytes:
+        candidate = self._repository_root.joinpath(*reference.split("/"))
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(self._repository_root)
+            if not resolved.is_file():
+                raise GateEvidenceError("TaskReport reference is not a file")
+            with resolved.open("rb") as stream:
+                raw = stream.read(MAX_TASK_REPORT_V2_BYTES + 1)
+        except GateEvidenceError:
+            raise
+        except (OSError, ValueError) as error:
+            raise GateEvidenceError(
+                "TaskReport reference is unavailable or outside the repository"
+            ) from error
+        if len(raw) > MAX_TASK_REPORT_V2_BYTES:
+            raise GateEvidenceError("TaskReport evidence exceeds its size limit")
+        return raw
+
+    def _verify_task_report_files(self, report: Mapping[str, object]) -> None:
+        task_reports = report["task_reports"]
+        if not isinstance(task_reports, list):
+            raise GateEvidenceError("gate TaskReport references are invalid")
+        for task_report in task_reports:
+            if not isinstance(task_report, Mapping):
+                raise GateEvidenceError("gate TaskReport reference is invalid")
+            raw = self._read_task_report_bytes(str(task_report["report_ref"]))
+            actual_sha256 = hashlib.sha256(raw).hexdigest()
+            if not hmac.compare_digest(
+                str(task_report["report_sha256"]),
+                actual_sha256,
+            ):
+                raise GateEvidenceError("TaskReport evidence SHA-256 mismatch")
 
     def verify(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)
@@ -482,11 +536,13 @@ class PhaseGateVerifier:
             raise GateAuthorityMismatchError(
                 "gate authority snapshot does not match current authority"
             )
+        self._verify_task_report_files(report)
 
 
 __all__ = [
     "GateAuthorityMismatchError",
     "GateBuildError",
+    "GateEvidenceError",
     "GateError",
     "GateValidationError",
     "PhaseGateBuilder",
