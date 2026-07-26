@@ -98,6 +98,13 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 ):
                     builder.build({field_name: value})
 
+    def test_builder_translates_malformed_nested_drafts(self) -> None:
+        draft = self._passing_draft()
+        draft["task_reports"] = [{}]
+
+        with self.assertRaises(GateBuildError):
+            PhaseGateBuilder().build(draft)
+
     def test_builder_computes_a_hashed_non_advancing_pass_candidate(self) -> None:
         now = datetime(2026, 7, 26, 8, 0, tzinfo=timezone.utc)
         report = PhaseGateBuilder(clock=lambda: now).build(

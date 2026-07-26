@@ -449,6 +449,7 @@ class PhaseGateBuilder:
         report["auto_advance"] = False
         report["created_at"] = _utc_text(self._clock())
         try:
+            _validate_nested_contracts(report)
             verdict, reason_codes = _derive_gate_verdict(report)
             report["verdict"] = verdict
             report["reason_codes"] = reason_codes
