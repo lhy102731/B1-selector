@@ -93,6 +93,21 @@ def _provision_store(
         connection.close()
 
 
+def _remove_owned_sqlite_artifacts(path: Path) -> None:
+    for candidate in (
+        path,
+        Path(f"{path}-journal"),
+        Path(f"{path}-wal"),
+        Path(f"{path}-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
+
+
+def _cleanup_bootstrap_artifacts(paths: tuple[Path, ...]) -> None:
+    for path in paths:
+        _remove_owned_sqlite_artifacts(path)
+
+
 def _trusted_bootstrap_at_paths(
     *,
     authority_path: str | Path,
@@ -110,25 +125,43 @@ def _trusted_bootstrap_at_paths(
         raise StoreBootstrapError("control-plane stores are already provisioned")
 
     installation_id = secrets.token_hex(32)
-    created: list[Path] = []
+    staging_id = secrets.token_hex(16)
+    authority_staging = resolved_authority.with_name(
+        f".{resolved_authority.name}.{staging_id}.bootstrap"
+    )
+    operational_staging = resolved_operational.with_name(
+        f".{resolved_operational.name}.{staging_id}.bootstrap"
+    )
+    staged = (authority_staging, operational_staging)
+    published: list[Path] = []
     try:
         _provision_store(
-            resolved_authority,
+            authority_staging,
             store_kind="AUTHORITY_STORE",
             metadata_table="authority_meta",
             installation_id=installation_id,
         )
-        created.append(resolved_authority)
         _provision_store(
-            resolved_operational,
+            operational_staging,
             store_kind="OPERATIONAL_JOURNAL",
             metadata_table="operational_meta",
             installation_id=installation_id,
         )
-        created.append(resolved_operational)
+        if os.path.samefile(authority_staging, operational_staging):
+            raise StoreConfigurationError(
+                "authority and operational stores must use different SQLite files"
+            )
+        if resolved_authority.exists() or resolved_operational.exists():
+            raise StoreBootstrapError("control-plane stores are already provisioned")
+        os.replace(authority_staging, resolved_authority)
+        published.append(resolved_authority)
+        os.replace(operational_staging, resolved_operational)
+        published.append(resolved_operational)
+    except StoreError:
+        _cleanup_bootstrap_artifacts(staged + tuple(published))
+        raise
     except (OSError, sqlite3.DatabaseError) as error:
-        for created_path in created:
-            created_path.unlink(missing_ok=True)
+        _cleanup_bootstrap_artifacts(staged + tuple(published))
         raise StoreBootstrapError("control-plane store bootstrap failed") from error
 
     if os.path.samefile(resolved_authority, resolved_operational):

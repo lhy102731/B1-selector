@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -91,6 +92,62 @@ class TrustedBootstrapTests(unittest.TestCase):
                 "OPERATIONAL_JOURNAL",
             )
             self.assertEqual(len(descriptor.installation_id), 64)
+
+    def test_second_store_failure_publishes_no_partial_pair(self) -> None:
+        class FailDuringSchemaConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self._connection = connection
+
+            def execute(self, statement: str, *args: object):
+                if statement.lstrip().startswith("CREATE TABLE"):
+                    self._connection.execute(
+                        "CREATE TABLE partial_bootstrap(value TEXT)"
+                    )
+                    raise sqlite3.OperationalError("simulated storage failure")
+                return self._connection.execute(statement, *args)
+
+            def executemany(self, *args: object):
+                return self._connection.executemany(*args)
+
+            def commit(self) -> None:
+                self._connection.commit()
+
+            def close(self) -> None:
+                self._connection.close()
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            real_connect = sqlite3.connect
+            connection_count = 0
+
+            def flaky_connect(*args: object, **kwargs: object):
+                nonlocal connection_count
+                connection_count += 1
+                connection = real_connect(*args, **kwargs)
+                if connection_count == 2:
+                    return FailDuringSchemaConnection(connection)
+                return connection
+
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ), patch.object(
+                stores_module.sqlite3,
+                "connect",
+                side_effect=flaky_connect,
+            ):
+                with self.assertRaisesRegex(
+                    stores_module.StoreBootstrapError,
+                    "bootstrap failed",
+                ):
+                    trusted_bootstrap()
+
+            self.assertFalse(authority_path.exists())
+            self.assertFalse(operational_path.exists())
+            self.assertEqual(tuple(root.iterdir()), ())
 
 
 if __name__ == "__main__":
