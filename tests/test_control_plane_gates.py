@@ -605,6 +605,16 @@ class PhaseGateBuilderTests(unittest.TestCase):
             with self.assertRaises(PhaseGateClosureConflictError):
                 fixture.closer.close(different_report)
 
+    def test_closer_replay_rechecks_evidence_before_returning_closure(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fixture.closer.close(fixture.report)
+            fixture.task_report_path.write_bytes(
+                fixture.task_report_bytes + b"\n"
+            )
+
+            with self.assertRaises(GateEvidenceError):
+                fixture.closer.close(fixture.report)
+
     def test_cli_verifies_a_passing_gate_read_only(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             report_path = fixture.root / "gate-report.json"

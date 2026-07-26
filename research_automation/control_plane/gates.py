@@ -678,8 +678,15 @@ class PhaseGateVerifier:
             raise GateAuthorityMismatchError(
                 "gate authority snapshot does not match current authority"
             )
+        self._verify_evidence(report)
+
+    def _verify_evidence(self, report: Mapping[str, object]) -> None:
         self._verify_task_report_files(report)
         self._verify_gate_artifact_files(report)
+
+    def verify_evidence(self, report: Mapping[str, object]) -> None:
+        validate_gate_report(report)
+        self._verify_evidence(report)
 
     def verify_bytes(self, raw: bytes) -> None:
         self.verify(parse_gate_report_v1_bytes(raw))
@@ -730,6 +737,7 @@ class PhaseGateCloser:
             attempt_id,
         )
         if existing is not None:
+            self._verifier.verify_evidence(report)
             if (
                 existing.gate_report_sha256 == gate_report_digest
                 and existing.verdict == verdict
