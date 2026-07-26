@@ -637,6 +637,31 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn('"verdict":"PASS"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_preflight_reports_a_ready_authority_snapshot(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "preflight",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 0)
+            self.assertIn('"status":"READY"', stdout.getvalue())
+            self.assertIn('"pending_outbox_count":0', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             report_path = fixture.root / "gate-report.json"

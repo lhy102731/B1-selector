@@ -28,6 +28,13 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     gate = commands.add_parser("gate")
     gate_commands = gate.add_subparsers(dest="gate_command", required=True)
+    preflight = gate_commands.add_parser("preflight")
+    preflight.add_argument(
+        "--phase",
+        required=True,
+        choices=[phase.value for phase in Phase],
+    )
+    preflight.add_argument("--attempt-id", required=True)
     verify = gate_commands.add_parser("verify")
     verify.add_argument(
         "--phase",
@@ -108,6 +115,36 @@ def main(
         else Path(__file__).resolve().parents[2]
     )
     try:
+        reader = authority_reader or AuthorityReader()
+        if args.gate_command == "preflight":
+            phase = Phase(str(args.phase))
+            snapshot = reader.phase_gate_snapshot(phase, args.attempt_id)
+            closure = reader.phase_gate_closure(phase, args.attempt_id)
+            blocked = bool(
+                len(snapshot.active_grant_ids) != 1
+                or snapshot.open_ticket_ids
+                or snapshot.failed_ticket_ids
+                or snapshot.in_doubt_ticket_ids
+                or snapshot.pending_outbox_count
+            )
+            status = "CLOSED" if closure is not None else (
+                "BLOCKED" if blocked else "READY"
+            )
+            output.write(
+                canonical_json(
+                    {
+                        "attempt_id": args.attempt_id,
+                        "authority_snapshot": snapshot.to_report_dict(),
+                        "closure_id": (
+                            None if closure is None else closure.closure_id
+                        ),
+                        "phase": phase.value,
+                        "status": status,
+                    }
+                )
+                + "\n"
+            )
+            return 4 if closure is not None else (2 if blocked else 0)
         raw = _read_repository_file(args.report, root)
         report = parse_gate_report_v1_bytes(raw)
         if (
@@ -119,7 +156,7 @@ def main(
             )
         if args.gate_command == "verify":
             PhaseGateVerifier(
-                authority_reader=authority_reader,
+                authority_reader=reader,
                 repository_root=root,
             ).verify(report)
         else:
@@ -130,7 +167,7 @@ def main(
                 )
             closure = PhaseGateCloser(
                 root_secret=capability,
-                authority_reader=authority_reader,
+                authority_reader=reader,
                 repository_root=root,
             ).close_bytes(raw)
             output.write(
