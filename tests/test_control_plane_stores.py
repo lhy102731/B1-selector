@@ -25,7 +25,10 @@ from research_automation.control_plane.stores import (
     StoreConfigurationError,
     read_store_pair_descriptor,
 )
-from research_automation.control_plane.sqlite_uow import SqliteSchemaError
+from research_automation.control_plane.sqlite_uow import (
+    SqliteSchemaError,
+    SqliteUnitOfWorkError,
+)
 
 
 class TrustedBootstrapTests(unittest.TestCase):
@@ -472,6 +475,60 @@ class TrustedBootstrapTests(unittest.TestCase):
                 self.assertEqual(replay.acknowledged_events, 1)
                 self.assertEqual(AuthorityReader().pending_outbox_count(), 0)
                 self.assertEqual(stores_module.OperationalReader().event_count(), 1)
+
+    def test_authority_mutation_rolls_back_when_outbox_insert_fails(self) -> None:
+        now = datetime(2026, 7, 26, 3, 0, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-outbox-atomicity")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                existing_event = authority._read_pending_outbox(limit=1)[0]
+                colliding_suffix = existing_event.event_id.removeprefix("evt_")
+
+                with patch.object(
+                    stores_module.secrets,
+                    "token_hex",
+                    side_effect=("atomicrollback", colliding_suffix),
+                ):
+                    with self.assertRaises(SqliteUnitOfWorkError):
+                        authority._provision_authorization(
+                            phase=Phase.P0,
+                            attempt_id="p0r2-attempt-002",
+                            actor=actor,
+                            identity=identity,
+                            expires_at=now + timedelta(hours=1),
+                            allowed_side_effects=(
+                                SideEffect.WRITE_CONTROL_PLANE,
+                            ),
+                        )
+
+                reader = AuthorityReader()
+                self.assertIsNone(
+                    reader.authorization_state("auth_atomicrollback")
+                )
+                self.assertEqual(reader.pending_outbox_count(), 1)
 
 
 if __name__ == "__main__":

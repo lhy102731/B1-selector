@@ -604,6 +604,21 @@ class AuthorityReader:
             )
         )
 
+    def authorization_state(self, authorization_ref: str) -> str | None:
+        _require_nonempty(authorization_ref, "authorization_ref")
+
+        def read_state(connection: sqlite3.Connection) -> str | None:
+            row = connection.execute(
+                """
+                SELECT state FROM authorizations_v2
+                WHERE authorization_ref = ?
+                """,
+                (authorization_ref,),
+            ).fetchone()
+            return None if row is None else str(row["state"])
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read_state)
+
 
 class OperationalReader:
     """Read-only journal queries with no generic SQL surface."""
