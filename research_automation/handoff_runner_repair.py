@@ -631,6 +631,15 @@ def repair_handoff_runner(
                 raise ExecutionAuthorizationError(
                     "runner repair requires a RUN_RESEARCH REPAIR intent"
                 )
+            required_resources = {handoff, out}
+            if not required_resources.issubset(set(permit.resource_paths)):
+                raise ExecutionAuthorizationError(
+                    "runner repair handoff/output resources differ from execution intent"
+                )
+            if out == Path(repository_root or PROJECT_ROOT).resolve():
+                raise ExecutionAuthorizationError(
+                    "runner repair output must be isolated from repository root"
+                )
         except (ExecutionAuthorizationError, OSError, ValueError) as error:
             return RepairResult(
                 ok=False,
