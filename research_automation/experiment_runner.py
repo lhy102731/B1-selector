@@ -24,8 +24,13 @@ from pathlib import Path
 from .experiment import Experiment, StandardMetrics
 from .result_parser import BacktestResultParser
 from .safety import assert_safe_path
-from .control_plane.sink_guard import ExecutionInvocation
-from .control_plane.stores import TaskExecutionLease
+from .control_plane.contracts import SideEffect
+from .control_plane.sink_guard import (
+    ExecutionAuthorizationError,
+    ExecutionInvocation,
+    ExecutionSinkGuard,
+)
+from .control_plane.stores import AuthorityReader, TaskExecutionLease
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -668,6 +673,27 @@ class RealBacktestExecutor(BacktestExecutor):
             return {
                 "success": False,
                 "error": "execution lease and invocation are required before backtest execution",
+                "requires_manual_integration": False,
+                "command": None,
+            }
+        try:
+            reader = authority_reader if isinstance(authority_reader, AuthorityReader) else AuthorityReader()
+            guard = ExecutionSinkGuard(
+                authority_reader=reader,
+                repository_root=repository_root or self.root,
+            )
+            permit = guard.authorize(lease, invocation)
+            if (
+                permit.operation != "SUBPROCESS"
+                or permit.effect is not SideEffect.START_SUBPROCESS
+            ):
+                raise ExecutionAuthorizationError(
+                    "backtest execution requires a START_SUBPROCESS intent"
+                )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            return {
+                "success": False,
+                "error": f"execution authorization rejected: {error}",
                 "requires_manual_integration": False,
                 "command": None,
             }
