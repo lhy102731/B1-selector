@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -29,6 +30,7 @@ P0R1_POLICY_HASH = (
     "5db5bfb72acf41a9f42d0d4f557036d28d0c4f4f9ef584e92e306922b6808d82"
 )
 MAX_LEGACY_REPORT_BYTES = 64 * 1024
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class LegacyAdoptionError(ValueError):
@@ -49,6 +51,43 @@ class LegacyReportSnapshot:
     inventory_disposition: str | None
     entry_policy_final_gate_eligible: bool | None
     missing_source_fields: tuple[str, ...]
+    known_total_tokens: int
+    unknown_usage_count: int
+    usage_owner_source_id: str
+    count_in_target_total: bool
+
+
+@dataclass(frozen=True)
+class LegacyFileExpectation:
+    path: str
+    expected_sha256: str
+    source_id: str
+    source_sequence: int
+
+
+@dataclass(frozen=True)
+class LegacyFileCheck:
+    path: str
+    expected_sha256: str
+    actual_sha256: str | None
+    expected_source_id: str
+    status: str
+
+
+@dataclass(frozen=True)
+class P0R1AdoptionSnapshot:
+    source_order: tuple[str, ...]
+    source_snapshots: tuple[LegacyReportSnapshot, ...]
+    overwritten_paths: tuple[str, ...]
+    file_checks: tuple[LegacyFileCheck, ...]
+    code_delta_status: str
+    adoption_status: str
+    ready_for_test_revalidation: bool
+    execution_eligible: bool
+    legacy_gate_eligible: bool
+    p0r1_evidence_directly_counted: bool
+    inventory_disposition: str
+    entry_policy_final_gate_eligible: bool
     known_total_tokens: int
     unknown_usage_count: int
     usage_owner_source_id: str
@@ -227,6 +266,177 @@ def classify_known_p0r1_t2(raw: bytes) -> LegacyReportSnapshot:
         missing_source_fields=missing_source_fields,
         known_total_tokens=58734,
         unknown_usage_count=1,
+        usage_owner_source_id="P0R1-T1",
+        count_in_target_total=False,
+    )
+
+
+def _require_legacy_path(value: object, source_label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value.startswith("/")
+        or "\\" in value
+        or any(part in ("", ".", "..") for part in value.split("/"))
+    ):
+        raise LegacyAdoptionError(
+            f"{source_label} changed-file path is not repository-relative POSIX"
+        )
+    return value
+
+
+def _require_legacy_sha256(value: object, source_label: str) -> str:
+    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+        raise LegacyAdoptionError(
+            f"{source_label} changed-file hash is not lowercase SHA-256"
+        )
+    return value
+
+
+def _t1_file_expectations(raw: bytes) -> tuple[LegacyFileExpectation, ...]:
+    classify_known_p0r1_t1(raw)
+    payload = _parse_exact_known_report(
+        raw,
+        source_label="P0R1 T1",
+        expected_sha256=P0R1_T1_RAW_SHA256,
+    )
+    changed_files = payload.get("changed_files")
+    if not isinstance(changed_files, list):
+        raise LegacyAdoptionError("P0R1 T1 changed_files must be an array")
+    expectations: list[LegacyFileExpectation] = []
+    seen_paths: set[str] = set()
+    for changed_file in changed_files:
+        if not isinstance(changed_file, Mapping):
+            raise LegacyAdoptionError("P0R1 T1 changed-file entry must be an object")
+        path = _require_legacy_path(changed_file.get("path"), "P0R1 T1")
+        if path in seen_paths:
+            raise LegacyAdoptionError("P0R1 T1 changed_files contains duplicate paths")
+        seen_paths.add(path)
+        expectations.append(
+            LegacyFileExpectation(
+                path=path,
+                expected_sha256=_require_legacy_sha256(
+                    changed_file.get("current_sha256"),
+                    "P0R1 T1",
+                ),
+                source_id="P0R1-T1",
+                source_sequence=1,
+            )
+        )
+    return tuple(expectations)
+
+
+def _t2_file_expectations(raw: bytes) -> tuple[LegacyFileExpectation, ...]:
+    classify_known_p0r1_t2(raw)
+    payload = _parse_exact_known_report(
+        raw,
+        source_label="P0R1 T2",
+        expected_sha256=P0R1_T2_RAW_SHA256,
+    )
+    changed_files = payload.get("changed_files")
+    if not isinstance(changed_files, Mapping):
+        raise LegacyAdoptionError("P0R1 T2 changed_files must be an object")
+    expectations: list[LegacyFileExpectation] = []
+    for raw_path, raw_sha256 in changed_files.items():
+        path = _require_legacy_path(raw_path, "P0R1 T2")
+        expectations.append(
+            LegacyFileExpectation(
+                path=path,
+                expected_sha256=_require_legacy_sha256(
+                    raw_sha256,
+                    "P0R1 T2",
+                ),
+                source_id="P0R1-T2",
+                source_sequence=2,
+            )
+        )
+    return tuple(expectations)
+
+
+def derive_ordered_p0r1_file_expectations(
+    t1_raw: bytes,
+    t2_raw: bytes,
+) -> tuple[LegacyFileExpectation, ...]:
+    """Return final file expectations after applying T1 then T2."""
+    final_by_path: dict[str, LegacyFileExpectation] = {}
+    for expectation in _t1_file_expectations(t1_raw):
+        final_by_path[expectation.path] = expectation
+    for expectation in _t2_file_expectations(t2_raw):
+        final_by_path[expectation.path] = expectation
+    return tuple(final_by_path[path] for path in sorted(final_by_path))
+
+
+def revalidate_ordered_p0r1_files(
+    t1_raw: bytes,
+    t2_raw: bytes,
+    current_file_sha256: Mapping[str, object],
+) -> P0R1AdoptionSnapshot:
+    """Compare current hashes using T1 then T2 without promoting P0R1."""
+    if not isinstance(current_file_sha256, Mapping):
+        raise LegacyAdoptionError("current_file_sha256 must be a mapping")
+    t1_snapshot = classify_known_p0r1_t1(t1_raw)
+    t2_snapshot = classify_known_p0r1_t2(t2_raw)
+    t1_expectations = _t1_file_expectations(t1_raw)
+    t2_expectations = _t2_file_expectations(t2_raw)
+    final_by_path = {
+        expectation.path: expectation for expectation in t1_expectations
+    }
+    overwritten_paths: list[str] = []
+    for expectation in t2_expectations:
+        if expectation.path in final_by_path:
+            overwritten_paths.append(expectation.path)
+        final_by_path[expectation.path] = expectation
+
+    checks: list[LegacyFileCheck] = []
+    for path in sorted(final_by_path):
+        expectation = final_by_path[path]
+        raw_actual = current_file_sha256.get(path)
+        if raw_actual is None:
+            actual_sha256 = None
+            status = "MISSING"
+        else:
+            actual_sha256 = _require_legacy_sha256(
+                raw_actual,
+                "current file map",
+            )
+            status = (
+                "MATCH"
+                if hmac.compare_digest(
+                    actual_sha256,
+                    expectation.expected_sha256,
+                )
+                else "MISMATCH"
+            )
+        checks.append(
+            LegacyFileCheck(
+                path=path,
+                expected_sha256=expectation.expected_sha256,
+                actual_sha256=actual_sha256,
+                expected_source_id=expectation.source_id,
+                status=status,
+            )
+        )
+
+    ready = all(check.status == "MATCH" for check in checks)
+    return P0R1AdoptionSnapshot(
+        source_order=("P0R1-T1", "P0R1-T2"),
+        source_snapshots=(t1_snapshot, t2_snapshot),
+        overwritten_paths=tuple(sorted(overwritten_paths)),
+        file_checks=tuple(checks),
+        code_delta_status="MATCH" if ready else "MISMATCH",
+        adoption_status=(
+            "READY_FOR_REQUIRED_TEST_REVALIDATION"
+            if ready
+            else "BLOCKED_BY_FILE_DELTA"
+        ),
+        ready_for_test_revalidation=ready,
+        execution_eligible=False,
+        legacy_gate_eligible=False,
+        p0r1_evidence_directly_counted=False,
+        inventory_disposition="INITIAL_PROVISIONAL_ONLY",
+        entry_policy_final_gate_eligible=False,
+        known_total_tokens=t1_snapshot.known_total_tokens,
+        unknown_usage_count=t1_snapshot.unknown_usage_count,
         usage_owner_source_id="P0R1-T1",
         count_in_target_total=False,
     )
