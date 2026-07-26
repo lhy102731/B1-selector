@@ -11,6 +11,7 @@ Production code is NEVER written — patches are always applied to the workspace
 from __future__ import annotations
 
 import ast
+import difflib
 import hashlib
 import json
 import operator
@@ -24,6 +25,8 @@ from .experiment_runner import CodeChangeExecutor, CodeChangeResult
 from .safety import assert_safe_path
 from .control_plane.contracts import SideEffect
 from .control_plane.sink_guard import (
+    AuthorizedPatchApplier,
+    AuthorizedSubprocess,
     ExecutionAuthorizationError,
     ExecutionInvocation,
     ExecutionSinkGuard,
@@ -310,6 +313,14 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         invocation=None,
         execution_lease=None,
         execution_invocation=None,
+        llm_lease=None,
+        llm_invocation=None,
+        execution_llm_lease=None,
+        execution_llm_invocation=None,
+        patch_lease=None,
+        patch_invocation=None,
+        execution_patch_lease=None,
+        execution_patch_invocation=None,
         authority_reader=None,
         repository_root: str | Path | None = None,
     ) -> CodeChangeResult:
@@ -319,6 +330,22 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         # positional API change for old callers.
         lease = lease if lease is not None else execution_lease
         invocation = invocation if invocation is not None else execution_invocation
+        llm_lease = llm_lease if llm_lease is not None else execution_llm_lease
+        llm_invocation = (
+            llm_invocation
+            if llm_invocation is not None
+            else execution_llm_invocation
+        )
+        patch_lease = patch_lease if patch_lease is not None else execution_patch_lease
+        patch_invocation = (
+            patch_invocation
+            if patch_invocation is not None
+            else execution_patch_invocation
+        )
+        if patch_lease is None:
+            patch_lease = lease
+        if patch_invocation is None:
+            patch_invocation = invocation
         if lease is None or invocation is None:
             return CodeChangeResult(
                 ok=False,
@@ -352,6 +379,14 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                 ok=False,
                 error=f"execution authorization rejected: {error}",
                 logs=["control-plane sink guard: patch intent rejected"],
+            )
+        if not isinstance(llm_lease, TaskExecutionLease) or not isinstance(
+            llm_invocation, ExecutionInvocation
+        ):
+            return CodeChangeResult(
+                ok=False,
+                error="LLM execution lease and invocation are required before patch generation",
+                logs=["control-plane sink guard: missing LLM authority"],
             )
         # 1. read task
         task_md = task_path.read_text(encoding="utf-8") if task_path.exists() else "# no task"
@@ -401,19 +436,33 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         prompt = self._build_patch_prompt(task_md, target_content, rel_file)
         self.last_prompt = prompt
 
-        # 4. call Claude CLI
+        # 4. call Claude CLI through the shared subprocess sink
+        def _authorized_llm_runner(command, **kwargs):
+            kwargs.setdefault("capture_output", True)
+            kwargs.setdefault("text", True)
+            kwargs.setdefault("encoding", "utf-8")
+            kwargs.setdefault("errors", "replace")
+            return subprocess.run(command, timeout=self.timeout, **kwargs)
+
+        llm_sink = AuthorizedSubprocess(
+            authority_reader=reader,
+            repository_root=repository_root or Path(__file__).resolve().parent.parent,
+            runner=_authorized_llm_runner,
+        )
         try:
-            proc = subprocess.run(
-                [self.binary, "-p", prompt],
-                capture_output=True, text=True, encoding="utf-8", errors="replace",
-                timeout=self.timeout, cwd=str(workspace),
-            )
+            proc = llm_sink.run(llm_lease, llm_invocation)
         except subprocess.TimeoutExpired:
             return CodeChangeResult(ok=False, error="Claude CLI timeout",
                                     logs=["timeout after {self.timeout}s"])
         except FileNotFoundError:
             return CodeChangeResult(ok=False, error="claude CLI not found",
                                     logs=["binary: {self.binary}"])
+        except ExecutionAuthorizationError as error:
+            return CodeChangeResult(
+                ok=False,
+                error=f"LLM execution authorization rejected: {error}",
+                logs=["control-plane sink guard: LLM intent rejected"],
+            )
 
         stdout = proc.stdout or ""
         self.last_stdout = stdout
@@ -458,19 +507,52 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             return CodeChangeResult(ok=False, error=f"FIND line not found in {rel_file}",
                                     logs=[f"FIND: {find_text[:100]}", stdout[:500]])
 
-        target_path.write_text(target_text, encoding="utf-8")
-        changes_log = [f"{rel_file}: find/replace applied"]
-
-        # Save replacement record for audit
-        _repl_path = workspace / "replace.diff"
-        assert_safe_path(_repl_path)
-        _repl_path.write_text(f"FIND:\n{find_text}\nREPLACE WITH:\n{replace_text}\n", encoding="utf-8")
+        diff_text = "".join(
+            difflib.unified_diff(
+                target_content.splitlines(keepends=True),
+                target_text.splitlines(keepends=True),
+                fromfile=f"a/{rel_file}",
+                tofile=f"b/{rel_file}",
+                lineterm="\n",
+            )
+        )
+        if not diff_text:
+            return CodeChangeResult(
+                ok=True,
+                changed_files=[],
+                deleted_files=[],
+                schema_changes=False,
+                git_commit=None,
+                logs=["Claude: replacement produced no content delta"],
+            )
+        patch_sink = AuthorizedPatchApplier(
+            authority_reader=reader,
+            repository_root=repository_root or Path(__file__).resolve().parent.parent,
+            runner=lambda command, **kwargs: subprocess.run(
+                command,
+                timeout=self.timeout,
+                **kwargs,
+            ),
+        )
+        try:
+            patch_sink.apply(
+                patch_lease,
+                patch_invocation,
+                diff_text,
+                audit_path=workspace / "replace.diff",
+            )
+        except (ExecutionAuthorizationError, OSError, ValueError) as error:
+            return CodeChangeResult(
+                ok=False,
+                error=f"patch application authorization rejected: {error}",
+                logs=["control-plane sink guard: patch mutation rejected"],
+            )
+        changes_log = [f"{rel_file}: authorized patch applied"]
 
         cc = self._extract_code_change(experiment)
         if cc and cc.get("change_type") == "modify_constant":
             verified, detail = _verify_modify_constant(target_path, cc)
             if not verified:
-                target_path.write_text(target_content, encoding="utf-8")
                 return CodeChangeResult(
                     ok=False,
                     error=f"semantic verification failed: {detail}",
@@ -485,10 +567,10 @@ class ClaudePatchExecutor(CodeChangeExecutor):
         # 7. compile gate — verify the patched file compiles
         _cg = compile_gate(workspace)
         if not _cg["ok"]:
-            # Restore original
-            target_path.write_text(target_content, encoding="utf-8")
+            # Rollback is performed by discarding the isolated workspace.
             return CodeChangeResult(ok=False, error=f"compile gate failed: {_cg['output'][:200]}",
-                                    logs=[_cg["output"][:500]])
+                                    logs=[_cg["output"][:500],
+                                          "discard the isolated workspace to roll back"])
 
         # 7b. Code_Reviewer gate (v4.0) — adversarial review before commit.
         # KB hard_constraints gate upstream covers already-frozen params.
@@ -551,11 +633,11 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                 # Parse verdict keyword; allow APPROVE without strict YAML.
                 verdict_upper = review_text.upper()
                 if "REJECT" in verdict_upper:
-                    target_path.write_text(target_content, encoding="utf-8")
                     return CodeChangeResult(
                         ok=False,
                         error=f"Code_Reviewer REJECT: {review_text[:400]}",
-                        logs=[f"kb_ctx: {_kb_ctx[:80]}...", review_text[:1500]],
+                        logs=[f"kb_ctx: {_kb_ctx[:80]}...", review_text[:1500],
+                              "discard the isolated workspace to roll back"],
                     )
                 if "REQUEST_CHANGES" in verdict_upper:
                     # Soft gate: REQUEST_CHANGES means proceed but record the note.
