@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
-from threading import Barrier, BrokenBarrierError
+from threading import Barrier, BrokenBarrierError, Event
 import unittest
 from unittest.mock import patch
 
@@ -722,6 +722,71 @@ class TrustedBootstrapTests(unittest.TestCase):
                     "EXPIRED",
                 )
                 self.assertEqual(reader.pending_outbox_count(), 2)
+
+    def test_claim_rechecks_expiry_after_waiting_for_the_write_lock(self) -> None:
+        clock = [datetime(2026, 7, 26, 4, 45, tzinfo=timezone.utc)]
+        clock_reads = [0]
+        claim_clock_sampled = Event()
+        actor = Actor("operator", "human", "invocation-expiry-after-lock")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        def read_clock() -> datetime:
+            clock_reads[0] += 1
+            if clock_reads[0] >= 2:
+                claim_clock_sampled.set()
+            return clock[0]
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=read_clock)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=clock[0] + timedelta(minutes=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                blocker = sqlite3.connect(authority_path, isolation_level=None)
+                blocker.execute("BEGIN IMMEDIATE")
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            authority.claim_authorization,
+                            envelope,
+                            expected_phase=Phase.P0,
+                            expected_attempt_id="p0r2-attempt-001",
+                            actor=actor,
+                            identity=identity,
+                        )
+                        claim_clock_sampled.wait(0.2)
+                        clock[0] += timedelta(minutes=2)
+                        blocker.rollback()
+                        with self.assertRaises(
+                            stores_module.AuthorizationExpiredError
+                        ):
+                            future.result(timeout=3)
+                finally:
+                    blocker.close()
+
+                self.assertEqual(
+                    AuthorityReader().authorization_state(
+                        envelope.authorization_ref
+                    ),
+                    "EXPIRED",
+                )
 
     def test_wrong_authorization_bindings_do_not_consume_the_envelope(self) -> None:
         now = datetime(2026, 7, 26, 5, 0, tzinfo=timezone.utc)

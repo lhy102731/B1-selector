@@ -1843,7 +1843,6 @@ class _AuthorityStore:
             or not isinstance(identity, AuthorityIdentity)
         ):
             raise AuthorizationRejectedError("authorization binding is invalid")
-        now = self._now()
         grant_id = f"grant_{secrets.token_hex(16)}"
         grant_secret = secrets.token_urlsafe(32)
         grant_secret_sha256 = hashlib.sha256(
@@ -1854,6 +1853,7 @@ class _AuthorityStore:
         ).hexdigest()
 
         def claim(connection: sqlite3.Connection) -> str:
+            now = self._now()
             row = connection.execute(
                 """
                 SELECT * FROM authorizations_v2
