@@ -29,6 +29,7 @@ from research_automation.control_plane.gates import (
 from research_automation.control_plane.stores import (
     AuthorityIdentity,
     AuthorityReader,
+    PhaseGateClosureConflictError,
 )
 from research_automation.control_plane.task_reports import (
     build_task_report_v2,
@@ -570,6 +571,16 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 "p0r2-attempt-001",
             )
             self.assertEqual(after_replay.pending_outbox_count, 1)
+
+    def test_closer_rejects_a_different_gate_for_closed_attempt(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            fixture.closer.close(fixture.report)
+            different_report = PhaseGateBuilder(
+                clock=lambda: datetime(2026, 7, 26, 8, 16, tzinfo=timezone.utc)
+            ).build(fixture.draft)
+
+            with self.assertRaises(PhaseGateClosureConflictError):
+                fixture.closer.close(different_report)
 
 
 if __name__ == "__main__":
