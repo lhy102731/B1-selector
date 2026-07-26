@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
+import json
+import logging
 import os
 from pathlib import Path
 import sqlite3
@@ -269,6 +272,78 @@ class TrustedBootstrapTests(unittest.TestCase):
             self.assertEqual(grant.attempt_id, "p0r2-attempt-001")
             self.assertEqual(grant.actor, actor)
             self.assertEqual(grant.identity, identity)
+
+    def test_authority_capability_secrets_never_enter_rendered_outputs(self) -> None:
+        now = datetime(2026, 7, 26, 2, 0, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-secret-test")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        authority_secret = "AUTHORIZATION_SECRET_SENTINEL"
+        grant_secret = "GRANT_SECRET_SENTINEL"
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ), patch.object(
+                stores_module.secrets,
+                "token_urlsafe",
+                side_effect=(
+                    authority_secret,
+                    grant_secret,
+                    "REPLAY_ATTEMPT_UNUSED_SECRET",
+                ),
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                with self.assertRaises(AuthorizationReplayError) as caught:
+                    authority.claim_authorization(
+                        envelope,
+                        expected_phase=Phase.P0,
+                        expected_attempt_id="p0r2-attempt-001",
+                        actor=actor,
+                        identity=identity,
+                    )
+
+            logger = logging.getLogger("control-plane-secret-test")
+            with self.assertLogs(logger, level="INFO") as captured:
+                logger.info("envelope=%r grant=%r", envelope, grant)
+            rendered = (
+                repr(envelope),
+                repr(grant),
+                json.dumps(envelope.to_public_dict(), sort_keys=True),
+                json.dumps(asdict(envelope), default=str, sort_keys=True),
+                json.dumps(asdict(grant), default=str, sort_keys=True),
+                str(caught.exception),
+                "\n".join(captured.output),
+                authority_path.read_bytes().decode("latin-1"),
+            )
+            for secret in (authority_secret, grant_secret):
+                for output in rendered:
+                    with self.subTest(secret=secret, output=output[:40]):
+                        self.assertNotIn(secret, output)
 
 
 if __name__ == "__main__":

@@ -138,6 +138,26 @@ class AuthorizationExpiredError(AuthorizationError):
     """Raised when an envelope is no longer valid."""
 
 
+class _BearerSecret:
+    """Opaque in-memory secret whose normal renderings are always redacted."""
+
+    __slots__ = ("__value",)
+
+    def __init__(self, value: str) -> None:
+        self.__value = _require_nonempty(value, "bearer secret")
+
+    def __repr__(self) -> str:
+        return "<redacted bearer secret>"
+
+    __str__ = __repr__
+
+    def __deepcopy__(self, _memo: dict[int, object]) -> _BearerSecret:
+        return self
+
+    def _reveal_for_authority_check(self) -> str:
+        return self.__value
+
+
 def _require_nonempty(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise ValueError(f"{field_name} must be a non-empty canonical string")
@@ -200,12 +220,13 @@ class AuthorizationEnvelope:
     identity: AuthorityIdentity
     expires_at: datetime
     allowed_side_effects: tuple[SideEffect, ...]
-    _bearer_secret: str = field(repr=False, compare=False)
+    _bearer_secret: _BearerSecret = field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _require_nonempty(self.authorization_ref, "authorization_ref")
         _require_nonempty(self.attempt_id, "attempt_id")
-        _require_nonempty(self._bearer_secret, "bearer secret")
+        if not isinstance(self._bearer_secret, _BearerSecret):
+            raise ValueError("bearer secret must be an opaque capability")
         if not isinstance(self.phase, Phase):
             raise ValueError("phase must be a Phase")
         if not isinstance(self.actor, Actor):
@@ -260,7 +281,7 @@ class AuthorityGrant:
     actor: Actor
     identity: AuthorityIdentity
     allowed_side_effects: tuple[SideEffect, ...]
-    _bearer_secret: str = field(repr=False, compare=False)
+    _bearer_secret: _BearerSecret = field(repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -585,7 +606,7 @@ class _AuthorityStore:
             identity=identity,
             expires_at=expiry,
             allowed_side_effects=allowed_side_effects,
-            _bearer_secret=bearer_secret,
+            _bearer_secret=_BearerSecret(bearer_secret),
         )
         allowed_effects_json = _effects_json(envelope.allowed_side_effects)
         secret_sha256 = hashlib.sha256(
@@ -654,7 +675,7 @@ class _AuthorityStore:
             grant_secret.encode("utf-8")
         ).hexdigest()
         envelope_secret_sha256 = hashlib.sha256(
-            envelope._bearer_secret.encode("utf-8")
+            envelope._bearer_secret._reveal_for_authority_check().encode("utf-8")
         ).hexdigest()
 
         def claim(connection: sqlite3.Connection) -> None:
@@ -785,7 +806,7 @@ class _AuthorityStore:
             actor=actor,
             identity=identity,
             allowed_side_effects=envelope.allowed_side_effects,
-            _bearer_secret=grant_secret,
+            _bearer_secret=_BearerSecret(grant_secret),
         )
 
 
