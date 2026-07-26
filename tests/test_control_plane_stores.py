@@ -916,6 +916,61 @@ class TrustedBootstrapTests(unittest.TestCase):
                     "EXPIRED",
                 )
 
+    def test_provision_rechecks_expiry_after_waiting_for_the_write_lock(self) -> None:
+        clock = [datetime(2026, 7, 26, 4, 50, tzinfo=timezone.utc)]
+        clock_sampled = Event()
+        actor = Actor("operator", "human", "invocation-provision-after-lock")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+
+        def read_clock() -> datetime:
+            clock_sampled.set()
+            return clock[0]
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=read_clock,
+                )
+                blocker = sqlite3.connect(authority_path, isolation_level=None)
+                blocker.execute("BEGIN IMMEDIATE")
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        future = pool.submit(
+                            authority._provision_authorization,
+                            phase=Phase.P0,
+                            attempt_id="p0r2-attempt-002",
+                            actor=actor,
+                            identity=identity,
+                            expires_at=clock[0] + timedelta(minutes=1),
+                            allowed_side_effects=(
+                                SideEffect.WRITE_CONTROL_PLANE,
+                            ),
+                        )
+                        clock_sampled.wait(0.2)
+                        clock[0] += timedelta(minutes=2)
+                        blocker.rollback()
+                        with self.assertRaises(
+                            stores_module.AuthorizationExpiredError
+                        ):
+                            future.result(timeout=3)
+                finally:
+                    blocker.close()
+
+                self.assertEqual(AuthorityReader().pending_outbox_count(), 0)
+
     def test_wrong_authorization_bindings_do_not_consume_the_envelope(self) -> None:
         now = datetime(2026, 7, 26, 5, 0, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-binding-test")

@@ -1566,12 +1566,7 @@ class _AuthorityStore:
         expires_at: datetime,
         allowed_side_effects: tuple[SideEffect, ...],
     ) -> AuthorizationEnvelope:
-        now = self._now()
         expiry = _require_aware_datetime(expires_at, "expires_at")
-        if expiry <= now:
-            raise AuthorizationExpiredError(
-                "authorization expiry must be later than issuance"
-        )
         authorization_ref = f"auth_{secrets.token_hex(16)}"
         envelope_draft = AuthorizationEnvelope(
             authorization_ref=authorization_ref,
@@ -1612,6 +1607,11 @@ class _AuthorityStore:
         ).hexdigest()
 
         def provision(connection: sqlite3.Connection) -> None:
+            now = self._now()
+            if envelope.expires_at <= now:
+                raise AuthorizationExpiredError(
+                    "authorization expiry must be later than issuance"
+                )
             connection.execute(
                 """
                 INSERT INTO authorizations_v2
