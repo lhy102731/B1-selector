@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from research_automation.task_queue import ExperimentTask, QueuePersistenceError, TaskQueue
 from research_automation.autonomous_runner import AutonomousRunnerV1, _kbase_writeback_enabled
+from research_automation.automation_controller import AutomationController
 from research_automation.experiment import StandardMetrics
 from research_automation.experiment_runner import RealBacktestExecutor
 from research_automation.patch_executor import ClaudePatchExecutor, _apply_patch_to_workspace
@@ -90,6 +91,19 @@ class TaskQueueRecoveryTests(unittest.TestCase):
 
 
 class BaselineFailFastTests(unittest.TestCase):
+    def test_controller_without_execution_lease_fails_before_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            output_root = Path(td) / "experiments"
+            controller = AutomationController(output_root=output_root)
+            result = controller.run_from_proposal(
+                "unauthorized",
+                {"hypothesis": "bounded", "scope": {}},
+            )
+
+            self.assertEqual("FAILED", result.status.value)
+            self.assertTrue(any("unauthorized" in item.lower() for item in result.logs))
+            self.assertFalse(output_root.exists())
+
     def test_failed_baseline_raises(self):
         runner = object.__new__(AutonomousRunnerV1)
         runner.project_root = None; runner.keep_scratch = False
