@@ -67,6 +67,14 @@ _ALLOWED_OPERATIONS = frozenset(
         "AUTONOMOUS",
         "EXPERIMENT",
         "DISCOVERY",
+        "REGISTRY_WRITE",
+        "SNAPSHOT_WRITE",
+        "HANDOFF_WRITE",
+        "KBASE_WRITE",
+        "EVOLUTION",
+        "BACKLOG",
+        "AUTORUN",
+        "WRITEBACK",
     }
 )
 _INTENT_NAMESPACE = "research_state/control_plane/p0r2/intents/"
@@ -721,6 +729,54 @@ class AuthorizedPatchApplier:
         return apply_result
 
 
+class AuthorizedPathMutation:
+    """Revalidate one exact set of paths immediately before a file mutation."""
+
+    def __init__(
+        self,
+        *,
+        authority_reader: AuthorityReader,
+        repository_root: str | Path,
+    ) -> None:
+        self._guard = ExecutionSinkGuard(
+            authority_reader=authority_reader,
+            repository_root=repository_root,
+        )
+
+    def authorize(
+        self,
+        lease: TaskExecutionLease | None,
+        invocation: ExecutionInvocation,
+        *,
+        operation: str,
+        effect: SideEffect,
+        module: str,
+        callable_name: str,
+        paths: Sequence[str | Path],
+    ) -> ExecutionPermit:
+        if not isinstance(lease, TaskExecutionLease):
+            raise ExecutionAuthorizationError("a live task lease is required")
+        if not isinstance(invocation, ExecutionInvocation):
+            raise ExecutionAuthorizationError("execution invocation is invalid")
+        permit = self._guard.authorize(lease, invocation)
+        if permit.operation != operation or permit.effect is not effect:
+            raise ExecutionAuthorizationError("path mutation operation/effect is invalid")
+        if (
+            invocation.runner.module != module
+            or invocation.runner.callable_name != callable_name
+        ):
+            raise ExecutionAuthorizationError("path mutation entry identity is invalid")
+        resolved_paths = tuple(
+            _resolve_absolute_path(str(path), field_name="mutation_path")
+            for path in paths
+        )
+        if permit.resource_paths != resolved_paths:
+            raise ExecutionAuthorizationError(
+                "path mutation resources differ from immutable intent"
+            )
+        return permit
+
+
 def _parse_patch_target_paths(diff_text: str) -> tuple[str, ...]:
     """Return canonical relative paths from a deliberately narrow unified diff."""
     lines = diff_text.splitlines()
@@ -784,6 +840,7 @@ def _is_contained(candidate: Path, root: Path) -> bool:
 
 
 __all__ = [
+    "AuthorizedPathMutation",
     "AuthorizedPatchApplier",
     "AuthorizedSubprocess",
     "ExecutionAuthorizationError",
