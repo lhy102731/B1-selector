@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.stores import (
+    AuthorityReader,
     StoreAlreadyBootstrappedError,
     StorePairDescriptor,
     StoreConfigurationError,
@@ -186,6 +187,34 @@ class TrustedBootstrapTests(unittest.TestCase):
                 }
 
             self.assertEqual(after, before)
+
+    def test_ordinary_authority_reader_has_no_generic_sql_capability(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                receipt = stores_module._trusted_bootstrap()
+                reader = AuthorityReader()
+                identity = reader.read_identity()
+
+            self.assertEqual(identity.installation_id, receipt.installation_id)
+            self.assertEqual(identity.store_kind, "AUTHORITY_STORE")
+            self.assertFalse(hasattr(reader, "__dict__"))
+            for generic_api in (
+                "connection",
+                "execute",
+                "read",
+                "transaction",
+                "unit_of_work",
+                "write",
+            ):
+                with self.subTest(generic_api=generic_api):
+                    self.assertFalse(hasattr(reader, generic_api))
 
 
 if __name__ == "__main__":

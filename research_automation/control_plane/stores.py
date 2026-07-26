@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import secrets
 
+from .sqlite_uow import _SqliteUnitOfWork, _StoreSpec
+
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 _AUTHORITY_STORE_PATH = (
@@ -62,6 +64,15 @@ class StorePairDescriptor:
     installation_id: str
     authority_kind: str
     operational_kind: str
+
+
+@dataclass(frozen=True)
+class StoreIdentity:
+    """Safe identity fields returned by an ordinary store reader."""
+
+    installation_id: str
+    store_kind: str
+    schema_version: int
 
 
 def _path_identity(path: str | Path) -> str:
@@ -203,53 +214,77 @@ def _trusted_bootstrap() -> StoreBootstrapReceipt:
     )
 
 
-def _read_store_metadata(path: Path, metadata_table: str) -> dict[str, str]:
-    database_uri = path.resolve(strict=False).as_uri()
-    try:
-        connection = sqlite3.connect(
-            f"{database_uri}?mode=ro",
-            uri=True,
-            isolation_level=None,
+def _read_store_identity(spec: _StoreSpec) -> StoreIdentity:
+    metadata = _SqliteUnitOfWork(spec)._read(
+        lambda connection: {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute(
+                f"SELECT key, value FROM {spec.metadata_table}"
+            )
+        }
+    )
+    installation_id = metadata.get("installation_id", "")
+    if (
+        len(installation_id) != 64
+        or any(character not in "0123456789abcdef" for character in installation_id)
+    ):
+        raise StoreBootstrapError("control-plane store identity is invalid")
+    return StoreIdentity(
+        installation_id=installation_id,
+        store_kind=spec.store_kind,
+        schema_version=spec.schema_version,
+    )
+
+
+class AuthorityReader:
+    """Read-only authority queries with no generic SQL surface."""
+
+    __slots__ = ()
+
+    def read_identity(self) -> StoreIdentity:
+        return _read_store_identity(
+            _StoreSpec(
+                path=_AUTHORITY_STORE_PATH,
+                store_kind="AUTHORITY_STORE",
+                metadata_table="authority_meta",
+                schema_version=1,
+            )
         )
-        try:
-            return {
-                str(key): str(value)
-                for key, value in connection.execute(
-                    f"SELECT key, value FROM {metadata_table}"
-                )
-            }
-        finally:
-            connection.close()
-    except (OSError, ValueError, sqlite3.DatabaseError) as error:
-        raise StoreBootstrapError("control-plane store pair is unavailable") from error
+
+
+class OperationalReader:
+    """Read-only journal queries with no generic SQL surface."""
+
+    __slots__ = ()
+
+    def read_identity(self) -> StoreIdentity:
+        return _read_store_identity(
+            _StoreSpec(
+                path=_OPERATIONAL_STORE_PATH,
+                store_kind="OPERATIONAL_JOURNAL",
+                metadata_table="operational_meta",
+                schema_version=1,
+            )
+        )
 
 
 def read_store_pair_descriptor() -> StorePairDescriptor:
     """Read only the fixed pair identity; never return a SQL connection."""
 
-    authority = _read_store_metadata(_AUTHORITY_STORE_PATH, "authority_meta")
-    operational = _read_store_metadata(
-        _OPERATIONAL_STORE_PATH,
-        "operational_meta",
-    )
-    installation_id = authority.get("installation_id")
-    if (
-        not installation_id
-        or operational.get("installation_id") != installation_id
-        or authority.get("store_kind") != "AUTHORITY_STORE"
-        or operational.get("store_kind") != "OPERATIONAL_JOURNAL"
-        or authority.get("schema_version") != "1"
-        or operational.get("schema_version") != "1"
-    ):
+    authority = AuthorityReader().read_identity()
+    operational = OperationalReader().read_identity()
+    if operational.installation_id != authority.installation_id:
         raise StoreBootstrapError("control-plane store pair identity mismatch")
     return StorePairDescriptor(
-        installation_id=installation_id,
-        authority_kind=authority["store_kind"],
-        operational_kind=operational["store_kind"],
+        installation_id=authority.installation_id,
+        authority_kind=authority.store_kind,
+        operational_kind=operational.store_kind,
     )
 
 
 __all__ = [
+    "AuthorityReader",
+    "OperationalReader",
     "StoreAlreadyBootstrappedError",
     "StoreBootstrapError",
     "StoreBootstrapIncompleteError",
@@ -257,5 +292,6 @@ __all__ = [
     "StoreConfigurationError",
     "StoreError",
     "StorePairDescriptor",
+    "StoreIdentity",
     "read_store_pair_descriptor",
 ]
