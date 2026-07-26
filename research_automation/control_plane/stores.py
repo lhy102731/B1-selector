@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -37,6 +38,22 @@ _OPERATIONAL_STORE_PATH = (
     / "control_plane"
     / "operational"
     / "operational.sqlite3"
+)
+_TASK_SPEC_FIELDS = frozenset(
+    {
+        "task_id",
+        "objective",
+        "dependencies",
+        "idempotency_key",
+        "task_spec_ref",
+        "task_spec_sha256",
+        "requirements",
+        "allowed_files",
+        "forbidden_files",
+        "baseline_ref",
+        "baseline_sha256",
+        "input_evidence_refs",
+    }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _AUTHORITY_SCHEMA = (
@@ -76,6 +93,29 @@ _AUTHORITY_SCHEMA = (
         allowed_effects_json TEXT NOT NULL,
         state TEXT NOT NULL CHECK(state IN ('ACTIVE', 'CLOSED', 'REVOKED')),
         created_at TEXT NOT NULL
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE task_tickets_v2 (
+        ticket_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES phase_grants_v2(grant_id),
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        task_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        task_spec_ref TEXT NOT NULL,
+        task_spec_sha256 TEXT NOT NULL,
+        task_spec_payload_json TEXT NOT NULL,
+        request_sha256 TEXT NOT NULL,
+        secret_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+            state IN ('ISSUED', 'IN_PROGRESS', 'SUCCEEDED', 'FAILED', 'IN_DOUBT')
+        ),
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        completed_at TEXT,
+        evidence_ref TEXT,
+        UNIQUE(grant_id, idempotency_key)
     ) WITHOUT ROWID
     """,
     """
@@ -153,6 +193,14 @@ class OutboxConflictError(StoreError):
 
 class PendingOutboxError(StoreError):
     """Raised when phase close is attempted before authority mirroring drains."""
+
+
+class TaskTicketError(StoreError):
+    """Base error for trusted task-ticket operations."""
+
+
+class TaskTicketIdempotencyError(TaskTicketError):
+    """Raised when one idempotency key is reused for different semantics."""
 
 
 class _BearerSecret:
@@ -298,6 +346,22 @@ class AuthorityGrant:
     actor: Actor
     identity: AuthorityIdentity
     allowed_side_effects: tuple[SideEffect, ...]
+    _bearer_secret: _BearerSecret = field(repr=False, compare=False)
+
+
+@dataclass(frozen=True, slots=True)
+class TaskAuthorityTicket:
+    ticket_id: str
+    grant_id: str
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    task_id: str
+    idempotency_key: str
+    task_spec_ref: str
+    task_spec_sha256: str
+    actor: Actor
+    identity: AuthorityIdentity
     _bearer_secret: _BearerSecret = field(repr=False, compare=False)
 
 
@@ -623,6 +687,18 @@ class AuthorityReader:
 
         return _SqliteUnitOfWork(_authority_spec())._read(read_state)
 
+    def task_ticket_state(self, ticket_id: str) -> str | None:
+        _require_nonempty(ticket_id, "ticket_id")
+
+        def read_state(connection: sqlite3.Connection) -> str | None:
+            row = connection.execute(
+                "SELECT state FROM task_tickets_v2 WHERE ticket_id = ?",
+                (ticket_id,),
+            ).fetchone()
+            return None if row is None else str(row["state"])
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read_state)
+
 
 class OperationalReader:
     """Read-only journal queries with no generic SQL surface."""
@@ -711,6 +787,68 @@ def _effects_json(effects: tuple[SideEffect, ...]) -> str:
         [effect.value for effect in effects],
         separators=(",", ":"),
     )
+
+
+def _require_unique_string_array(value: object, field_name: str) -> None:
+    if not isinstance(value, list):
+        raise TaskTicketError(f"{field_name} must be an array")
+    if any(
+        not isinstance(item, str) or not item or item != item.strip()
+        for item in value
+    ):
+        raise TaskTicketError(
+            f"{field_name} must contain canonical non-empty strings"
+        )
+    if len(set(value)) != len(value):
+        raise TaskTicketError(f"{field_name} must not contain duplicates")
+
+
+def _canonical_task_spec(task_spec: Mapping[str, object]) -> str:
+    if not isinstance(task_spec, Mapping) or set(task_spec) != _TASK_SPEC_FIELDS:
+        raise TaskTicketError("task spec has an invalid field contract")
+    for field_name in (
+        "task_id",
+        "objective",
+        "idempotency_key",
+        "task_spec_ref",
+        "baseline_ref",
+    ):
+        try:
+            _require_nonempty(task_spec[field_name], field_name)
+        except ValueError as error:
+            raise TaskTicketError(str(error)) from error
+    for field_name in ("task_spec_sha256", "baseline_sha256"):
+        try:
+            _require_sha256(task_spec[field_name], field_name)
+        except ValueError as error:
+            raise TaskTicketError(str(error)) from error
+    for field_name in (
+        "dependencies",
+        "allowed_files",
+        "forbidden_files",
+        "input_evidence_refs",
+    ):
+        _require_unique_string_array(task_spec[field_name], field_name)
+    requirements = task_spec["requirements"]
+    required_fields = {
+        "required_test_receipt_ids",
+        "required_review_receipt_ids",
+        "required_evidence_ids",
+    }
+    if not isinstance(requirements, Mapping) or set(requirements) != required_fields:
+        raise TaskTicketError("task spec requirements contract is invalid")
+    for field_name in sorted(required_fields):
+        _require_unique_string_array(requirements[field_name], field_name)
+    try:
+        return json.dumps(
+            task_spec,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise TaskTicketError("task spec is not canonical JSON") from error
 
 
 class _AuthorityStore:
@@ -888,6 +1026,157 @@ class _AuthorityStore:
 
         _SqliteUnitOfWork(_authority_spec())._write(provision)
         return envelope
+
+    @staticmethod
+    def _require_active_grant(
+        connection: sqlite3.Connection,
+        grant: AuthorityGrant,
+    ) -> sqlite3.Row:
+        if not isinstance(grant, AuthorityGrant):
+            raise AuthorizationRejectedError("authority grant is invalid")
+        row = connection.execute(
+            "SELECT * FROM phase_grants_v2 WHERE grant_id = ?",
+            (grant.grant_id,),
+        ).fetchone()
+        supplied_secret_sha256 = hashlib.sha256(
+            grant._bearer_secret._reveal_for_authority_check().encode("utf-8")
+        ).hexdigest()
+        if row is None or row["state"] != "ACTIVE":
+            raise AuthorizationRejectedError("authority grant is not active")
+        stored_binding = (
+            row["authorization_ref"],
+            row["phase"],
+            row["attempt_id"],
+            row["actor_id"],
+            row["actor_type"],
+            row["invocation_id"],
+            row["plan_hash"],
+            row["scope_hash"],
+            row["instruction_policy_hash"],
+            row["allowed_effects_json"],
+        )
+        supplied_binding = (
+            grant.authorization_ref,
+            grant.phase.value,
+            grant.attempt_id,
+            grant.actor.actor_id,
+            grant.actor.actor_type,
+            grant.actor.invocation_id,
+            grant.identity.plan_hash,
+            grant.identity.scope_hash,
+            grant.identity.instruction_policy_hash,
+            _effects_json(grant.allowed_side_effects),
+        )
+        if stored_binding != supplied_binding or not hmac.compare_digest(
+            str(row["secret_sha256"]),
+            supplied_secret_sha256,
+        ):
+            raise AuthorizationRejectedError("authority grant is invalid")
+        return row
+
+    def _issue_task_ticket(
+        self,
+        grant: AuthorityGrant,
+        task_spec: Mapping[str, object],
+    ) -> TaskAuthorityTicket:
+        payload_json = _canonical_task_spec(task_spec)
+        request_sha256 = hashlib.sha256(
+            b"control_plane.task_spec_binding.v1\0"
+            + payload_json.encode("utf-8")
+        ).hexdigest()
+        idempotency_key = str(task_spec["idempotency_key"])
+        ticket_id = hashlib.sha256(
+            b"control_plane.task_ticket.v2\0"
+            + grant.grant_id.encode("utf-8")
+            + b"\0"
+            + idempotency_key.encode("utf-8")
+        ).hexdigest()
+        ticket_secret_value = hmac.new(
+            grant._bearer_secret._reveal_for_authority_check().encode("utf-8"),
+            request_sha256.encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()
+        ticket_secret_sha256 = hashlib.sha256(
+            ticket_secret_value.encode("utf-8")
+        ).hexdigest()
+        now = self._now()
+
+        def issue(connection: sqlite3.Connection) -> None:
+            self._require_active_grant(connection, grant)
+            existing = connection.execute(
+                """
+                SELECT request_sha256 FROM task_tickets_v2
+                WHERE grant_id = ? AND idempotency_key = ?
+                """,
+                (grant.grant_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if not hmac.compare_digest(
+                    str(existing["request_sha256"]),
+                    request_sha256,
+                ):
+                    raise TaskTicketIdempotencyError(
+                        "task-ticket idempotency key changed semantics"
+                    )
+                return
+            connection.execute(
+                """
+                INSERT INTO task_tickets_v2
+                (ticket_id, grant_id, phase, attempt_id, task_id,
+                 idempotency_key, task_spec_ref, task_spec_sha256,
+                 task_spec_payload_json, request_sha256, secret_sha256,
+                 state, created_at, started_at, completed_at, evidence_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED', ?,
+                        NULL, NULL, NULL)
+                """,
+                (
+                    ticket_id,
+                    grant.grant_id,
+                    grant.phase.value,
+                    grant.attempt_id,
+                    str(task_spec["task_id"]),
+                    idempotency_key,
+                    str(task_spec["task_spec_ref"]),
+                    str(task_spec["task_spec_sha256"]),
+                    payload_json,
+                    request_sha256,
+                    ticket_secret_sha256,
+                    _utc_text(now),
+                ),
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="TASK_TICKET_ISSUED",
+                aggregate_id=ticket_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "grant_id": grant.grant_id,
+                    "authorization_ref": grant.authorization_ref,
+                    "phase": grant.phase.value,
+                    "attempt_id": grant.attempt_id,
+                    "task_id": task_spec["task_id"],
+                    "task_spec_ref": task_spec["task_spec_ref"],
+                    "task_spec_sha256": task_spec["task_spec_sha256"],
+                    "request_sha256": request_sha256,
+                },
+                created_at=now,
+            )
+
+        _SqliteUnitOfWork(_authority_spec())._write(issue)
+        return TaskAuthorityTicket(
+            ticket_id=ticket_id,
+            grant_id=grant.grant_id,
+            authorization_ref=grant.authorization_ref,
+            phase=grant.phase,
+            attempt_id=grant.attempt_id,
+            task_id=str(task_spec["task_id"]),
+            idempotency_key=idempotency_key,
+            task_spec_ref=str(task_spec["task_spec_ref"]),
+            task_spec_sha256=str(task_spec["task_spec_sha256"]),
+            actor=grant.actor,
+            identity=grant.identity,
+            _bearer_secret=_BearerSecret(ticket_secret_value),
+        )
 
     def claim_authorization(
         self,
@@ -1205,5 +1494,8 @@ __all__ = [
     "StoreError",
     "StorePairDescriptor",
     "StoreIdentity",
+    "TaskAuthorityTicket",
+    "TaskTicketError",
+    "TaskTicketIdempotencyError",
     "read_store_pair_descriptor",
 ]

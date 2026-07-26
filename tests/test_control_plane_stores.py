@@ -829,6 +829,76 @@ class TrustedBootstrapTests(unittest.TestCase):
                 )
                 self.assertEqual(AuthorityReader().pending_outbox_count(), 2)
 
+    def test_task_ticket_idempotency_requires_identical_task_spec(self) -> None:
+        now = datetime(2026, 7, 26, 6, 0, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-task-ticket")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        task_spec = {
+            "task_id": "P0R2-T1-STORE-TRACER",
+            "objective": "Prove task ticket idempotency.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-store-tracer-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/store.json",
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": ["store-tests"],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_automation/control_plane/stores.py"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
+            "baseline_sha256": "e" * 64,
+            "input_evidence_refs": [],
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap()
+                authority = stores_module._AuthorityStore(clock=lambda: now)
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+
+                first = authority._issue_task_ticket(grant, task_spec)
+                replay = authority._issue_task_ticket(grant, task_spec)
+                changed_spec = dict(task_spec)
+                changed_spec["objective"] = "Different task semantics."
+                with self.assertRaises(
+                    stores_module.TaskTicketIdempotencyError
+                ):
+                    authority._issue_task_ticket(grant, changed_spec)
+
+                self.assertEqual(replay.ticket_id, first.ticket_id)
+                self.assertEqual(replay.task_id, first.task_id)
+                self.assertEqual(
+                    AuthorityReader().task_ticket_state(first.ticket_id),
+                    "ISSUED",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
