@@ -10,7 +10,9 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-project_root = Path(__file__).parent
+project_root = Path(__file__).resolve()
+while not (project_root / 'AGENTS.md').exists() and project_root != project_root.parent:
+    project_root = project_root.parent
 sys.path.insert(0, str(project_root))
 
 from utils.csv_manager import CSVManager
@@ -183,8 +185,11 @@ class DetailedBacktest:
 
 
 class DetailedBacktestEngine:
-    def __init__(self, data_dir="data"):
-        self.csv_manager = CSVManager(data_dir)
+    def __init__(self, data_dir=None):
+        data_path = Path(data_dir) if data_dir is not None else project_root / "data"
+        if not data_path.is_absolute():
+            data_path = project_root / data_path
+        self.csv_manager = CSVManager(str(data_path))
         self.cases = B1_PERFECT_CASES
         self.case_features = {}
 
@@ -261,8 +266,10 @@ class DetailedBacktestEngine:
         df_out = pd.DataFrame(results)
         df_out = df_out[['name', 'code', 'breakout_date', 'selected_by_b1', 'fail_reason',
                          'surge_start_date', 'best_similarity', 'best_match_case', 'similarity_ge_75']]
-        df_out.to_csv("backtest_detailed_results.csv", index=False, encoding='utf-8-sig')
-        print("\n详细结果已保存至 backtest_detailed_results.csv")
+        output_path = project_root / 'artifacts' / 'research' / 'b1' / 'manual' / 'backtest_detailed_results.csv'
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        df_out.to_csv(output_path, index=False, encoding='utf-8-sig')
+        print(f"\n详细结果已保存至 {output_path}")
 
         # 控制台打印未选出原因列表
         print("\n未选出案例及原因:")
