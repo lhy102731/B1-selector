@@ -360,18 +360,32 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     "callable:research_automation.autonomous_runner:"
                     "AutonomousRunnerV1.run",
                     "AutonomousRunnerV1.run",
+                    [
+                        "READ",
+                        "WRITE_STAGING",
+                        "RUN_RESEARCH",
+                        "WRITE_KBASE",
+                        "GIT_MUTATION",
+                    ],
                 ),
                 (
                     "research_automation/discovery_execution_bridge.py",
                     "callable:research_automation.discovery_execution_bridge:"
                     "execute_plan",
                     "execute_plan",
+                    ["WRITE_STAGING", "RUN_RESEARCH"],
                 ),
                 (
                     "research_automation/kbase_ag2_full_cycle.py",
                     "callable:research_automation.kbase_ag2_full_cycle:"
                     "run_kbase_ag2_full_cycle",
                     "run_kbase_ag2_full_cycle",
+                    [
+                        "READ",
+                        "WRITE_STAGING",
+                        "RUN_RESEARCH",
+                        "GIT_MUTATION",
+                    ],
                 ),
             )
             freeze_files: list[dict[str, object]] = []
@@ -389,7 +403,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     "bytes": len(gitattributes_bytes),
                 }
             )
-            for path_text, _, _ in seam_specs:
+            for path_text, _, _, _ in seam_specs:
                 source_path = root.joinpath(*path_text.split("/"))
                 source_path.parent.mkdir(parents=True, exist_ok=True)
                 source_bytes = f"# fixture {path_text}\n".encode("utf-8")
@@ -494,7 +508,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     "source": "filesystem_inventory",
                 },
             ]
-            for path_text, entry_id, callable_name in seam_specs:
+            for path_text, entry_id, callable_name, effects in seam_specs:
                 inventory_entries.append(
                     {
                         "entry_id": entry_id,
@@ -505,7 +519,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "content_sha256": seam_digests[path_text],
                         "disposition": "LEGACY_UNAUDITED",
                         "trust_state": "legacy_unaudited",
-                        "declared_side_effects": ["RUN_RESEARCH"],
+                        "declared_side_effects": effects,
                         "declared_phase": None,
                         "resource_roots": [],
                         "external_metadata": {},

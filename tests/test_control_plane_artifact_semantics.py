@@ -202,22 +202,31 @@ class FinalInventoryTests(unittest.TestCase):
             "research_automation/autonomous_runner.py",
             "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run",
             "AutonomousRunnerV1.run",
+            [
+                "READ",
+                "WRITE_STAGING",
+                "RUN_RESEARCH",
+                "WRITE_KBASE",
+                "GIT_MUTATION",
+            ],
         ),
         (
             "research_automation/discovery_execution_bridge.py",
             "callable:research_automation.discovery_execution_bridge:execute_plan",
             "execute_plan",
+            ["WRITE_STAGING", "RUN_RESEARCH"],
         ),
         (
             "research_automation/kbase_ag2_full_cycle.py",
             "callable:research_automation.kbase_ag2_full_cycle:run_kbase_ag2_full_cycle",
             "run_kbase_ag2_full_cycle",
+            ["READ", "WRITE_STAGING", "RUN_RESEARCH", "GIT_MUTATION"],
         ),
     )
 
     def _freeze(self, root: Path) -> dict[str, object]:
         files: list[dict[str, object]] = []
-        for path, _, _ in self.seam_specs:
+        for path, _, _, _ in self.seam_specs:
             target = root.joinpath(*path.split("/"))
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(f"# {path}\n".encode("utf-8"))
@@ -310,7 +319,7 @@ class FinalInventoryTests(unittest.TestCase):
                 "source": "filesystem_inventory",
             },
         ]
-        for path, entry_id, callable_name in self.seam_specs:
+        for path, entry_id, callable_name, effects in self.seam_specs:
             entries.append(
                 {
                     "entry_id": entry_id,
@@ -321,7 +330,7 @@ class FinalInventoryTests(unittest.TestCase):
                     "content_sha256": digests[path],
                     "disposition": "LEGACY_UNAUDITED",
                     "trust_state": "legacy_unaudited",
-                    "declared_side_effects": ["RUN_RESEARCH"],
+                    "declared_side_effects": effects,
                     "declared_phase": None,
                     "resource_roots": [],
                     "external_metadata": {},
@@ -392,6 +401,68 @@ class FinalInventoryTests(unittest.TestCase):
             entries[1]["entry_id"] = entries[0]["entry_id"]
 
             with self.assertRaises(ArtifactSemanticError):
+                self._validate(inventory, freeze)
+
+    def test_inventory_rejects_swapped_required_import_seam_bindings(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            freeze = self._freeze(root)
+            inventory = self._inventory(freeze)
+            entries = inventory["entries"]
+            self.assertIsInstance(entries, list)
+            seams = [entry for entry in entries if entry["kind"] == "python_callable"]
+            seams[0]["entry_id"], seams[1]["entry_id"] = (
+                seams[1]["entry_id"],
+                seams[0]["entry_id"],
+            )
+            seams[0]["callable_name"], seams[1]["callable_name"] = (
+                seams[1]["callable_name"],
+                seams[0]["callable_name"],
+            )
+            entries.sort(
+                key=lambda item: (item["kind"], item["path"], item["entry_id"])
+            )
+            inventory["inventory_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in inventory.items()
+                    if key != "inventory_payload_sha256"
+                }
+            )
+
+            with self.assertRaisesRegex(
+                ArtifactSemanticError,
+                "required import seam binding",
+            ):
+                self._validate(inventory, freeze)
+
+    def test_inventory_rejects_a_scheduler_with_nonproduction_identity(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            freeze = self._freeze(root)
+            inventory = self._inventory(freeze)
+            entries = inventory["entries"]
+            self.assertIsInstance(entries, list)
+            scheduler = next(
+                entry
+                for entry in entries
+                if entry["entry_id"] == "external:scheduler:/A股选股"
+            )
+            scheduler["actor_type"] = "human"
+            scheduler["disposition"] = "ADMIN_ONLY"
+            scheduler["trust_state"] = "admin_only"
+            inventory["inventory_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in inventory.items()
+                    if key != "inventory_payload_sha256"
+                }
+            )
+
+            with self.assertRaisesRegex(
+                ArtifactSemanticError,
+                "scheduler binding",
+            ):
                 self._validate(inventory, freeze)
 
 

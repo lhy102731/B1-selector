@@ -262,13 +262,35 @@ _POLICY_TOP_LEVEL_FIELDS = frozenset(
         "policy_payload_sha256",
     }
 )
-_REQUIRED_IMPORT_SEAM_IDS = frozenset(
-    {
-        "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run",
-        "callable:research_automation.discovery_execution_bridge:execute_plan",
-        "callable:research_automation.kbase_ag2_full_cycle:run_kbase_ag2_full_cycle",
-    }
-)
+_REQUIRED_IMPORT_SEAM_BINDINGS = {
+    "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run": {
+        "path": "research_automation/autonomous_runner.py",
+        "callable_name": "AutonomousRunnerV1.run",
+        "declared_side_effects": [
+            "READ",
+            "WRITE_STAGING",
+            "RUN_RESEARCH",
+            "WRITE_KBASE",
+            "GIT_MUTATION",
+        ],
+    },
+    "callable:research_automation.discovery_execution_bridge:execute_plan": {
+        "path": "research_automation/discovery_execution_bridge.py",
+        "callable_name": "execute_plan",
+        "declared_side_effects": ["WRITE_STAGING", "RUN_RESEARCH"],
+    },
+    "callable:research_automation.kbase_ag2_full_cycle:run_kbase_ag2_full_cycle": {
+        "path": "research_automation/kbase_ag2_full_cycle.py",
+        "callable_name": "run_kbase_ag2_full_cycle",
+        "declared_side_effects": [
+            "READ",
+            "WRITE_STAGING",
+            "RUN_RESEARCH",
+            "GIT_MUTATION",
+        ],
+    },
+}
+_REQUIRED_IMPORT_SEAM_IDS = frozenset(_REQUIRED_IMPORT_SEAM_BINDINGS)
 _REQUIRED_SCHEDULER_ENTRY_ID = "external:scheduler:/A\u80a1\u9009\u80a1"
 _SCHEDULER_TOP_LEVEL_FIELDS = frozenset(
     {
@@ -654,8 +676,63 @@ def validate_final_inventory(
     missing_seams = _REQUIRED_IMPORT_SEAM_IDS - entry_ids
     if missing_seams:
         raise ArtifactSemanticError("final inventory is missing required import seams")
+    entries_by_id = {str(entry["entry_id"]): entry for entry in entries}
+    for entry_id, expected in _REQUIRED_IMPORT_SEAM_BINDINGS.items():
+        entry = entries_by_id[entry_id]
+        actual_binding = {
+            "path": entry["path"],
+            "kind": entry["kind"],
+            "callable_name": entry["callable_name"],
+            "actor_type": entry["actor_type"],
+            "disposition": entry["disposition"],
+            "trust_state": entry["trust_state"],
+            "declared_side_effects": entry["declared_side_effects"],
+            "declared_phase": entry["declared_phase"],
+            "resource_roots": entry["resource_roots"],
+            "external_metadata": entry["external_metadata"],
+            "source": entry["source"],
+        }
+        expected_binding = {
+            **expected,
+            "kind": "python_callable",
+            "actor_type": "legacy_runner",
+            "disposition": "LEGACY_UNAUDITED",
+            "trust_state": "legacy_unaudited",
+            "declared_phase": None,
+            "resource_roots": [],
+            "external_metadata": {},
+            "source": "required_import_seam",
+        }
+        if actual_binding != expected_binding:
+            raise ArtifactSemanticError(
+                f"required import seam binding is invalid: {entry_id}"
+            )
     if _REQUIRED_SCHEDULER_ENTRY_ID not in entry_ids:
         raise ArtifactSemanticError("final inventory is missing scheduler evidence")
+    scheduler_entry = entries_by_id[_REQUIRED_SCHEDULER_ENTRY_ID]
+    scheduler_binding = {
+        "path": scheduler_entry["path"],
+        "kind": scheduler_entry["kind"],
+        "actor_type": scheduler_entry["actor_type"],
+        "disposition": scheduler_entry["disposition"],
+        "trust_state": scheduler_entry["trust_state"],
+        "declared_side_effects": scheduler_entry["declared_side_effects"],
+        "declared_phase": scheduler_entry["declared_phase"],
+        "resource_roots": scheduler_entry["resource_roots"],
+        "source": scheduler_entry["source"],
+    }
+    if scheduler_binding != {
+        "path": "/A股选股",
+        "kind": "external_scheduler",
+        "actor_type": "scheduler",
+        "disposition": "PRODUCTION_DAILY",
+        "trust_state": "production_daily",
+        "declared_side_effects": [],
+        "declared_phase": None,
+        "resource_roots": [],
+        "source": "external_scheduler_inventory",
+    }:
+        raise ArtifactSemanticError("required scheduler binding is invalid")
     freeze_files = freeze_manifest.get("files")
     if not isinstance(freeze_files, list):
         raise ArtifactSemanticError("code-freeze files are unavailable")
