@@ -245,6 +245,11 @@ control_layer: {}
                 'control_layer:\n  note: "${UNDECLARED_PUBLIC_VALUE:-default}"\n',
                 "public environment reference",
             ),
+            (
+                "      extra_params:\n"
+                '        note: "${UNDECLARED_PUBLIC_VALUE:-default}"\n',
+                "public environment reference",
+            ),
         )
         for replacement, message in variants:
             with self.subTest(message=message), TemporaryDirectory() as temporary:

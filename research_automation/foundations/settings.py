@@ -719,7 +719,7 @@ def _validate_secret_environment_reference(
     if isinstance(value, str):
         match = _ENV_REFERENCE.fullmatch(value)
         is_typed_profile_field = (
-            len(path) >= 4
+            len(path) == 4
             and path[0] == "llm"
             and path[1] == "profiles"
             and path[3] in _PROFILE_REFERENCE_FIELDS
@@ -1147,7 +1147,6 @@ def load_project_settings(
         )
     credential_names = frozenset(credential_environment_names)
     _validate_credential_reference_scope(raw, credential_names)
-    _validate_secret_environment_reference(raw, credential_names)
     _validate_reference_integrity(raw, set(profiles_raw))
     consumed_environment_names = (
         _referenced_environment_names(raw) - credential_names
@@ -1204,6 +1203,7 @@ def load_project_settings(
             sources,
             credential_names,
         )
+    _validate_secret_environment_reference(raw, credential_names)
     default_profile = _resolve_reference(llm.get("default", "openai"), sources)
     if not isinstance(default_profile, str):
         raise ProjectSettingsError("default profile is invalid")
