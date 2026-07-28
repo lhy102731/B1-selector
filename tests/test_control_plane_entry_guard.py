@@ -173,6 +173,36 @@ class EntryInventoryTests(unittest.TestCase):
             all(by_path[path].disposition == "PRODUCTION_DAILY" for path in runtime_files)
         )
 
+    def test_scan_classifies_the_observed_ths_daily_chain_without_promoting_run_select1(self) -> None:
+        production_daily_paths = {
+            "tools/update_today_ths.py",
+            "tools/update_ths_market_assets.py",
+            "tools/backfill_daily_pcf_baostock.py",
+            "build_indicators_cache.py",
+            "tools/select_etf_candidates.py",
+            "backtest_brick_v2.py",
+            "filter_exec_reduce.py",
+            "tools/ths_yuanhang_bridge/build.ps1",
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for relative in production_daily_paths | {"run_select1.bat"}:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("pass\n", encoding="utf-8")
+
+            records = EntryInventory.scan(
+                root,
+                include_required_import_seams=False,
+            )
+
+        disposition_by_path = {record.path: record.disposition for record in records}
+        self.assertEqual(
+            {path: "PRODUCTION_DAILY" for path in production_daily_paths},
+            {path: disposition_by_path[path] for path in production_daily_paths},
+        )
+        self.assertEqual(disposition_by_path["run_select1.bat"], "ADMIN_ONLY")
+
     def test_scan_rejects_a_missing_inventory_root(self) -> None:
         with TemporaryDirectory() as tmp:
             missing_root = Path(tmp) / "missing"

@@ -106,11 +106,19 @@ _PRODUCTION_DAILY_PATHS = frozenset(
         "daily_select.py",
         "main.py",
         "build_daily_ret_cache.py",
+        "build_indicators_cache.py",
+        "backtest_brick_v2.py",
+        "filter_exec_reduce.py",
         "run_b1_v3.py",
         "run_b3.py",
+        "tools/backfill_daily_pcf_baostock.py",
+        "tools/select_etf_candidates.py",
         "tools/ths_yuanhang_bridge/build.ps1",
+        "tools/update_ths_market_assets.py",
+        "tools/update_today_ths.py",
     }
 )
+_ADMIN_ONLY_PATHS = frozenset({"run_select1.bat"})
 _THS_BRIDGE_MARKER_PATH = "utils/ths_yuanhang_bridge.py"
 _THS_BRIDGE_RUNTIME_PATHS = (
     "tools/ths_yuanhang_bridge/build.ps1",
@@ -1415,6 +1423,8 @@ def _conservative_entry_classification(
 ) -> tuple[str, str, str]:
     if relative in _PRODUCTION_DAILY_PATHS:
         return ("scheduler", "PRODUCTION_DAILY", "production_daily")
+    if relative in _ADMIN_ONLY_PATHS:
+        return ("human", "ADMIN_ONLY", "admin_only")
     if relative.startswith("tests/"):
         return ("automation", "TEST_ONLY", "test_only")
     if relative.startswith("apps/"):
