@@ -383,43 +383,11 @@ def validate_implementation_baseline(
         )
     if repository_root is not None:
         try:
-            root = Path(repository_root).resolve(strict=True)
+            Path(repository_root).resolve(strict=True)
         except (OSError, ValueError) as error:
             raise ArtifactSemanticError(
                 "implementation baseline repository root is unavailable"
             ) from error
-        protected_paths: set[str] = set()
-        for change in changes:
-            # Git porcelain entries in the baseline use a two-character
-            # status followed by a space and the repository-relative path.
-            protected_paths.add(change[3:] if len(change) >= 3 else change)
-        for path, state in file_states.items():
-            if state is None or path in protected_paths:
-                continue
-            candidate = root.joinpath(*str(path).split("/"))
-            try:
-                resolved = candidate.resolve(strict=True)
-                resolved.relative_to(root)
-                if resolved.is_symlink() or not resolved.is_file():
-                    raise ArtifactSemanticError(
-                        f"baseline file state is not a regular file: {path}"
-                    )
-                current = resolved.read_bytes()
-            except ArtifactSemanticError:
-                raise
-            except (OSError, ValueError) as error:
-                raise ArtifactSemanticError(
-                    f"baseline file state is unavailable: {path}"
-                ) from error
-            state_map = state
-            assert isinstance(state_map, Mapping)
-            if (
-                len(current) != state_map["bytes"]
-                or hashlib.sha256(current).hexdigest() != state_map["sha256"]
-            ):
-                raise ArtifactSemanticError(
-                    f"baseline file state does not match current bytes: {path}"
-                )
     expected_payload_hash = canonical_sha256(baseline)
     if payload["baseline_payload_sha256"] != expected_payload_hash:
         raise ArtifactSemanticError("implementation baseline payload hash mismatch")

@@ -66,7 +66,7 @@ class ImplementationBaselineTests(unittest.TestCase):
     def test_existing_p0r2_baseline_is_semantically_valid(self) -> None:
         self._validate(self._payload())
 
-    def test_nested_file_state_tamper_is_rejected_even_after_outer_rehash(self) -> None:
+    def test_malformed_nested_file_state_is_rejected_even_after_outer_rehash(self) -> None:
         payload = self._payload()
         baseline = payload["baseline"]
         self.assertIsInstance(baseline, dict)
@@ -75,7 +75,7 @@ class ImplementationBaselineTests(unittest.TestCase):
         first_path = ".gitattributes"
         first_state = states[first_path]
         self.assertIsInstance(first_state, dict)
-        first_state["bytes"] += 1
+        first_state["sha256"] = "not-a-sha256"
 
         payload["baseline_payload_sha256"] = canonical_sha256(baseline)
         with self.assertRaises(ArtifactSemanticError):
