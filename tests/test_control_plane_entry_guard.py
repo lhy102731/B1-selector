@@ -203,6 +203,28 @@ class EntryInventoryTests(unittest.TestCase):
         )
         self.assertEqual(disposition_by_path["run_select1.bat"], "ADMIN_ONLY")
 
+    def test_scan_does_not_generalize_runtime_dependency_suffixes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generic_files = {
+                "tools/unrelated.cs": b"class Unrelated {}\n",
+                "tools/unrelated.dll": b"MZ-unrelated",
+                "tools/unrelated.json": b"{}\n",
+                "tools/unrelated.xml": b"<root />\n",
+            }
+            for relative, content in generic_files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+
+            records = EntryInventory.scan(
+                root,
+                include_required_import_seams=False,
+            )
+
+        scanned_paths = {record.path for record in records}
+        self.assertTrue(set(generic_files).isdisjoint(scanned_paths))
+
     def test_scan_rejects_a_missing_inventory_root(self) -> None:
         with TemporaryDirectory() as tmp:
             missing_root = Path(tmp) / "missing"
