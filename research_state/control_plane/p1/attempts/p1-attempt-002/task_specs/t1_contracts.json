@@ -1,0 +1,84 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-002",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "4a5cca1c17111cade3c174dad48ea70ce550052103d4eb6c09af7477b06e96e6",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P1R2-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "objective": "Independently adopt and verify the attempt-001 drafts for strict typed contracts, stable artifact identity, bounded directory manifests, and read-only legacy adapters without modifying sealed P0 validators.",
+      "dependencies": [
+        "P1R2-T0-AUTHORITY-SCOPE"
+      ],
+      "idempotency_key": "p1-attempt-002-t1-contract-registry-artifact-identity",
+      "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-002/task_specs/t1_contracts.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "foundations-contracts-tests",
+          "p0-contract-regression-tests",
+          "foundations-import-purity"
+        ],
+        "required_review_receipt_ids": [
+          "controller-contracts-review"
+        ],
+        "required_evidence_ids": [
+          "p1r2-authorization",
+          "implementation-baseline",
+          "attempt-001-incident"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/foundations/contract_registry.py",
+        "research_automation/foundations/artifact_identity.py",
+        "research_automation/foundations/legacy_contract_adapters.py",
+        "tests/test_foundations_contract_registry.py",
+        "tests/test_foundations_artifact_identity.py",
+        "tests/test_foundations_legacy_contract_adapters.py",
+        "research_state/control_plane/p1/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/config.py",
+        "artifacts/",
+        "config/",
+        "data/",
+        "data_ths/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/"
+      ],
+      "baseline_ref": "research_state/control_plane/p1/attempts/p1-attempt-002/implementation_baseline.json",
+      "baseline_sha256": "e8a2fe673c17883d653d626ea81b118db6726c562e86baf0108158a8ce8f3ced",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p1r2-authorization",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-002/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "c98b8ca122f7ec79373b66a2f1d0565f524a7b6b9895bc38f3a42598b43e4976",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-002/implementation_baseline.json",
+          "evidence_sha256": "e8a2fe673c17883d653d626ea81b118db6726c562e86baf0108158a8ce8f3ced",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "attempt-001-incident",
+          "evidence_ref": "research_state/control_plane/p1/evidence/p1_attempt_001_lease_loss_incident.json",
+          "evidence_sha256": "361c0b31dc562fd7831d95a0716ad611c42cd19a27c6fc5f182979398b7f0306",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "ed0a9efbf14fb9a19651013e38b64725b1dc99cf29827f752938addddd51df0a"
+  }
+}
