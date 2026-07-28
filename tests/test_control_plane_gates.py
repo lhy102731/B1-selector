@@ -390,6 +390,17 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "bytes": len(source_bytes),
                     }
                 )
+            action_path = root / "run_select.bat"
+            action_bytes = b"# gate fixture run_select.bat\n"
+            action_path.write_bytes(action_bytes)
+            action_digest = hashlib.sha256(action_bytes).hexdigest()
+            freeze_files.append(
+                {
+                    "path": "run_select.bat",
+                    "sha256": action_digest,
+                    "bytes": len(action_bytes),
+                }
+            )
             freeze_files.sort(key=lambda item: str(item["path"]))
             freeze_payload: dict[str, object] = {
                 "schema_version": "control_plane.code_freeze_manifest.v1",
@@ -438,7 +449,22 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     "resource_roots": [],
                     "external_metadata": scheduler_metadata,
                     "source": "external_scheduler_inventory",
-                }
+                },
+                {
+                    "entry_id": "file:run_select.bat",
+                    "path": "run_select.bat",
+                    "kind": "batch",
+                    "callable_name": "<batch>",
+                    "actor_type": "scheduler",
+                    "content_sha256": action_digest,
+                    "disposition": "PRODUCTION_DAILY",
+                    "trust_state": "production_daily",
+                    "declared_side_effects": [],
+                    "declared_phase": None,
+                    "resource_roots": [],
+                    "external_metadata": {},
+                    "source": "filesystem_inventory",
+                },
             ]
             for path_text, entry_id, callable_name in seam_specs:
                 inventory_entries.append(
@@ -536,7 +562,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     "execute": "D:/workspace/run_select.bat",
                     "arguments": None,
                     "working_directory": None,
-                    "content_sha256": "f" * 64,
+                    "content_sha256": action_digest,
                 },
                 "principal": {
                     "user_id": "Administrator",
