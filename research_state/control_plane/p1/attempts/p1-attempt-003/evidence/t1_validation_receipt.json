@@ -1,0 +1,79 @@
+{
+  "schema_version": "control_plane.p1_task_validation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p1_task_validation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "task_id": "P1R3-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+    "validated_at": "2026-07-28T13:16:44.7434931Z",
+    "implementation_commit": "4d6eb999c049f4e6736b327431be478bc1759db8",
+    "revalidation": {
+      "source_attempt": "p1-attempt-002",
+      "source_task_report_authoritative": false,
+      "implementation_rewritten": false,
+      "attempt_002_ticket_or_result_counted": false,
+      "receipt_domain_error_corrected_by_sealed_helper": true
+    },
+    "files": [
+      {"path": "research_automation/foundations/contract_registry.py", "sha256": "69d0fe198ea5995db52c9592685a1b2ac98070a4865a469958cb564d6fc3e312", "bytes": 7167},
+      {"path": "research_automation/foundations/artifact_identity.py", "sha256": "9a63e63b65cfddcb8ba881a07358810e0788a4c2eb1bfb142e84e5654eadd0ee", "bytes": 12721},
+      {"path": "research_automation/foundations/legacy_contract_adapters.py", "sha256": "77a4d93e43d8b52100abe53b0fe01e82dca362369650052515953965e1d59562", "bytes": 10240},
+      {"path": "tests/test_foundations_contract_registry.py", "sha256": "762bcd391c7645ec8e7221f9c38926ba812928d926cfcc7b2fde844032a06c74", "bytes": 6840},
+      {"path": "tests/test_foundations_artifact_identity.py", "sha256": "05a402c1eabd8771838400792c18fc25a89a0c93efd1119e2c980192ac9a3116", "bytes": 12677},
+      {"path": "tests/test_foundations_legacy_contract_adapters.py", "sha256": "6e40f580f6f1396c38e72b0836e7e27080a2258d22161fe16090bb1cb6db6b73", "bytes": 6830}
+    ],
+    "test_receipts": [
+      {
+        "receipt_id": "foundations-contracts-tests",
+        "command": "python -m unittest tests.test_foundations_contract_registry tests.test_foundations_artifact_identity tests.test_foundations_legacy_contract_adapters -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 29
+      },
+      {
+        "receipt_id": "p0-contract-regression-tests",
+        "command": "python -m unittest tests.test_control_plane_contracts tests.test_control_plane_artifact_semantics tests.test_control_plane_task_reports -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 133
+      },
+      {
+        "receipt_id": "foundations-import-purity",
+        "command": "python -m unittest tests.test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_catalog_adapter_does_not_load_the_legacy_ag2_runtime -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 1
+      }
+    ],
+    "controller_review": {
+      "receipt_id": "controller-contracts-review",
+      "reviewer_id": "codex-controller-reviewer",
+      "reviewer_actor_type": "llm",
+      "result": "PASS",
+      "exit_code": 0,
+      "findings_hash_helper": "review_findings_sha256",
+      "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+      "blocking_findings": [],
+      "scope_match": true,
+      "reuse_before_reimplementation": true,
+      "p0_tcb_unchanged": true
+    },
+    "sealed_p0_tcb_check": {
+      "result": "PASS",
+      "matched_file_count": 10,
+      "full_freeze_manifest_file_count_checked": 451,
+      "official_freeze_ref": "research_state/control_plane/p0r2/evidence/code_freeze_manifest_v342_p0r2.json"
+    },
+    "side_effects": {
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "9f5f105a1e55e6df39cb702427b21da281e3da99599a075e26c4c371acba24ce"
+  }
+}
