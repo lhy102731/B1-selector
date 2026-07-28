@@ -6,8 +6,9 @@ import hashlib
 import hmac
 import os
 import stat as stat_module
+from contextlib import contextmanager
 from pathlib import Path
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Annotated, Literal
 
 from pydantic import Field, StringConstraints, field_validator, model_validator
@@ -239,8 +240,8 @@ def _is_reparse_point(path: Path) -> bool:
     return bool(attributes & _FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def resolve_bounded_locator(locator: ArtifactLocator) -> Path:
-    """Resolve a file locator without following a reparse point inside its root."""
+def _resolve_bounded_locator_preflight(locator: ArtifactLocator) -> Path:
+    """Preflight a locator before the authoritative open-handle check."""
     root = Path(locator.storage_root)
     if _is_reparse_point(root) or not root.is_dir():
         raise ArtifactLocationError("artifact storage root is unsafe or unavailable")
@@ -269,24 +270,164 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int]:
     )
 
 
+def _windows_final_path(handle: int) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    get_final_path = ctypes.WinDLL(
+        "kernel32",
+        use_last_error=True,
+    ).GetFinalPathNameByHandleW
+    get_final_path.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+    get_final_path.restype = wintypes.DWORD
+    size = 512
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        length = get_final_path(wintypes.HANDLE(handle), buffer, size, 0)
+        if length == 0:
+            raise OSError(ctypes.get_last_error(), "unable to resolve open handle")
+        if length < size:
+            value = buffer.value
+            if value.startswith("\\\\?\\UNC\\"):
+                return "\\\\" + value[8:]
+            if value.startswith("\\\\?\\"):
+                return value[4:]
+            return value
+        size = length + 1
+
+
+def _open_windows_directory_handle(root: Path) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    create_file = ctypes.WinDLL("kernel32", use_last_error=True).CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(root),
+        0x0080,
+        0x0001 | 0x0002 | 0x0004,
+        None,
+        3,
+        0x02000000 | 0x00200000,
+        None,
+    )
+    invalid = ctypes.c_void_p(-1).value
+    if handle == invalid:
+        raise OSError(ctypes.get_last_error(), "unable to open artifact root")
+    return int(handle)
+
+
+def _close_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    close_handle = ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    if not close_handle(wintypes.HANDLE(handle)):
+        raise OSError(ctypes.get_last_error(), "unable to close artifact root")
+
+
+def _posix_descriptor_path(file_descriptor: int) -> str:
+    for namespace in ("/proc/self/fd", "/dev/fd"):
+        candidate = Path(namespace) / str(file_descriptor)
+        if candidate.exists():
+            return str(candidate.resolve(strict=True))
+    raise ArtifactLocationError(
+        "platform cannot prove open-handle artifact containment"
+    )
+
+
+@contextmanager
+def _stable_root_boundary(root: Path) -> Iterator[str]:
+    try:
+        if os.name == "nt":
+            handle = _open_windows_directory_handle(root)
+            try:
+                yield _windows_final_path(handle)
+            finally:
+                _close_windows_handle(handle)
+            return
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_DIRECTORY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(root, flags)
+        try:
+            yield _posix_descriptor_path(descriptor)
+        finally:
+            os.close(descriptor)
+    except ArtifactLocationError:
+        raise
+    except OSError as error:
+        raise ArtifactLocationError(
+            "artifact storage root became unavailable"
+        ) from error
+
+
+def _open_file_final_path(file_descriptor: int) -> str:
+    if os.name == "nt":
+        import msvcrt
+
+        return _windows_final_path(msvcrt.get_osfhandle(file_descriptor))
+    return _posix_descriptor_path(file_descriptor)
+
+
+def _assert_open_handle_contained(
+    file_descriptor: int,
+    root_boundary: str,
+) -> None:
+    try:
+        root_key = os.path.normcase(os.path.abspath(root_boundary))
+        file_key = os.path.normcase(
+            os.path.abspath(_open_file_final_path(file_descriptor))
+        )
+        common = os.path.commonpath((root_key, file_key))
+    except (OSError, ValueError) as error:
+        raise ArtifactLocationError(
+            "artifact open-handle containment could not be proven"
+        ) from error
+    if common != root_key or file_key == root_key:
+        raise ArtifactLocationError(
+            "artifact open handle escaped its storage root containment"
+        )
+
+
 def _hash_stable_file(path: Path, locator: ArtifactLocator) -> tuple[str, int]:
     digest = hashlib.sha256()
     total = 0
     try:
-        with path.open("rb") as handle:
-            before = os.fstat(handle.fileno())
-            if not stat_module.S_ISREG(before.st_mode):
-                raise ArtifactLocationError("artifact path is not a regular file")
-            if (
-                before.st_size != locator.size_bytes
-                or before.st_mtime_ns != locator.mtime_ns
-            ):
-                raise ArtifactLocationError("artifact locator metadata is stale")
-            while chunk := handle.read(1024 * 1024):
-                digest.update(chunk)
-                total += len(chunk)
-            after = os.fstat(handle.fileno())
-        path_after = path.stat()
+        with _stable_root_boundary(Path(locator.storage_root)) as root_boundary:
+            with path.open("rb") as handle:
+                _assert_open_handle_contained(handle.fileno(), root_boundary)
+                before = os.fstat(handle.fileno())
+                if not stat_module.S_ISREG(before.st_mode):
+                    raise ArtifactLocationError("artifact path is not a regular file")
+                if (
+                    before.st_size != locator.size_bytes
+                    or before.st_mtime_ns != locator.mtime_ns
+                ):
+                    raise ArtifactLocationError("artifact locator metadata is stale")
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+                    total += len(chunk)
+                after = os.fstat(handle.fileno())
+                _assert_open_handle_contained(handle.fileno(), root_boundary)
+            path_after = path.stat()
     except ArtifactLocationError:
         raise
     except OSError as error:
@@ -313,7 +454,7 @@ def identify_file(
     if not isinstance(locator, ArtifactLocator):
         raise TypeError("locator must be an ArtifactLocator")
     content_sha256, byte_length = _hash_stable_file(
-        resolve_bounded_locator(locator),
+        _resolve_bounded_locator_preflight(locator),
         locator,
     )
     return ArtifactIdentity(
@@ -361,6 +502,5 @@ __all__ = [
     "directory_identity_from_manifest",
     "identify_file",
     "inventory_fingerprint",
-    "resolve_bounded_locator",
     "verify_file_identity",
 ]

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
+import research_automation.foundations.legacy_contract_adapters as legacy_module
 from research_automation.control_plane.contracts import canonical_json
 from research_automation.control_plane.task_reports import build_task_report_v2
 from research_automation.foundations.legacy_contract_adapters import (
@@ -18,6 +20,38 @@ from research_automation.foundations.legacy_contract_adapters import (
 
 
 class LegacyContractAdapterTests(unittest.TestCase):
+    def test_catalog_schema_bytes_are_bound_before_legacy_validation(self) -> None:
+        raw = json.dumps(
+            self._catalog_entry(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        schema_path = (
+            Path(legacy_module.__file__).resolve().parents[2]
+            / "ag2_research"
+            / "kbase"
+            / "contracts"
+            / "catalog_entry.schema.json"
+        )
+        original_read_bytes = Path.read_bytes
+
+        def replace_only_the_legacy_schema(path: Path) -> bytes:
+            if path == schema_path:
+                return b"{}"
+            return original_read_bytes(path)
+
+        with patch.object(
+            Path,
+            "read_bytes",
+            autospec=True,
+            side_effect=replace_only_the_legacy_schema,
+        ):
+            with self.assertRaisesRegex(
+                LegacyContractAdapterError,
+                "schema binding",
+            ):
+                read_legacy_kbase_catalog_entry(raw)
+
     @staticmethod
     def _catalog_entry(*, catalog_schema_version: int = 1) -> dict[str, object]:
         return {

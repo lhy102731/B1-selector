@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from pydantic import ValidationError
+
+import research_automation.foundations.artifact_identity as artifact_module
 
 from research_automation.foundations.artifact_identity import (
     ArtifactIdentity,
@@ -273,6 +277,59 @@ class ArtifactIdentityTests(unittest.TestCase):
                     kind="file",
                     logical_role="input",
                 )
+
+    def test_parent_swap_after_resolution_cannot_hash_outside_the_root(self) -> None:
+        with TemporaryDirectory() as base:
+            base_path = Path(base)
+            root = base_path / "root"
+            outside = base_path / "outside"
+            parent = root / "nested"
+            parent.mkdir(parents=True)
+            outside.mkdir()
+            inside_file = parent / "artifact.bin"
+            outside_file = outside / "artifact.bin"
+            inside_file.write_bytes(b"alpha")
+            outside_file.write_bytes(b"bravo")
+            stat = inside_file.stat()
+            os.utime(
+                outside_file,
+                ns=(stat.st_atime_ns, stat.st_mtime_ns),
+            )
+            locator = ArtifactLocator(
+                schema_version="research.artifact_locator.v1",
+                storage_root=root.as_posix(),
+                path="nested/artifact.bin",
+                size_bytes=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+            )
+            original_resolver = artifact_module._resolve_bounded_locator_preflight
+
+            def swap_parent_after_resolution(value: ArtifactLocator) -> Path:
+                resolved = original_resolver(value)
+                parent.rename(root / "parked")
+                try:
+                    parent.symlink_to(outside, target_is_directory=True)
+                except OSError as error:
+                    self.skipTest(f"symlink creation unavailable: {error}")
+                return resolved
+
+            with patch.object(
+                artifact_module,
+                "_resolve_bounded_locator_preflight",
+                side_effect=swap_parent_after_resolution,
+            ):
+                with self.assertRaisesRegex(
+                    ArtifactLocationError,
+                    "escaped|containment",
+                ):
+                    identify_file(
+                        locator,
+                        content_schema="research.binary.v1",
+                        producer="unit-test",
+                        generation="generation-1",
+                        kind="file",
+                        logical_role="input",
+                    )
 
     def test_inventory_fingerprint_cannot_enter_a_trusted_identity_check(self) -> None:
         with TemporaryDirectory() as root:

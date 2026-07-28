@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import traceback
 from typing import Literal
 
 from jsonschema import Draft202012Validator
-from pydantic import ValidationError
+from pydantic import ConfigDict, SecretStr, ValidationError
 
 from research_automation.foundations.contract_registry import (
     ContractValidationError,
@@ -29,7 +30,61 @@ class ExampleContractV2(StrictContractModel):
     display_name: str
 
 
+class SecretContract(StrictContractModel):
+    schema_version: Literal["research.secret.v1"]
+    api_key: SecretStr
+
+
+class WeakenedContract(StrictContractModel):
+    model_config = ConfigDict(strict=True, frozen=False, extra="allow")
+
+    schema_version: Literal["research.weakened.v1"]
+    name: str
+
+
+class DefaultedContract(StrictContractModel):
+    schema_version: Literal["research.defaulted.v1"]
+    name: str = "silent-default"
+
+
 class ContractRegistryTests(unittest.TestCase):
+    def test_registered_model_cannot_supply_silent_semantic_defaults(self) -> None:
+        with self.assertRaisesRegex(ValueError, "required"):
+            ContractRegistry(
+                version="research.contract_registry.v2",
+                contracts={"research.defaulted.v1": DefaultedContract},
+            )
+
+    def test_registered_model_cannot_weaken_the_strict_base_policy(self) -> None:
+        with self.assertRaisesRegex(ValueError, "model policy"):
+            ContractRegistry(
+                version="research.contract_registry.v2",
+                contracts={"research.weakened.v1": WeakenedContract},
+            )
+
+    def test_validation_errors_never_echo_untrusted_input_values(self) -> None:
+        registry = ContractRegistry(
+            version="research.contract_registry.v2",
+            contracts={"research.secret.v1": SecretContract},
+        )
+
+        with self.assertRaises(ContractValidationError) as captured:
+            registry.parse_json(
+                "research.secret.v1",
+                b'{"schema_version":"research.secret.v1",'
+                b'"api_key":"DUMMY-KEY","typo_secret":"LEAKME"}',
+            )
+
+        message = str(captured.exception)
+        formatted = "".join(traceback.format_exception(captured.exception))
+        self.assertNotIn("LEAKME", message)
+        self.assertNotIn("DUMMY-KEY", message)
+        self.assertNotIn("LEAKME", formatted)
+        self.assertNotIn("DUMMY-KEY", formatted)
+        self.assertIsNone(captured.exception.__context__)
+        self.assertIsNone(captured.exception.__cause__)
+        self.assertIn("strict validation", message)
+
     def test_registered_contract_parses_to_a_frozen_typed_model(self) -> None:
         registry = ContractRegistry(
             version="research.contract_registry.v2",

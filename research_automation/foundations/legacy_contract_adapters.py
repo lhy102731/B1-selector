@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 from functools import lru_cache
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from threading import Lock
 from types import ModuleType
 from typing import Annotated, Literal
 
@@ -28,6 +31,16 @@ _MAX_LEGACY_CONTRACT_BYTES = 128 * 1024
 _KBASE_SCHEMA_MODULE = (
     Path(__file__).resolve().parents[2] / "ag2_research" / "kbase" / "schemas.py"
 )
+_KBASE_SCHEMA_MODULE_SHA256 = (
+    "105207f72adfe7ac51bac47f8567376404fa1b8b84b3aa7d6f957cb267ee1198"
+)
+_KBASE_CATALOG_SCHEMA = (
+    _KBASE_SCHEMA_MODULE.parent / "contracts" / "catalog_entry.schema.json"
+)
+_KBASE_CATALOG_SCHEMA_SHA256 = (
+    "fd882281f9579a84b0e448a9e3443768b0b15664efa1062b40ea5f978748f99d"
+)
+_KBASE_VALIDATION_LOCK = Lock()
 
 
 class LegacyContractAdapterError(ValueError):
@@ -201,21 +214,62 @@ def _load_legacy_kbase_schema_module() -> ModuleType:
     if spec is None or spec.loader is None:
         raise LegacyContractAdapterError("legacy KBase validator is unavailable")
     try:
+        source = _KBASE_SCHEMA_MODULE.read_bytes()
+        if hashlib.sha256(source).hexdigest() != _KBASE_SCHEMA_MODULE_SHA256:
+            raise LegacyContractAdapterError(
+                "legacy KBase validator binding is invalid"
+            )
         module = module_from_spec(spec)
-        spec.loader.exec_module(module)
-    except (ImportError, OSError) as error:
+        exec(compile(source, str(_KBASE_SCHEMA_MODULE), "exec"), module.__dict__)
+    except LegacyContractAdapterError:
+        raise
+    except (ImportError, OSError, SyntaxError) as error:
         raise LegacyContractAdapterError(
             "legacy KBase validator is unavailable"
         ) from error
     return module
 
 
+def _read_bound_legacy_catalog_schema() -> dict[str, object]:
+    try:
+        raw = _KBASE_CATALOG_SCHEMA.read_bytes()
+    except OSError as error:
+        raise LegacyContractAdapterError(
+            "legacy KBase catalog schema binding is invalid"
+        ) from error
+    if hashlib.sha256(raw).hexdigest() != _KBASE_CATALOG_SCHEMA_SHA256:
+        raise LegacyContractAdapterError(
+            "legacy KBase catalog schema binding is invalid"
+        )
+    try:
+        return parse_strict_json(
+            raw,
+            artifact_name="legacy_kbase_catalog_schema",
+        )
+    except ArtifactSemanticError as error:
+        raise LegacyContractAdapterError(
+            "legacy KBase catalog schema binding is invalid"
+        ) from error
+
+
 def _validate_legacy_kbase_catalog_payload(payload: dict[str, object]) -> None:
     module = _load_legacy_kbase_schema_module()
-    try:
-        module.validate_catalog_entry(payload)
-    except module.ContractValidationError as error:
-        raise LegacyContractAdapterError(str(error)) from error
+    schema = _read_bound_legacy_catalog_schema()
+    with _KBASE_VALIDATION_LOCK:
+        original_loader = module.load_contract_schema
+
+        def load_bound_schema(name: str) -> dict[str, object]:
+            if name != "catalog_entry":
+                raise KeyError(f"unknown KBase contract: {name}")
+            return copy.deepcopy(schema)
+
+        module.load_contract_schema = load_bound_schema
+        try:
+            module.validate_catalog_entry(payload)
+        except module.ContractValidationError as error:
+            raise LegacyContractAdapterError(str(error)) from error
+        finally:
+            module.load_contract_schema = original_loader
 
 
 def preserve_legacy_kbase_artifact_reference(
