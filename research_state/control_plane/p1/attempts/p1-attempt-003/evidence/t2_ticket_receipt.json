@@ -1,0 +1,20 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P1",
+  "attempt_id": "p1-attempt-003",
+  "recorded_at": "2026-07-28T13:29:43.3098247Z",
+  "task_id": "P1R3-T2-TYPED-PROJECT-SETTINGS",
+  "ticket_id": "edb64f57a0a29e1a8c892d01465f9b58dbe80f3d7c423e99e9e5ef90bece7ad8",
+  "ticket_state": "ISSUED",
+  "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t2_settings.json",
+  "task_spec_sha256": "44ee2babca43a66369b33c416de415dfd079a9aeb7c589fd5d9d4326bdcd59b2",
+  "entry_policy_sha256": "21ddc7b920d780cf50a43fbecc5e050f5ec1ecb7b8ca6d129c9648fb1d067046",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "lease_custody_rule": "Keep implementation and validation outside the lease; begin only after all exact test, review, evidence, and provisional TaskReport payloads pass sealed validation.",
+  "bearer_secret_recorded": false
+}
