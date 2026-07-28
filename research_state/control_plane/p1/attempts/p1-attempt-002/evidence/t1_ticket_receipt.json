@@ -1,0 +1,19 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P1",
+  "attempt_id": "p1-attempt-002",
+  "task_id": "P1R2-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+  "ticket_id": "e0babd819678f7c4c5c419afddb92f61e87a5ce8ed516a4d10542cf773e00723",
+  "ticket_state": "ISSUED",
+  "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-002/task_specs/t1_contracts.json",
+  "task_spec_sha256": "d90267eedbc3da15a9e185489c16b6673a9b51fbc395be14bf797d4f12c0fbad",
+  "entry_policy_sha256": "21ddc7b920d780cf50a43fbecc5e050f5ec1ecb7b8ca6d129c9648fb1d067046",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "lease_custody_rule": "Begin and finish only in the same trusted process after all required evidence is ready.",
+  "bearer_secret_recorded": false
+}
