@@ -1,0 +1,71 @@
+{
+  "schema_version": "control_plane.post_close_security_incident_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.post_close_security_incident.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "incident_id": "P1R3-INC-T1-POST-CLOSE-SECURITY-001",
+    "detected_at": "2026-07-28T13:46:26.0838256Z",
+    "affected_task": {
+      "task_id": "P1R3-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "ticket_id": "4af22462e9cd8f40950a96ad60eb88e8f89cd8ab34ee65ff6fc097634ce1de59",
+      "task_report_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t1_task_report.json",
+      "task_report_sha256": "553bf7d005dc8aa301a45d65c50ee22ddd3f956cd08517fd567c0ad7b6832d4e",
+      "task_report_payload_sha256": "845c20144c3c61cd2e5768eacf425d11369bca0a6ad7b518e3a99acae88fb890",
+      "immutable_authority_state": "SUCCEEDED",
+      "post_close_review_status": "INSUFFICIENT_FOR_P1_GATE"
+    },
+    "blocking_findings": [
+      {
+        "finding_id": "P1R3-T1-BF-001",
+        "component": "artifact_identity",
+        "summary": "A checked parent can be replaced by an external reparse point before pathname open; the outside file is then hashed successfully.",
+        "reproduction": "PASS_REPRODUCED_FAIL_OPEN",
+        "severity": "BLOCKING"
+      },
+      {
+        "finding_id": "P1R3-T1-BF-002",
+        "component": "contract_registry",
+        "summary": "Wrapped Pydantic validation errors expose raw unknown-field input values, including secret-like values.",
+        "reproduction": "PASS_REPRODUCED_LEAK",
+        "severity": "BLOCKING"
+      },
+      {
+        "finding_id": "P1R3-T1-BF-003",
+        "component": "contract_registry",
+        "summary": "Registered subclasses can weaken frozen and extra-forbid settings and can silently provide semantic defaults.",
+        "reproduction": "PASS_REPRODUCED_FAIL_OPEN",
+        "severity": "BLOCKING"
+      },
+      {
+        "finding_id": "P1R3-T1-BF-004",
+        "component": "legacy_contract_adapters",
+        "summary": "The legacy catalog JSON Schema is read at validation time but is neither tracked nor hash-bound by the adapter.",
+        "reproduction": "PASS_CONFIRMED_UNBOUND_DEPENDENCY",
+        "severity": "BLOCKING"
+      }
+    ],
+    "containment": {
+      "p1_gate_must_remain_open": true,
+      "t1_report_must_not_be_rewritten": true,
+      "corrective_ticket_required": true,
+      "t2_ticket_id": "edb64f57a0a29e1a8c892d01465f9b58dbe80f3d7c423e99e9e5ef90bece7ad8",
+      "t2_ticket_state": "ISSUED",
+      "t2_lease_started": false,
+      "t2_code_changed": false,
+      "p2_campaign_final_eval_auto_advance_authorized": false
+    },
+    "corrective_scope": {
+      "minimal_existing_files_only": true,
+      "add_adversarial_regression_tests_first": true,
+      "modify_sealed_p0_tcb": false,
+      "modify_research_data_kbase_content_or_production_strategy": false,
+      "run_research_backtest_network_or_llm": false
+    },
+    "verdict": "FAIL_CLOSED_CORRECTION_REQUIRED"
+  },
+  "computed": {
+    "payload_sha256": "dd48dd07b0355e62e604bad39de1936c1c19e006cd92f7cbddf5bbc1eca851aa"
+  }
+}
