@@ -1073,6 +1073,44 @@ class StableFreezeInventoryBuilderTests(unittest.TestCase):
                     scheduler_records=[self._scheduler_record()],
                 )
 
+    def test_t8_rejects_ths_runtime_binary_drift_after_t7(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repository(root)
+            marker = root / "utils" / "ths_yuanhang_bridge.py"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("pass\n", encoding="utf-8")
+            runtime_files = {
+                "tools/ths_yuanhang_bridge/build.ps1": b"Write-Output built\n",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.cs": b"class Bridge {}\n",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.dll": b"MZ-version-one",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.runtimeconfig.json": b"{}\n",
+                "tools/ths_yuanhang_bridge/workspace/datacenter.xml": b"<root />\n",
+                "tools/ths_yuanhang_bridge/workspace/DNSTest.xml": b"<root />\n",
+            }
+            for relative, content in runtime_files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            freeze = self._freeze(root)
+            (root / "tools/ths_yuanhang_bridge/YuanhangBridge.dll").write_bytes(
+                b"MZ-version-two"
+            )
+
+            with self.assertRaisesRegex(
+                UnstableInventoryError,
+                "code freeze",
+            ):
+                build_final_entry_inventory(
+                    root,
+                    plan_version="V3.4.2-P0R2",
+                    phase="P0",
+                    attempt_id="p0r2-attempt-001",
+                    identity_binding=self.identity,
+                    freeze_manifest=freeze,
+                    scheduler_records=[self._scheduler_record()],
+                )
+
     def test_t7_rejects_an_unknown_top_level_source_root(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
