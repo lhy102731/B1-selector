@@ -25,6 +25,7 @@ from .inventory import UnstableInventoryError, build_code_freeze_manifest
 from .stores import (
     AuthorityIdentity,
     AuthorityReader,
+    PhaseGateAuthoritySnapshot,
     PhaseGateClosure,
     PhaseGateClosureConflictError,
     TaskReportAuthorityError,
@@ -282,6 +283,14 @@ def _derive_gate_verdict(
     authority = report["authority_snapshot"]
     if not isinstance(authority, Mapping):
         raise GateValidationError("authority_snapshot must be a mapping")
+    active_policy_sha256 = authority["active_entry_policy_sha256"]
+    reviewed_policy = report["reviewed_entry_policy"]
+    if not isinstance(reviewed_policy, Mapping):
+        raise GateValidationError("reviewed_entry_policy must be a mapping")
+    if active_policy_sha256 is None:
+        reasons.append("MISSING_ACTIVE_ENTRY_POLICY")
+    elif active_policy_sha256 != reviewed_policy["sha256"]:
+        reasons.append("ACTIVE_ENTRY_POLICY_MISMATCH")
     active_grant_ids = authority["active_grant_ids"]
     if not isinstance(active_grant_ids, list):
         raise GateValidationError("authority_snapshot.active_grant_ids invalid")
@@ -436,6 +445,7 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
         "authority_snapshot",
         frozenset(
             {
+                "active_entry_policy_sha256",
                 "active_grant_ids",
                 "open_ticket_ids",
                 "succeeded_ticket_ids",
@@ -445,6 +455,12 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
             }
         ),
     )
+    active_policy_sha256 = authority["active_entry_policy_sha256"]
+    if active_policy_sha256 is not None:
+        _require_sha256(
+            active_policy_sha256,
+            "authority_snapshot.active_entry_policy_sha256",
+        )
     _require_string_array(
         authority["active_grant_ids"],
         "authority_snapshot.active_grant_ids",
@@ -837,10 +853,79 @@ class PhaseGateVerifier:
             raise GateAuthorityMismatchError(
                 "gate authority snapshot does not match current authority"
             )
-        self._verify_evidence(report)
+        artifacts = self._verify_evidence(report)
+        if report["verdict"] == "PASS":
+            self._verify_active_entry_policy_binding(
+                report,
+                artifacts=artifacts,
+                authority_snapshot=actual,
+            )
 
-    def _verify_evidence(self, report: Mapping[str, object]) -> None:
-        self._verify_gate_artifact_files(report)
+    def _verify_active_entry_policy_binding(
+        self,
+        report: Mapping[str, object],
+        *,
+        artifacts: Mapping[str, Mapping[str, object]],
+        authority_snapshot: PhaseGateAuthoritySnapshot,
+    ) -> None:
+        active = self._authority_reader.active_entry_policy()
+        active_snapshot_digest = authority_snapshot.active_entry_policy_sha256
+        if active is None or active.policy_sha256 != active_snapshot_digest:
+            raise GateAuthorityMismatchError(
+                "active entry policy changed during gate verification"
+            )
+        policy_reference = report["reviewed_entry_policy"]
+        policy = artifacts["reviewed_entry_policy"]
+        inventory = artifacts["final_inventory"]
+        identity_binding = report["identity_binding"]
+        if not isinstance(policy_reference, Mapping) or not isinstance(
+            identity_binding,
+            Mapping,
+        ):
+            raise GateAuthorityMismatchError(
+                "active entry policy gate binding is invalid"
+            )
+        expected_identity = AuthorityIdentity(
+            plan_hash=str(identity_binding["plan_hash"]),
+            scope_hash=str(identity_binding["scope_hash"]),
+            instruction_policy_hash=str(
+                identity_binding["instruction_policy_hash"]
+            ),
+        )
+        expected_binding = (
+            str(policy_reference["sha256"]),
+            str(policy["policy_payload_sha256"]),
+            str(inventory["inventory_payload_sha256"]),
+            str(policy["review_receipt_sha256"]),
+            str(policy["reviewer_id"]),
+            Phase(str(report["phase"])),
+            str(report["attempt_id"]),
+            expected_identity,
+        )
+        actual_binding = (
+            active.policy_sha256,
+            active.policy_payload_sha256,
+            active.inventory_payload_sha256,
+            active.review_receipt_sha256,
+            active.reviewer.actor_id,
+            active.phase,
+            active.attempt_id,
+            active.identity,
+        )
+        if actual_binding != expected_binding:
+            raise GateAuthorityMismatchError(
+                "active entry policy binding does not match gate evidence"
+            )
+        if active.ticket_id not in authority_snapshot.succeeded_ticket_ids:
+            raise GateAuthorityMismatchError(
+                "active entry policy ticket is not succeeded"
+            )
+
+    def _verify_evidence(
+        self,
+        report: Mapping[str, object],
+    ) -> dict[str, dict[str, object]]:
+        artifacts = self._verify_gate_artifact_files(report)
         parsed_task_reports = self._verify_task_report_files(report)
         baseline_ref = report["implementation_baseline"]
         if not isinstance(baseline_ref, Mapping):
@@ -853,6 +938,7 @@ class PhaseGateVerifier:
                 raise GateAuthorityMismatchError(
                     "TaskReport baseline does not match the gate baseline"
                 )
+        return artifacts
 
     def verify_evidence(self, report: Mapping[str, object]) -> None:
         validate_gate_report(report)

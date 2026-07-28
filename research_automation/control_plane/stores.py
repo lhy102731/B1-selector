@@ -507,6 +507,7 @@ class PhaseGateAuthoritySnapshot:
 
     phase: Phase
     attempt_id: str
+    active_entry_policy_sha256: str | None
     active_grant_ids: tuple[str, ...]
     open_ticket_ids: tuple[str, ...]
     succeeded_ticket_ids: tuple[str, ...]
@@ -516,6 +517,7 @@ class PhaseGateAuthoritySnapshot:
 
     def to_report_dict(self) -> dict[str, object]:
         return {
+            "active_entry_policy_sha256": self.active_entry_policy_sha256,
             "active_grant_ids": list(self.active_grant_ids),
             "open_ticket_ids": list(self.open_ticket_ids),
             "succeeded_ticket_ids": list(self.succeeded_ticket_ids),
@@ -901,6 +903,25 @@ def _read_phase_gate_authority_snapshot(
     phase: Phase,
     attempt_id: str,
 ) -> PhaseGateAuthoritySnapshot:
+    active_policy_row = connection.execute(
+        """
+        SELECT policy_sha256 FROM active_entry_policy_v1
+        WHERE singleton_id = 1
+        """
+    ).fetchone()
+    try:
+        active_entry_policy_sha256 = (
+            None
+            if active_policy_row is None
+            else _require_sha256(
+                active_policy_row["policy_sha256"],
+                "active_entry_policy_sha256",
+            )
+        )
+    except ValueError as error:
+        raise EntryPolicyActivationError(
+            "stored active entry policy digest is invalid"
+        ) from error
     active_grant_ids = tuple(
         str(row["grant_id"])
         for row in connection.execute(
@@ -947,6 +968,7 @@ def _read_phase_gate_authority_snapshot(
     return PhaseGateAuthoritySnapshot(
         phase=phase,
         attempt_id=attempt_id,
+        active_entry_policy_sha256=active_entry_policy_sha256,
         active_grant_ids=active_grant_ids,
         open_ticket_ids=tuple(ticket_ids_by_state["OPEN"]),
         succeeded_ticket_ids=tuple(ticket_ids_by_state["SUCCEEDED"]),

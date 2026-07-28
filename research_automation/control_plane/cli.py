@@ -481,7 +481,8 @@ def main(
             snapshot = reader.phase_gate_snapshot(phase, args.attempt_id)
             closure = reader.phase_gate_closure(phase, args.attempt_id)
             blocked = bool(
-                len(snapshot.active_grant_ids) != 1
+                snapshot.active_entry_policy_sha256 is None
+                or len(snapshot.active_grant_ids) != 1
                 or snapshot.open_ticket_ids
                 or snapshot.failed_ticket_ids
                 or snapshot.in_doubt_ticket_ids

@@ -1734,8 +1734,16 @@ class TrustedBootstrapTests(unittest.TestCase):
                     expected_active_sha256=None,
                 )
                 active = AuthorityReader().active_entry_policy()
+                gate_snapshot = AuthorityReader().phase_gate_snapshot(
+                    Phase.P0,
+                    "p0r2-attempt-001",
+                )
 
                 self.assertEqual(active, activated)
+                self.assertEqual(
+                    gate_snapshot.active_entry_policy_sha256,
+                    activated.policy_sha256,
+                )
                 self.assertEqual(active.policy_sha256, "1" * 64)
                 self.assertEqual(active.reviewer, reviewer)
                 self.assertEqual(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -37,6 +38,7 @@ from research_automation.control_plane.gates import (
 from research_automation.control_plane.stores import (
     AuthorityIdentity,
     AuthorityReader,
+    PhaseGateClosureError,
     PhaseGateClosureConflictError,
 )
 from research_automation.control_plane.task_reports import (
@@ -106,6 +108,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 }
             ],
             "authority_snapshot": {
+                "active_entry_policy_sha256": "d" * 64,
                 "active_grant_ids": ["grant-001"],
                 "open_ticket_ids": [],
                 "succeeded_ticket_ids": ["ticket-001"],
@@ -249,6 +252,25 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 self.assertEqual(report["verdict"], "FAIL")
                 self.assertIn(expected_reason, report["reason_codes"])
 
+    def test_gate_requires_the_active_policy_to_match_the_reviewed_artifact(
+        self,
+    ) -> None:
+        cases = (
+            (None, "MISSING_ACTIVE_ENTRY_POLICY"),
+            ("e" * 64, "ACTIVE_ENTRY_POLICY_MISMATCH"),
+        )
+        for active_digest, expected_reason in cases:
+            with self.subTest(active_digest=active_digest):
+                draft = self._passing_draft()
+                authority_snapshot = dict(draft["authority_snapshot"])
+                authority_snapshot["active_entry_policy_sha256"] = active_digest
+                draft["authority_snapshot"] = authority_snapshot
+
+                report = PhaseGateBuilder().build(draft)
+
+                self.assertEqual(report["verdict"], "FAIL")
+                self.assertIn(expected_reason, report["reason_codes"])
+
     def test_gate_closes_task_reports_over_known_authority_tickets(self) -> None:
         cases = (
             ([], ["ticket-001"], "MISSING_TASK_REPORT:ticket-001"),
@@ -281,7 +303,12 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 self.assertIn(expected_reason, report["reason_codes"])
 
     @contextmanager
-    def _trusted_gate_fixture(self) -> Iterator[_TrustedGateFixture]:
+    def _trusted_gate_fixture(
+        self,
+        *,
+        activate_policy: bool = True,
+        active_policy_payload_sha256: str | None = None,
+    ) -> Iterator[_TrustedGateFixture]:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")
         identity = AuthorityIdentity(
@@ -672,6 +699,27 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
                 lease = authority._begin_task(ticket)
+                if activate_policy:
+                    authority._activate_reviewed_entry_policy(
+                        lease,
+                        reviewer=Actor(
+                            "independent-test-reviewer",
+                            "llm",
+                            "review-gate-policy-001",
+                        ),
+                        policy_sha256=policy_sha256,
+                        policy_payload_sha256=(
+                            active_policy_payload_sha256
+                            or str(policy_payload["policy_payload_sha256"])
+                        ),
+                        inventory_payload_sha256=str(
+                            policy_payload["inventory_payload_sha256"]
+                        ),
+                        review_receipt_sha256=str(
+                            policy_payload["review_receipt_sha256"]
+                        ),
+                        expected_active_sha256=None,
+                    )
                 finished = authority._finish_task(
                     lease,
                     outcome="SUCCEEDED",
@@ -838,6 +886,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(
                 fixture.snapshot,
                 {
+                    "active_entry_policy_sha256": fixture.draft[
+                        "reviewed_entry_policy"
+                    ]["sha256"],
                     "active_grant_ids": [fixture.active_grant_id],
                     "open_ticket_ids": [],
                     "succeeded_ticket_ids": [fixture.ticket_id],
@@ -856,6 +907,18 @@ class PhaseGateBuilderTests(unittest.TestCase):
             forged_report = PhaseGateBuilder().build(forged_draft)
             with self.assertRaises(GateAuthorityMismatchError):
                 fixture.verifier.verify(forged_report)
+
+    def test_verifier_rejects_an_active_policy_binding_mismatch(self) -> None:
+        with self._trusted_gate_fixture(
+            active_policy_payload_sha256="9" * 64,
+        ) as fixture:
+            self.assertEqual(fixture.report["verdict"], "PASS")
+
+            with self.assertRaisesRegex(
+                GateAuthorityMismatchError,
+                "active entry policy",
+            ):
+                fixture.verifier.verify(fixture.report)
 
     def test_verifier_accepts_a_canonical_gate_report_bytes(self) -> None:
         with self._trusted_gate_fixture() as fixture:
@@ -1092,6 +1155,69 @@ class PhaseGateBuilderTests(unittest.TestCase):
             )
             self.assertEqual(after_replay.pending_outbox_count, 1)
 
+    def test_closer_rechecks_active_policy_inside_the_close_transaction(
+        self,
+    ) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            original_verify = fixture.verifier.verify
+            old_digest = str(
+                fixture.snapshot["active_entry_policy_sha256"]
+            )
+            rotated_bytes = fixture.artifact_paths[
+                "reviewed_entry_policy"
+            ].read_bytes() + b"\n"
+            rotated_digest = hashlib.sha256(rotated_bytes).hexdigest()
+            rotated_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "policies"
+                / f"{rotated_digest}.json"
+            )
+
+            def verify_then_rotate(report: dict[str, object]) -> None:
+                original_verify(report)
+                rotated_path.write_bytes(rotated_bytes)
+                connection = sqlite3.connect(fixture.root / "authority.sqlite3")
+                try:
+                    connection.execute("PRAGMA foreign_keys = ON")
+                    connection.execute(
+                        """
+                        INSERT INTO reviewed_entry_policies_v1
+                        SELECT ?, policy_payload_sha256,
+                               inventory_payload_sha256,
+                               review_receipt_sha256, reviewer_actor_id,
+                               reviewer_actor_type, reviewer_invocation_id,
+                               ticket_id, phase, attempt_id, plan_hash,
+                               scope_hash, instruction_policy_hash, created_at
+                        FROM reviewed_entry_policies_v1
+                        WHERE policy_sha256 = ?
+                        """,
+                        (rotated_digest, old_digest),
+                    )
+                    connection.execute(
+                        """
+                        UPDATE active_entry_policy_v1
+                        SET policy_sha256 = ?
+                        WHERE singleton_id = 1 AND policy_sha256 = ?
+                        """,
+                        (rotated_digest, old_digest),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+
+            with patch.object(
+                PhaseGateVerifier,
+                "verify",
+                side_effect=verify_then_rotate,
+            ):
+                with self.assertRaisesRegex(
+                    PhaseGateClosureError,
+                    "authority changed before closure",
+                ):
+                    fixture.closer.close(fixture.report)
+
     def test_closer_rejects_a_different_gate_for_closed_attempt(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             fixture.closer.close(fixture.report)
@@ -1167,6 +1293,30 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertIn('"status":"READY"', stdout.getvalue())
             self.assertIn('"pending_outbox_count":0', stdout.getvalue())
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_preflight_blocks_without_an_active_entry_policy(self) -> None:
+        with self._trusted_gate_fixture(activate_policy=False) as fixture:
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                [
+                    "gate",
+                    "preflight",
+                    "--phase",
+                    "P0",
+                    "--attempt-id",
+                    "p0r2-attempt-001",
+                ],
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn('"status":"BLOCKED"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
     def test_cli_builds_a_gate_candidate_from_hashed_inputs(self) -> None:
