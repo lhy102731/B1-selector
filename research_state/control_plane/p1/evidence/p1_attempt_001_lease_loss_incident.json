@@ -1,0 +1,50 @@
+{
+  "schema_version": "control_plane.phase_attempt_incident_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.phase_attempt_incident.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-001",
+    "recorded_at": "2026-07-28T19:33:45.9090115+08:00",
+    "classification": "LOST_EPHEMERAL_TASK_LEASE_CAPABILITY",
+    "cause": "The task lease was begun inside a short-lived trusted process. The process exited without retaining the random lease bearer, so the task could not later record trusted receipts or finish.",
+    "affected_task": {
+      "task_id": "P1-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "ticket_id": "a418cbab7dc01237a6f8675750d9a28726811c325d4f744aca791f96584c3bfc",
+      "lease_id": "lease_e985751674d96634fe78e706bc1987ff",
+      "terminal_state": "IN_DOUBT"
+    },
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_84741df52352721b58758119b4f2de3f"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [
+        "a418cbab7dc01237a6f8675750d9a28726811c325d4f744aca791f96584c3bfc"
+      ],
+      "pending_outbox_count": 0,
+      "active_entry_policy_sha256": "21ddc7b920d780cf50a43fbecc5e050f5ec1ecb7b8ca6d129c9648fb1d067046"
+    },
+    "impact": {
+      "p0_tcb_changed": false,
+      "authority_secret_exposed": false,
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_code_changed": false,
+      "p1_attempt_can_pass": false
+    },
+    "recovery": {
+      "required_new_attempt": "p1-attempt-002",
+      "reuse_rule": "Any draft source or test bytes from attempt-001 are non-authoritative inputs only and must be independently reviewed and revalidated under attempt-002.",
+      "future_ticket_rule": "Issue a durable recoverable task ticket before implementation, but call begin and finish in one trusted process only after evidence is ready.",
+      "p2_campaign_final_eval_remain_unauthorized": true
+    },
+    "verdict": "FAIL_CLOSED"
+  },
+  "computed": {
+    "payload_sha256": "fd7174596533f3aaad64e9d1c1b4c628010f63ec6d9b9db272bfc8409bac066c"
+  }
+}
