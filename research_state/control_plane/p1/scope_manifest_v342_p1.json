@@ -1,6 +1,9 @@
 {
   "schema_version": "control_plane.scope_manifest.v3",
   "created_at": "2026-07-28T19:15:44.9489162+08:00",
+  "updated_at": "2026-07-28T19:24:00+08:00",
+  "revision": "P1-SCOPE-R1",
+  "supersedes_git_commit": "b3c1d5c",
   "hash_algorithm": "sha256(UTF-8 'control_plane.scope_bundle.v1' + NUL + canonical_json(payload))",
   "payload": {
     "schema_version": "control_plane.scope_payload.v1",
@@ -32,14 +35,19 @@
     ],
     "allowed_code_and_test_files": [
       "ag2_research/config.py",
-      "requirements-control-plane.txt",
+      "requirements/control-plane.in",
+      "requirements/control-plane.lock",
       "research_automation/foundations/__init__.py",
       "research_automation/foundations/artifact_identity.py",
       "research_automation/foundations/contract_registry.py",
+      "research_automation/foundations/dependency_preflight.py",
+      "research_automation/foundations/legacy_contract_adapters.py",
       "research_automation/foundations/protocols.py",
       "research_automation/foundations/settings.py",
       "tests/test_foundations_artifact_identity.py",
       "tests/test_foundations_contract_registry.py",
+      "tests/test_foundations_dependency_preflight.py",
+      "tests/test_foundations_legacy_contract_adapters.py",
       "tests/test_foundations_protocols.py",
       "tests/test_foundations_settings.py"
     ],
@@ -47,10 +55,13 @@
       "research_automation/control_plane/artifact_semantics.py",
       "research_automation/control_plane/cli.py",
       "research_automation/control_plane/contracts.py",
+      "research_automation/control_plane/entry_guard.py",
       "research_automation/control_plane/gates.py",
+      "research_automation/control_plane/inventory.py",
       "research_automation/control_plane/sqlite_uow.py",
       "research_automation/control_plane/stores.py",
-      "research_automation/control_plane/task_reports.py"
+      "research_automation/control_plane/task_reports.py",
+      "research_automation/control_plane/__init__.py"
     ],
     "allowed_actions": [
       "read_repository_and_process_metadata",
@@ -106,6 +117,11 @@
       "no_research_goal_drift": true,
       "mainline_over_edge_case_optimization": true
     },
+    "scope_revision": {
+      "reason": "Independent P1 architecture review placed Pydantic foundations outside the sealed control_plane import chain and made the required legacy readers and dependency preflight explicit.",
+      "authority_expanding_beyond_p1": false,
+      "production_or_research_authority_added": false
+    },
     "phase_authorization": {
       "p1": true,
       "p2": false,
@@ -131,7 +147,7 @@
     }
   },
   "computed": {
-    "canonical_payload_bytes": 3945,
-    "scope_hash": "cf061797fb8c0c678e5539b9a6045af836c730c455d88a2c2dae6d075ac6906a"
+    "canonical_payload_bytes": 4644,
+    "scope_hash": "495e91e0ad27544ae822f79f3d50ad1fe2f3a3140d6c6b68c50e5e2b5754505e"
   }
 }

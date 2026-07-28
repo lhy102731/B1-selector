@@ -8,6 +8,7 @@
   "actor_type": "human",
   "invocation_id": "codex-thread-019f8fbf-6816-7663-af83-35b4279848ae",
   "observed_at": "2026-07-28T19:15:44.9489162+08:00",
+  "scope_revision": "P1-SCOPE-R1",
   "operator_statement": "继续推进吧，还是老样子如果没有别的重大决策需要我参与就一直推进下去，而且做好约束，不要进行研究目标漂移以及不要在细枝末节的地方钻牛角尖导致在小问题上越走越远，重要的还是主干问题",
   "operator_statement_sha256": "bd5ff06ced94d78619a8d4d9501290fcb6880465a639723ac4612dea88f6de3b",
   "operator_statement_hash_rule": "SHA-256 of exact UTF-8 quote, no BOM or trailing newline",
@@ -15,14 +16,15 @@
   "conservative_interpretation": "Authorize the current P1 implementation attempt only, using the approved V3.4.2 plan and strict scope manifest. Do not infer P2, Campaign, Final Holdout, production, data, KBase, scheduler, ACL, network-research, or auto-advance authority.",
   "plan_version": "V3.4.2-P0R2",
   "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
-  "scope_hash": "cf061797fb8c0c678e5539b9a6045af836c730c455d88a2c2dae6d075ac6906a",
+  "scope_hash": "495e91e0ad27544ae822f79f3d50ad1fe2f3a3140d6c6b68c50e5e2b5754505e",
   "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
-  "identity_bundle_sha256": "164fa8a0b1ed0100f002527ed4d598b570a8c229b3bf7999d0ec9a00e33b7da4",
+  "identity_bundle_sha256": "440461cce43d888a95f5cafbb3c5c298e7f887edd51998704f5ac95b19ed8056",
   "hash_binding": {
     "user_saw_p0_completion_and_next_legal_action": true,
     "binding_kind": "NATURAL_LANGUAGE_CONTINUATION_AT_P1_BOUNDARY",
     "authority_expanded_beyond_p1": false,
-    "reapproval_required_if_scope_or_phase_expands": true
+    "reapproval_required_if_scope_or_phase_expands": true,
+    "non_expansive_scope_refinement_after_review": true
   },
   "state": "APPROVED_PENDING_TRUSTED_AUTHORITY_PROVISION",
   "documentary_only": true,

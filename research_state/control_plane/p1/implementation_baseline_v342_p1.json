@@ -3,7 +3,7 @@
   "plan_version": "V3.4.2-P0R2",
   "phase": "P1",
   "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)",
-  "baseline_payload_sha256": "76fb67369c5062eb9ee14c29ecc3fe198ce1320471795c06d37471e29a8f00fa",
+  "baseline_payload_sha256": "0016c26c7224babf227fbe6052826ba1ca6dde992c398f20508163eb6ed79588",
   "baseline": {
     "attempt_id": "p1-attempt-001",
     "git_head": "4463c5b17e80694ca659869c419bc970a9932ecb",
@@ -39,17 +39,22 @@
       " M utils/technical.py",
       " D web_server.py"
     ],
-    "file_state_count": 11,
+    "file_state_count": 16,
     "file_states": {
       "ag2_research/config.py": {"sha256": "c2075535fad75838a2be409b1f5d18342916bb2af95583b4542345f63ba0ac6d", "bytes": 4935},
-      "requirements-control-plane.txt": null,
+      "requirements/control-plane.in": null,
+      "requirements/control-plane.lock": null,
       "research_automation/foundations/__init__.py": null,
       "research_automation/foundations/artifact_identity.py": null,
       "research_automation/foundations/contract_registry.py": null,
+      "research_automation/foundations/dependency_preflight.py": null,
+      "research_automation/foundations/legacy_contract_adapters.py": null,
       "research_automation/foundations/protocols.py": null,
       "research_automation/foundations/settings.py": null,
       "tests/test_foundations_artifact_identity.py": null,
       "tests/test_foundations_contract_registry.py": null,
+      "tests/test_foundations_dependency_preflight.py": null,
+      "tests/test_foundations_legacy_contract_adapters.py": null,
       "tests/test_foundations_protocols.py": null,
       "tests/test_foundations_settings.py": null
     },
