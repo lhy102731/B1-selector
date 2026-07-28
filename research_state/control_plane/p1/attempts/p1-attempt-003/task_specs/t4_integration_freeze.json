@@ -1,0 +1,99 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "116672d5c9580d22a04d03aa119a7b79ac5f3045ca0a3bed1381700220492aca",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P1R3-T4-INTEGRATION-FREEZE",
+      "objective": "Freeze and verify the complete P1 typed-foundations integration by running the full offline foundations suite, live locked dependency preflight, syntax/import checks, sealed P0 regressions, exact implementation and dependency hashes, correction supersession, scope isolation, and production non-interference without changing code or entering P2.",
+      "dependencies": [
+        "P1R3-T1C-FOUNDATION-SECURITY-CORRECTION",
+        "P1R3-T2C-SETTINGS-BOUNDARY-CORRECTION",
+        "P1R3-T3-EXECUTION-SPEC-PROTOCOL-COMPILER"
+      ],
+      "idempotency_key": "p1-attempt-003-t4-integration-freeze",
+      "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t4_integration_freeze.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "p1-foundations-integration-tests",
+          "p1-dependency-environment-preflight",
+          "p1-static-syntax-check",
+          "p0-foundations-integration-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "controller-p1-integration-review"
+        ],
+        "required_evidence_ids": [
+          "p1r3-authorization",
+          "implementation-baseline",
+          "t1-security-correction-report",
+          "t2-settings-superseding-report",
+          "t3-protocol-report"
+        ]
+      },
+      "allowed_files": [
+        "research_state/control_plane/p1/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/",
+        "apps/",
+        "artifacts/",
+        "config/",
+        "data/",
+        "data_ths/",
+        "models/",
+        "outputs/",
+        "requirements/",
+        "research_automation/control_plane/",
+        "research_automation/foundations/",
+        "strategy/",
+        "tests/"
+      ],
+      "baseline_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json",
+      "baseline_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p1r3-authorization",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "d95aa158e9296104ead79f40074c80aef7fe884427143acff05a933ad92696a5",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json",
+          "evidence_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t1-security-correction-report",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t1c_task_report.json",
+          "evidence_sha256": "cfa3b54ec2972cb31244f53661d93af49f3225e4204d65b65ee01120cb3a3606",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t2-settings-superseding-report",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t2c_task_report.json",
+          "evidence_sha256": "f7f033f5768c47681abb2f7433751e61bb662aa42dfe2c208b28cc02762033c6",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t3-protocol-report",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t3_task_report.json",
+          "evidence_sha256": "bd6baddc64ad04a663fd71e7d9d3b5c3a9bfc1db306e90a418dd108c8ab3d997",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "522bfe94d9313724fb880ddaa07aa63613f28045dad08b8e43e76a7f615a049f"
+  }
+}
