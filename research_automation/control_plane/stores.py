@@ -112,6 +112,7 @@ _AUTHORITY_SCHEMA = (
         task_spec_sha256 TEXT NOT NULL,
         task_spec_payload_json TEXT NOT NULL,
         request_sha256 TEXT NOT NULL,
+        entry_policy_sha256 TEXT,
         allowed_effects_json TEXT NOT NULL,
         secret_sha256 TEXT NOT NULL,
         lease_id TEXT,
@@ -336,6 +337,10 @@ def _require_sha256(value: object, field_name: str) -> str:
     return value
 
 
+def _optional_sha256(value: object, field_name: str) -> str | None:
+    return None if value is None else _require_sha256(value, field_name)
+
+
 def _root_secret_sha256(value: object) -> str:
     try:
         secret = _require_nonempty(value, "authority root capability")
@@ -471,6 +476,7 @@ class TaskAuthorityTicket:
     idempotency_key: str
     task_spec_ref: str
     task_spec_sha256: str
+    entry_policy_sha256: str | None
     allowed_side_effects: tuple[SideEffect, ...]
     actor: Actor
     identity: AuthorityIdentity
@@ -486,6 +492,7 @@ class TaskExecutionLease:
     phase: Phase
     attempt_id: str
     task_id: str
+    entry_policy_sha256: str | None
     allowed_side_effects: tuple[SideEffect, ...]
     actor: Actor
     identity: AuthorityIdentity
@@ -619,6 +626,7 @@ class TaskReportAuthorityBinding:
     actor_type: str
     invocation_id: str
     identity: AuthorityIdentity
+    entry_policy_sha256: str | None
     allowed_side_effects: tuple[SideEffect, ...]
     ticket_state: str
     report_payload_sha256: str
@@ -638,6 +646,7 @@ class ExecutionLeaseAuthorityBinding:
     task_spec_ref: str
     task_spec_sha256: str
     task_spec_payload_json: str
+    entry_policy_sha256: str | None
     allowed_side_effects: tuple[SideEffect, ...]
     actor: Actor
     identity: AuthorityIdentity
@@ -1179,12 +1188,20 @@ class AuthorityReader:
                 )
             ):
                 raise TaskTicketError("stored task spec binding is inconsistent")
-            expected_request_sha256 = hashlib.sha256(
-                b"control_plane.task_spec_binding.v2\0"
-                + canonical_task_spec.encode("utf-8")
-                + b"\0"
-                + str(row["allowed_effects_json"]).encode("utf-8")
-            ).hexdigest()
+            try:
+                entry_policy_sha256 = _optional_sha256(
+                    row["entry_policy_sha256"],
+                    "entry_policy_sha256",
+                )
+                expected_request_sha256 = _task_request_sha256(
+                    canonical_task_spec,
+                    str(row["allowed_effects_json"]),
+                    entry_policy_sha256,
+                )
+            except ValueError as error:
+                raise TaskTicketError(
+                    "stored task entry-policy binding is invalid"
+                ) from error
             if not hmac.compare_digest(
                 expected_request_sha256,
                 str(row["request_sha256"]),
@@ -1201,6 +1218,7 @@ class AuthorityReader:
                 task_spec_ref=str(row["task_spec_ref"]),
                 task_spec_sha256=str(row["task_spec_sha256"]),
                 task_spec_payload_json=str(row["task_spec_payload_json"]),
+                entry_policy_sha256=entry_policy_sha256,
                 allowed_side_effects=lease.allowed_side_effects,
                 actor=lease.actor,
                 identity=lease.identity,
@@ -1392,6 +1410,29 @@ def _effects_json(effects: tuple[SideEffect, ...]) -> str:
         [effect.value for effect in effects],
         separators=(",", ":"),
     )
+
+
+def _task_request_sha256(
+    task_spec_payload_json: str,
+    allowed_effects_json: str,
+    entry_policy_sha256: str | None,
+) -> str:
+    policy_binding = (
+        "PRE_POLICY_P0_BOOTSTRAP"
+        if entry_policy_sha256 is None
+        else _require_sha256(
+            entry_policy_sha256,
+            "entry_policy_sha256",
+        )
+    )
+    return hashlib.sha256(
+        b"control_plane.task_spec_binding.v2\0"
+        + task_spec_payload_json.encode("utf-8")
+        + b"\0"
+        + allowed_effects_json.encode("utf-8")
+        + b"\0"
+        + policy_binding.encode("ascii")
+    ).hexdigest()
 
 
 def _require_side_effects(
@@ -1802,6 +1843,15 @@ def _verify_task_report_authority(
         trusted_receipts[key] = (payload_json, payload_sha256)
     if trusted_receipts != expected_receipts:
         raise TaskReportAuthorityError("TaskReport trusted receipts mismatch")
+    try:
+        entry_policy_sha256 = _optional_sha256(
+            row["entry_policy_sha256"],
+            "entry_policy_sha256",
+        )
+    except ValueError as error:
+        raise TaskReportAuthorityError(
+            "TaskReport entry-policy authority binding is invalid"
+        ) from error
     return TaskReportAuthorityBinding(
         ticket_id=str(row["ticket_id"]),
         grant_id=str(row["grant_id"]),
@@ -1816,6 +1866,7 @@ def _verify_task_report_authority(
                 row["grant_instruction_policy_hash"]
             ),
         ),
+        entry_policy_sha256=entry_policy_sha256,
         allowed_side_effects=_effects_from_json(row["allowed_effects_json"]),
         ticket_state=str(row["state"]),
         report_payload_sha256=str(report["report_payload_sha256"]),
@@ -2684,12 +2735,6 @@ class _AuthorityStore:
         )
         payload_json = _canonical_task_spec(task_spec)
         allowed_effects_json = _effects_json(requested_effects)
-        request_sha256 = hashlib.sha256(
-            b"control_plane.task_spec_binding.v2\0"
-            + payload_json.encode("utf-8")
-            + b"\0"
-            + allowed_effects_json.encode("utf-8")
-        ).hexdigest()
         idempotency_key = str(task_spec["idempotency_key"])
         ticket_id = hashlib.sha256(
             b"control_plane.task_ticket.v2\0"
@@ -2697,25 +2742,58 @@ class _AuthorityStore:
             + b"\0"
             + idempotency_key.encode("utf-8")
         ).hexdigest()
-        ticket_secret_value = hmac.new(
-            grant._bearer_secret._reveal_for_authority_check().encode("utf-8"),
-            request_sha256.encode("ascii"),
-            hashlib.sha256,
-        ).hexdigest()
-        ticket_secret_sha256 = hashlib.sha256(
-            ticket_secret_value.encode("utf-8")
-        ).hexdigest()
         now = self._now()
 
-        def issue(connection: sqlite3.Connection) -> None:
+        def issue(
+            connection: sqlite3.Connection,
+        ) -> tuple[str, str, str | None]:
             self._require_active_grant(connection, grant)
             if not set(requested_effects).issubset(grant.allowed_side_effects):
                 raise TaskTicketError(
                     "task side effects exceed the active phase grant"
                 )
+            active_policy = connection.execute(
+                """
+                SELECT policy_sha256 FROM active_entry_policy_v1
+                WHERE singleton_id = 1
+                """
+            ).fetchone()
+            try:
+                entry_policy_sha256 = (
+                    None
+                    if active_policy is None
+                    else _require_sha256(
+                        active_policy["policy_sha256"],
+                        "entry_policy_sha256",
+                    )
+                )
+            except ValueError as error:
+                raise TaskTicketError(
+                    "active entry-policy binding is invalid"
+                ) from error
+            if entry_policy_sha256 is None and grant.phase is not Phase.P0:
+                raise TaskTicketError(
+                    "non-P0 task ticket requires an active entry policy"
+                )
+            request_sha256 = _task_request_sha256(
+                payload_json,
+                allowed_effects_json,
+                entry_policy_sha256,
+            )
+            ticket_secret_value = hmac.new(
+                grant._bearer_secret._reveal_for_authority_check().encode(
+                    "utf-8"
+                ),
+                request_sha256.encode("ascii"),
+                hashlib.sha256,
+            ).hexdigest()
+            ticket_secret_sha256 = hashlib.sha256(
+                ticket_secret_value.encode("utf-8")
+            ).hexdigest()
             existing = connection.execute(
                 """
-                SELECT request_sha256 FROM task_tickets_v2
+                SELECT request_sha256, entry_policy_sha256
+                FROM task_tickets_v2
                 WHERE grant_id = ? AND idempotency_key = ?
                 """,
                 (grant.grant_id, idempotency_key),
@@ -2728,16 +2806,27 @@ class _AuthorityStore:
                     raise TaskTicketIdempotencyError(
                         "task-ticket idempotency key changed semantics"
                     )
-                return
+                if _optional_sha256(
+                    existing["entry_policy_sha256"],
+                    "entry_policy_sha256",
+                ) != entry_policy_sha256:
+                    raise TaskTicketIdempotencyError(
+                        "task-ticket idempotency key changed entry policy"
+                    )
+                return (
+                    request_sha256,
+                    ticket_secret_value,
+                    entry_policy_sha256,
+                )
             connection.execute(
                 """
                 INSERT INTO task_tickets_v2
                 (ticket_id, grant_id, phase, attempt_id, task_id,
                  idempotency_key, task_spec_ref, task_spec_sha256,
-                  task_spec_payload_json, request_sha256, allowed_effects_json,
-                  secret_sha256,
+                  task_spec_payload_json, request_sha256,
+                  entry_policy_sha256, allowed_effects_json, secret_sha256,
                   state, created_at, started_at, completed_at, evidence_ref)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED', ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ISSUED', ?,
                         NULL, NULL, NULL)
                 """,
                 (
@@ -2751,6 +2840,7 @@ class _AuthorityStore:
                     str(task_spec["task_spec_sha256"]),
                     payload_json,
                     request_sha256,
+                    entry_policy_sha256,
                     allowed_effects_json,
                     ticket_secret_sha256,
                     _utc_text(now),
@@ -2770,14 +2860,22 @@ class _AuthorityStore:
                     "task_spec_ref": task_spec["task_spec_ref"],
                     "task_spec_sha256": task_spec["task_spec_sha256"],
                     "request_sha256": request_sha256,
+                    "entry_policy_sha256": entry_policy_sha256,
                     "allowed_side_effects": [
                         effect.value for effect in requested_effects
                     ],
                 },
                 created_at=now,
             )
+            return (
+                request_sha256,
+                ticket_secret_value,
+                entry_policy_sha256,
+            )
 
-        _SqliteUnitOfWork(_authority_spec())._write(issue)
+        _, ticket_secret_value, entry_policy_sha256 = _SqliteUnitOfWork(
+            _authority_spec()
+        )._write(issue)
         return TaskAuthorityTicket(
             ticket_id=ticket_id,
             grant_id=grant.grant_id,
@@ -2788,6 +2886,7 @@ class _AuthorityStore:
             idempotency_key=idempotency_key,
             task_spec_ref=str(task_spec["task_spec_ref"]),
             task_spec_sha256=str(task_spec["task_spec_sha256"]),
+            entry_policy_sha256=entry_policy_sha256,
             allowed_side_effects=requested_effects,
             actor=grant.actor,
             identity=grant.identity,
@@ -2823,6 +2922,19 @@ class _AuthorityStore:
         ).hexdigest()
         if row is None or row["grant_state"] != "ACTIVE":
             raise TaskTicketError("task ticket is unavailable")
+        try:
+            stored_entry_policy = _optional_sha256(
+                row["entry_policy_sha256"],
+                "entry_policy_sha256",
+            )
+            supplied_entry_policy = _optional_sha256(
+                ticket.entry_policy_sha256,
+                "entry_policy_sha256",
+            )
+        except ValueError as error:
+            raise TaskTicketError(
+                "task ticket entry-policy binding is invalid"
+            ) from error
         stored_binding = (
             row["grant_id"],
             row["grant_authorization_ref"],
@@ -2832,6 +2944,7 @@ class _AuthorityStore:
             row["idempotency_key"],
             row["task_spec_ref"],
             row["task_spec_sha256"],
+            stored_entry_policy,
             row["allowed_effects_json"],
             row["grant_actor_id"],
             row["grant_actor_type"],
@@ -2849,6 +2962,7 @@ class _AuthorityStore:
             ticket.idempotency_key,
             ticket.task_spec_ref,
             ticket.task_spec_sha256,
+            supplied_entry_policy,
             _effects_json(ticket.allowed_side_effects),
             ticket.actor.actor_id,
             ticket.actor.actor_type,
@@ -2901,6 +3015,7 @@ class _AuthorityStore:
                     "lease_id": lease_id,
                     "task_id": ticket.task_id,
                     "attempt_id": ticket.attempt_id,
+                    "entry_policy_sha256": ticket.entry_policy_sha256,
                     "started_at": _utc_text(now),
                 },
                 created_at=now,
@@ -2915,6 +3030,7 @@ class _AuthorityStore:
             phase=ticket.phase,
             attempt_id=ticket.attempt_id,
             task_id=ticket.task_id,
+            entry_policy_sha256=ticket.entry_policy_sha256,
             allowed_side_effects=ticket.allowed_side_effects,
             actor=ticket.actor,
             identity=ticket.identity,
@@ -2947,6 +3063,19 @@ class _AuthorityStore:
         ).fetchone()
         if row is None or row["state"] != "IN_PROGRESS":
             raise TaskTicketStateError("task ticket is not IN_PROGRESS")
+        try:
+            stored_entry_policy = _optional_sha256(
+                row["entry_policy_sha256"],
+                "entry_policy_sha256",
+            )
+            supplied_entry_policy = _optional_sha256(
+                lease.entry_policy_sha256,
+                "entry_policy_sha256",
+            )
+        except ValueError as error:
+            raise TaskTicketError(
+                "task execution lease entry-policy binding is invalid"
+            ) from error
         supplied_secret_sha256 = hashlib.sha256(
             lease._bearer_secret._reveal_for_authority_check().encode("utf-8")
         ).hexdigest()
@@ -2957,6 +3086,7 @@ class _AuthorityStore:
             row["phase"],
             row["attempt_id"],
             row["task_id"],
+            stored_entry_policy,
             row["allowed_effects_json"],
             row["grant_actor_id"],
             row["grant_actor_type"],
@@ -2973,6 +3103,7 @@ class _AuthorityStore:
             lease.phase.value,
             lease.attempt_id,
             lease.task_id,
+            supplied_entry_policy,
             _effects_json(lease.allowed_side_effects),
             lease.actor.actor_id,
             lease.actor.actor_type,
@@ -3271,6 +3402,19 @@ class _AuthorityStore:
             ).fetchone()
             if row is None or row["state"] != "IN_PROGRESS":
                 raise TaskTicketStateError("task ticket is not IN_PROGRESS")
+            try:
+                stored_entry_policy = _optional_sha256(
+                    row["entry_policy_sha256"],
+                    "entry_policy_sha256",
+                )
+                supplied_entry_policy = _optional_sha256(
+                    lease.entry_policy_sha256,
+                    "entry_policy_sha256",
+                )
+            except ValueError as error:
+                raise TaskTicketError(
+                    "task execution lease entry-policy binding is invalid"
+                ) from error
             stored_binding = (
                 row["lease_id"],
                 row["grant_id"],
@@ -3278,6 +3422,7 @@ class _AuthorityStore:
                 row["phase"],
                 row["attempt_id"],
                 row["task_id"],
+                stored_entry_policy,
                 row["allowed_effects_json"],
                 row["grant_actor_id"],
                 row["grant_actor_type"],
@@ -3294,6 +3439,7 @@ class _AuthorityStore:
                 lease.phase.value,
                 lease.attempt_id,
                 lease.task_id,
+                supplied_entry_policy,
                 _effects_json(lease.allowed_side_effects),
                 lease.actor.actor_id,
                 lease.actor.actor_type,
@@ -3337,6 +3483,7 @@ class _AuthorityStore:
                     "ticket_id": lease.ticket_id,
                     "task_id": lease.task_id,
                     "attempt_id": lease.attempt_id,
+                    "entry_policy_sha256": lease.entry_policy_sha256,
                     "state": terminal_state,
                     "evidence_ref": evidence,
                     "completed_at": _utc_text(completed_at),

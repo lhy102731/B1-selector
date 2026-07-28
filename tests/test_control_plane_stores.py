@@ -1204,6 +1204,33 @@ class TrustedBootstrapTests(unittest.TestCase):
                 self.assertEqual(recovered_grant, grant)
                 grant = recovered_grant
 
+                p1_envelope = authority._provision_authorization(
+                    phase=Phase.P1,
+                    attempt_id="p1-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                p1_grant = authority.claim_authorization(
+                    p1_envelope,
+                    expected_phase=Phase.P1,
+                    expected_attempt_id="p1-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                with self.assertRaisesRegex(
+                    stores_module.TaskTicketError,
+                    "requires an active entry policy",
+                ):
+                    authority._issue_task_ticket(
+                        p1_grant,
+                        task_spec,
+                        allowed_side_effects=(
+                            SideEffect.WRITE_CONTROL_PLANE,
+                        ),
+                    )
+
                 with self.assertRaises(stores_module.TaskTicketError):
                     authority._issue_task_ticket(
                         grant,
@@ -1722,6 +1749,8 @@ class TrustedBootstrapTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
                 lease = authority._begin_task(ticket)
+                self.assertIsNone(ticket.entry_policy_sha256)
+                self.assertIsNone(lease.entry_policy_sha256)
                 before_outbox = AuthorityReader().pending_outbox_count()
 
                 activated = authority._activate_reviewed_entry_policy(
@@ -1749,6 +1778,36 @@ class TrustedBootstrapTests(unittest.TestCase):
                 self.assertEqual(
                     AuthorityReader().pending_outbox_count(),
                     before_outbox + 1,
+                )
+                next_task_spec = dict(task_spec)
+                next_task_spec["task_id"] = "P0R2-T8-POST-POLICY"
+                next_task_spec["idempotency_key"] = (
+                    "p0r2-post-policy-ticket-001"
+                )
+                next_task_spec["task_spec_ref"] = (
+                    "research_state/control_plane/p0r2/task_specs/"
+                    "post-policy.json"
+                )
+                next_ticket = authority._issue_task_ticket(
+                    grant,
+                    next_task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                next_lease = authority._begin_task(next_ticket)
+                lease_binding = AuthorityReader().execution_lease_binding(
+                    next_lease
+                )
+                self.assertEqual(
+                    next_ticket.entry_policy_sha256,
+                    activated.policy_sha256,
+                )
+                self.assertEqual(
+                    next_lease.entry_policy_sha256,
+                    activated.policy_sha256,
+                )
+                self.assertEqual(
+                    lease_binding.entry_policy_sha256,
+                    activated.policy_sha256,
                 )
                 with self.assertRaises(
                     stores_module.EntryPolicyActivationConflictError
