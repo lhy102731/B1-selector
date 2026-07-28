@@ -171,6 +171,26 @@ control_layer: {}
                 "secret-like",
             ),
             (
+                "      extra_params:\n"
+                '        APISecretKey: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        secretValue: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        authHeader: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        bearer: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
                 'control_layer:\n  service_token: "PLAINTEXT-MUST-NOT-LEAK"\n',
                 "secret-like",
             ),
@@ -236,17 +256,87 @@ control_layer: {}
             config_path.write_text(
                 config_path.read_text(encoding="utf-8").replace(
                     "control_layer: {}",
-                    'control_layer:\n  note: "${UNCONSUMED_VALUE}"',
+                    'control_layer:\n  state_root: "${STATE_ROOT:-default-root}"',
                 ),
                 encoding="utf-8",
             )
 
+            baseline = load_project_settings(config_path, environ={})
+            overridden = load_project_settings(
+                config_path,
+                environ={},
+                overrides={"STATE_ROOT": "override-root"},
+            )
+
+            self.assertEqual(
+                baseline.public_manifest()["control_layer"]["state_root"],
+                "default-root",
+            )
+            self.assertEqual(
+                overridden.public_manifest()["control_layer"]["state_root"],
+                "override-root",
+            )
+
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
             with self.assertRaisesRegex(ProjectSettingsError, "unknown override"):
                 load_project_settings(
                     config_path,
                     environ={},
-                    overrides={"UNCONSUMED_VALUE": "ignored"},
+                    overrides={"UNREFERENCED_SETTING": "value"},
                 )
+
+    def test_non_profile_sections_resolve_references_with_one_precedence_chain(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
+            text = config_path.read_text(encoding="utf-8")
+            text = text.replace(
+                "  default: primary\n",
+                "  default: primary\n"
+                "  usage_targets:\n"
+                '    daily_budget: "${DAILY_BUDGET:-100}"\n',
+            )
+            text = text.replace(
+                "    description: Test worker\n",
+                '    description: "${AGENT_DESCRIPTION:-Test worker}"\n',
+            )
+            text = text.replace(
+                "control_layer: {}\n",
+                'control_layer:\n  state_root: "${STATE_ROOT:-default-root}"\n',
+            )
+            config_path.write_text(text, encoding="utf-8")
+
+            settings = load_project_settings(
+                config_path,
+                env_file=None,
+                environ={
+                    "TEST_API_KEY": "DUMMY-KEY",
+                    "DAILY_BUDGET": "file-budget",
+                    "AGENT_DESCRIPTION": "environment-description",
+                    "STATE_ROOT": "environment-root",
+                },
+                overrides={
+                    "DAILY_BUDGET": "override-budget",
+                    "STATE_ROOT": "override-root",
+                },
+            )
+            manifest = settings.public_manifest()
+            self.assertEqual(
+                manifest["usage_targets"]["daily_budget"],
+                "override-budget",
+            )
+            self.assertEqual(
+                manifest["agents"]["worker"]["description"],
+                "environment-description",
+            )
+            self.assertEqual(
+                manifest["control_layer"]["state_root"],
+                "override-root",
+            )
+            self.assertEqual(
+                settings.unresolved_document()["control_layer"]["state_root"],
+                "${STATE_ROOT:-default-root}",
+            )
 
     def test_explicit_sources_reject_non_string_entries(self) -> None:
         invalid_sources = (

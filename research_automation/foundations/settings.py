@@ -90,6 +90,8 @@ _SECRET_FIELD_EXACT = frozenset(
         "client_secret",
         "authorization",
         "proxy_authorization",
+        "auth_header",
+        "bearer",
         "cookie",
         "set_cookie",
     }
@@ -185,7 +187,12 @@ class _ResolvedProfile(BaseModel):
 class ProjectSettings:
     """Immutable owner of resolved profiles; inspection may tolerate missing secrets."""
 
-    __slots__ = ("_default_profile", "_document", "_profiles")
+    __slots__ = (
+        "_default_profile",
+        "_document",
+        "_profiles",
+        "_public_document",
+    )
 
     def __init__(
         self,
@@ -193,12 +200,14 @@ class ProjectSettings:
         default_profile: str,
         document: Mapping[str, object],
         profiles: Mapping[str, _ResolvedProfile],
+        public_document: Mapping[str, object],
     ) -> None:
         if default_profile not in profiles:
             raise ProjectSettingsError("default profile is not defined")
         self._default_profile = default_profile
         self._document = copy.deepcopy(dict(document))
         self._profiles = MappingProxyType(dict(profiles))
+        self._public_document = copy.deepcopy(dict(public_document))
 
     @property
     def default_profile(self) -> str:
@@ -262,7 +271,7 @@ class ProjectSettings:
 
     def public_manifest(self) -> dict[str, object]:
         """Return the deterministic, credential-free settings identity payload."""
-        llm = self._document.get("llm", {})
+        llm = self._public_document.get("llm", {})
         return {
             "schema_version": "control_plane.project_settings_public.v1",
             "default_profile": self._default_profile,
@@ -274,11 +283,15 @@ class ProjectSettings:
                 llm.get("usage_targets", {}) if isinstance(llm, dict) else {}
             ),
             "control_layer": copy.deepcopy(
-                self._document.get("control_layer", {})
+                self._public_document.get("control_layer", {})
             ),
-            "agents": copy.deepcopy(self._document.get("agents", {})),
-            "workflows": copy.deepcopy(self._document.get("workflows", {})),
-            "roundtable": copy.deepcopy(self._document.get("roundtable", {})),
+            "agents": copy.deepcopy(self._public_document.get("agents", {})),
+            "workflows": copy.deepcopy(
+                self._public_document.get("workflows", {})
+            ),
+            "roundtable": copy.deepcopy(
+                self._public_document.get("roundtable", {})
+            ),
         }
 
     def unresolved_document(self) -> dict[str, object]:
@@ -327,6 +340,46 @@ def _resolve_nested(value: object, sources: Mapping[str, str]) -> object:
         return {key: _resolve_nested(child, sources) for key, child in value.items()}
     if isinstance(value, list):
         return [_resolve_nested(child, sources) for child in value]
+    return _resolve_reference(value, sources)
+
+
+def _resolve_public_document(
+    value: object,
+    sources: Mapping[str, str],
+    *,
+    path: tuple[object, ...] = (),
+) -> object:
+    """Resolve non-secret references for the public settings identity.
+
+    The credential seam remains a reference in the copied document.  It is
+    never included in ``public_manifest`` (profiles are represented by the
+    typed, redacted projection), but preserving it here keeps this helper safe
+    if another public section is added later.
+    """
+    if isinstance(value, dict):
+        result: dict[object, object] = {}
+        for key, child in value.items():
+            is_profile_credential = (
+                len(path) == 3
+                and path[0] == "llm"
+                and path[1] == "profiles"
+                and key == "api_key"
+            )
+            result[key] = (
+                child
+                if is_profile_credential
+                else _resolve_public_document(
+                    child,
+                    sources,
+                    path=path + (key,),
+                )
+            )
+        return result
+    if isinstance(value, list):
+        return [
+            _resolve_public_document(child, sources, path=path + (index,))
+            for index, child in enumerate(value)
+        ]
     return _resolve_reference(value, sources)
 
 
@@ -520,24 +573,29 @@ def _valid_base_url(value: str) -> bool:
 
 
 def _normalized_field_name(value: str) -> str:
-    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    acronym_split = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", value)
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", acronym_split)
     return re.sub(r"[^A-Za-z0-9]+", "_", camel_split).strip("_").lower()
 
 
 def _is_secret_field_name(value: str) -> bool:
     normalized = _normalized_field_name(value)
-    return normalized in _SECRET_FIELD_EXACT or normalized.endswith(
-        (
-            "_api_key",
-            "_secret",
-            "_secret_key",
-            "_password",
-            "_passwd",
-            "_credential",
-            "_credentials",
-            "_token",
-            "_private_key",
-            "_authorization",
+    return (
+        normalized in _SECRET_FIELD_EXACT
+        or normalized.startswith(("secret_", "auth_", "bearer_"))
+        or normalized.endswith(
+            (
+                "_api_key",
+                "_secret",
+                "_secret_key",
+                "_password",
+                "_passwd",
+                "_credential",
+                "_credentials",
+                "_token",
+                "_private_key",
+                "_authorization",
+            )
         )
     )
 
@@ -893,7 +951,6 @@ def load_project_settings(
     if not isinstance(profiles_raw, dict) or not profiles_raw:
         raise ProjectSettingsError("project settings profiles are invalid")
     credential_environment_names: set[str] = set()
-    consumed_environment_names: set[str] = set()
     for profile_raw in profiles_raw.values():
         if not isinstance(profile_raw, dict):
             raise ProjectSettingsError("project settings profiles are invalid")
@@ -910,18 +967,12 @@ def load_project_settings(
         credential_environment_names.add(
             _environment_name(key_match.group("name"))
         )
-        consumed_environment_names.update(
-            _referenced_environment_names(
-                {
-                    field_name: value
-                    for field_name, value in profile_raw.items()
-                    if field_name in _PROFILE_REFERENCE_FIELDS
-                }
-            )
-        )
     credential_names = frozenset(credential_environment_names)
     _validate_credential_reference_scope(raw, credential_names)
     _validate_reference_integrity(raw, set(profiles_raw))
+    consumed_environment_names = (
+        _referenced_environment_names(raw) - credential_names
+    ) | set(credential_names)
     sources: dict[str, str] = {}
     if env_file is not None:
         selected: Mapping[str, str | None] | None
@@ -981,6 +1032,7 @@ def load_project_settings(
         default_profile=default_profile,
         document=raw,
         profiles=profiles,
+        public_document=_resolve_public_document(raw, sources),
     )
     _validate_public_json_value(settings.public_manifest())
     return settings
