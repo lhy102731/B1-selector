@@ -1,0 +1,90 @@
+{
+  "schema_version": "control_plane.plan_freeze_receipt.v2-documentary",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P0",
+  "task_id": "P0R2-0-PLAN-FREEZE-CR005",
+  "attempt_id": "p0r2-attempt-001",
+  "observed_at": "2026-07-28T16:06:25.4483192+08:00",
+  "git_head_before_stage": "74a3e2adff63dbbc7478b68a5203ab9ff0a0f919",
+  "branch": "codex/v342-control-plane",
+  "identity_bundle_sha256": "187b211a8a3fc36b1eb27a8b0da867cdff96e93801f728296edc0f2a93f504a2",
+  "base_plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+  "revised_scope_hash": "e9a2e9fbc0bfcb0ab1fc90ccd17ddd592b99a5413a19bf3f9253eba988e3b5e1",
+  "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+  "artifacts": [
+    {
+      "path": ".gitattributes",
+      "sha256": "17f53f08b7ae4f02d167bf07772feef04c79bb28708169bb879c6e157ce5600d",
+      "bytes": 491
+    },
+    {
+      "path": "research_state/control_plane/p0r2/plan_manifest_v342_p0r2.json",
+      "sha256": "bc5389fbcdf41c6705ee2b4c163041a3611d3b481e95a74cf2dae4a75f49a99d",
+      "bytes": 4104
+    },
+    {
+      "path": "research_state/control_plane/p0r2/scope_manifest_v342_p0r2_cr005.json",
+      "sha256": "92cb14ece9ba9b61cfac316b3419b394a872149b9d1b13cf257a40e82cd15dd3",
+      "bytes": 9869
+    },
+    {
+      "path": "research_state/control_plane/p0r2/instruction_policy_manifest_v342_p0r2.json",
+      "sha256": "dcdaf5faca2c1d47ac4549f83e6d438a7996c33ef2656cf7db33a81da66af3e3",
+      "bytes": 1605
+    },
+    {
+      "path": "research_state/control_plane/p0r2/identity_bundle_v342_p0r2_cr005.json",
+      "sha256": "66edb4cb81fae327ed41f58684c524ebea6b51aa7fec15b51f5edc8c21db58c9",
+      "bytes": 685
+    },
+    {
+      "path": "research_state/control_plane/p0r2/implementation_baseline_v342_p0r2.json",
+      "sha256": "0bf4b985c74bf6ee7e31cbfc6886bdbe08635abd0b4344331fee3fa721bb8710",
+      "bytes": 8351
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-28-v342-p0-change-request-004.md",
+      "sha256": "55521a9a9607cc97b69697ddd19743b9aaad838be961117e5cce4bcd5839cede",
+      "bytes": 5752
+    },
+    {
+      "path": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-004.json",
+      "sha256": "8663a3c4d9b6f41008cf43f5528cd3973a7f69c5e2214dd36ca05909866fcf5a",
+      "bytes": 1730
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-28-v342-p0-change-request-005.md",
+      "sha256": "7b3945fea7a72d5d2b244cf02fc815c35532100bdc0d118186b4e1e8653278bd",
+      "bytes": 6547
+    },
+    {
+      "path": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-005.json",
+      "sha256": "5cc5ae2e6821bd5b2a5065e7d570e2d6321f0273e65eddf26bb1d875c8123299",
+      "bytes": 1560
+    },
+    {
+      "path": "research_state/control_plane/p0r2/implementation_authorization_receipt_v342_p0r2_cr005.json",
+      "sha256": "becc39a119aa5ce8415731377c09d73dadc214c2aabe3372b9167ba4d0018a5b",
+      "bytes": 2310
+    }
+  ],
+  "verification": {
+    "method": "independent stdlib byte and canonical-payload recomputation",
+    "cr004_exact_approval_receipt_present": true,
+    "cr005_explicit_approval_receipt_present": true,
+    "plan_hash_unchanged": true,
+    "revised_scope_hash_match": true,
+    "instruction_policy_hash_unchanged": true,
+    "identity_bundle_hash_match": true,
+    "original_baseline_raw_sha256_match": true,
+    "pending_placeholder_count": 0
+  },
+  "stage_verdict": "PASS",
+  "authority_store_created": false,
+  "capability_issued": false,
+  "p0_code_freeze_created": false,
+  "auto_advance": false,
+  "p1_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false
+}

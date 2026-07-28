@@ -1,0 +1,253 @@
+{
+  "schema_version": "control_plane.scope_manifest.v3",
+  "created_at": "2026-07-28T16:06:25.4483192+08:00",
+  "supplementary": true,
+  "base_scope_manifest": "research_state/control_plane/p0r2/scope_manifest_v342_p0r2.json",
+  "hash_algorithm": "sha256(UTF-8 'control_plane.scope_bundle.v1' + NUL + canonical_json(payload))",
+  "payload": {
+    "schema_version": "control_plane.scope_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P0",
+    "attempt_generation": "P0R2",
+    "attempt_id": "p0r2-attempt-001",
+    "task_ids": [
+      "P0R2-0-PLAN-FREEZE",
+      "P0R2-T1-STORE-BOOTSTRAP-REPORTING",
+      "P0R2-T2-PROVISIONAL-ADOPTION",
+      "P0R2-T3-GENERIC-GATE",
+      "P0R2-T4-EXECUTION-SINKS",
+      "P0R2-T5-AUTHORITY-WRITES-LEGACY-QUARANTINE",
+      "P0R2-T6-WEB-CLI-CLOSURE",
+      "P0R2-T7-INTEGRATION-FREEZE",
+      "P0R2-T8-FINAL-INVENTORY-POLICY",
+      "P0R2-T9-OFFICIAL-GATE"
+    ],
+    "task_ticket_requires_exact_files": true,
+    "allowed_write_roots": [
+      "docs/superpowers/plans/",
+      "docs/superpowers/evidence/",
+      "docs/superpowers/reviews/2026-07-26-v342-p0r2/",
+      "research_state/control_plane/p0r2/",
+      "research_state/control_plane/authority/",
+      "research_state/control_plane/operational/",
+      "research_state/control_plane/inventories/",
+      "research_state/control_plane/policies/"
+    ],
+    "allowed_code_and_test_files": [
+      ".gitattributes",
+      "research_automation/control_plane/__init__.py",
+      "research_automation/control_plane/contracts.py",
+      "research_automation/control_plane/entry_guard.py",
+      "research_automation/control_plane/sqlite_uow.py",
+      "research_automation/control_plane/stores.py",
+      "research_automation/control_plane/task_reports.py",
+      "research_automation/control_plane/gates.py",
+      "research_automation/control_plane/cli.py",
+      "research_automation/control_plane/sink_guard.py",
+      "research_automation/control_plane/inventory.py",
+      "research_automation/automation_controller.py",
+      "research_automation/autonomous_runner.py",
+      "research_automation/discovery_execution_bridge.py",
+      "research_automation/evolution_loop.py",
+      "research_automation/experiment_runner.py",
+      "research_automation/handoff_runner_repair.py",
+      "research_automation/handoff_updater.py",
+      "research_automation/kb_gate.py",
+      "research_automation/kbase_ag2_full_cycle.py",
+      "research_automation/patch_executor.py",
+      "research_automation/registry_updater.py",
+      "research_automation/run_brick_sqnav_backlog.py",
+      "research_automation/safety.py",
+      "research_automation/snapshot_updater.py",
+      "ag2_research/discovery_handoff.py",
+      "ag2_research/knowledge_bridge.py",
+      "ag2_research/orchestrator.py",
+      "research/brick_ag2_kbase_sqnav_autorun.py",
+      "apps/web_roundtable.py",
+      "apps/web_server.py",
+      "run_research.py",
+      "run_research_cycle.py",
+      "tests/test_control_plane_contracts.py",
+      "tests/test_control_plane_entry_guard.py",
+      "tests/test_control_plane_sqlite_uow.py",
+      "tests/test_control_plane_stores.py",
+      "tests/test_control_plane_task_reports.py",
+      "tests/test_control_plane_gates.py",
+      "tests/test_control_plane_sink_guards.py",
+      "tests/test_import_side_effects.py",
+      "tests/test_legacy_campaign_guards.py",
+      "tests/test_web_entry_guards.py",
+      "tests/test_automation_resilience.py",
+      "tests/test_ag2_orchestration_contracts.py",
+      "tests/test_discovery_handoff_bridge.py",
+      "tests/test_handoff_runner_repair.py",
+      "tests/test_kbase_ag2_full_cycle.py",
+      "tests/test_knowledge_bridge.py",
+      "research_automation/control_plane/artifact_semantics.py",
+      "research_automation/control_plane/cli_registry.py",
+      "research_automation/control_plane/legacy_adoption.py",
+      "research_automation/control_plane/provenance.py",
+      "research_automation/control_plane/web_guard.py",
+      "tests/test_ag2_cli_routing.py",
+      "tests/test_cli_entry_guards.py",
+      "tests/test_control_plane_artifact_semantics.py",
+      "tests/test_control_plane_legacy_adoption.py"
+    ],
+    "read_only_legacy_evidence": [
+      "docs/superpowers/plans/2026-07-25-v34-*",
+      "docs/superpowers/reviews/2026-07-25-p0-cr001-panel/*",
+      "research_state/control_plane/p0/*",
+      "research_automation/control_plane/entry_policy.json"
+    ],
+    "allowed_actions": [
+      "read_repository_and_process_metadata",
+      "write_exact_ticket_scoped_control_plane_files",
+      "run_offline_tests_and_static_checks",
+      "call_development_review_models_without_research_data_or_authority_secrets",
+      "create_or_switch_local_codex_branch",
+      "git_stage_exact_intentional_files",
+      "git_local_commit_each_verified_stage"
+    ],
+    "allowed_side_effects": [
+      "READ",
+      "WRITE_SCOPED_CODE_TEST_PLAN_AND_CONTROL_STATE",
+      "SPAWN_OFFLINE_TEST_PROCESS",
+      "DEVELOPMENT_REVIEW_MODEL_API_CALL",
+      "LOCAL_GIT_BRANCH_STAGE_COMMIT"
+    ],
+    "forbidden_roots": [
+      ".env",
+      "artifacts/",
+      "config/",
+      "data/",
+      "models/",
+      "strategy/",
+      "D:/KBase/",
+      "ag2_research/knowledge_base/",
+      "data_ths/",
+      "data_pre_ths_backup_20260727_110350/",
+      "outputs/",
+      "ths-rebuild-1s3f37j2/",
+      "ths-rebuild-2f8lznck/",
+      "ths-rebuild-gzsqa360/",
+      "ths-rebuild-rn72aj5e/"
+    ],
+    "forbidden_actions": [
+      "backtest_or_research_execution",
+      "parameter_sweep",
+      "cache_build_or_rebuild",
+      "data_update_or_data_byte_mutation",
+      "final_holdout_access",
+      "kbase_registry_snapshot_handoff_or_memory_content_write",
+      "production_config_model_parameter_signal_or_strategy_change",
+      "real_campaign_start",
+      "process_stop_cancel_or_parameter_change",
+      "windows_scheduler_or_acl_mutation",
+      "git_push_merge_pull_request_rebase_reset_or_broad_stage",
+      "silent_scope_validation_or_roster_reduction"
+    ],
+    "git_authorization": {
+      "create_or_switch_local_branch": true,
+      "stage_exact_intentional_files": true,
+      "local_commit_each_verified_stage": true,
+      "git_add_all": false,
+      "amend_or_rewrite_history": false,
+      "push": false,
+      "merge": false,
+      "pull_request": false,
+      "reset_or_checkout_cleanup": false
+    },
+    "content_identity_checkout_policy": {
+      "gitattributes_path": ".gitattributes",
+      "control_plane_text_eol": "lf",
+      "purpose": "keep byte-addressed plan and legacy evidence stable under Windows core.autocrlf"
+    },
+    "phase_authorization": {
+      "p0r2": true,
+      "p1": false,
+      "campaign": false,
+      "final_eval": false,
+      "auto_advance": false
+    },
+    "user_worktree_policy": {
+      "existing_changes_are_user_owned": true,
+      "broad_staging_forbidden": true,
+      "stage_only_intentionally_changed_or_preserved_evidence_paths": true,
+      "concurrent_workspace_delta_manifest_required": true,
+      "outside_scope_files_are_p0_evidence": false,
+      "runtime_artifacts_read_only": true
+    },
+    "external_development_review": {
+      "parallel_review_required": true,
+      "scientific_campaign_roster": false,
+      "authority_secret_access": false,
+      "research_data_access": false,
+      "workspace_write_access": false,
+      "primary_codex_review_required": true
+    },
+    "scope_revision": {
+      "revision_id": "P0R2-SCOPE-CR004-CR005",
+      "base_scope_hash": "d8ca0be226c43a54de63a5e5d50ffe905ab6da7746584095a9084b981fa26584",
+      "approved_change_requests": [
+        {
+          "id": "P0-CR-004",
+          "path": "docs/superpowers/plans/2026-07-28-v342-p0-change-request-004.md",
+          "sha256": "55521a9a9607cc97b69697ddd19743b9aaad838be961117e5cce4bcd5839cede",
+          "approval_receipt": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-004.json"
+        },
+        {
+          "id": "P0-CR-005",
+          "path": "docs/superpowers/plans/2026-07-28-v342-p0-change-request-005.md",
+          "sha256": "7b3945fea7a72d5d2b244cf02fc815c35532100bdc0d118186b4e1e8653278bd",
+          "approval_receipt": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-005.json"
+        }
+      ]
+    },
+    "excluded_non_executable_roots": [
+      "data_ths/",
+      "data_pre_ths_backup_20260727_110350/",
+      "outputs/",
+      "ths-rebuild-1s3f37j2/",
+      "ths-rebuild-2f8lznck/",
+      "ths-rebuild-gzsqa360/",
+      "ths-rebuild-rn72aj5e/"
+    ],
+    "exact_read_only_runtime_artifacts": [
+      "tools/ths_yuanhang_bridge/build.ps1",
+      "tools/ths_yuanhang_bridge/YuanhangBridge.cs",
+      "tools/ths_yuanhang_bridge/YuanhangBridge.dll",
+      "tools/ths_yuanhang_bridge/YuanhangBridge.runtimeconfig.json",
+      "tools/ths_yuanhang_bridge/workspace/datacenter.xml",
+      "tools/ths_yuanhang_bridge/workspace/DNSTest.xml"
+    ],
+    "production_daily_entry_reconciliation": {
+      "production_daily_paths": [
+        "tools/update_today_ths.py",
+        "tools/update_ths_market_assets.py",
+        "tools/backfill_daily_pcf_baostock.py",
+        "build_indicators_cache.py",
+        "tools/select_etf_candidates.py",
+        "backtest_brick_v2.py",
+        "filter_exec_reduce.py",
+        "tools/ths_yuanhang_bridge/build.ps1"
+      ],
+      "admin_only_paths": [
+        "run_select1.bat"
+      ],
+      "classification_grants_execution_authority": false
+    },
+    "external_concurrent_change_policy": {
+      "classification": "UNKNOWN_EXTERNAL_CONCURRENT_CHANGE",
+      "must_not_attribute_to": [
+        "P0R2",
+        "Codex",
+        "Windows scheduler"
+      ],
+      "data_quality_claim_authorized": false
+    }
+  },
+  "computed": {
+    "canonical_payload_bytes": 7649,
+    "scope_hash": "e9a2e9fbc0bfcb0ab1fc90ccd17ddd592b99a5413a19bf3f9253eba988e3b5e1"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": "control_plane.identity_bundle.v2",
+  "created_at": "2026-07-28T16:06:25.4483192+08:00",
+  "supplementary": true,
+  "approved_change_requests": [
+    "P0-CR-004",
+    "P0-CR-005"
+  ],
+  "payload": {
+    "plan_version": "V3.4.2-P0R2",
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "e9a2e9fbc0bfcb0ab1fc90ccd17ddd592b99a5413a19bf3f9253eba988e3b5e1",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "computed": {
+    "canonical_payload_bytes": 282,
+    "identity_bundle_sha256": "187b211a8a3fc36b1eb27a8b0da867cdff96e93801f728296edc0f2a93f504a2"
+  }
+}
