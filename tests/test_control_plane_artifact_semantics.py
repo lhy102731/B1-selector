@@ -21,6 +21,9 @@ from research_automation.control_plane.contracts import (
     canonical_json,
     canonical_sha256,
 )
+from research_automation.control_plane.policy_publisher import (
+    publish_reviewed_entry_policy,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -528,6 +531,41 @@ class ReviewedEntryPolicyTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             _, inventory = self._artifacts(Path(tmp))
             self._validate(self._policy(inventory), inventory)
+
+    def test_reviewed_policy_is_published_once_by_its_exact_byte_hash(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "research_state" / "control_plane").mkdir(parents=True)
+            _, inventory = self._artifacts(root)
+            raw = canonical_json(self._policy(inventory)).encode("utf-8")
+
+            first = publish_reviewed_entry_policy(
+                raw,
+                repository_root=root,
+                expected_plan_version="V3.4.2-P0R2",
+                expected_phase="P0",
+                expected_attempt_id="p0r2-attempt-001",
+                expected_identity=self.identity,
+                final_inventory=inventory,
+            )
+            second = publish_reviewed_entry_policy(
+                raw,
+                repository_root=root,
+                expected_plan_version="V3.4.2-P0R2",
+                expected_phase="P0",
+                expected_attempt_id="p0r2-attempt-001",
+                expected_identity=self.identity,
+                final_inventory=inventory,
+            )
+
+            self.assertEqual(first, second)
+            self.assertEqual(first.file_sha256, hashlib.sha256(raw).hexdigest())
+            self.assertEqual(
+                first.reference,
+                "research_state/control_plane/policies/"
+                f"{first.file_sha256}.json",
+            )
+            self.assertEqual((root / first.reference).read_bytes(), raw)
 
     def test_scanner_cannot_self_approve_policy(self) -> None:
         with TemporaryDirectory() as tmp:
