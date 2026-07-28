@@ -44,7 +44,7 @@ env/
 *~
 
 # Data files (large, should not be committed)
-data/
+/data/
 !data/.gitkeep
 /data_ths/
 /data_pre_ths_backup_*/
