@@ -140,6 +140,39 @@ class EntryInventoryTests(unittest.TestCase):
             entry_ids,
         )
 
+    def test_scan_includes_the_exact_ths_bridge_runtime_surface(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bridge_module = root / "utils" / "ths_yuanhang_bridge.py"
+            bridge_module.parent.mkdir(parents=True)
+            bridge_module.write_text("pass\n", encoding="utf-8")
+            runtime_files = {
+                "tools/ths_yuanhang_bridge/build.ps1": "Write-Output built\n",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.cs": "class Bridge {}\n",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.dll": b"MZ-test-runtime",
+                "tools/ths_yuanhang_bridge/YuanhangBridge.runtimeconfig.json": "{}\n",
+                "tools/ths_yuanhang_bridge/workspace/datacenter.xml": "<root />\n",
+                "tools/ths_yuanhang_bridge/workspace/DNSTest.xml": "<root />\n",
+            }
+            for relative, content in runtime_files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if isinstance(content, bytes):
+                    path.write_bytes(content)
+                else:
+                    path.write_text(content, encoding="utf-8")
+
+            records = EntryInventory.scan(
+                root,
+                include_required_import_seams=False,
+            )
+
+        by_path = {record.path: record for record in records}
+        self.assertEqual(set(runtime_files), set(runtime_files) & set(by_path))
+        self.assertTrue(
+            all(by_path[path].disposition == "PRODUCTION_DAILY" for path in runtime_files)
+        )
+
     def test_scan_rejects_a_missing_inventory_root(self) -> None:
         with TemporaryDirectory() as tmp:
             missing_root = Path(tmp) / "missing"

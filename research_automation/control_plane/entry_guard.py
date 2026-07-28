@@ -108,7 +108,17 @@ _PRODUCTION_DAILY_PATHS = frozenset(
         "build_daily_ret_cache.py",
         "run_b1_v3.py",
         "run_b3.py",
+        "tools/ths_yuanhang_bridge/build.ps1",
     }
+)
+_THS_BRIDGE_MARKER_PATH = "utils/ths_yuanhang_bridge.py"
+_THS_BRIDGE_RUNTIME_PATHS = (
+    "tools/ths_yuanhang_bridge/build.ps1",
+    "tools/ths_yuanhang_bridge/YuanhangBridge.cs",
+    "tools/ths_yuanhang_bridge/YuanhangBridge.dll",
+    "tools/ths_yuanhang_bridge/YuanhangBridge.runtimeconfig.json",
+    "tools/ths_yuanhang_bridge/workspace/datacenter.xml",
+    "tools/ths_yuanhang_bridge/workspace/DNSTest.xml",
 )
 _PRODUCTION_DAILY_SCHEDULER_PATH = "\\A\u80a1\u9009\u80a1"
 _CONTROL_PLANE_DB_PATH = (
@@ -1367,6 +1377,39 @@ def _content_sha256(path: Path) -> str:
         ) from error
 
 
+def _exact_runtime_dependency_records(root: Path) -> tuple[EntryRecord, ...]:
+    marker = root / _THS_BRIDGE_MARKER_PATH
+    if not marker.exists():
+        return ()
+    if _path_is_reparse_point(marker) or not marker.is_file():
+        raise EntryNotDeclaredError(
+            f"runtime dependency marker is missing or unsafe: {_THS_BRIDGE_MARKER_PATH}"
+        )
+    records: list[EntryRecord] = []
+    for relative in _THS_BRIDGE_RUNTIME_PATHS:
+        path = root.joinpath(*relative.split("/"))
+        if _path_is_reparse_point(path) or not path.is_file():
+            raise EntryNotDeclaredError(
+                f"required runtime dependency is missing or unsafe: {relative}"
+            )
+        if path.suffix.lower() in _SCRIPT_SUFFIXES:
+            continue
+        records.append(
+            EntryRecord(
+                entry_id=f"runtime:{relative}",
+                path=relative,
+                kind="runtime_dependency",
+                callable_name="<runtime-dependency>",
+                actor_type="scheduler",
+                content_sha256=_content_sha256(path),
+                disposition="PRODUCTION_DAILY",
+                trust_state="production_daily",
+                source="runtime_dependency_inventory",
+            )
+        )
+    return tuple(records)
+
+
 def _conservative_entry_classification(
     relative: str,
 ) -> tuple[str, str, str]:
@@ -1428,6 +1471,7 @@ class EntryInventory:
                     trust_state=trust_state,
                 )
             )
+        records.extend(_exact_runtime_dependency_records(root_path))
         if include_required_import_seams:
             for module_name, callable_name, relative, effects in _REQUIRED_IMPORT_SEAMS:
                 seam_path = root_path / relative
