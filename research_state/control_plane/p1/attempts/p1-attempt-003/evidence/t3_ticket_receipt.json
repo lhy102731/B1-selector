@@ -1,0 +1,20 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P1",
+  "attempt_id": "p1-attempt-003",
+  "recorded_at": "2026-07-28T19:27:32.653224Z",
+  "task_id": "P1R3-T3-EXECUTION-SPEC-PROTOCOL-COMPILER",
+  "ticket_id": "5eb5e7b554156b2b7ffd8a8dcac28152e27ea9ab5d24059046d13395951588ca",
+  "ticket_state": "ISSUED",
+  "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t3_protocols.json",
+  "task_spec_sha256": "839f5a8a08221480730ba3335683620480a6432c68aad8fef1af828e6f5657dc",
+  "entry_policy_sha256": "21ddc7b920d780cf50a43fbecc5e050f5ec1ecb7b8ca6d129c9648fb1d067046",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "lease_custody_rule": "Keep protocol implementation, tests, and independent review outside the lease; begin only for the short trusted receipt and terminal report transaction after exact validation passes.",
+  "bearer_secret_recorded": false
+}
