@@ -1,0 +1,92 @@
+{
+  "schema_version": "control_plane.p1_task_validation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p1_task_validation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "task_id": "P1R3-T1C-FOUNDATION-SECURITY-CORRECTION",
+    "validated_at": "2026-07-28T14:23:41.7854195Z",
+    "implementation_commit": "0d0cdb3b8b63f44f86c1f039ae556eb5ae9309f3",
+    "incident_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t1_post_close_security_incident.json",
+    "corrections": [
+      {"finding_id": "P1R3-T1-BF-001", "status": "RESOLVED", "evidence": "Open file handles are checked against a stable root handle; parent, root, and final-file swap harnesses reject external targets."},
+      {"finding_id": "P1R3-T1-BF-002", "status": "RESOLVED", "evidence": "Contract errors retain neither raw values nor a Pydantic cause/context; formatted tracebacks are secret-free."},
+      {"finding_id": "P1R3-T1-BF-003", "status": "RESOLVED", "evidence": "Registry admission rejects weakened strict/frozen/extra policy and every non-required semantic field."},
+      {"finding_id": "P1R3-T1-BF-004", "status": "RESOLVED", "evidence": "Legacy validator source and catalog schema bytes are SHA-256 bound; validation consumes the verified in-memory schema."}
+    ],
+    "files": [
+      {"path": "research_automation/foundations/contract_registry.py", "sha256": "18997ab45d2e4351c049ebb60373d370a365ad280a437a1254d0c30091c4cf84", "bytes": 8872},
+      {"path": "research_automation/foundations/artifact_identity.py", "sha256": "00bd97eaeed2f6f47e9d7bd3878c0fa6d516649414d43769b3ab23c7b0c9e423", "bytes": 17264},
+      {"path": "research_automation/foundations/legacy_contract_adapters.py", "sha256": "3ef321d67535be90ce871fb58b6bc361749a7a51c1bcfe2d8f401d7f04a94601", "bytes": 12247},
+      {"path": "tests/test_foundations_contract_registry.py", "sha256": "b2093b3d7f601d89f36ef53864a28e8fe299730f3a395e8483906fc670449484", "bytes": 8950},
+      {"path": "tests/test_foundations_artifact_identity.py", "sha256": "8b8b7d3efa8f609b37c96f79e9860aa9b96da8badb258b98cd89339e5c30b413", "bytes": 14970},
+      {"path": "tests/test_foundations_legacy_contract_adapters.py", "sha256": "de5b36562eb889b22e09d6f1fb7f9e8d3d5c1eb28e54efce7941a00cadb74410", "bytes": 7965}
+    ],
+    "test_receipts": [
+      {
+        "receipt_id": "contract-security-regressions",
+        "command": "python -m unittest tests.test_foundations_contract_registry.ContractRegistryTests.test_validation_errors_never_echo_untrusted_input_values tests.test_foundations_contract_registry.ContractRegistryTests.test_registered_model_cannot_weaken_the_strict_base_policy tests.test_foundations_contract_registry.ContractRegistryTests.test_registered_model_cannot_supply_silent_semantic_defaults -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 3
+      },
+      {
+        "receipt_id": "artifact-containment-regressions",
+        "command": "python -m unittest tests.test_foundations_artifact_identity.ArtifactIdentityTests.test_parent_swap_after_resolution_cannot_hash_outside_the_root tests.test_foundations_artifact_identity.ArtifactIdentityTests.test_reparse_component_cannot_produce_an_identity -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 2
+      },
+      {
+        "receipt_id": "legacy-schema-binding-regressions",
+        "command": "python -m unittest tests.test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_catalog_schema_bytes_are_bound_before_legacy_validation -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 1
+      },
+      {
+        "receipt_id": "foundations-correction-full-regression",
+        "command": "python -m unittest tests.test_foundations_contract_registry tests.test_foundations_artifact_identity tests.test_foundations_legacy_contract_adapters -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 34
+      },
+      {
+        "receipt_id": "p0-contract-regression-tests",
+        "command": "python -m unittest tests.test_control_plane_contracts tests.test_control_plane_artifact_semantics tests.test_control_plane_task_reports -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 133
+      }
+    ],
+    "controller_review": {
+      "receipt_id": "controller-foundation-correction-review",
+      "reviewer_id": "codex-controller-security-reviewer",
+      "reviewer_actor_type": "llm",
+      "result": "PASS",
+      "exit_code": 0,
+      "findings_hash_helper": "review_findings_sha256",
+      "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+      "blocking_findings": [],
+      "original_reproductions_no_longer_reproduce": true,
+      "scope_match": true,
+      "p0_tcb_unchanged": true
+    },
+    "sealed_p0_freeze_check": {
+      "result": "PASS",
+      "matched_file_count": 451,
+      "official_freeze_ref": "research_state/control_plane/p0r2/evidence/code_freeze_manifest_v342_p0r2.json"
+    },
+    "side_effects": {
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "73d55bfeb8d40bda2a72572c15a5ab992fb661c69b354e88de32eecf5f4c3b21"
+  }
+}
