@@ -229,6 +229,16 @@ class FinalInventoryTests(unittest.TestCase):
                     "bytes": len(raw),
                 }
             )
+        action_path = root / "run_select.bat"
+        action_path.write_bytes(b"# run_select.bat\n")
+        action_raw = action_path.read_bytes()
+        files.append(
+            {
+                "path": "run_select.bat",
+                "sha256": hashlib.sha256(action_raw).hexdigest(),
+                "bytes": len(action_raw),
+            }
+        )
         files.sort(key=lambda item: str(item["path"]))
         payload: dict[str, object] = {
             "schema_version": "control_plane.code_freeze_manifest.v1",
@@ -283,7 +293,22 @@ class FinalInventoryTests(unittest.TestCase):
                     ),
                 },
                 "source": "external_scheduler_inventory",
-            }
+            },
+            {
+                "entry_id": "file:run_select.bat",
+                "path": "run_select.bat",
+                "kind": "batch",
+                "callable_name": "<batch>",
+                "actor_type": "scheduler",
+                "content_sha256": digests["run_select.bat"],
+                "disposition": "PRODUCTION_DAILY",
+                "trust_state": "production_daily",
+                "declared_side_effects": [],
+                "declared_phase": None,
+                "resource_roots": [],
+                "external_metadata": {},
+                "source": "filesystem_inventory",
+            },
         ]
         for path, entry_id, callable_name in self.seam_specs:
             entries.append(
@@ -513,7 +538,9 @@ class SchedulerInventoryTests(unittest.TestCase):
                 "execute": "D:/workspace/run_select.bat",
                 "arguments": None,
                 "working_directory": None,
-                "content_sha256": "f" * 64,
+                "content_sha256": hashlib.sha256(
+                    b"# run_select.bat\n"
+                ).hexdigest(),
             },
             "principal": {
                 "user_id": "Administrator",
@@ -566,6 +593,24 @@ class SchedulerInventoryTests(unittest.TestCase):
             action["execute"] = "D:/workspace/forged.bat"
 
             with self.assertRaises(ArtifactSemanticError):
+                validate_scheduler_inventory(
+                    canonical_json(payload).encode("utf-8"),
+                    expected_phase="P0",
+                    final_inventory=inventory,
+                )
+
+    def test_scheduler_inventory_rejects_a_stale_action_content_hash(self) -> None:
+        with TemporaryDirectory() as tmp:
+            inventory = self._inventory(Path(tmp))
+            payload = self._payload()
+            action = payload["action"]
+            self.assertIsInstance(action, dict)
+            action["content_sha256"] = "0" * 64
+
+            with self.assertRaisesRegex(
+                ArtifactSemanticError,
+                "action content",
+            ):
                 validate_scheduler_inventory(
                     canonical_json(payload).encode("utf-8"),
                     expected_phase="P0",

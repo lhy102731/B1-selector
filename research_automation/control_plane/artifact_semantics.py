@@ -837,7 +837,10 @@ def validate_scheduler_inventory(
         action["working_directory"],
         "scheduler.action.working_directory",
     )
-    _sha256(action["content_sha256"], "scheduler.action.content_sha256")
+    action_content_sha256 = _sha256(
+        action["content_sha256"],
+        "scheduler.action.content_sha256",
+    )
     principal = _exact_mapping(
         payload["principal"],
         _SCHEDULER_PRINCIPAL_FIELDS,
@@ -878,6 +881,27 @@ def validate_scheduler_inventory(
     if len(scheduler_entries) != 1:
         raise ArtifactSemanticError("scheduler inventory entry is not unique")
     inventory_scheduler = scheduler_entries[0]
+    action_entries = [
+        entry
+        for entry in inventory_entries
+        if entry["entry_id"] == "file:run_select.bat"
+        and entry["path"] == "run_select.bat"
+        and entry["kind"] == "batch"
+        and entry["disposition"] == "PRODUCTION_DAILY"
+        and entry["source"] == "filesystem_inventory"
+    ]
+    if len(action_entries) != 1:
+        raise ArtifactSemanticError(
+            "scheduler action entry is not uniquely bound to run_select.bat"
+        )
+    if (
+        action_execute.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        != "run_select.bat"
+        or action_entries[0]["content_sha256"] != action_content_sha256
+    ):
+        raise ArtifactSemanticError(
+            "scheduler action content differs from the final inventory"
+        )
     expected_metadata = {
         "acl_summary": f"owner={acl['owner']};sddl={acl['sddl']}",
         "action": action_execute,
