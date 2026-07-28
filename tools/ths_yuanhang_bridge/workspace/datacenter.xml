@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<DataCenter>
+  <DataSessions>
+    <DataSession Type="QuoteV2" IsOverwritten="false" />
+    <DataSession Type="QuoteV3" IsOverwritten="false" />
+    <DataSession Type="QuoteVice" IsOverwritten="false" />
+  </DataSessions>
+</DataCenter>

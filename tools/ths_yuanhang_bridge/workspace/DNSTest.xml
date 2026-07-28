@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="gbk"?>
+<hosts timestamp="2024-08-05 16:42:00">
+  <host main="10jqka.com.cn" detect="true">
+    <backup-host>0033.cn</backup-host>
+  </host>
+  <host main="auth.10jqka.com.cn" detect="false">
+    <backup-host>auth.0033.cn</backup-host>
+    <backup-ip channel="1">122.224.106.14</backup-ip>
+    <backup-ip channel="2">101.71.41.216</backup-ip>
+  </host>
+</hosts>

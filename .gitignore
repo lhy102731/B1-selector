@@ -98,6 +98,9 @@ config/*.bak
 /research_state/control_plane/authority/root_capability.dpapi
 /research_state/control_plane/operational/operational.sqlite3*
 
+# Rebuildable native bridge output; source and runtime metadata stay tracked.
+/tools/ths_yuanhang_bridge/YuanhangBridge.dll
+
 # OS
 .DS_Store
 Thumbs.db
