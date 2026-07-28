@@ -4,6 +4,17 @@ __pycache__/
 *$py.class
 *.so
 .Python
+
+# Local agent/runtime environments (not project source)
+/.agents/
+/.claude/memory/
+/.claude/skills/
+/.claude/worktrees/
+/.codex_pydeps/
+
+# Research Automation Layer -- generated artifacts (deltas/candidates/reports/runs)
+research_automation/_output/
+
 build/
 develop-eggs/
 dist/
@@ -35,14 +46,57 @@ env/
 # Data files (large, should not be committed)
 data/
 !data/.gitkeep
+/data_ths/
+/data_pre_ths_backup_*/
+/models/
+/outputs/
+/tmp/
+/ths-rebuild-*/
 
 # Logs
 *.log
+nohup.out
+
+# Interrupted/generated CSV fragments
+*.csv.tmp_*
+/signals_test*.csv
+/backtest_equity.csv
+/backtest_trades.csv
+
+# Generated backtest artifacts (runners write here; legacy root patterns stay ignored)
+/artifacts/
+/backtest_brick_nav*.csv
+/backtest_brick_v2_*_trades.csv
+/backtest_brick_v2_*_summary.csv
+/backtest_brick_trades*.csv
+/backtest_brick_summary*.csv
+/backtest_brick_v1_*_2016_2019.csv
+/backtest_brick_v1_*_2020_2023.csv
+/backtest_equity_v3.csv
+/backtest_trades_v3.csv
+/sweep_results_v3.csv
+/factor_test_results_v3.csv
+/benchmark_*.csv
+/ml_results_summary.csv
+/signals_today.csv
+
+# Retired V2/V3/V5 research panels (regenerate under artifacts/ when needed)
+/raw_24_26.csv
+/signals_raw_*.csv
+/signals_v3_*.csv
+/v5e_top5_trades.csv
 
 # Config with sensitive info (user should create their own)
+/.env
 config/config.yaml
 config/config_local.yaml
 config/github.yaml
+config/*.bak
+
+# Runtime authority stores and local capability material are never source.
+/research_state/control_plane/authority/authority.sqlite3*
+/research_state/control_plane/authority/root_capability.dpapi
+/research_state/control_plane/operational/operational.sqlite3*
 
 # OS
 .DS_Store
@@ -58,3 +112,4 @@ htmlcov/
 
 # One-off scripts (not part of main workflow)
 fix_market_cap.py
+/_*.py
