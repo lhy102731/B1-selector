@@ -76,6 +76,10 @@ class MissingInvocationSettingError(ProjectSettingsError):
     """Raised before client construction when invocation settings are absent."""
 
 
+def _environment_name(name: str) -> str:
+    return name.upper() if os.name == "nt" else name
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     pass
 
@@ -284,8 +288,9 @@ def _resolve_reference(value: object, sources: Mapping[str, str]) -> object:
     if match is None:
         return value
     name = match.group("name")
-    if name in sources:
-        return sources[name]
+    normalized_name = _environment_name(name)
+    if normalized_name in sources:
+        return sources[normalized_name]
     return match.group("default")
 
 
@@ -310,7 +315,11 @@ def _referenced_environment_names(value: object) -> set[str]:
         return result
     if isinstance(value, str):
         match = _ENV_REFERENCE.fullmatch(value)
-        return {match.group("name")} if match is not None else set()
+        return (
+            {_environment_name(match.group("name"))}
+            if match is not None
+            else set()
+        )
     return set()
 
 
@@ -320,7 +329,13 @@ def _validated_environment_source(value: object) -> dict[str, str]:
         for key, item in value.items()
     ):
         raise ProjectSettingsError("environment source is invalid")
-    return dict(value)
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        normalized_key = _environment_name(key)
+        if normalized_key in result:
+            raise ProjectSettingsError("environment source is invalid")
+        result[normalized_key] = item
+    return result
 
 
 def _validate_public_json_value(
@@ -408,7 +423,7 @@ def _resolved_profile(
         raise ProjectSettingsError(
             "credential environment reference cannot be reused in public profile fields"
         )
-    key_value = sources.get(key_match.group("name"))
+    key_value = sources.get(_environment_name(key_match.group("name")))
     if key_value is not None and not isinstance(key_value, str):
         raise ProjectSettingsError("profile values failed strict validation")
     api_key = (
@@ -659,7 +674,9 @@ def load_project_settings(
             raise ProjectSettingsError(
                 "profile credential reference must be an exact environment reference"
             )
-        credential_environment_names.add(key_match.group("name"))
+        credential_environment_names.add(
+            _environment_name(key_match.group("name"))
+        )
         consumed_environment_names.update(
             _referenced_environment_names(
                 {

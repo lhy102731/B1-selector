@@ -10,6 +10,7 @@ import traceback
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from research_automation.foundations.settings import (
     MissingInvocationSettingError,
@@ -152,6 +153,29 @@ control_layer: {}
                     "environment source",
                 ):
                     load_project_settings(config_path, **source)
+
+    @unittest.skipUnless(os.name == "nt", "Windows environment names are case-insensitive")
+    def test_windows_environment_names_remain_case_insensitive_after_copy(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "${TEST_API_KEY}",
+                    "${MixedCase_API_KEY}",
+                ),
+                encoding="utf-8",
+            )
+
+            settings = load_project_settings(
+                config_path,
+                environ={"MIXEDCASE_API_KEY": "DUMMY-KEY"},
+            )
+
+            self.assertEqual(
+                settings.require_invocation_profile("primary")
+                .api_key.get_secret_value(),
+                "DUMMY-KEY",
+            )
 
     def test_inspection_succeeds_without_secret_or_ambient_dotenv_loading(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -804,6 +828,304 @@ control_layer: {}
             before_logger = (logger.level, len(logger.handlers), logger.propagate)
             sys.path.insert(0, {str(repository_root)!r})
             import research_automation.foundations.settings
+            after_logger = (logger.level, len(logger.handlers), logger.propagate)
+            loaded_forbidden = sorted(
+                name for name in sys.modules
+                if name == "autogen"
+                or name.startswith("autogen.")
+                or name == "ag2_research.orchestrator"
+            )
+            print(json.dumps({{
+                "environment_unchanged": before_environment == dict(os.environ),
+                "logger_unchanged": before_logger == after_logger,
+                "loaded_forbidden": loaded_forbidden,
+            }}))
+            """
+        )
+
+        completed = subprocess.run(
+            [sys.executable, "-I", "-c", script],
+            cwd=repository_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stderr, "")
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {
+                "environment_unchanged": True,
+                "logger_unchanged": True,
+                "loaded_forbidden": [],
+            },
+        )
+
+
+class ResearchConfigAdapterTests(unittest.TestCase):
+    @staticmethod
+    def _import_adapter_class():
+        logger = logging.getLogger("autogen.oai.client")
+        original_level = logger.level
+        try:
+            with patch("dotenv.load_dotenv"):
+                from ag2_research.config import ResearchConfig
+        finally:
+            logger.setLevel(original_level)
+        return ResearchConfig
+
+    def test_adapter_builds_the_legacy_llm_shape_at_invocation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={"TEST_API_KEY": "DUMMY-KEY"},
+            )
+
+            self.assertEqual(
+                research_config.get_llm_config(),
+                {
+                    "config_list": [
+                        {
+                            "model": "model-a",
+                            "api_key": "DUMMY-KEY",
+                            "base_url": "https://example.invalid/v1",
+                            "max_retries": 6,
+                        }
+                    ],
+                    "temperature": 0.2,
+                    "timeout": 30,
+                },
+            )
+
+    def test_adapter_inspection_works_without_a_credential(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={},
+            )
+
+            self.assertEqual(research_config.default_profile, "primary")
+            self.assertEqual(research_config.list_profiles(), ["primary"])
+            self.assertEqual(
+                research_config._raw["llm"]["profiles"]["primary"]["api_key"],
+                "${TEST_API_KEY}",
+            )
+            with self.assertRaisesRegex(
+                MissingInvocationSettingError,
+                "MISSING_CREDENTIAL",
+            ):
+                research_config.get_llm_config()
+
+    def test_adapter_returns_detached_redacted_configuration_views(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={"TEST_API_KEY": "DUMMY-KEY"},
+            )
+
+            raw = research_config._raw
+            profiles = research_config.profiles
+            agents = research_config.agents
+            workflows = research_config.workflows
+            agent = research_config.get_agent("worker")
+            workflow = research_config.get_workflow("simple")
+            raw["agents"]["worker"]["description"] = "changed"
+            profiles["primary"]["model"] = "changed"
+            agents["worker"]["description"] = "changed"
+            workflows["simple"]["description"] = "changed"
+            agent["description"] = "changed"
+            workflow["description"] = "changed"
+
+            self.assertEqual(
+                research_config.get_agent("worker")["description"],
+                "Test worker",
+            )
+            self.assertEqual(
+                research_config.get_workflow("simple")["description"],
+                "Simple workflow",
+            )
+            self.assertEqual(research_config.profiles["primary"]["model"], "${TEST_MODEL:-model-a}")
+            redacted = json.dumps(
+                {
+                    "raw": research_config._raw,
+                    "profiles": research_config.profiles,
+                    "agents": research_config.agents,
+                    "workflows": research_config.workflows,
+                }
+            )
+            self.assertNotIn("DUMMY-KEY", redacted)
+            self.assertIn("${TEST_API_KEY}", redacted)
+
+    def test_adapter_preserves_routing_aliases_and_optional_llm_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "      timeout: 30\n",
+                    "      timeout: 30\n"
+                    "      max_retries: 4\n"
+                    "      max_tokens: 123\n"
+                    "      extra_params:\n"
+                    "        reasoning:\n"
+                    "          effort: high\n",
+                ),
+                encoding="utf-8",
+            )
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={"TEST_API_KEY": "DUMMY-KEY"},
+            )
+
+            overridden = research_config.get_llm_config(model="model-override")
+            self.assertEqual(
+                overridden,
+                {
+                    "config_list": [
+                        {
+                            "model": "model-override",
+                            "api_key": "DUMMY-KEY",
+                            "base_url": "https://example.invalid/v1",
+                            "max_retries": 4,
+                            "extra_body": {
+                                "reasoning": {"effort": "high"},
+                            },
+                        }
+                    ],
+                    "temperature": 0.2,
+                    "timeout": 30,
+                    "max_tokens": 123,
+                },
+            )
+            overridden["config_list"][0]["extra_body"]["reasoning"]["effort"] = "low"
+            self.assertEqual(
+                research_config.get_llm_config()["config_list"][0]["extra_body"]
+                ["reasoning"]["effort"],
+                "high",
+            )
+            self.assertEqual(
+                research_config.llm_config["config_list"][0]["model"],
+                "model-a",
+            )
+            self.assertEqual(
+                research_config.list_agents(),
+                [
+                    {
+                        "id": "worker",
+                        "name": "Worker",
+                        "description": "Test worker",
+                    }
+                ],
+            )
+            self.assertEqual(
+                research_config.list_workflows(),
+                [{"id": "simple", "description": "Simple workflow"}],
+            )
+            self.assertIsNone(research_config.get_agent("missing"))
+            self.assertIsNone(research_config.get_workflow("missing"))
+            with self.assertRaises(KeyError):
+                research_config.get_llm_config("missing")
+            self.assertEqual(
+                research_config.get_agent_llm_config("missing")["config_list"][0]
+                ["model"],
+                "model-a",
+            )
+
+    def test_adapter_reload_replaces_state_only_after_complete_validation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={"TEST_API_KEY": "DUMMY-KEY"},
+            )
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "      timeout: 30\n",
+                    "      timeout: 30\n      typo_timeout: 31\n",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ProjectSettingsError):
+                research_config.load(
+                    environ={"TEST_API_KEY": "REPLACEMENT-KEY"},
+                )
+
+            self.assertEqual(research_config.default_profile, "primary")
+            self.assertEqual(
+                research_config.get_llm_config()["config_list"][0]["api_key"],
+                "DUMMY-KEY",
+            )
+
+    def test_real_project_adapter_preserves_catalog_order_without_credentials(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "ag2_research" / "config.yaml"
+        research_config = self._import_adapter_class()(config_path, environ={})
+
+        self.assertEqual(
+            research_config.list_profiles(),
+            [
+                "gpt55",
+                "grok43",
+                "gemini35flash",
+                "deepseekv4",
+                "glm51",
+                "doubao",
+                "kimi_hs",
+                "minimax_hs",
+                "kimi",
+                "mimo",
+                "minimax",
+            ],
+        )
+        self.assertEqual(len(research_config.list_agents()), 20)
+        self.assertEqual(research_config.list_agents()[0]["id"], "research_proposer")
+        self.assertEqual(research_config.list_agents()[-1]["id"], "code_reviewer")
+        self.assertEqual(
+            [item["id"] for item in research_config.list_workflows()],
+            [
+                "brainstorm",
+                "review",
+                "proposal_gate",
+                "solo",
+                "director_only",
+                "kbase_discovery",
+                "kbase_source_brief",
+                "kbase_factor_handoff",
+                "kbase_source_first_discovery",
+                "kbase_roundtable_discovery",
+            ],
+        )
+        with self.assertRaisesRegex(
+            MissingInvocationSettingError,
+            "MISSING_CREDENTIAL",
+        ):
+            research_config.get_llm_config("gpt55")
+
+    def test_config_adapter_module_itself_has_no_import_side_effects(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        config_module_path = repository_root / "ag2_research" / "config.py"
+        script = textwrap.dedent(
+            f"""
+            import importlib.util
+            import json
+            import logging
+            import os
+            import sys
+
+            before_environment = dict(os.environ)
+            logger = logging.getLogger("autogen.oai.client")
+            before_logger = (logger.level, len(logger.handlers), logger.propagate)
+            sys.path.insert(0, {str(repository_root)!r})
+            spec = importlib.util.spec_from_file_location(
+                "ag2_config_adapter_purity",
+                {str(config_module_path)!r},
+            )
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
             after_logger = (logger.level, len(logger.handlers), logger.propagate)
             loaded_forbidden = sorted(
                 name for name in sys.modules
