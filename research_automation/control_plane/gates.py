@@ -278,7 +278,10 @@ def _derive_gate_verdict(
         if not isinstance(receipt, Mapping):
             raise GateValidationError("gate test receipt must be a mapping")
         if receipt["result"] != "PASS" or receipt["exit_code"] != 0:
-            reasons.append(f"GATE_TEST_FAILED:{receipt['receipt_id']}")
+            reasons.append(
+                "GATE_TEST_FAILED:"
+                f"{receipt['ticket_id']}:{receipt['receipt_id']}"
+            )
 
     authority = report["authority_snapshot"]
     if not isinstance(authority, Mapping):
@@ -350,6 +353,67 @@ def _derive_gate_verdict(
     return ("PASS", []) if not reasons else ("FAIL", reasons)
 
 
+def _project_task_report_evidence(
+    task_reports: list[dict[str, object]],
+) -> dict[str, object]:
+    test_receipts: list[dict[str, object]] = []
+    observed_effects: set[str] = set()
+    unauthorized_effects: set[str] = set()
+    changed_files: set[str] = set()
+    unexpected_changes: set[str] = set()
+    unresolved_risks: set[str] = set()
+    for report in sorted(task_reports, key=lambda item: str(item["ticket_id"])):
+        ticket_id = str(report["ticket_id"])
+        for receipt in report["test_receipts"]:
+            if not isinstance(receipt, Mapping):
+                raise GateEvidenceError("TaskReport test receipt is invalid")
+            test_receipts.append(
+                {
+                    "ticket_id": ticket_id,
+                    "receipt_id": str(receipt["receipt_id"]),
+                    "command": str(receipt["command"]),
+                    "exit_code": receipt["exit_code"],
+                    "result": str(receipt["result"]),
+                }
+            )
+        side_effects = report["side_effect_summary"]
+        if not isinstance(side_effects, Mapping):
+            raise GateEvidenceError("TaskReport side-effect summary is invalid")
+        observed_effects.update(str(item) for item in side_effects["observed"])
+        unauthorized_effects.update(
+            str(item) for item in side_effects["unauthorized"]
+        )
+        for changed_file in report["changed_files"]:
+            if not isinstance(changed_file, Mapping):
+                raise GateEvidenceError("TaskReport changed file is invalid")
+            changed_files.add(str(changed_file["path"]))
+        unexpected_changes.update(
+            str(item) for item in report["unexpected_changes"]
+        )
+        for finding in report["review_findings"]:
+            if not isinstance(finding, Mapping):
+                raise GateEvidenceError("TaskReport review finding is invalid")
+            if finding["status"] == "OPEN":
+                unresolved_risks.add(
+                    f"{ticket_id}:{finding['finding_id']}"
+                )
+    test_receipts.sort(
+        key=lambda item: (str(item["ticket_id"]), str(item["receipt_id"]))
+    )
+    return {
+        "test_receipts": test_receipts,
+        "side_effect_summary": {
+            "observed": sorted(observed_effects),
+            "unauthorized": sorted(unauthorized_effects),
+        },
+        "file_delta_summary": {
+            "changed_files": sorted(changed_files),
+            "unexpected_changes": sorted(unexpected_changes),
+        },
+        "unresolved_risks": sorted(unresolved_risks),
+    }
+
+
 def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     identity = _require_closed_mapping(
         report["identity_binding"],
@@ -415,12 +479,24 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
     receipts = report["test_receipts"]
     if not isinstance(receipts, list):
         raise GateValidationError("test_receipts must be a list")
-    receipt_ids: set[str] = set()
+    receipt_ids: set[tuple[str, str]] = set()
     for index, item in enumerate(receipts):
         receipt = _require_closed_mapping(
             item,
             f"test_receipts[{index}]",
-            frozenset({"receipt_id", "command", "exit_code", "result"}),
+            frozenset(
+                {
+                    "ticket_id",
+                    "receipt_id",
+                    "command",
+                    "exit_code",
+                    "result",
+                }
+            ),
+        )
+        ticket_id = _require_nonempty(
+            receipt["ticket_id"],
+            f"test_receipts[{index}].ticket_id",
         )
         receipt_id = _require_nonempty(
             receipt["receipt_id"],
@@ -436,9 +512,12 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
         )
         if receipt["result"] == "PASS" and receipt["exit_code"] != 0:
             raise GateValidationError("PASS gate test requires exit_code zero")
-        if receipt_id in receipt_ids:
-            raise GateValidationError("gate test receipt ids must be unique")
-        receipt_ids.add(receipt_id)
+        receipt_key = (ticket_id, receipt_id)
+        if receipt_key in receipt_ids:
+            raise GateValidationError(
+                "gate test receipt ticket/id pairs must be unique"
+            )
+        receipt_ids.add(receipt_key)
 
     authority = _require_closed_mapping(
         report["authority_snapshot"],
@@ -938,6 +1017,19 @@ class PhaseGateVerifier:
                 raise GateAuthorityMismatchError(
                     "TaskReport baseline does not match the gate baseline"
                 )
+        projected = _project_task_report_evidence(parsed_task_reports)
+        if any(
+            report[field_name] != projected[field_name]
+            for field_name in (
+                "test_receipts",
+                "side_effect_summary",
+                "file_delta_summary",
+                "unresolved_risks",
+            )
+        ):
+            raise GateEvidenceError(
+                "gate fields do not match projected TaskReport evidence"
+            )
         return artifacts
 
     def verify_evidence(self, report: Mapping[str, object]) -> None:

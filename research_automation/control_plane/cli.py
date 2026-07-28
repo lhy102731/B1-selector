@@ -28,6 +28,7 @@ from .gates import (
     GateValidationError,
     PhaseGateCloser,
     PhaseGateVerifier,
+    _project_task_report_evidence,
     parse_gate_report_v1_bytes,
 )
 from .sqlite_uow import SqliteUnitOfWorkError
@@ -37,6 +38,7 @@ from .stores import (
     PendingOutboxError,
     PhaseGateClosureError,
     StoreError,
+    TaskReportAuthorityError,
 )
 from .task_reports import (
     TaskReportValidationError,
@@ -88,7 +90,7 @@ def _build_parser() -> argparse.ArgumentParser:
     build.add_argument("--inventory", required=True)
     build.add_argument("--entry-policy", required=True)
     build.add_argument("--scheduler-inventory", required=True)
-    build.add_argument("--task-report-id", required=True)
+    build.add_argument("--task-report-id", required=True, action="append")
     build.add_argument("--output", required=True)
     verify = gate_commands.add_parser("verify")
     verify.add_argument(
@@ -265,28 +267,69 @@ def _build_gate_candidate(
             "phase attempt already has an immutable gate closure"
         )
     protected_paths: list[Path] = []
-    task_reference = _repository_reference(
-        args.task_report_id,
-        repository_root,
-    )
-    protected_paths.append(
-        _resolve_repository_path(
-            args.task_report_id,
+    parsed_task_reports: list[dict[str, object]] = []
+    task_report_records: list[dict[str, object]] = []
+    task_references: set[str] = set()
+    task_ticket_ids: set[str] = set()
+    for task_path_text in args.task_report_id:
+        task_reference = _repository_reference(
+            task_path_text,
             repository_root,
-            strict=True,
         )
-    )
-    task_bytes = _read_repository_file(args.task_report_id, repository_root)
-    try:
-        task_report = parse_task_report_v2_bytes(task_bytes)
-    except TaskReportValidationError as error:
-        raise GateEvidenceError("TaskReport input is invalid") from error
-    if (
-        task_report["phase"] != args.phase
-        or task_report["attempt_id"] != args.attempt_id
+        if task_reference in task_references:
+            raise GateEvidenceError("TaskReport references must be distinct")
+        task_references.add(task_reference)
+        protected_paths.append(
+            _resolve_repository_path(
+                task_path_text,
+                repository_root,
+                strict=True,
+            )
+        )
+        task_bytes = _read_repository_file(task_path_text, repository_root)
+        try:
+            task_report = parse_task_report_v2_bytes(task_bytes)
+        except TaskReportValidationError as error:
+            raise GateEvidenceError("TaskReport input is invalid") from error
+        if (
+            task_report["phase"] != args.phase
+            or task_report["attempt_id"] != args.attempt_id
+        ):
+            raise GateAuthorityMismatchError(
+                "TaskReport input does not match the requested gate"
+            )
+        try:
+            authority_reader.verify_task_report_binding(task_report)
+        except TaskReportAuthorityError as error:
+            raise GateAuthorityMismatchError(
+                "TaskReport input does not match trusted authority"
+            ) from error
+        ticket_id = str(task_report["ticket_id"])
+        if ticket_id in task_ticket_ids:
+            raise GateEvidenceError("TaskReport ticket ids must be distinct")
+        task_ticket_ids.add(ticket_id)
+        parsed_task_reports.append(task_report)
+        task_report_records.append(
+            {
+                "report_ref": task_reference,
+                "report_sha256": hashlib.sha256(task_bytes).hexdigest(),
+                "ticket_id": ticket_id,
+                "outcome": task_report["outcome"],
+            }
+        )
+    task_report_records.sort(key=lambda item: str(item["ticket_id"]))
+    parsed_task_reports.sort(key=lambda item: str(item["ticket_id"]))
+    primary_task_report = parsed_task_reports[0]
+    primary_identity = primary_task_report["identity_binding"]
+    if not isinstance(primary_identity, dict):
+        raise GateEvidenceError("TaskReport identity binding is invalid")
+    if any(
+        task_report["plan_version"] != primary_task_report["plan_version"]
+        or task_report["identity_binding"] != primary_identity
+        for task_report in parsed_task_reports
     ):
         raise GateAuthorityMismatchError(
-            "TaskReport input does not match the requested gate"
+            "TaskReports do not share one gate identity"
         )
 
     artifacts: dict[str, dict[str, str]] = {}
@@ -317,7 +360,9 @@ def _build_gate_candidate(
         }
         artifact_payloads[field_name] = artifact_bytes
     artifact_refs = {artifact["ref"] for artifact in artifacts.values()}
-    if len(artifact_refs) != len(artifacts) or task_reference in artifact_refs:
+    if len(artifact_refs) != len(artifacts) or (
+        task_references & artifact_refs
+    ):
         raise GateEvidenceError("gate evidence references must be distinct")
     policy_artifact = artifacts["reviewed_entry_policy"]
     if policy_artifact["ref"] != (
@@ -327,9 +372,7 @@ def _build_gate_candidate(
         raise GateEvidenceError(
             "reviewed entry policy is outside the immutable policy namespace"
         )
-    identity_binding = task_report["identity_binding"]
-    if not isinstance(identity_binding, dict):
-        raise GateEvidenceError("TaskReport identity binding is invalid")
+    identity_binding = primary_identity
     expected_identity = {
         "plan_hash": str(identity_binding["plan_hash"]),
         "scope_hash": str(identity_binding["scope_hash"]),
@@ -340,14 +383,14 @@ def _build_gate_candidate(
     try:
         validate_implementation_baseline(
             artifact_payloads["implementation_baseline"],
-            expected_plan_version=str(task_report["plan_version"]),
+            expected_plan_version=str(primary_task_report["plan_version"]),
             expected_phase=str(args.phase),
             expected_attempt_id=str(args.attempt_id),
             repository_root=repository_root,
         )
         freeze_manifest = validate_code_freeze_manifest(
             artifact_payloads["code_freeze_manifest"],
-            expected_plan_version=str(task_report["plan_version"]),
+            expected_plan_version=str(primary_task_report["plan_version"]),
             expected_phase=str(args.phase),
             expected_attempt_id=str(args.attempt_id),
             expected_identity=expected_identity,
@@ -355,7 +398,7 @@ def _build_gate_candidate(
         )
         final_inventory = validate_final_inventory(
             artifact_payloads["final_inventory"],
-            expected_plan_version=str(task_report["plan_version"]),
+            expected_plan_version=str(primary_task_report["plan_version"]),
             expected_phase=str(args.phase),
             expected_attempt_id=str(args.attempt_id),
             expected_identity=expected_identity,
@@ -363,7 +406,7 @@ def _build_gate_candidate(
         )
         validate_reviewed_entry_policy(
             artifact_payloads["reviewed_entry_policy"],
-            expected_plan_version=str(task_report["plan_version"]),
+            expected_plan_version=str(primary_task_report["plan_version"]),
             expected_phase=str(args.phase),
             expected_attempt_id=str(args.attempt_id),
             expected_identity=expected_identity,
@@ -378,11 +421,12 @@ def _build_gate_candidate(
         raise GateAuthorityMismatchError(str(error)) from error
     except ArtifactSemanticError as error:
         raise GateEvidenceError(str(error)) from error
-    if (
+    if any(
         task_report["baseline_ref"]
         != artifacts["implementation_baseline"]["ref"]
         or task_report["baseline_sha256"]
         != artifacts["implementation_baseline"]["sha256"]
+        for task_report in parsed_task_reports
     ):
         raise GateAuthorityMismatchError(
             "TaskReport baseline does not match the gate baseline"
@@ -391,19 +435,13 @@ def _build_gate_candidate(
         phase,
         args.attempt_id,
     )
+    projected = _project_task_report_evidence(parsed_task_reports)
     draft: dict[str, object] = {
-        "plan_version": str(task_report["plan_version"]),
+        "plan_version": str(primary_task_report["plan_version"]),
         "phase": args.phase,
         "attempt_id": args.attempt_id,
         "identity_binding": dict(identity_binding),
-        "task_reports": [
-            {
-                "report_ref": task_reference,
-                "report_sha256": hashlib.sha256(task_bytes).hexdigest(),
-                "ticket_id": task_report["ticket_id"],
-                "outcome": task_report["outcome"],
-            }
-        ],
+        "task_reports": task_report_records,
         "implementation_baseline": artifacts["implementation_baseline"],
         "code_freeze_manifest": artifacts["code_freeze_manifest"],
         "final_inventory": artifacts["final_inventory"],
@@ -412,14 +450,11 @@ def _build_gate_candidate(
             **artifacts["scheduler_inventory"],
             "status": scheduler_status,
         },
-        "test_receipts": [],
+        "test_receipts": projected["test_receipts"],
         "authority_snapshot": snapshot.to_report_dict(),
-        "side_effect_summary": {"observed": [], "unauthorized": []},
-        "file_delta_summary": {
-            "changed_files": [],
-            "unexpected_changes": [],
-        },
-        "unresolved_risks": [],
+        "side_effect_summary": projected["side_effect_summary"],
+        "file_delta_summary": projected["file_delta_summary"],
+        "unresolved_risks": projected["unresolved_risks"],
     }
     candidate = PhaseGateBuilder().build(draft)
     output_path = _write_repository_bytes(
@@ -442,7 +477,7 @@ def _build_gate_candidate(
         )
         + "\n"
     )
-    return 0
+    return 0 if candidate["verdict"] == "PASS" else 2
 
 
 def _emit_error(stderr: TextIO, error: Exception) -> None:

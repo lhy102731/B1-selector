@@ -101,6 +101,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
             },
             "test_receipts": [
                 {
+                    "ticket_id": "ticket-001",
                     "receipt_id": "gate-tests",
                     "command": "python -m unittest tests.test_control_plane_gates",
                     "exit_code": 0,
@@ -324,7 +325,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
             "task_spec_ref": "research_state/control_plane/p0r2/task_specs/gate.json",
             "task_spec_sha256": "e" * 64,
             "requirements": {
-                "required_test_receipt_ids": [],
+                "required_test_receipt_ids": ["gate-tests"],
                 "required_review_receipt_ids": [],
                 "required_evidence_ids": [],
             },
@@ -699,6 +700,28 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
                 )
                 lease = authority._begin_task(ticket)
+                gate_test_receipt = {
+                    "receipt_id": "gate-tests",
+                    "command": (
+                        "python -m unittest tests.test_control_plane_gates"
+                    ),
+                    "exit_code": 0,
+                    "result": "PASS",
+                }
+                gate_test_attestation = authority._attest_task_receipt(
+                    lease,
+                    receipt_kind="TEST",
+                    issuer=Actor(
+                        "trusted-gate-test-runner",
+                        "automation",
+                        "gate-tests-001",
+                    ),
+                    payload=gate_test_receipt,
+                )
+                authority._record_task_receipt(
+                    lease,
+                    attestation=gate_test_attestation,
+                )
                 if activate_policy:
                     authority._activate_reviewed_entry_policy(
                         lease,
@@ -770,7 +793,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "input_evidence_refs": task_spec[
                             "input_evidence_refs"
                         ],
-                        "test_receipts": [],
+                        "test_receipts": [gate_test_receipt],
                         "review_receipts": [],
                         "review_findings": [],
                         "changed_files": [],
@@ -799,6 +822,12 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         ).hexdigest(),
                         "ticket_id": ticket.ticket_id,
                         "outcome": "PASS",
+                    }
+                ]
+                draft["test_receipts"] = [
+                    {
+                        "ticket_id": ticket.ticket_id,
+                        **gate_test_receipt,
                     }
                 ]
                 artifact_refs = {
@@ -880,6 +909,127 @@ class PhaseGateBuilderTests(unittest.TestCase):
             "--output",
             str(output),
         ]
+
+    def _add_succeeded_task_report(
+        self,
+        fixture: _TrustedGateFixture,
+        *,
+        with_adverse_evidence: bool = False,
+    ) -> Path:
+        first_report = parse_task_report_v2_bytes(fixture.task_report_bytes)
+        authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+        grant = authority._recover_claimed_grant(
+            str(first_report["authorization_ref"])
+        )
+        task_spec = {
+            "task_id": "P0R2-T3-GATE-VERIFY-SECOND",
+            "objective": "Prove deterministic multi-report aggregation.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-gate-verify-002",
+            "task_spec_ref": (
+                "research_state/control_plane/p0r2/task_specs/gate-second.json"
+            ),
+            "task_spec_sha256": "8" * 64,
+            "requirements": {
+                "required_test_receipt_ids": ["gate-tests"],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_automation/control_plane/gates.py"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": first_report["baseline_ref"],
+            "baseline_sha256": first_report["baseline_sha256"],
+            "input_evidence_refs": [],
+        }
+        ticket = authority._issue_task_ticket(
+            grant,
+            task_spec,
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        lease = authority._begin_task(ticket)
+        receipt = {
+            "receipt_id": "gate-tests",
+            "command": "python -m unittest tests.test_control_plane_gates",
+            "exit_code": 0,
+            "result": "PASS",
+        }
+        attestation = authority._attest_task_receipt(
+            lease,
+            receipt_kind="TEST",
+            issuer=Actor(
+                "trusted-gate-test-runner",
+                "automation",
+                "gate-tests-002",
+            ),
+            payload=receipt,
+        )
+        authority._record_task_receipt(lease, attestation=attestation)
+        finished = authority._finish_task(
+            lease,
+            outcome="SUCCEEDED",
+            evidence_ref="evidence/gate-verify-second.json",
+        )
+        journal = stores_module._OperationalJournal(root_secret=ROOT_SECRET)
+        stores_module._mirror_authority_outbox(authority, journal, limit=100)
+        report = build_task_report_v2(
+            {
+                "plan_version": first_report["plan_version"],
+                "phase": first_report["phase"],
+                "task_id": task_spec["task_id"],
+                "attempt_id": first_report["attempt_id"],
+                "authorization_ref": first_report["authorization_ref"],
+                "ticket_id": ticket.ticket_id,
+                "identity_binding": first_report["identity_binding"],
+                "objective": task_spec["objective"],
+                "dependencies": task_spec["dependencies"],
+                "idempotency_key": task_spec["idempotency_key"],
+                "task_spec_ref": task_spec["task_spec_ref"],
+                "task_spec_sha256": task_spec["task_spec_sha256"],
+                "requirements": task_spec["requirements"],
+                "allowed_files": task_spec["allowed_files"],
+                "forbidden_files": task_spec["forbidden_files"],
+                "baseline_ref": task_spec["baseline_ref"],
+                "baseline_sha256": task_spec["baseline_sha256"],
+                "input_evidence_refs": [],
+                "test_receipts": [receipt],
+                "review_receipts": [],
+                "review_findings": [],
+                "changed_files": (
+                    [
+                        {
+                            "path": "unexpected.py",
+                            "change_type": "MODIFY",
+                            "baseline_sha256": "1" * 64,
+                            "current_sha256": "2" * 64,
+                        }
+                    ]
+                    if with_adverse_evidence
+                    else []
+                ),
+                "external_invocations": [],
+                "side_effect_summary": {
+                    "observed": (
+                        ["NETWORK_EGRESS"] if with_adverse_evidence else []
+                    ),
+                    "unauthorized": (
+                        ["NETWORK_EGRESS"] if with_adverse_evidence else []
+                    ),
+                },
+                "ticket_state": "SUCCEEDED",
+                "started_at": finished.started_at.isoformat(),
+                "completed_at": finished.completed_at.isoformat(),
+            }
+        )
+        path = (
+            fixture.root
+            / "research_state"
+            / "control_plane"
+            / "p0r2"
+            / "reports"
+            / "gate-second.json"
+        )
+        path.write_text(canonical_json(report), encoding="utf-8")
+        return path
 
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
         with self._trusted_gate_fixture() as fixture:
@@ -995,6 +1145,22 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
             with self.assertRaises(GateAuthorityMismatchError):
                 fixture.verifier.verify(gate_report)
+
+    def test_verifier_rejects_a_gate_receipt_not_projected_from_task_reports(
+        self,
+    ) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            forged_draft = dict(fixture.draft)
+            forged_receipts = [dict(fixture.draft["test_receipts"][0])]
+            forged_receipts[0]["command"] = "forged untrusted command"
+            forged_draft["test_receipts"] = forged_receipts
+            forged_report = PhaseGateBuilder().build(forged_draft)
+
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "projected TaskReport evidence",
+            ):
+                fixture.verifier.verify(forged_report)
 
     def test_verifier_binds_gate_identity_to_task_reports(self) -> None:
         with self._trusted_gate_fixture() as fixture:
@@ -1344,6 +1510,114 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn('"status":"BUILT"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
 
+    def test_cli_aggregates_multiple_trusted_task_reports(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            second_path = self._add_succeeded_task_report(fixture)
+            output_path = fixture.root / "multi-report-gate.json"
+            args = self._gate_build_cli_args(fixture, output_path)
+            option_index = args.index("--task-report-id")
+            first_path = args[option_index + 1]
+            args[option_index : option_index + 2] = [
+                "--task-report-id",
+                str(second_path),
+                "--task-report-id",
+                first_path,
+            ]
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                args,
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 0)
+            built = parse_gate_report_v1_bytes(output_path.read_bytes())
+            self.assertEqual(built["verdict"], "PASS")
+            self.assertEqual(len(built["task_reports"]), 2)
+            self.assertEqual(len(built["test_receipts"]), 2)
+            self.assertEqual(
+                [item["ticket_id"] for item in built["task_reports"]],
+                sorted(item["ticket_id"] for item in built["task_reports"]),
+            )
+            self.assertEqual(
+                {item["receipt_id"] for item in built["test_receipts"]},
+                {"gate-tests"},
+            )
+            fixture.verifier.verify(built)
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_build_returns_two_when_a_succeeded_report_is_missing(
+        self,
+    ) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            self._add_succeeded_task_report(fixture)
+            output_path = fixture.root / "missing-report-gate.json"
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                self._gate_build_cli_args(fixture, output_path),
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 2)
+            built = parse_gate_report_v1_bytes(output_path.read_bytes())
+            self.assertEqual(built["verdict"], "FAIL")
+            self.assertTrue(
+                any(
+                    reason.startswith("MISSING_TASK_REPORT:")
+                    for reason in built["reason_codes"]
+                )
+            )
+            fixture.verifier.verify(built)
+            self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_projects_task_side_effects_and_file_deltas(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            second_path = self._add_succeeded_task_report(
+                fixture,
+                with_adverse_evidence=True,
+            )
+            output_path = fixture.root / "adverse-evidence-gate.json"
+            args = self._gate_build_cli_args(fixture, output_path)
+            args.extend(["--task-report-id", str(second_path)])
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                args,
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 2)
+            built = parse_gate_report_v1_bytes(output_path.read_bytes())
+            self.assertEqual(
+                built["side_effect_summary"],
+                {
+                    "observed": ["NETWORK_EGRESS"],
+                    "unauthorized": ["NETWORK_EGRESS"],
+                },
+            )
+            self.assertEqual(
+                built["file_delta_summary"],
+                {
+                    "changed_files": ["unexpected.py"],
+                    "unexpected_changes": ["unexpected.py"],
+                },
+            )
+            fixture.verifier.verify(built)
+            self.assertEqual(stderr.getvalue(), "")
+
     def test_cli_allows_large_gate_artifacts_but_rejects_oversized_artifacts(
         self,
     ) -> None:
@@ -1476,10 +1750,8 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIn("GateAuthorityMismatchError", stderr.getvalue())
 
     def test_cli_returns_exit_code_two_for_a_verified_computed_fail(self) -> None:
-        with self._trusted_gate_fixture() as fixture:
-            fail_draft = dict(fixture.draft)
-            fail_draft["unresolved_risks"] = ["known-risk"]
-            fail_report = PhaseGateBuilder().build(fail_draft)
+        with self._trusted_gate_fixture(activate_policy=False) as fixture:
+            fail_report = fixture.report
             report_path = fixture.root / "gate-fail-report.json"
             report_path.write_text(
                 canonical_json(fail_report),
