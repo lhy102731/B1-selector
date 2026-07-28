@@ -1,0 +1,85 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "116672d5c9580d22a04d03aa119a7b79ac5f3045ca0a3bed1381700220492aca",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P1R3-T2C-SETTINGS-BOUNDARY-CORRECTION",
+      "objective": "Supersede the original T2 report by binding resolved non-secret settings to the legacy runtime seam, resolving the default profile before construction, and rejecting undeclared secret-shaped fields and environment references without changing research scope or sealed P0 code.",
+      "dependencies": [
+        "P1R3-T2-TYPED-PROJECT-SETTINGS"
+      ],
+      "idempotency_key": "p1-attempt-003-t2c-settings-boundary-correction-001",
+      "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t2_correction.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "foundations-settings-correction-tests",
+          "foundations-dependency-preflight-correction-tests",
+          "ag2-config-correction-compatibility-tests",
+          "settings-correction-import-purity",
+          "p0-foundations-correction-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "controller-settings-correction-review"
+        ],
+        "required_evidence_ids": [
+          "prior-t2-report",
+          "prior-t2-validation",
+          "implementation-baseline"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/foundations/settings.py",
+        "tests/test_foundations_settings.py",
+        "ag2_research/config.py",
+        "research_state/control_plane/p1/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/config.yaml",
+        "ag2_research/__init__.py",
+        "apps/",
+        "artifacts/",
+        "config/",
+        "data/",
+        "data_ths/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/"
+      ],
+      "baseline_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json",
+      "baseline_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "prior-t2-report",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t2_task_report.json",
+          "evidence_sha256": "9ce8f5964c066540381877c9ce833599282098e751c513fb53fe090cc396eabb",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "prior-t2-validation",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t2_validation_receipt.json",
+          "evidence_sha256": "bfb283d31cbe865a4cf8bc1be8d2837dc197b50ee7c7e552050a2de831cff5b5",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json",
+          "evidence_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "987af9b00e00bd5b833f6da9958153a9fe105b43ba414ddaec9249379bc7dd27"
+  }
+}

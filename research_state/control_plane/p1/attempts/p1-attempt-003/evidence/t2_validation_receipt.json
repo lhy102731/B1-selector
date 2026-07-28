@@ -1,0 +1,289 @@
+{
+  "schema_version": "control_plane.p1_task_validation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p1_task_validation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "task_id": "P1R3-T2-TYPED-PROJECT-SETTINGS",
+    "validated_at": "2026-07-29T02:35:11.8185323+08:00",
+    "implementation_commit": "038f689a8aba581351c16d5b44d6820bdddcc130",
+    "task_spec_sha256": "44ee2babca43a66369b33c416de415dfd079a9aeb7c589fd5d9d4326bdcd59b2",
+    "baseline_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+    "files": [
+      {
+        "path": "ag2_research/config.py",
+        "change_type": "MODIFY",
+        "baseline_sha256": "c2075535fad75838a2be409b1f5d18342916bb2af95583b4542345f63ba0ac6d",
+        "baseline_bytes": 4935,
+        "sha256": "591c0c99868290181985bf8ccbfbaca60a890707785be42d798a96ce7e26315c",
+        "bytes": 4876
+      },
+      {
+        "path": "requirements/control-plane.in",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "4473ea6b8124d4bc34a6036ea14757b9ce86163303f117f192c0f83ad1d5b6a0",
+        "bytes": 252
+      },
+      {
+        "path": "requirements/control-plane.lock",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+        "bytes": 62635
+      },
+      {
+        "path": "research_automation/foundations/dependency_preflight.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "92d57b2f5bcc3b58239e36308779ba7ba7e5f13b7040e61e70bd51ec12d80ef6",
+        "bytes": 6939
+      },
+      {
+        "path": "research_automation/foundations/settings.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "57a581973dcf6840b5fffa97169ad4d89cad782cadbf95b3bd78c22a469d4f91",
+        "bytes": 36752
+      },
+      {
+        "path": "tests/test_foundations_dependency_preflight.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "380a823e250feb12b6907356e05344f8f22fd8a78fd23e9a87fd7c3066dae258",
+        "bytes": 10006
+      },
+      {
+        "path": "tests/test_foundations_settings.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "baseline_bytes": null,
+        "sha256": "cef4aee812cec20a0e54edd44ee27f4fd02184e8ada45a551a7391856da52fc6",
+        "bytes": 54778
+      }
+    ],
+    "test_receipts": [
+      {
+        "receipt_id": "foundations-settings-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_settings.ProjectSettingsTests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 32
+      },
+      {
+        "receipt_id": "foundations-dependency-preflight-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_dependency_preflight.DependencyPreflightTests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 7
+      },
+      {
+        "receipt_id": "ag2-config-compatibility-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_settings.ResearchConfigAdapterTests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 7
+      },
+      {
+        "receipt_id": "settings-import-purity",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_settings.ProjectSettingsTests.test_foundations_settings_import_is_side_effect_free tests.test_foundations_settings.ResearchConfigAdapterTests.test_config_adapter_module_itself_has_no_import_side_effects -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 2
+      },
+      {
+        "receipt_id": "p0-foundations-regression-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_control_plane_contracts tests.test_control_plane_artifact_semantics tests.test_control_plane_task_reports -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 133
+      }
+    ],
+    "controller_review": {
+      "receipt_id": "controller-settings-review",
+      "reviewer_id": "codex-controller-settings-reviewer",
+      "reviewer_actor_type": "llm",
+      "result": "PASS",
+      "exit_code": 0,
+      "findings_hash_helper": "review_findings_sha256",
+      "findings_sha256": "89e4a3814cce572d3b86a5857e304c8abb0f908a034946453d260396f9e6596a",
+      "blocking_findings": [],
+      "resolved_findings": [
+        "T2-REVIEW-ENV-FILE-FAILOPEN",
+        "T2-REVIEW-NESTED-SECRET",
+        "T2-REVIEW-NUMERIC-PRECEDENCE",
+        "T2-REVIEW-LOCK-HASH-WHITESPACE",
+        "T2-REVIEW-ROSTER-REQUIRED-FIELDS",
+        "T2-REVIEW-CAMEL-SECRET-BYPASS",
+        "T2-REVIEW-GLOBAL-REFERENCE-PRECEDENCE"
+      ],
+      "scope_match": true,
+      "reuse_before_reimplementation": true,
+      "p0_tcb_unchanged": true
+    },
+    "review_findings": [
+      {
+        "finding_id": "T2-REVIEW-ENV-FILE-FAILOPEN",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Selected dotenv files could be missing or syntactically invalid without a fail-closed error.",
+        "resolution": "Require a regular file, reject BOM/parse errors/duplicate keys, and parse the selected bytes strictly before source merge."
+      },
+      {
+        "finding_id": "T2-REVIEW-NESTED-SECRET",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Nested secret-shaped fields could enter public settings views and identity.",
+        "resolution": "Reject secret-like fields outside the typed profile api_key seam and reject reuse of credential references outside that seam."
+      },
+      {
+        "finding_id": "T2-REVIEW-NUMERIC-PRECEDENCE",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Numeric profile settings did not honor environment-reference precedence.",
+        "resolution": "Consume numeric references and strictly convert finite floats and exact integers at profile resolution."
+      },
+      {
+        "finding_id": "T2-REVIEW-LOCK-HASH-WHITESPACE",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Lock parsing removed internal hash whitespace before validation.",
+        "resolution": "Validate the complete hash token and permit only the terminal continuation syntax."
+      },
+      {
+        "finding_id": "T2-REVIEW-ROSTER-REQUIRED-FIELDS",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Malformed legacy roster entries could reach adapter list methods and raise KeyError.",
+        "resolution": "Validate nonblank agent names/descriptions and workflow descriptions during settings load."
+      },
+      {
+        "finding_id": "T2-REVIEW-CAMEL-SECRET-BYPASS",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "CamelCase and authorization header names could bypass secret-shaped field checks.",
+        "resolution": "Normalize camelCase and separators and cover authorization, credential, password, token, and secret-key suffixes."
+      },
+      {
+        "finding_id": "T2-REVIEW-GLOBAL-REFERENCE-PRECEDENCE",
+        "review_receipt_id": "controller-settings-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Environment references outside LLM profiles were not consumed or resolved under the documented precedence chain.",
+        "resolution": "Collect references recursively across all documented public sections, apply explicit override > environment > selected env file > YAML/default, and expose resolved values only through the redacted public manifest."
+      }
+    ],
+    "clean_locked_venv": {
+      "status": "PASS",
+      "python_implementation": "CPython",
+      "python_version": "3.13.12",
+      "venv_outside_repository": true,
+      "lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "locked_distribution_count": 33,
+      "matched_distribution_count": 33,
+      "missing_distribution_count": 0,
+      "mismatched_distribution_count": 0,
+      "pip_install_exit_code": 0,
+      "pip_check_exit_code": 0,
+      "preflight_exit_code": 0,
+      "unexpected_distributions": []
+    },
+    "global_preflight_diagnostic": {
+      "required_receipt": false,
+      "command_exit_code": 0,
+      "report_status": "FAIL",
+      "issue_codes": ["VERSION_MISMATCH"],
+      "lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "checked_distribution_count": 33,
+      "matched_distribution_count": 16,
+      "mismatched_distribution_count": 17,
+      "missing_distribution_count": 0,
+      "python_version": "3.13.12"
+    },
+    "lock_integrity": {
+      "input_ref": "requirements/control-plane.in",
+      "input_sha256": "4473ea6b8124d4bc34a6036ea14757b9ce86163303f117f192c0f83ad1d5b6a0",
+      "input_bytes": 252,
+      "lock_ref": "requirements/control-plane.lock",
+      "lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "lock_bytes": 62635,
+      "locked_distribution_count": 33,
+      "resolver_declared": "pip-tools==7.6.0",
+      "all_records_exact_and_hashed": true,
+      "resolver_byte_for_byte_reproduction": "PASS",
+      "first_output_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "second_output_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "byte_equal": true,
+      "reproduction_scope": "two isolated pip-tools 7.6.0 resolver runs against the same control-plane.in"
+    },
+    "p0_freeze_delta": {
+      "manifest_ref": "research_state/control_plane/p0r2/evidence/code_freeze_manifest_v342_p0r2.json",
+      "manifest_sha256": "98e64eed8ab749051b9386cb77eb3fcc4a61fa6351401d37a85056962ed954da",
+      "freeze_payload_sha256": "0882a0c08805bcf3fab0dfa9e7ac92e4f4996b84db8235fdded075361a8146f0",
+      "manifest_file_count": 451,
+      "sealed_p0_tcb_file_count": 10,
+      "sealed_p0_tcb_changed_paths": [],
+      "full_manifest_delta_paths": ["ag2_research/config.py"],
+      "authorized_delta_paths": ["ag2_research/config.py"],
+      "unauthorized_delta_paths": [],
+      "result": "PASS_WITH_AUTHORIZED_P1_DELTA"
+    },
+    "forbidden_side_effect_checks": {
+      "task_delta_base_commit": "98568ce02ab927ac1c15accbb1bfef9a071bfcf1",
+      "implementation_commit": "038f689a8aba581351c16d5b44d6820bdddcc130",
+      "task_delta_paths": [
+        "ag2_research/config.py",
+        "requirements/control-plane.in",
+        "requirements/control-plane.lock",
+        "research_automation/foundations/dependency_preflight.py",
+        "research_automation/foundations/settings.py",
+        "tests/test_foundations_dependency_preflight.py",
+        "tests/test_foundations_settings.py"
+      ],
+      "forbidden_delta_paths": [],
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false,
+      "holdout_accessed": false
+    },
+    "dirty_baseline": {
+      "baseline_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json",
+      "baseline_git_head": "06d517d586ef884dfedc99c9eb7bd5f6bfe1105d",
+      "status_command": "git status --short --untracked-files=no",
+      "status_hash_encoding": "raw UTF-8 bytes, LF-terminated",
+      "baseline_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "post_validation_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "baseline_tracked_status_line_count": 27,
+      "post_validation_tracked_status_line_count": 27,
+      "protected_dirty_baseline_unchanged": true
+    },
+    "known_nonblocking_boundaries": [
+      "Normal package-level import of ag2_research.config still runs the pre-existing ag2_research package initializer; T2 proves direct config-module and foundations import purity without modifying the forbidden initializer.",
+      "The legacy adapter intentionally exposes the unresolved YAML-shaped document; effective non-profile references are resolved only in the typed public manifest and never mutate the source document."
+    ],
+    "side_effects": {
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false,
+      "holdout_accessed": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "b826213e13d497d7bb1b0ca0e197dc24805983eff4091cf0b0a6c0f1f3c56020"
+  }
+}
