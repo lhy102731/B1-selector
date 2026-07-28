@@ -53,6 +53,19 @@ _TOP_LEVEL_FIELDS = frozenset(
     }
 )
 _LLM_FIELDS = frozenset({"default", "profiles", "usage_targets"})
+_PROFILE_REFERENCE_FIELDS = frozenset(
+    {
+        "api_key",
+        "base_url",
+        "model",
+        "extra_params",
+        "provider_id",
+        "transport",
+        "retry_policy_ref",
+        "tokenizer_ref",
+        "pricing_ref",
+    }
+)
 
 
 class ProjectSettingsError(ValueError):
@@ -102,6 +115,11 @@ class InvocationProfile(BaseModel):
     model_config = ConfigDict(strict=True, frozen=True, extra="forbid")
 
     profile_id: str
+    provider_id: str
+    transport: str
+    retry_policy_ref: str
+    tokenizer_ref: str
+    pricing_ref: str
     model: str
     api_key: SecretStr
     base_url: str
@@ -176,6 +194,11 @@ class ProjectSettings:
             raise MissingInvocationSettingError("MISSING_REQUIRED_SETTING")
         return InvocationProfile(
             profile_id=profile.profile_id,
+            provider_id=profile.provider_id,
+            transport=profile.transport,
+            retry_policy_ref=profile.retry_policy_ref,
+            tokenizer_ref=profile.tokenizer_ref,
+            pricing_ref=profile.pricing_ref,
             model=model,
             api_key=profile.api_key,
             base_url=profile.base_url,
@@ -300,6 +323,61 @@ def _validated_environment_source(value: object) -> dict[str, str]:
     return dict(value)
 
 
+def _validate_public_json_value(
+    value: object,
+    *,
+    active_containers: set[int] | None = None,
+) -> None:
+    if isinstance(value, (dict, list)):
+        active = active_containers if active_containers is not None else set()
+        container_id = id(value)
+        if container_id in active:
+            raise ProjectSettingsError(
+                "project settings public configuration is invalid"
+            )
+        active.add(container_id)
+        try:
+            if isinstance(value, dict):
+                if any(not isinstance(key, str) for key in value):
+                    raise ProjectSettingsError(
+                        "project settings public configuration is invalid"
+                    )
+                children = value.values()
+            else:
+                children = value
+            for child in children:
+                _validate_public_json_value(
+                    child,
+                    active_containers=active,
+                )
+        finally:
+            active.remove(container_id)
+        return
+    if value is None or type(value) in {bool, int, str}:
+        return
+    if type(value) is float and math.isfinite(value):
+        return
+    raise ProjectSettingsError("project settings public configuration is invalid")
+
+
+def _valid_base_url(value: str) -> bool:
+    try:
+        parsed_url = urlsplit(value)
+        parsed_url.port
+    except ValueError:
+        return False
+    return bool(
+        parsed_url.scheme in {"http", "https"}
+        and parsed_url.netloc
+        and parsed_url.hostname
+        and parsed_url.username is None
+        and parsed_url.password is None
+        and not parsed_url.query
+        and not parsed_url.fragment
+        and not any(character.isspace() for character in value)
+    )
+
+
 def _resolved_profile(
     profile_id: str,
     raw: Mapping[str, object],
@@ -335,7 +413,11 @@ def _resolved_profile(
         raise ProjectSettingsError("profile values failed strict validation")
     api_key = (
         SecretStr(key_value)
-        if isinstance(key_value, str) and key_value.strip()
+        if (
+            isinstance(key_value, str)
+            and key_value
+            and key_value == key_value.strip()
+        )
         else None
     )
     model = _resolve_reference(raw.get("model", "gpt-4o"), sources)
@@ -344,8 +426,10 @@ def _resolved_profile(
         sources,
     )
     extra = _resolve_nested(raw.get("extra_params"), sources)
+    if extra is not None:
+        _validate_public_json_value(extra)
     metadata = {
-        field_name: raw.get(field_name, "UNSET")
+        field_name: _resolve_reference(raw.get(field_name, "UNSET"), sources)
         for field_name in (
             "provider_id",
             "transport",
@@ -393,15 +477,8 @@ def _resolved_profile(
         )
     ):
         raise ProjectSettingsError("profile values failed strict validation")
-    if isinstance(base_url, str) and base_url:
-        parsed_url = urlsplit(base_url)
-        if (
-            parsed_url.scheme not in {"http", "https"}
-            or not parsed_url.netloc
-            or parsed_url.username is not None
-            or parsed_url.password is not None
-        ):
-            raise ProjectSettingsError("profile values failed strict validation")
+    if isinstance(base_url, str) and base_url and not _valid_base_url(base_url):
+        raise ProjectSettingsError("profile values failed strict validation")
     return _ResolvedProfile(
         profile_id=profile_id,
         credential_env=(
@@ -438,6 +515,7 @@ def _validate_roundtable_reference_integrity(
     if not isinstance(participants, list):
         raise ProjectSettingsError("project settings reference integrity failed")
     labels: list[str] = []
+    participant_profiles: list[str] = []
     for participant in participants:
         if not isinstance(participant, dict):
             raise ProjectSettingsError("project settings reference integrity failed")
@@ -451,7 +529,10 @@ def _validate_roundtable_reference_integrity(
         ):
             raise ProjectSettingsError("project settings reference integrity failed")
         labels.append(label)
+        participant_profiles.append(participant_profile)
     if len(labels) != len(set(labels)):
+        raise ProjectSettingsError("project settings reference integrity failed")
+    if coordinator is not None and coordinator not in participant_profiles:
         raise ProjectSettingsError("project settings reference integrity failed")
 
 
@@ -494,6 +575,20 @@ def _validate_reference_integrity(
             not isinstance(coordinator, str) or coordinator not in agent_ids
         ):
             raise ProjectSettingsError("project settings reference integrity failed")
+        declared_agents = workflow.get("agents")
+        if isinstance(declared_agents, list):
+            local_agent_ids = set(declared_agents)
+            pipeline_order = workflow.get("pipeline_order")
+            if isinstance(pipeline_order, list) and any(
+                reference not in local_agent_ids for reference in pipeline_order
+            ):
+                raise ProjectSettingsError(
+                    "project settings reference integrity failed"
+                )
+            if coordinator is not None and coordinator not in local_agent_ids:
+                raise ProjectSettingsError(
+                    "project settings reference integrity failed"
+                )
         for field_name in (
             "source_brief_workflow",
             "factor_workflow",
@@ -550,6 +645,7 @@ def load_project_settings(
     if not isinstance(profiles_raw, dict) or not profiles_raw:
         raise ProjectSettingsError("project settings profiles are invalid")
     credential_environment_names: set[str] = set()
+    consumed_environment_names: set[str] = set()
     for profile_raw in profiles_raw.values():
         if not isinstance(profile_raw, dict):
             raise ProjectSettingsError("project settings profiles are invalid")
@@ -564,6 +660,15 @@ def load_project_settings(
                 "profile credential reference must be an exact environment reference"
             )
         credential_environment_names.add(key_match.group("name"))
+        consumed_environment_names.update(
+            _referenced_environment_names(
+                {
+                    field_name: value
+                    for field_name, value in profile_raw.items()
+                    if field_name in _PROFILE_REFERENCE_FIELDS
+                }
+            )
+        )
     _validate_reference_integrity(raw, set(profiles_raw))
     sources: dict[str, str] = {}
     if env_file is not None:
@@ -585,7 +690,7 @@ def load_project_settings(
     explicit_overrides = _validated_environment_source(
         {} if overrides is None else overrides
     )
-    unknown_overrides = set(explicit_overrides) - _referenced_environment_names(raw)
+    unknown_overrides = set(explicit_overrides) - consumed_environment_names
     if unknown_overrides:
         raise ProjectSettingsError("explicit settings contain an unknown override")
     sources.update(explicit_overrides)
@@ -607,12 +712,7 @@ def load_project_settings(
         document=raw,
         profiles=profiles,
     )
-    try:
-        canonical_json(settings.public_manifest())
-    except (RecursionError, TypeError, ValueError):
-        raise ProjectSettingsError(
-            "project settings public configuration is invalid"
-        ) from None
+    _validate_public_json_value(settings.public_manifest())
     return settings
 
 

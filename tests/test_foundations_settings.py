@@ -93,6 +93,50 @@ control_layer: {}
             self.assertEqual(profile.api_key.get_secret_value(), "OVERRIDE-KEY")
             self.assertEqual(profile.model, "file-model")
 
+    def test_metadata_overrides_are_applied_and_unconsumed_overrides_are_rejected(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "      timeout: 30\n",
+                    "      timeout: 30\n"
+                    '      provider_id: "${TEST_PROVIDER:-provider-a}"\n',
+                ),
+                encoding="utf-8",
+            )
+            baseline = load_project_settings(config_path, environ={})
+            overridden = load_project_settings(
+                config_path,
+                environ={},
+                overrides={"TEST_PROVIDER": "provider-b"},
+            )
+
+            self.assertEqual(
+                overridden.inspect()["profiles"]["primary"]["provider_id"],
+                "provider-b",
+            )
+            self.assertNotEqual(
+                baseline.public_identity_sha256,
+                overridden.public_identity_sha256,
+            )
+
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "control_layer: {}",
+                    'control_layer:\n  note: "${UNCONSUMED_VALUE}"',
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ProjectSettingsError, "unknown override"):
+                load_project_settings(
+                    config_path,
+                    environ={},
+                    overrides={"UNCONSUMED_VALUE": "ignored"},
+                )
+
     def test_explicit_sources_reject_non_string_entries(self) -> None:
         invalid_sources = (
             {"environ": {"UNUSED_VALUE": 1}},
@@ -133,22 +177,23 @@ control_layer: {}
                 settings.require_invocation_profile("primary")
 
     def test_blank_credentials_are_missing_at_the_invocation_seam(self) -> None:
-        with TemporaryDirectory() as temporary:
-            config_path = self._write_minimal_config(Path(temporary))
-            settings = load_project_settings(
-                config_path,
-                environ={"TEST_API_KEY": " \t "},
-            )
+        for credential in (" \t ", " PADDED-KEY "):
+            with self.subTest(credential=credential), TemporaryDirectory() as temporary:
+                config_path = self._write_minimal_config(Path(temporary))
+                settings = load_project_settings(
+                    config_path,
+                    environ={"TEST_API_KEY": credential},
+                )
 
-            self.assertEqual(
-                settings.inspect()["profiles"]["primary"]["credential_status"],
-                "MISSING",
-            )
-            with self.assertRaisesRegex(
-                MissingInvocationSettingError,
-                "MISSING_CREDENTIAL",
-            ):
-                settings.require_invocation_profile("primary")
+                self.assertEqual(
+                    settings.inspect()["profiles"]["primary"]["credential_status"],
+                    "MISSING",
+                )
+                with self.assertRaisesRegex(
+                    MissingInvocationSettingError,
+                    "MISSING_CREDENTIAL",
+                ):
+                    settings.require_invocation_profile("primary")
 
     def test_duplicate_yaml_keys_fail_closed(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -232,6 +277,22 @@ control_layer: {}
                 'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
                 "base_url: ftp://example.invalid/v1",
             ),
+            (
+                'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
+                "base_url: https://example.invalid:99999/v1",
+            ),
+            (
+                'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
+                'base_url: "https://bad host.invalid/v1"',
+            ),
+            (
+                'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
+                "base_url: https://example.invalid/v1?token=public-leak",
+            ),
+            (
+                'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
+                "base_url: https://example.invalid/v1#fragment",
+            ),
             ("timeout: 30", "timeout: -1"),
         )
         for original, replacement in replacements:
@@ -263,8 +324,43 @@ control_layer: {}
             with self.assertRaisesRegex(
                 ProjectSettingsError,
                 "public configuration",
-            ):
+            ) as captured:
                 load_project_settings(config_path, environ={})
+
+            self.assertIsNone(captured.exception.__cause__)
+            self.assertIsNone(captured.exception.__context__)
+
+    def test_profile_validation_errors_are_safely_normalized(self) -> None:
+        replacements = (
+            (
+                'base_url: "${TEST_BASE_URL:-https://example.invalid/v1}"',
+                'base_url: "http://[::1/MUST-NOT-LEAK"',
+            ),
+            (
+                "      timeout: 30\n",
+                "      timeout: 30\n"
+                "      extra_params:\n"
+                "        1: MUST-NOT-LEAK\n",
+            ),
+        )
+        for original, replacement in replacements:
+            with self.subTest(replacement=replacement), TemporaryDirectory() as temporary:
+                config_path = self._write_minimal_config(Path(temporary))
+                config_path.write_text(
+                    config_path.read_text(encoding="utf-8").replace(
+                        original,
+                        replacement,
+                    ),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaises(ProjectSettingsError) as captured:
+                    load_project_settings(config_path, environ={})
+
+                rendered = "".join(traceback.format_exception(captured.exception))
+                self.assertNotIn("MUST-NOT-LEAK", rendered)
+                self.assertIsNone(captured.exception.__cause__)
+                self.assertIsNone(captured.exception.__context__)
 
     def test_agent_workflow_and_roundtable_references_are_closed(self) -> None:
         replacements = (
@@ -333,6 +429,56 @@ control_layer: {}
                     "reference integrity",
                 ):
                     load_project_settings(config_path, environ={})
+
+    def test_workflow_and_roundtable_control_roles_are_local_members(self) -> None:
+        workflow_replacements = (
+            ("    coordinator: worker", "    coordinator: outsider"),
+            (
+                "    agents: [worker]",
+                "    agents: [worker]\n    pipeline_order: [outsider]",
+            ),
+        )
+        for original, replacement in workflow_replacements:
+            with self.subTest(replacement=replacement), TemporaryDirectory() as temporary:
+                config_path = self._write_minimal_config(Path(temporary))
+                text = config_path.read_text(encoding="utf-8").replace(
+                    "workflows:\n",
+                    "  outsider:\n"
+                    "    profile: primary\n"
+                    "    name: Outsider\n"
+                    "    description: Outsider\n"
+                    "workflows:\n",
+                )
+                config_path.write_text(
+                    text.replace(original, replacement, 1),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(ProjectSettingsError, "reference integrity"):
+                    load_project_settings(config_path, environ={})
+
+        with TemporaryDirectory() as temporary:
+            config_path = self._write_minimal_config(Path(temporary))
+            text = config_path.read_text(encoding="utf-8").replace(
+                "agents:\n",
+                "    secondary:\n"
+                '      api_key: "${SECONDARY_API_KEY}"\n'
+                "      model: model-b\n"
+                "      base_url: https://secondary.invalid/v1\n"
+                "      temperature: 0.2\n"
+                "      timeout: 30\n"
+                "agents:\n",
+            )
+            config_path.write_text(
+                text.replace(
+                    "  coordinator: primary",
+                    "  coordinator: secondary",
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ProjectSettingsError, "reference integrity"):
+                load_project_settings(config_path, environ={})
 
     def test_public_identity_is_deterministic_and_secret_value_independent(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -524,6 +670,18 @@ control_layer: {}
     def test_invocation_model_override_is_explicit_and_validated(self) -> None:
         with TemporaryDirectory() as temporary:
             config_path = self._write_minimal_config(Path(temporary))
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "      timeout: 30\n",
+                    "      timeout: 30\n"
+                    "      provider_id: provider-a\n"
+                    "      transport: openai-compatible\n"
+                    "      retry_policy_ref: retry.standard\n"
+                    "      tokenizer_ref: tokenizer.model-a\n"
+                    "      pricing_ref: pricing.unknown\n",
+                ),
+                encoding="utf-8",
+            )
             settings = load_project_settings(
                 config_path,
                 environ={"TEST_API_KEY": "DUMMY-KEY"},
@@ -535,6 +693,11 @@ control_layer: {}
             )
 
             self.assertEqual(profile.model, "model-override")
+            self.assertEqual(profile.provider_id, "provider-a")
+            self.assertEqual(profile.transport, "openai-compatible")
+            self.assertEqual(profile.retry_policy_ref, "retry.standard")
+            self.assertEqual(profile.tokenizer_ref, "tokenizer.model-a")
+            self.assertEqual(profile.pricing_ref, "pricing.unknown")
             with self.assertRaisesRegex(ProjectSettingsError, "model override"):
                 settings.require_invocation_profile(
                     "primary",
