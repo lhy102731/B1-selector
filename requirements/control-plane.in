@@ -1,0 +1,13 @@
+# Resolver: pip-tools==7.6.0
+# Target runtime: CPython 3.13
+
+# Typed foundations
+pydantic>=2.6.1,<3
+PyYAML>=6.0.2,<7
+python-dotenv>=1,<2
+jsonschema>=4,<5
+
+# Legacy AG2 research-runtime compatibility
+ag2[openai]==0.13.3
+openai>=2.41,<3
+httpx>=0.28.1,<1
