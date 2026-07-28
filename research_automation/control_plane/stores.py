@@ -144,6 +144,32 @@ _AUTHORITY_SCHEMA = (
     ) WITHOUT ROWID
     """,
     """
+    CREATE TABLE reviewed_entry_policies_v1 (
+        policy_sha256 TEXT PRIMARY KEY,
+        policy_payload_sha256 TEXT NOT NULL,
+        inventory_payload_sha256 TEXT NOT NULL,
+        review_receipt_sha256 TEXT NOT NULL,
+        reviewer_actor_id TEXT NOT NULL,
+        reviewer_actor_type TEXT NOT NULL,
+        reviewer_invocation_id TEXT NOT NULL,
+        ticket_id TEXT NOT NULL REFERENCES task_tickets_v2(ticket_id),
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        plan_hash TEXT NOT NULL,
+        scope_hash TEXT NOT NULL,
+        instruction_policy_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE active_entry_policy_v1 (
+        singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1),
+        policy_sha256 TEXT NOT NULL
+            REFERENCES reviewed_entry_policies_v1(policy_sha256),
+        activated_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE phase_gate_closures_v1 (
         closure_id TEXT PRIMARY KEY,
         phase TEXT NOT NULL,
@@ -264,6 +290,14 @@ class TaskTicketStateError(TaskTicketError):
 
 class TrustedReceiptConflictError(TaskTicketError):
     """Raised when one trusted receipt identity changes content."""
+
+
+class EntryPolicyActivationError(StoreError):
+    """Raised when a reviewed entry policy cannot become active safely."""
+
+
+class EntryPolicyActivationConflictError(EntryPolicyActivationError):
+    """Raised when active-policy compare-and-swap loses or changes identity."""
 
 
 class TaskReportAuthorityError(StoreError):
@@ -501,6 +535,20 @@ class PhaseGateClosure:
     verdict: str
     identity: AuthorityIdentity
     closed_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveEntryPolicy:
+    policy_sha256: str
+    policy_payload_sha256: str
+    inventory_payload_sha256: str
+    review_receipt_sha256: str
+    reviewer: Actor
+    ticket_id: str
+    phase: Phase
+    attempt_id: str
+    identity: AuthorityIdentity
+    activated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -935,6 +983,46 @@ def _phase_gate_closure_from_row(row: sqlite3.Row) -> PhaseGateClosure:
         ) from error
 
 
+def _active_entry_policy_from_row(row: sqlite3.Row) -> ActiveEntryPolicy:
+    try:
+        return ActiveEntryPolicy(
+            policy_sha256=_require_sha256(
+                row["policy_sha256"],
+                "policy_sha256",
+            ),
+            policy_payload_sha256=_require_sha256(
+                row["policy_payload_sha256"],
+                "policy_payload_sha256",
+            ),
+            inventory_payload_sha256=_require_sha256(
+                row["inventory_payload_sha256"],
+                "inventory_payload_sha256",
+            ),
+            review_receipt_sha256=_require_sha256(
+                row["review_receipt_sha256"],
+                "review_receipt_sha256",
+            ),
+            reviewer=Actor(
+                actor_id=str(row["reviewer_actor_id"]),
+                actor_type=str(row["reviewer_actor_type"]),
+                invocation_id=str(row["reviewer_invocation_id"]),
+            ),
+            ticket_id=_require_nonempty(row["ticket_id"], "ticket_id"),
+            phase=Phase(str(row["phase"])),
+            attempt_id=_require_nonempty(row["attempt_id"], "attempt_id"),
+            identity=AuthorityIdentity(
+                plan_hash=str(row["plan_hash"]),
+                scope_hash=str(row["scope_hash"]),
+                instruction_policy_hash=str(row["instruction_policy_hash"]),
+            ),
+            activated_at=_parse_utc_text(str(row["activated_at"])),
+        )
+    except (TypeError, ValueError) as error:
+        raise EntryPolicyActivationError(
+            "stored active entry policy is invalid"
+        ) from error
+
+
 class AuthorityReader:
     """Read-only authority queries with no generic SQL surface."""
 
@@ -954,6 +1042,21 @@ class AuthorityReader:
                 ).fetchone()[0]
             )
         )
+
+    def active_entry_policy(self) -> ActiveEntryPolicy | None:
+        def read(connection: sqlite3.Connection) -> ActiveEntryPolicy | None:
+            row = connection.execute(
+                """
+                SELECT policy.*, active.activated_at
+                FROM active_entry_policy_v1 AS active
+                JOIN reviewed_entry_policies_v1 AS policy
+                  ON policy.policy_sha256 = active.policy_sha256
+                WHERE active.singleton_id = 1
+                """
+            ).fetchone()
+            return None if row is None else _active_entry_policy_from_row(row)
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read)
 
     def phase_gate_snapshot(
         self,
@@ -1720,6 +1823,213 @@ class _AuthorityStore:
             raise PendingOutboxError(
                 "pending authority outbox blocks phase closure"
             )
+
+    def _activate_reviewed_entry_policy(
+        self,
+        lease: TaskExecutionLease,
+        *,
+        reviewer: Actor,
+        policy_sha256: str,
+        policy_payload_sha256: str,
+        inventory_payload_sha256: str,
+        review_receipt_sha256: str,
+        expected_active_sha256: str | None,
+    ) -> ActiveEntryPolicy:
+        if not isinstance(lease, TaskExecutionLease):
+            raise EntryPolicyActivationError("entry policy lease is invalid")
+        if SideEffect.WRITE_CONTROL_PLANE not in lease.allowed_side_effects:
+            raise EntryPolicyActivationError(
+                "entry policy activation requires WRITE_CONTROL_PLANE"
+            )
+        if not isinstance(reviewer, Actor):
+            raise EntryPolicyActivationError("entry policy reviewer is invalid")
+        try:
+            policy_digest = _require_sha256(policy_sha256, "policy_sha256")
+            policy_payload_digest = _require_sha256(
+                policy_payload_sha256,
+                "policy_payload_sha256",
+            )
+            inventory_digest = _require_sha256(
+                inventory_payload_sha256,
+                "inventory_payload_sha256",
+            )
+            review_digest = _require_sha256(
+                review_receipt_sha256,
+                "review_receipt_sha256",
+            )
+            expected_old = (
+                None
+                if expected_active_sha256 is None
+                else _require_sha256(
+                    expected_active_sha256,
+                    "expected_active_sha256",
+                )
+            )
+        except ValueError as error:
+            raise EntryPolicyActivationError(str(error)) from error
+        activated_at = self._now()
+
+        def activate(connection: sqlite3.Connection) -> ActiveEntryPolicy:
+            lease_row = self._require_task_lease(connection, lease)
+            task_actor = Actor(
+                actor_id=str(lease_row["grant_actor_id"]),
+                actor_type=str(lease_row["grant_actor_type"]),
+                invocation_id=str(lease_row["grant_invocation_id"]),
+            )
+            _require_independent_receipt_issuer(
+                "REVIEW",
+                reviewer,
+                task_actor,
+            )
+            current = connection.execute(
+                """
+                SELECT policy.*, active.activated_at
+                FROM active_entry_policy_v1 AS active
+                JOIN reviewed_entry_policies_v1 AS policy
+                  ON policy.policy_sha256 = active.policy_sha256
+                WHERE active.singleton_id = 1
+                """
+            ).fetchone()
+            if current is not None and str(current["policy_sha256"]) == policy_digest:
+                existing = _active_entry_policy_from_row(current)
+                expected_binding = (
+                    policy_payload_digest,
+                    inventory_digest,
+                    review_digest,
+                    reviewer,
+                    lease.ticket_id,
+                    lease.phase,
+                    lease.attempt_id,
+                    lease.identity,
+                )
+                actual_binding = (
+                    existing.policy_payload_sha256,
+                    existing.inventory_payload_sha256,
+                    existing.review_receipt_sha256,
+                    existing.reviewer,
+                    existing.ticket_id,
+                    existing.phase,
+                    existing.attempt_id,
+                    existing.identity,
+                )
+                if actual_binding != expected_binding:
+                    raise EntryPolicyActivationConflictError(
+                        "active entry policy digest changed binding"
+                    )
+                return existing
+            current_digest = (
+                None if current is None else str(current["policy_sha256"])
+            )
+            if current_digest != expected_old:
+                raise EntryPolicyActivationConflictError(
+                    "active entry policy compare-and-swap mismatch"
+                )
+
+            policy_values = (
+                policy_payload_digest,
+                inventory_digest,
+                review_digest,
+                reviewer.actor_id,
+                reviewer.actor_type,
+                reviewer.invocation_id,
+                lease.ticket_id,
+                lease.phase.value,
+                lease.attempt_id,
+                lease.identity.plan_hash,
+                lease.identity.scope_hash,
+                lease.identity.instruction_policy_hash,
+            )
+            stored = connection.execute(
+                """
+                SELECT policy_payload_sha256, inventory_payload_sha256,
+                       review_receipt_sha256, reviewer_actor_id,
+                       reviewer_actor_type, reviewer_invocation_id, ticket_id,
+                       phase, attempt_id, plan_hash, scope_hash,
+                       instruction_policy_hash
+                FROM reviewed_entry_policies_v1
+                WHERE policy_sha256 = ?
+                """,
+                (policy_digest,),
+            ).fetchone()
+            if stored is not None:
+                if tuple(str(value) for value in stored) != policy_values:
+                    raise EntryPolicyActivationConflictError(
+                        "reviewed entry policy digest changed content"
+                    )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO reviewed_entry_policies_v1
+                    (policy_sha256, policy_payload_sha256,
+                     inventory_payload_sha256, review_receipt_sha256,
+                     reviewer_actor_id, reviewer_actor_type,
+                     reviewer_invocation_id, ticket_id, phase, attempt_id,
+                     plan_hash, scope_hash, instruction_policy_hash, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        policy_digest,
+                        *policy_values,
+                        _utc_text(activated_at),
+                    ),
+                )
+            if current_digest is None:
+                connection.execute(
+                    """
+                    INSERT INTO active_entry_policy_v1
+                    (singleton_id, policy_sha256, activated_at)
+                    VALUES (1, ?, ?)
+                    """,
+                    (policy_digest, _utc_text(activated_at)),
+                )
+            else:
+                update = connection.execute(
+                    """
+                    UPDATE active_entry_policy_v1
+                    SET policy_sha256 = ?, activated_at = ?
+                    WHERE singleton_id = 1 AND policy_sha256 = ?
+                    """,
+                    (
+                        policy_digest,
+                        _utc_text(activated_at),
+                        current_digest,
+                    ),
+                )
+                if update.rowcount != 1:
+                    raise EntryPolicyActivationConflictError(
+                        "active entry policy compare-and-swap lost a race"
+                    )
+            _insert_authority_outbox(
+                connection,
+                event_type="ENTRY_POLICY_ACTIVATED",
+                aggregate_id=policy_digest,
+                payload={
+                    "policy_sha256": policy_digest,
+                    "policy_payload_sha256": policy_payload_digest,
+                    "inventory_payload_sha256": inventory_digest,
+                    "review_receipt_sha256": review_digest,
+                    "reviewer_actor_id": reviewer.actor_id,
+                    "ticket_id": lease.ticket_id,
+                    "phase": lease.phase.value,
+                    "attempt_id": lease.attempt_id,
+                    "activated_at": _utc_text(activated_at),
+                },
+                created_at=activated_at,
+            )
+            return ActiveEntryPolicy(
+                policy_sha256=policy_digest,
+                policy_payload_sha256=policy_payload_digest,
+                inventory_payload_sha256=inventory_digest,
+                review_receipt_sha256=review_digest,
+                reviewer=reviewer,
+                ticket_id=lease.ticket_id,
+                phase=lease.phase,
+                attempt_id=lease.attempt_id,
+                identity=lease.identity,
+                activated_at=activated_at,
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._write(activate)
 
     def _close_phase_gate(
         self,
@@ -3347,6 +3657,7 @@ def read_store_pair_descriptor() -> StorePairDescriptor:
 
 
 __all__ = [
+    "ActiveEntryPolicy",
     "AuthorityReader",
     "ExecutionLeaseAuthorityBinding",
     "AuthorityGrant",
@@ -3358,6 +3669,8 @@ __all__ = [
     "AuthorizationExpiredError",
     "AuthorizationRejectedError",
     "AuthorizationReplayError",
+    "EntryPolicyActivationConflictError",
+    "EntryPolicyActivationError",
     "OperationalReader",
     "OutboxConflictError",
     "OutboxMirrorResult",

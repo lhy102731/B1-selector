@@ -1661,6 +1661,100 @@ class TrustedBootstrapTests(unittest.TestCase):
                 with self.assertRaises(stores_module.TaskReportAuthorityError):
                     AuthorityReader().verify_task_report_binding(forged_report)
 
+    def test_reviewed_entry_policy_activation_is_cas_bound_and_outboxed(self) -> None:
+        now = datetime(2026, 7, 28, 8, 30, tzinfo=timezone.utc)
+        actor = Actor("operator", "human", "invocation-policy-publish")
+        reviewer = Actor("independent-reviewer", "llm", "review-policy-001")
+        identity = AuthorityIdentity(
+            plan_hash="a" * 64,
+            scope_hash="b" * 64,
+            instruction_policy_hash="c" * 64,
+        )
+        task_spec = {
+            "task_id": "P0R2-T8-POLICY-ACTIVATE",
+            "objective": "Activate one independently reviewed entry policy.",
+            "dependencies": [],
+            "idempotency_key": "p0r2-policy-activate-001",
+            "task_spec_ref": "research_state/control_plane/p0r2/task_specs/policy.json",
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_state/control_plane/policies/"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": "research_state/control_plane/p0r2/baseline.json",
+            "baseline_sha256": "e" * 64,
+            "input_evidence_refs": [],
+        }
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+                _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+            ):
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET,
+                    clock=lambda: now,
+                )
+                envelope = authority._provision_authorization(
+                    phase=Phase.P0,
+                    attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                    expires_at=now + timedelta(hours=1),
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                grant = authority.claim_authorization(
+                    envelope,
+                    expected_phase=Phase.P0,
+                    expected_attempt_id="p0r2-attempt-001",
+                    actor=actor,
+                    identity=identity,
+                )
+                ticket = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+                )
+                lease = authority._begin_task(ticket)
+                before_outbox = AuthorityReader().pending_outbox_count()
+
+                activated = authority._activate_reviewed_entry_policy(
+                    lease,
+                    reviewer=reviewer,
+                    policy_sha256="1" * 64,
+                    policy_payload_sha256="2" * 64,
+                    inventory_payload_sha256="3" * 64,
+                    review_receipt_sha256="4" * 64,
+                    expected_active_sha256=None,
+                )
+                active = AuthorityReader().active_entry_policy()
+
+                self.assertEqual(active, activated)
+                self.assertEqual(active.policy_sha256, "1" * 64)
+                self.assertEqual(active.reviewer, reviewer)
+                self.assertEqual(
+                    AuthorityReader().pending_outbox_count(),
+                    before_outbox + 1,
+                )
+                with self.assertRaises(
+                    stores_module.EntryPolicyActivationConflictError
+                ):
+                    authority._activate_reviewed_entry_policy(
+                        lease,
+                        reviewer=reviewer,
+                        policy_sha256="5" * 64,
+                        policy_payload_sha256="6" * 64,
+                        inventory_payload_sha256="7" * 64,
+                        review_receipt_sha256="8" * 64,
+                        expected_active_sha256=None,
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
