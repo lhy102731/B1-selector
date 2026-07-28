@@ -1,0 +1,50 @@
+{
+  "schema_version": "control_plane.phase_attempt_incident_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.phase_attempt_incident.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-002",
+    "recorded_at": "2026-07-28T20:21:09.1936015+08:00",
+    "classification": "UNREPORTABLE_TRUSTED_REVIEW_RECEIPT",
+    "cause": "The empty review-findings digest was calculated with canonical_sha256([]) instead of the sealed review_findings_sha256(receipt_id, findings) domain. The immutable trusted receipt therefore cannot appear in a valid TaskReport V2.",
+    "affected_task": {
+      "task_id": "P1R2-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "ticket_id": "e0babd819678f7c4c5c419afddb92f61e87a5ce8ed516a4d10542cf773e00723",
+      "ticket_state": "SUCCEEDED",
+      "stored_findings_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "required_findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b"
+    },
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_e1c27d72e61eba2aa0e6d542b61a6eab"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [
+        "e0babd819678f7c4c5c419afddb92f61e87a5ce8ed516a4d10542cf773e00723"
+      ],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [],
+      "pending_outbox_count": 0
+    },
+    "impact": {
+      "implementation_validation_result": "PASS",
+      "p0_tcb_changed": false,
+      "authority_secret_exposed": false,
+      "research_or_backtest_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "p1_attempt_can_pass": false
+    },
+    "recovery": {
+      "required_new_attempt": "p1-attempt-003",
+      "code_reimplementation_required": false,
+      "independent_code_and_test_revalidation_required": true,
+      "receipt_hashes_must_be_computed_by_sealed_helpers": true,
+      "lease_receipts_finish_and_report_draft_must_be_built_in_one_trusted_process": true
+    },
+    "verdict": "FAIL_CLOSED"
+  },
+  "computed": {
+    "payload_sha256": "410392c82817a9d97a1c44a9348c3f74dbcb2ff35acc35752197fd58c1fb828f"
+  }
+}
