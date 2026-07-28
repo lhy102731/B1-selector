@@ -14,8 +14,11 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
+import tempfile
 from typing import Callable
 
+from .artifact_semantics import validate_reviewed_entry_policy
 from .contracts import Actor, Phase, SideEffect
 from .sqlite_uow import (
     _SqliteUnitOfWork,
@@ -57,6 +60,9 @@ _TASK_SPEC_FIELDS = frozenset(
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _STORE_SCHEMA_VERSION = 1
+MAX_REVIEWED_POLICY_BYTES = 4 * 1024 * 1024
+_POLICY_NAMESPACE = ("research_state", "control_plane", "policies")
+_POLICY_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
 _AUTHORITY_SCHEMA = (
     """
     CREATE TABLE authorizations_v2 (
@@ -219,6 +225,10 @@ _OPERATIONAL_SCHEMA = (
 
 class StoreError(RuntimeError):
     """Base error for trusted control-plane storage."""
+
+
+class PolicyPublicationError(StoreError):
+    """Raised when a reviewed policy cannot be published create-only."""
 
 
 class StoreConfigurationError(StoreError):
@@ -561,6 +571,16 @@ class ActiveEntryPolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class PublishedReviewedEntryPolicy:
+    reference: str
+    file_sha256: str
+    policy_payload_sha256: str
+    inventory_payload_sha256: str
+    review_receipt_sha256: str
+    reviewer_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class TrustedReceiptAttestation:
     ticket_id: str
     receipt_kind: str
@@ -865,6 +885,153 @@ def _trusted_bootstrap(*, root_secret: str) -> StoreBootstrapReceipt:
         )
     finally:
         lock_path.unlink(missing_ok=True)
+
+
+def _policy_path_is_reparse(path: Path) -> bool:
+    try:
+        if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+            return True
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except OSError as error:
+        raise PolicyPublicationError(
+            "unable to inspect reviewed-policy namespace"
+        ) from error
+    return bool(
+        attributes
+        & getattr(
+            stat,
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            _POLICY_FILE_ATTRIBUTE_REPARSE_POINT,
+        )
+    )
+
+
+def _policy_directory(repository_root: str | Path) -> tuple[Path, Path]:
+    try:
+        root = Path(repository_root).resolve(strict=True)
+    except (OSError, TypeError, ValueError) as error:
+        raise PolicyPublicationError("repository root is unavailable") from error
+    if not root.is_dir():
+        raise PolicyPublicationError("repository root is not a directory")
+    current = root
+    for component in _POLICY_NAMESPACE[:-1]:
+        current = current / component
+        if not current.is_dir() or _policy_path_is_reparse(current):
+            raise PolicyPublicationError(
+                "reviewed-policy namespace parent is unavailable or unsafe"
+            )
+    policy_directory = current / _POLICY_NAMESPACE[-1]
+    try:
+        policy_directory.mkdir(exist_ok=True)
+    except OSError as error:
+        raise PolicyPublicationError(
+            "unable to create reviewed-policy namespace"
+        ) from error
+    if not policy_directory.is_dir() or _policy_path_is_reparse(
+        policy_directory
+    ):
+        raise PolicyPublicationError(
+            "reviewed-policy namespace is unavailable or unsafe"
+        )
+    try:
+        policy_directory.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError) as error:
+        raise PolicyPublicationError(
+            "reviewed-policy namespace escapes the repository"
+        ) from error
+    return root, policy_directory
+
+
+def _require_exact_existing_policy(path: Path, expected: bytes) -> None:
+    if _policy_path_is_reparse(path) or not path.is_file():
+        raise PolicyPublicationError(
+            "content-addressed reviewed-policy path is not a regular file"
+        )
+    try:
+        with path.open("rb") as stream:
+            observed = stream.read(len(expected) + 1)
+    except OSError as error:
+        raise PolicyPublicationError(
+            "content-addressed reviewed-policy file is unreadable"
+        ) from error
+    if observed != expected:
+        raise PolicyPublicationError(
+            "content-addressed reviewed-policy file has conflicting bytes"
+        )
+
+
+def publish_reviewed_entry_policy(
+    raw: bytes,
+    *,
+    repository_root: str | Path,
+    expected_plan_version: str,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_identity: Mapping[str, str],
+    final_inventory: Mapping[str, object],
+) -> PublishedReviewedEntryPolicy:
+    """Validate and atomically publish one immutable content-addressed policy."""
+
+    if not isinstance(raw, bytes):
+        raise PolicyPublicationError("reviewed policy input must be bytes")
+    if not raw or len(raw) > MAX_REVIEWED_POLICY_BYTES:
+        raise PolicyPublicationError("reviewed policy input has an invalid size")
+    policy = validate_reviewed_entry_policy(
+        raw,
+        expected_plan_version=expected_plan_version,
+        expected_phase=expected_phase,
+        expected_attempt_id=expected_attempt_id,
+        expected_identity=expected_identity,
+        final_inventory=final_inventory,
+    )
+    root, policy_directory = _policy_directory(repository_root)
+    file_sha256 = hashlib.sha256(raw).hexdigest()
+    destination = policy_directory / f"{file_sha256}.json"
+    reference = destination.relative_to(root).as_posix()
+    if destination.exists() or os.path.lexists(destination):
+        _require_exact_existing_policy(destination, raw)
+    else:
+        descriptor: int | None = None
+        temporary_path: Path | None = None
+        try:
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{file_sha256}.",
+                suffix=".tmp",
+                dir=policy_directory,
+            )
+            temporary_path = Path(temporary_name)
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = None
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                os.link(temporary_path, destination)
+            except FileExistsError:
+                _require_exact_existing_policy(destination, raw)
+            _require_exact_existing_policy(destination, raw)
+        except PolicyPublicationError:
+            raise
+        except OSError as error:
+            raise PolicyPublicationError(
+                "unable to publish reviewed policy create-only"
+            ) from error
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if temporary_path is not None:
+                try:
+                    temporary_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+    return PublishedReviewedEntryPolicy(
+        reference=reference,
+        file_sha256=file_sha256,
+        policy_payload_sha256=str(policy["policy_payload_sha256"]),
+        inventory_payload_sha256=str(policy["inventory_payload_sha256"]),
+        review_receipt_sha256=str(policy["review_receipt_sha256"]),
+        reviewer_id=str(policy["reviewer_id"]),
+    )
 
 
 def _read_store_identity(spec: _StoreSpec) -> StoreIdentity:
@@ -3829,6 +3996,7 @@ __all__ = [
     "ActiveEntryPolicy",
     "AuthorityReader",
     "ExecutionLeaseAuthorityBinding",
+    "MAX_REVIEWED_POLICY_BYTES",
     "AuthorityGrant",
     "AuthorityIdentity",
     "AuthorityRootError",
@@ -3844,6 +4012,8 @@ __all__ = [
     "OutboxConflictError",
     "OutboxMirrorResult",
     "PendingOutboxError",
+    "PolicyPublicationError",
+    "PublishedReviewedEntryPolicy",
     "PhaseGateAuthoritySnapshot",
     "PhaseGateClosure",
     "PhaseGateClosureConflictError",
@@ -3868,4 +4038,5 @@ __all__ = [
     "TrustedReceiptAttestation",
     "TrustedReceiptConflictError",
     "read_store_pair_descriptor",
+    "publish_reviewed_entry_policy",
 ]

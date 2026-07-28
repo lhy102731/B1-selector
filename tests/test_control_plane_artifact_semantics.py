@@ -21,7 +21,7 @@ from research_automation.control_plane.contracts import (
     canonical_json,
     canonical_sha256,
 )
-from research_automation.control_plane.policy_publisher import (
+from research_automation.control_plane.stores import (
     publish_reviewed_entry_policy,
 )
 
