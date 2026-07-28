@@ -234,23 +234,22 @@ def _write_repository_bytes(
             stream.write(raw)
             stream.flush()
             os.fsync(stream.fileno())
-        if resolved.exists():
-            raise GateEvidenceError("gate output already exists and is immutable")
-        os.replace(temporary_path, resolved)
+        try:
+            os.link(temporary_path, resolved)
+        except FileExistsError as error:
+            raise GateEvidenceError(
+                "gate output already exists and is immutable"
+            ) from error
     except GateEvidenceError:
-        if temporary_path is not None:
-            try:
-                Path(temporary_path).unlink()
-            except OSError:
-                pass
         raise
     except OSError as error:
+        raise GateEvidenceError("unable to publish gate candidate") from error
+    finally:
         if temporary_path is not None:
             try:
                 Path(temporary_path).unlink()
             except OSError:
                 pass
-        raise GateEvidenceError("unable to publish gate candidate") from error
     return resolved
 
 

@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
+from research_automation.control_plane import cli as cli_module
 from research_automation.control_plane.cli import main as gate_cli_main
 from research_automation.control_plane.contracts import (
     Actor,
@@ -1696,6 +1697,33 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 3)
             self.assertEqual(output_path.read_bytes(), b"immutable")
+            self.assertIn("GateEvidenceError", stderr.getvalue())
+
+    def test_cli_loses_a_concurrent_create_without_overwriting_it(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            output_path = fixture.root / "concurrent-report.json"
+            stdout = StringIO()
+            stderr = StringIO()
+
+            def concurrent_create(_source: object, destination: object) -> None:
+                Path(destination).write_bytes(b"concurrent-winner")
+                raise FileExistsError
+
+            with patch.object(
+                cli_module.os,
+                "link",
+                side_effect=concurrent_create,
+            ):
+                exit_code = gate_cli_main(
+                    self._gate_build_cli_args(fixture, output_path),
+                    stdout=stdout,
+                    stderr=stderr,
+                    authority_reader=fixture.reader,
+                    repository_root=fixture.root,
+                )
+
+            self.assertEqual(exit_code, 3)
+            self.assertEqual(output_path.read_bytes(), b"concurrent-winner")
             self.assertIn("GateEvidenceError", stderr.getvalue())
 
     def test_cli_rejects_build_for_a_closed_gate_attempt(self) -> None:
