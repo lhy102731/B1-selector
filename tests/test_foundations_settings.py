@@ -217,6 +217,14 @@ control_layer: {}
                 'control_layer:\n  note: "${SECONDARY_SECRET}"\n',
                 "secret environment",
             ),
+            (
+                'control_layer:\n  note: "${UNDECLARED_PUBLIC_VALUE}"\n',
+                "public environment reference",
+            ),
+            (
+                'control_layer:\n  note: "${UNDECLARED_PUBLIC_VALUE:-default}"\n',
+                "public environment reference",
+            ),
         )
         for replacement, message in variants:
             with self.subTest(message=message), TemporaryDirectory() as temporary:
@@ -239,6 +247,7 @@ control_layer: {}
                             "TEST_API_KEY": "DUMMY-KEY",
                             "SECONDARY_KEY": "SECONDARY-MUST-NOT-LEAK",
                             "SECONDARY_SECRET": "SECRET-MUST-NOT-LEAK",
+                            "UNDECLARED_PUBLIC_VALUE": "MUST-NOT-BE-PROJECTED",
                         },
                     )
                 self.assertNotIn("SECONDARY-MUST-NOT-LEAK", str(captured.exception))

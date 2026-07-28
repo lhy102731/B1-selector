@@ -96,6 +96,62 @@ _SECRET_FIELD_EXACT = frozenset(
         "set_cookie",
     }
 )
+_PUBLIC_REFERENCE_FIELD_EXACT = frozenset(
+    {
+        "agents",
+        "budget",
+        "coordinator",
+        "count",
+        "days",
+        "default",
+        "description",
+        "label",
+        "limit",
+        "mode",
+        "model",
+        "name",
+        "path",
+        "participants",
+        "pipeline_order",
+        "profile",
+        "ref",
+        "reference",
+        "reasoning_effort",
+        "retries",
+        "root",
+        "rounds",
+        "system_message",
+        "system_prompt",
+        "timeout",
+        "tools",
+        "type",
+        "url",
+        "workflow",
+    }
+)
+_PUBLIC_REFERENCE_FIELD_SUFFIXES = (
+    "_budget",
+    "_count",
+    "_days",
+    "_description",
+    "_label",
+    "_limit",
+    "_message",
+    "_mode",
+    "_model",
+    "_name",
+    "_path",
+    "_profile",
+    "_prompt",
+    "_ref",
+    "_reference",
+    "_retries",
+    "_root",
+    "_rounds",
+    "_timeout",
+    "_url",
+    "_workflow",
+)
 
 
 class ProjectSettingsError(ValueError):
@@ -582,6 +638,17 @@ def _normalized_field_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", camel_split).strip("_").lower()
 
 
+def _is_allowlisted_public_reference_path(path: tuple[object, ...]) -> bool:
+    for component in reversed(path):
+        if isinstance(component, str):
+            normalized = _normalized_field_name(component)
+            return (
+                normalized in _PUBLIC_REFERENCE_FIELD_EXACT
+                or normalized.endswith(_PUBLIC_REFERENCE_FIELD_SUFFIXES)
+            )
+    return False
+
+
 def _is_secret_field_name(value: str) -> bool:
     normalized = _normalized_field_name(value)
     tokens = tuple(token for token in normalized.split("_") if token)
@@ -623,6 +690,7 @@ def _validate_secret_environment_reference(
     value: object,
     credential_environment_names: frozenset[str],
     *,
+    path: tuple[object, ...] = (),
     active_containers: set[int] | None = None,
 ) -> None:
     """Reject undeclared secret-shaped environment references.
@@ -634,6 +702,12 @@ def _validate_secret_environment_reference(
     """
     if isinstance(value, str):
         match = _ENV_REFERENCE.fullmatch(value)
+        is_typed_profile_field = (
+            len(path) >= 4
+            and path[0] == "llm"
+            and path[1] == "profiles"
+            and path[3] in _PROFILE_REFERENCE_FIELDS
+        )
         if (
             match is not None
             and _environment_name(match.group("name"))
@@ -642,6 +716,22 @@ def _validate_secret_environment_reference(
         ):
             raise ProjectSettingsError(
                 "secret environment reference must use a profile api_key"
+            )
+        if (
+            match is not None
+            and not is_typed_profile_field
+            and not _is_allowlisted_public_reference_path(path)
+        ):
+            raise ProjectSettingsError(
+                "public environment reference field is not allowlisted"
+            )
+        if (
+            match is not None
+            and not is_typed_profile_field
+            and match.group("default") is None
+        ):
+            raise ProjectSettingsError(
+                "public environment reference requires a documented default"
             )
         return
     if not isinstance(value, (dict, list)):
@@ -653,17 +743,19 @@ def _validate_secret_environment_reference(
     active.add(container_id)
     try:
         if isinstance(value, dict):
-            for child in value.values():
+            for key, child in value.items():
                 _validate_secret_environment_reference(
                     child,
                     credential_environment_names,
+                    path=path + (key,),
                     active_containers=active,
                 )
         else:
-            for child in value:
+            for index, child in enumerate(value):
                 _validate_secret_environment_reference(
                     child,
                     credential_environment_names,
+                    path=path + (index,),
                     active_containers=active,
                 )
     finally:
