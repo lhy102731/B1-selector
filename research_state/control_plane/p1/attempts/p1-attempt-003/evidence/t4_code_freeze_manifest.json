@@ -1,0 +1,140 @@
+{
+  "schema_version": "control_plane.code_freeze_manifest.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P1",
+  "attempt_id": "p1-attempt-003",
+  "identity_binding": {
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "116672d5c9580d22a04d03aa119a7b79ac5f3045ca0a3bed1381700220492aca",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "files": [
+    {
+      "path": "ag2_research/config.py",
+      "sha256": "a6f40c135e3c95eabf9a1d4b7f7d557816e1c714a5bfe171d735aff46e0c9cba",
+      "bytes": 5055
+    },
+    {
+      "path": "requirements/control-plane.in",
+      "sha256": "4473ea6b8124d4bc34a6036ea14757b9ce86163303f117f192c0f83ad1d5b6a0",
+      "bytes": 252
+    },
+    {
+      "path": "requirements/control-plane.lock",
+      "sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "bytes": 62635
+    },
+    {
+      "path": "research_automation/control_plane/__init__.py",
+      "sha256": "daa549addbfab3d3fda678a50bf4b833e4dd5dc82671bbc95a25a287c4216b66",
+      "bytes": 1151
+    },
+    {
+      "path": "research_automation/control_plane/artifact_semantics.py",
+      "sha256": "cc8a9af9d07d47a379bf828784735c6587d78218f5cc53bae6fe93e05aaf38a7",
+      "bytes": 40092
+    },
+    {
+      "path": "research_automation/control_plane/cli.py",
+      "sha256": "8ce6cf6a2a631b4c478dfcd49b93e780c159d4b82e86049ea2af9a85de8add0a",
+      "bytes": 22706
+    },
+    {
+      "path": "research_automation/control_plane/contracts.py",
+      "sha256": "c35e6277a8a3cb029cb85742679283509697b9cc5a3936addd3793966199e6c2",
+      "bytes": 11587
+    },
+    {
+      "path": "research_automation/control_plane/entry_guard.py",
+      "sha256": "dee75d0116dd2545d966faf96d6390c7b962b8560e394b0a2126eb0a09a01385",
+      "bytes": 69757
+    },
+    {
+      "path": "research_automation/control_plane/gates.py",
+      "sha256": "7acb86ee2f55ee7019021532e1ff4b2c195312f146805bf9e83ca67d193a5cb2",
+      "bytes": 43170
+    },
+    {
+      "path": "research_automation/control_plane/inventory.py",
+      "sha256": "9140c2879759fd11fc2e436cb19e1008d0746b1e73d2f26958914c40f7d870f3",
+      "bytes": 15688
+    },
+    {
+      "path": "research_automation/control_plane/sqlite_uow.py",
+      "sha256": "c05dbf78576f3ea3fa446440c5d827da492056e658635d3daaf7ff1eb0360eed",
+      "bytes": 10267
+    },
+    {
+      "path": "research_automation/control_plane/stores.py",
+      "sha256": "a0e9ee9a341f2304497dbb7226dc4854a5031d816cbfd829b2f690f54660bdb9",
+      "bytes": 146973
+    },
+    {
+      "path": "research_automation/control_plane/task_reports.py",
+      "sha256": "565b843881f61264fe3c044cf8e895684ee29b24c3bc8d6ddf5720a95cd00029",
+      "bytes": 40241
+    },
+    {
+      "path": "research_automation/foundations/artifact_identity.py",
+      "sha256": "00bd97eaeed2f6f47e9d7bd3878c0fa6d516649414d43769b3ab23c7b0c9e423",
+      "bytes": 17264
+    },
+    {
+      "path": "research_automation/foundations/contract_registry.py",
+      "sha256": "18997ab45d2e4351c049ebb60373d370a365ad280a437a1254d0c30091c4cf84",
+      "bytes": 8872
+    },
+    {
+      "path": "research_automation/foundations/dependency_preflight.py",
+      "sha256": "92d57b2f5bcc3b58239e36308779ba7ba7e5f13b7040e61e70bd51ec12d80ef6",
+      "bytes": 6939
+    },
+    {
+      "path": "research_automation/foundations/legacy_contract_adapters.py",
+      "sha256": "3ef321d67535be90ce871fb58b6bc361749a7a51c1bcfe2d8f401d7f04a94601",
+      "bytes": 12247
+    },
+    {
+      "path": "research_automation/foundations/protocols.py",
+      "sha256": "44beacc806845da2f01cea5043d5358b7897a6f669f1e388fabbfe0be2297d14",
+      "bytes": 53024
+    },
+    {
+      "path": "research_automation/foundations/settings.py",
+      "sha256": "98e02e1fbdee5a6293e994e17039782d5ad290745596805a94c8dca1028bc473",
+      "bytes": 42332
+    },
+    {
+      "path": "tests/test_foundations_artifact_identity.py",
+      "sha256": "8b8b7d3efa8f609b37c96f79e9860aa9b96da8badb258b98cd89339e5c30b413",
+      "bytes": 14970
+    },
+    {
+      "path": "tests/test_foundations_contract_registry.py",
+      "sha256": "b2093b3d7f601d89f36ef53864a28e8fe299730f3a395e8483906fc670449484",
+      "bytes": 8950
+    },
+    {
+      "path": "tests/test_foundations_dependency_preflight.py",
+      "sha256": "380a823e250feb12b6907356e05344f8f22fd8a78fd23e9a87fd7c3066dae258",
+      "bytes": 10006
+    },
+    {
+      "path": "tests/test_foundations_legacy_contract_adapters.py",
+      "sha256": "de5b36562eb889b22e09d6f1fb7f9e8d3d5c1eb28e54efce7941a00cadb74410",
+      "bytes": 7965
+    },
+    {
+      "path": "tests/test_foundations_protocols.py",
+      "sha256": "47c7c740a76c8ebca8cd546f8fa719eeeb9bcbcb76fce23667104641d9e2a81e",
+      "bytes": 53986
+    },
+    {
+      "path": "tests/test_foundations_settings.py",
+      "sha256": "4daa74a0cc8515033386a11e16dd06ac425c19cea66561f4195a29415cd83fb0",
+      "bytes": 58741
+    }
+  ],
+  "file_count": 25,
+  "freeze_payload_sha256": "8f660bb8a915a14a0b66cfb4be4641282e6af1345d63cedd5219e470f978cd15"
+}

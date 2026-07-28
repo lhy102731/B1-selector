@@ -1,0 +1,165 @@
+{
+  "schema_version": "control_plane.p1_task_validation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p1_task_validation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "task_id": "P1R3-T4-INTEGRATION-FREEZE",
+    "validated_at": "2026-07-28T21:15:12.998389+00:00",
+    "implementation_commit": "7c2156bc492b69cff471399a2509c5cdff5d3035",
+    "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t4_integration_freeze.json",
+    "task_spec_sha256": "9df01edccbe71c7c117983e711df7f155f2b6bf928fa3412908c1bbae7b25216",
+    "baseline_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+    "freeze_manifest": {
+      "ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t4_code_freeze_manifest.json",
+      "sha256": "96791e7ddfb30b2f20e683eb5fa022b0fb738fa73ad4d00fd415eb718d392844",
+      "payload_sha256": "8f660bb8a915a14a0b66cfb4be4641282e6af1345d63cedd5219e470f978cd15",
+      "file_count": 25,
+      "validated_against_current_repository": true,
+      "allowed_missing_scope_paths": [
+        "research_automation/foundations/__init__.py"
+      ]
+    },
+    "implementation_projection": {
+      "status": "PASS",
+      "terminal_file_count": 15,
+      "source_validation_receipts": [
+        "t1c_validation_receipt.json",
+        "t2_validation_receipt.json",
+        "t2c_validation_receipt.json",
+        "t3_validation_receipt.json"
+      ],
+      "supersession_rules": {
+        "t1c_supersedes_original_t1": true,
+        "t2c_supersedes_original_t2": true
+      },
+      "projection_problem_count": 0
+    },
+    "test_receipts": [
+      {
+        "receipt_id": "p1-foundations-integration-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_contract_registry tests.test_foundations_artifact_identity tests.test_foundations_legacy_contract_adapters tests.test_foundations_settings tests.test_foundations_dependency_preflight tests.test_foundations_protocols -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 99,
+        "duration_seconds": 2.845
+      },
+      {
+        "receipt_id": "p1-dependency-environment-preflight",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -c \"require_dependency_environment(requirements/control-plane.lock)\"",
+        "exit_code": 0,
+        "result": "PASS",
+        "checked_distributions": 33,
+        "lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+        "python": "3.13.12",
+        "duration_seconds": 0.128
+      },
+      {
+        "receipt_id": "p1-static-syntax-check",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -c \"compile exact P1 scope Python files without bytecode writes\"",
+        "exit_code": 0,
+        "result": "PASS",
+        "file_count": 13,
+        "duration_seconds": 0.082
+      },
+      {
+        "receipt_id": "p0-foundations-integration-regression-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_control_plane_contracts tests.test_control_plane_artifact_semantics tests.test_control_plane_task_reports -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 133,
+        "duration_seconds": 0.313
+      },
+      {
+        "receipt_id": "full-unittest-suite",
+        "command": "C:/Users/Administrator/AppData/Local/Programs/Python/Python313/python.exe -B -m unittest discover -s tests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 941,
+        "duration_seconds": 38.284,
+        "runtime_fixture_contract": "Process-local non-secret placeholder values supplied only for AG2_OPENAI/AG2_DEEPSEEK2/AG2_Kimi/AG2_ZHIPU credential and required public endpoint references; no .env loading, network, or secret value was used."
+      }
+    ],
+    "diagnostic_attempts": [
+      {
+        "command": "locked control-plane runtime full repository suite without project dependencies",
+        "exit_code": 1,
+        "test_count": 747,
+        "error_count": 56,
+        "disposition": "NON_CLOSING_DIAGNOSTIC",
+        "root_cause": "isolated control-plane runtime intentionally lacks project-level pandas/flask and invocation fixture values; no code conclusion drawn"
+      },
+      {
+        "command": "project runtime full repository suite without process-local fixtures",
+        "exit_code": 1,
+        "test_count": 941,
+        "error_count": 4,
+        "disposition": "NON_CLOSING_DIAGNOSTIC",
+        "root_cause": "P1 explicit invocation boundary correctly rejected absent credentials"
+      },
+      {
+        "command": "project runtime full repository suite with partial process-local fixtures",
+        "exit_code": 1,
+        "test_count": 941,
+        "error_count": 3,
+        "disposition": "NON_CLOSING_DIAGNOSTIC",
+        "root_cause": "remaining required public endpoint references were absent"
+      },
+      {
+        "command": "four affected invocation tests with complete non-secret fixtures",
+        "exit_code": 0,
+        "test_count": 4,
+        "disposition": "DIAGNOSTIC_CONFIRMATION"
+      }
+    ],
+    "controller_review": {
+      "receipt_id": "controller-p1-integration-review",
+      "reviewer_id": "codex-controller-p1-integration-reviewer",
+      "reviewer_actor_type": "llm",
+      "result": "PASS",
+      "exit_code": 0,
+      "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+      "blocking_findings": [],
+      "reviewed_freeze_manifest_sha256": "96791e7ddfb30b2f20e683eb5fa022b0fb738fa73ad4d00fd415eb718d392844",
+      "reviewed_dependency_lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "reviewed_terminal_projection_file_count": 15,
+      "reviewed_sealed_p0_file_count": 10
+    },
+    "dirty_baseline": {
+      "status_command": "git status --short --untracked-files=no",
+      "baseline_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "post_validation_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "baseline_tracked_status_line_count": 27,
+      "post_validation_tracked_status_line_count": 27,
+      "protected_dirty_baseline_unchanged": true
+    },
+    "sealed_p0": {
+      "result": "PASS",
+      "official_freeze_ref": "research_state/control_plane/p0r2/evidence/code_freeze_manifest_v342_p0r2.json",
+      "official_freeze_sha256": "98e64eed8ab749051b9386cb77eb3fcc4a61fa6351401d37a85056962ed954da",
+      "matched_file_count": 10,
+      "changed_paths": []
+    },
+    "side_effects": {
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false,
+      "holdout_accessed": false,
+      "temporary_test_domains_observed": true,
+      "production_bytes_mutated": false
+    },
+    "phase_boundary": {
+      "p2_authorized": false,
+      "campaign_authorized": false,
+      "final_holdout_authorized": false,
+      "auto_advance": false,
+      "stopped_at_p1_t4_boundary": true
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "68e7d227061cbe4216ae61ee5b8df9564857dded0d1cb389e2d90feab35127ae"
+  }
+}
