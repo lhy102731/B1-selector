@@ -13,7 +13,9 @@ from pathlib import Path
 
 _DISTRIBUTION_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _EXACT_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.!+_-]*$")
-_HASH_OPTION = re.compile(r"^--hash=sha256:(?P<digest>[0-9a-f]{64})\\?$")
+_HASH_OPTION = re.compile(
+    r"^--hash=sha256:(?P<digest>[0-9a-f]{64})(?:[ \t]*\\)?$"
+)
 
 
 @dataclass(frozen=True)
@@ -80,7 +82,7 @@ def _parse_lock(lock_bytes: bytes) -> dict[str, str]:
         if stripped.startswith("--hash="):
             if current_name is None:
                 raise ValueError("hash option has no requirement")
-            match = _HASH_OPTION.fullmatch(stripped.replace(" ", ""))
+            match = _HASH_OPTION.fullmatch(stripped)
             if match is None:
                 raise ValueError("lock contains an invalid hash option")
             digest = match.group("digest")

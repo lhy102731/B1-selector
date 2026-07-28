@@ -94,6 +94,105 @@ control_layer: {}
             self.assertEqual(profile.api_key.get_secret_value(), "OVERRIDE-KEY")
             self.assertEqual(profile.model, "file-model")
 
+    def test_selected_env_file_must_exist_and_parse_without_silent_fallback(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._write_minimal_config(root)
+            missing = root / "missing.env"
+            with self.assertRaisesRegex(ProjectSettingsError, "env file"):
+                load_project_settings(
+                    config_path,
+                    env_file=missing,
+                    environ={"TEST_API_KEY": "AMBIENT-KEY"},
+                )
+
+            malformed = root / "malformed.env"
+            malformed.write_text(
+                "TEST_API_KEY=FILE-KEY\nnot a dotenv binding\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ProjectSettingsError, "env file"):
+                load_project_settings(config_path, env_file=malformed, environ={})
+
+            malformed.write_text(
+                "\ufeffTEST_API_KEY=FILE-KEY\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ProjectSettingsError, "env file"):
+                load_project_settings(config_path, env_file=malformed, environ={})
+
+    def test_numeric_profile_references_follow_precedence(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config_path = self._write_minimal_config(root)
+            config_path.write_text(
+                config_path.read_text(encoding="utf-8").replace(
+                    "      temperature: 0.2\n      timeout: 30\n",
+                    "      temperature: ${TEST_TEMPERATURE:-0.4}\n"
+                    "      timeout: ${TEST_TIMEOUT:-30}\n"
+                    "      max_retries: ${TEST_RETRIES:-2}\n"
+                    "      max_tokens: ${TEST_MAX_TOKENS:-400}\n",
+                ),
+                encoding="utf-8",
+            )
+
+            settings = load_project_settings(
+                config_path,
+                environ={"TEST_API_KEY": "DUMMY-KEY"},
+                overrides={
+                    "TEST_TEMPERATURE": "0.6",
+                    "TEST_TIMEOUT": "45",
+                    "TEST_RETRIES": "3",
+                    "TEST_MAX_TOKENS": "500",
+                },
+            )
+            profile = settings.require_invocation_profile("primary")
+            self.assertEqual(profile.temperature, 0.6)
+            self.assertEqual(profile.timeout, 45)
+            self.assertEqual(profile.max_retries, 3)
+            self.assertEqual(profile.max_tokens, 500)
+
+    def test_secret_like_nested_fields_fail_closed(self) -> None:
+        variants = (
+            (
+                "      extra_params:\n"
+                '        api_key: "${SECONDARY_KEY}"\n',
+                "api_key",
+            ),
+            (
+                'control_layer:\n  service_token: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                'control_layer:\n  note: "${TEST_API_KEY}"\n',
+                "credential environment",
+            ),
+        )
+        for replacement, message in variants:
+            with self.subTest(message=message), TemporaryDirectory() as temporary:
+                config_path = self._write_minimal_config(Path(temporary))
+                if replacement.startswith("      "):
+                    text = config_path.read_text(encoding="utf-8").replace(
+                        "      timeout: 30\n",
+                        "      timeout: 30\n" + replacement,
+                    )
+                else:
+                    text = config_path.read_text(encoding="utf-8").replace(
+                        "control_layer: {}\n",
+                        replacement,
+                    )
+                config_path.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(ProjectSettingsError, message) as captured:
+                    load_project_settings(
+                        config_path,
+                        environ={
+                            "TEST_API_KEY": "DUMMY-KEY",
+                            "SECONDARY_KEY": "SECONDARY-MUST-NOT-LEAK",
+                        },
+                    )
+                self.assertNotIn("SECONDARY-MUST-NOT-LEAK", str(captured.exception))
+                self.assertNotIn("PLAINTEXT-MUST-NOT-LEAK", str(captured.exception))
+
     def test_metadata_overrides_are_applied_and_unconsumed_overrides_are_rejected(self) -> None:
         with TemporaryDirectory() as temporary:
             config_path = self._write_minimal_config(Path(temporary))
@@ -411,6 +510,25 @@ control_layer: {}
                 )
                 config_path.write_text(text, encoding="utf-8")
 
+                with self.assertRaisesRegex(
+                    ProjectSettingsError,
+                    "reference integrity",
+                ):
+                    load_project_settings(config_path, environ={})
+
+    def test_legacy_roster_required_display_fields_fail_during_load(self) -> None:
+        removals = (
+            "    name: Worker\n",
+            "    description: Test worker\n",
+            "    description: Simple workflow\n",
+        )
+        for removal in removals:
+            with self.subTest(removal=removal), TemporaryDirectory() as temporary:
+                config_path = self._write_minimal_config(Path(temporary))
+                config_path.write_text(
+                    config_path.read_text(encoding="utf-8").replace(removal, "", 1),
+                    encoding="utf-8",
+                )
                 with self.assertRaisesRegex(
                     ProjectSettingsError,
                     "reference integrity",

@@ -121,6 +121,13 @@ class DependencyPreflightTests(unittest.TestCase):
                 + "b" * 64
                 + "\n"
             ),
+            (
+                "package==1.0 \\\n    --hash=sha256:"
+                + "a" * 32
+                + " "
+                + "b" * 32
+                + "\n"
+            ),
             "\ufeffpackage==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
         )
         for document in invalid_documents:

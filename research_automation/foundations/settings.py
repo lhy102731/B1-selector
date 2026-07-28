@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+from io import StringIO
 import math
 import os
 import re
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 
 import yaml
 from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from research_automation.control_plane.contracts import canonical_json
@@ -58,12 +60,34 @@ _PROFILE_REFERENCE_FIELDS = frozenset(
         "api_key",
         "base_url",
         "model",
+        "temperature",
+        "timeout",
+        "max_retries",
+        "max_tokens",
         "extra_params",
         "provider_id",
         "transport",
         "retry_policy_ref",
         "tokenizer_ref",
         "pricing_ref",
+    }
+)
+_SECRET_FIELD_EXACT = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "secret",
+        "secret_key",
+        "password",
+        "passwd",
+        "credential",
+        "credentials",
+        "token",
+        "access_token",
+        "refresh_token",
+        "auth_token",
+        "private_key",
+        "client_secret",
     }
 )
 
@@ -302,6 +326,40 @@ def _resolve_nested(value: object, sources: Mapping[str, str]) -> object:
     return _resolve_reference(value, sources)
 
 
+def _resolve_numeric(
+    value: object,
+    sources: Mapping[str, str],
+    *,
+    integer: bool,
+) -> int | float:
+    resolved = _resolve_reference(value, sources)
+    reference_value = isinstance(value, str) and _ENV_REFERENCE.fullmatch(value)
+    if integer:
+        if type(resolved) is int:
+            return resolved
+        if (
+            reference_value
+            and isinstance(resolved, str)
+            and resolved == resolved.strip()
+            and re.fullmatch(r"[+-]?[0-9]+", resolved)
+        ):
+            try:
+                return int(resolved)
+            except ValueError:
+                pass
+    else:
+        if type(resolved) in {int, float} and math.isfinite(float(resolved)):
+            return float(resolved)
+        if reference_value and isinstance(resolved, str) and resolved == resolved.strip():
+            try:
+                converted = float(resolved)
+            except ValueError:
+                converted = float("nan")
+            if math.isfinite(converted):
+                return converted
+    raise ProjectSettingsError("profile values failed strict validation")
+
+
 def _referenced_environment_names(value: object) -> set[str]:
     if isinstance(value, dict):
         result: set[str] = set()
@@ -321,6 +379,70 @@ def _referenced_environment_names(value: object) -> set[str]:
             else set()
         )
     return set()
+
+
+def _validate_credential_reference_scope(
+    value: object,
+    credential_environment_names: frozenset[str],
+    *,
+    path: tuple[object, ...] = (),
+    active_containers: set[int] | None = None,
+) -> None:
+    """Keep credential references confined to profile.api_key fields."""
+    if isinstance(value, str):
+        match = _ENV_REFERENCE.fullmatch(value)
+        if (
+            match is not None
+            and _environment_name(match.group("name"))
+            in credential_environment_names
+        ):
+            raise ProjectSettingsError(
+                "credential environment reference is outside profile api_key"
+            )
+        return
+    if not isinstance(value, (dict, list)):
+        return
+    active = active_containers if active_containers is not None else set()
+    container_id = id(value)
+    if container_id in active:
+        raise ProjectSettingsError("project settings document is cyclic")
+    active.add(container_id)
+    try:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if path == () and key == "llm" and isinstance(child, dict):
+                    for llm_key, llm_child in child.items():
+                        if llm_key != "profiles":
+                            _validate_credential_reference_scope(
+                                llm_child,
+                                credential_environment_names,
+                                path=("llm", llm_key),
+                                active_containers=active,
+                            )
+                    continue
+                is_profile_credential = (
+                    len(path) == 3
+                    and path[0] == "llm"
+                    and path[1] == "profiles"
+                    and key == "api_key"
+                )
+                if not is_profile_credential:
+                    _validate_credential_reference_scope(
+                        child,
+                        credential_environment_names,
+                        path=path + (key,),
+                        active_containers=active,
+                    )
+        else:
+            for index, child in enumerate(value):
+                _validate_credential_reference_scope(
+                    child,
+                    credential_environment_names,
+                    path=path + (index,),
+                    active_containers=active,
+                )
+    finally:
+        active.remove(container_id)
 
 
 def _validated_environment_source(value: object) -> dict[str, str]:
@@ -393,6 +515,67 @@ def _valid_base_url(value: str) -> bool:
     )
 
 
+def _normalized_field_name(value: str) -> str:
+    return re.sub(r"[-\s]+", "_", value).lower()
+
+
+def _is_secret_field_name(value: str) -> bool:
+    normalized = _normalized_field_name(value)
+    return normalized in _SECRET_FIELD_EXACT or normalized.endswith(
+        ("_api_key", "_secret", "_password", "_credential", "_token", "_private_key")
+    )
+
+
+def _validate_secret_field_placement(
+    value: object,
+    *,
+    path: tuple[object, ...] = (),
+    active_containers: set[int] | None = None,
+) -> None:
+    """Reject secret-like fields outside the one typed credential seam.
+
+    A recursive public document is otherwise allowed to contain arbitrary
+    project metadata.  Secret-shaped keys are the explicit exception: keeping
+    them out of YAML-shaped inspection and public identity prevents a future
+    adapter from accidentally treating an untyped value as safe metadata.
+    """
+    if not isinstance(value, (dict, list)):
+        return
+    active = active_containers if active_containers is not None else set()
+    container_id = id(value)
+    if container_id in active:
+        raise ProjectSettingsError("project settings document is cyclic")
+    active.add(container_id)
+    try:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(key, str) and _is_secret_field_name(key):
+                    is_profile_credential = (
+                        len(path) == 3
+                        and path[0] == "llm"
+                        and path[1] == "profiles"
+                        and key == "api_key"
+                    )
+                    if not is_profile_credential:
+                        raise ProjectSettingsError(
+                            "secret-like settings must use a profile api_key reference"
+                        )
+                _validate_secret_field_placement(
+                    child,
+                    path=path + (key,),
+                    active_containers=active,
+                )
+        else:
+            for index, child in enumerate(value):
+                _validate_secret_field_placement(
+                    child,
+                    path=path + (index,),
+                    active_containers=active,
+                )
+    finally:
+        active.remove(container_id)
+
+
 def _resolved_profile(
     profile_id: str,
     raw: Mapping[str, object],
@@ -453,15 +636,33 @@ def _resolved_profile(
             "pricing_ref",
         )
     }
-    temperature = raw.get("temperature", 0.7)
-    timeout = raw.get("timeout", 120)
-    max_retries = raw.get("max_retries", 6)
-    max_tokens = raw.get("max_tokens")
+    temperature = _resolve_numeric(
+        raw.get("temperature", 0.7),
+        sources,
+        integer=False,
+    )
+    timeout = _resolve_numeric(
+        raw.get("timeout", 120),
+        sources,
+        integer=True,
+    )
+    max_retries = _resolve_numeric(
+        raw.get("max_retries", 6),
+        sources,
+        integer=True,
+    )
+    max_tokens_raw = raw.get("max_tokens")
+    max_tokens = (
+        None
+        if max_tokens_raw is None
+        else _resolve_numeric(
+            max_tokens_raw,
+            sources,
+            integer=True,
+        )
+    )
     if (
-        isinstance(temperature, bool)
-        or not isinstance(temperature, (int, float))
-        or not math.isfinite(float(temperature))
-        or type(timeout) is not int
+        type(timeout) is not int
         or timeout <= 0
         or type(max_retries) is not int
         or max_retries < 0
@@ -563,7 +764,16 @@ def _validate_reference_integrity(
     agent_ids = set(agents)
     workflow_ids = set(workflows)
     for agent_id, agent in agents.items():
-        if not isinstance(agent_id, str) or not isinstance(agent, dict):
+        if (
+            not isinstance(agent_id, str)
+            or not agent_id
+            or not isinstance(agent, dict)
+            or any(
+                not isinstance(agent.get(field_name), str)
+                or not agent[field_name].strip()
+                for field_name in ("name", "description")
+            )
+        ):
             raise ProjectSettingsError("project settings reference integrity failed")
         profile_id = agent.get("profile")
         if profile_id is not None and (
@@ -571,7 +781,13 @@ def _validate_reference_integrity(
         ):
             raise ProjectSettingsError("project settings reference integrity failed")
     for workflow_id, workflow in workflows.items():
-        if not isinstance(workflow_id, str) or not isinstance(workflow, dict):
+        if (
+            not isinstance(workflow_id, str)
+            or not workflow_id
+            or not isinstance(workflow, dict)
+            or not isinstance(workflow.get("description"), str)
+            or not workflow["description"].strip()
+        ):
             raise ProjectSettingsError("project settings reference integrity failed")
         for field_name in ("agents", "pipeline_order"):
             references = workflow.get(field_name)
@@ -648,6 +864,7 @@ def load_project_settings(
         raise ProjectSettingsError(yaml_error)
     if not isinstance(raw, dict) or not isinstance(raw.get("llm"), dict):
         raise ProjectSettingsError("project settings root is invalid")
+    _validate_secret_field_placement(raw)
     if set(raw) - _TOP_LEVEL_FIELDS:
         raise ProjectSettingsError("project settings document contract is invalid")
     schema_version = raw.get("schema_version")
@@ -686,16 +903,36 @@ def load_project_settings(
                 }
             )
         )
+    credential_names = frozenset(credential_environment_names)
+    _validate_credential_reference_scope(raw, credential_names)
     _validate_reference_integrity(raw, set(profiles_raw))
     sources: dict[str, str] = {}
     if env_file is not None:
         selected: Mapping[str, str | None] | None
+        selected_path = Path(env_file)
+        if not selected_path.is_file():
+            raise ProjectSettingsError("selected env file is invalid")
         try:
+            env_text = selected_path.read_text(encoding="utf-8")
+            if env_text.startswith("\ufeff"):
+                raise ProjectSettingsError("selected env file is invalid")
+            bindings = tuple(parse_stream(StringIO(env_text)))
+            binding_names: set[str] = set()
+            for binding in bindings:
+                if binding.error:
+                    raise ProjectSettingsError("selected env file is invalid")
+                if binding.key is not None:
+                    normalized_name = _environment_name(binding.key)
+                    if normalized_name in binding_names:
+                        raise ProjectSettingsError("selected env file is invalid")
+                    binding_names.add(normalized_name)
             selected = dotenv_values(
-                dotenv_path=Path(env_file),
+                stream=StringIO(env_text),
                 encoding="utf-8",
                 interpolate=False,
             )
+        except ProjectSettingsError:
+            raise
         except (OSError, UnicodeError, ValueError):
             selected = None
         if selected is None:
@@ -719,7 +956,7 @@ def load_project_settings(
             profile_id,
             profile_raw,
             sources,
-            frozenset(credential_environment_names),
+            credential_names,
         )
     default_profile = llm.get("default", "openai")
     if not isinstance(default_profile, str):
