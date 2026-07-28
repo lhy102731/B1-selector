@@ -99,6 +99,21 @@ class DependencyPreflightTests(unittest.TestCase):
             "package[extra]==1.0 \\\n    --hash=sha256:" + "a" * 64 + "\n",
             "package==1.0/invalid \\\n    --hash=sha256:" + "a" * 64 + "\n",
             "package==1.0\n    --hash=sha256:" + "a" * 64 + "\n",
+            "package==1.0 \\\n    --hash=sha256:" + "a" * 64 + " \\\n",
+            (
+                "package==1.0 \\\n    --hash=sha256:"
+                + "a" * 64
+                + "\n    --hash=sha256:"
+                + "b" * 64
+                + "\n"
+            ),
+            (
+                "package-one==1.0 \\\n    --hash=sha256:"
+                + "a" * 64
+                + " \\\npackage-two==2.0 \\\n    --hash=sha256:"
+                + "b" * 64
+                + "\n"
+            ),
             (
                 "some_package==1.0 \\\n    --hash=sha256:"
                 + "a" * 64

@@ -74,6 +74,8 @@ def _parse_lock(lock_bytes: bytes) -> dict[str, str]:
     for physical_line in text.splitlines():
         stripped = physical_line.strip()
         if not stripped or stripped.startswith("#"):
+            if current_name is not None:
+                raise ValueError("continued requirement was interrupted")
             continue
         if stripped.startswith("--hash="):
             if current_name is None:
@@ -81,10 +83,16 @@ def _parse_lock(lock_bytes: bytes) -> dict[str, str]:
             match = _HASH_OPTION.fullmatch(stripped.replace(" ", ""))
             if match is None:
                 raise ValueError("lock contains an invalid hash option")
-            current_hashes.add(match.group("digest"))
+            digest = match.group("digest")
+            if digest in current_hashes:
+                raise ValueError("lock contains a duplicate hash option")
+            current_hashes.add(digest)
+            if not stripped.endswith("\\"):
+                finish_record()
             continue
 
-        finish_record()
+        if current_name is not None:
+            raise ValueError("continued requirement did not receive another hash")
         if not stripped.endswith("\\"):
             raise ValueError("locked requirements must continue to hash options")
         requirement = stripped[:-1].rstrip()
@@ -101,7 +109,8 @@ def _parse_lock(lock_bytes: bytes) -> dict[str, str]:
         current_name = _normalize_distribution_name(raw_name)
         current_version = version
 
-    finish_record()
+    if current_name is not None:
+        raise ValueError("lock ends with a dangling continuation")
     if not pins:
         raise ValueError("lock contains no distributions")
     return pins
