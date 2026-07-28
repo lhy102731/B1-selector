@@ -1,0 +1,56 @@
+{
+  "schema_version": "control_plane.trusted_phase_authorization_activation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.trusted_phase_authorization_activation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "recorded_at": "2026-07-28T12:56:48.4932888Z",
+    "authorization_ref": "auth_9e526e1442573fb705236fd1282c0eec",
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_5f81702ed85d27f1df546c8534f307f6",
+    "grant_state": "ACTIVE",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "116672d5c9580d22a04d03aa119a7b79ac5f3045ca0a3bed1381700220492aca",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "active_entry_policy_sha256": "21ddc7b920d780cf50a43fbecc5e050f5ec1ecb7b8ca6d129c9648fb1d067046",
+    "input_artifacts": [
+      {"path": "research_state/control_plane/p1/attempts/p1-attempt-003/scope_manifest.json", "sha256": "e8649654ce53a7cb9968dcbd785cb1546b13aad902eb400a8d985da39d80922f", "bytes": 5447},
+      {"path": "research_state/control_plane/p1/attempts/p1-attempt-003/identity_bundle.json", "sha256": "dda3d5ecd5237d1c1af70f4e012e58ec5908b805dcd361a70af84032b3511b46", "bytes": 694},
+      {"path": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_baseline.json", "sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90", "bytes": 3410},
+      {"path": "research_state/control_plane/p1/attempts/p1-attempt-003/implementation_authorization_receipt.json", "sha256": "22eff34dbcdf1420a0591cac53cb9bd0cc18a83d62323f8d0d75c75db6eba329", "bytes": 2328},
+      {"path": "research_state/control_plane/p1/attempts/p1-attempt-003/authorization_ref_receipt.json", "sha256": "43c11ae77357e350b2600adc88474f2a57b39ef872eae948121733a1c2c5ce6a", "bytes": 1435}
+    ],
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_5f81702ed85d27f1df546c8534f307f6"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [],
+      "pending_outbox_count": 0
+    },
+    "secret_handling": {
+      "root_capability_recorded": false,
+      "authorization_bearer_recorded": false,
+      "grant_bearer_recorded": false,
+      "dpapi_ciphertext_staged": false,
+      "authority_database_staged": false,
+      "operational_database_staged": false
+    },
+    "phase_boundary": {
+      "P1_AUTHORIZED": true,
+      "P2_AUTHORIZED": false,
+      "CAMPAIGN_AUTHORIZED": false,
+      "FINAL_EVAL_AUTHORIZED": false,
+      "AUTO_ADVANCE": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "7309dd15308e0f0fff14e77cb43d6d7e03e759b6b0f8255e1ef332f5076e4959"
+  }
+}
