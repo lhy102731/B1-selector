@@ -160,6 +160,17 @@ control_layer: {}
                 "api_key",
             ),
             (
+                "      extra_params:\n"
+                '        clientSecret: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                "        headers:\n"
+                '          Authorization: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
                 'control_layer:\n  service_token: "PLAINTEXT-MUST-NOT-LEAK"\n',
                 "secret-like",
             ),

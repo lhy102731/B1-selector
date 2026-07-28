@@ -88,6 +88,10 @@ _SECRET_FIELD_EXACT = frozenset(
         "auth_token",
         "private_key",
         "client_secret",
+        "authorization",
+        "proxy_authorization",
+        "cookie",
+        "set_cookie",
     }
 )
 
@@ -516,13 +520,25 @@ def _valid_base_url(value: str) -> bool:
 
 
 def _normalized_field_name(value: str) -> str:
-    return re.sub(r"[-\s]+", "_", value).lower()
+    camel_split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", value)
+    return re.sub(r"[^A-Za-z0-9]+", "_", camel_split).strip("_").lower()
 
 
 def _is_secret_field_name(value: str) -> bool:
     normalized = _normalized_field_name(value)
     return normalized in _SECRET_FIELD_EXACT or normalized.endswith(
-        ("_api_key", "_secret", "_password", "_credential", "_token", "_private_key")
+        (
+            "_api_key",
+            "_secret",
+            "_secret_key",
+            "_password",
+            "_passwd",
+            "_credential",
+            "_credentials",
+            "_token",
+            "_private_key",
+            "_authorization",
+        )
     )
 
 
