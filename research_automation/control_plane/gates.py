@@ -21,6 +21,7 @@ from .artifact_semantics import (
     validate_reviewed_entry_policy,
     validate_scheduler_inventory,
 )
+from .inventory import UnstableInventoryError, build_code_freeze_manifest
 from .stores import (
     AuthorityIdentity,
     AuthorityReader,
@@ -765,6 +766,25 @@ class PhaseGateVerifier:
                 expected_identity=expected_identity,
                 repository_root=self._repository_root,
             )
+            try:
+                current_freeze = build_code_freeze_manifest(
+                    self._repository_root,
+                    plan_version=str(report["plan_version"]),
+                    phase=str(report["phase"]),
+                    attempt_id=str(report["attempt_id"]),
+                    identity_binding=expected_identity,
+                )
+            except UnstableInventoryError as error:
+                raise ArtifactSemanticError(
+                    f"current executable surface cannot be verified: {error}"
+                ) from error
+            if (
+                current_freeze["freeze_payload_sha256"]
+                != artifacts["code_freeze_manifest"]["freeze_payload_sha256"]
+            ):
+                raise ArtifactSemanticError(
+                    "current executable surface differs from the code freeze"
+                )
             if (
                 str(report["implementation_baseline"]["ref"])
                 == str(report["code_freeze_manifest"]["ref"])

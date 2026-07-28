@@ -376,6 +376,19 @@ class PhaseGateBuilderTests(unittest.TestCase):
             )
             freeze_files: list[dict[str, object]] = []
             seam_digests: dict[str, str] = {}
+            gitattributes_path = root / ".gitattributes"
+            gitattributes_bytes = b"*.py text eol=lf\n"
+            gitattributes_path.write_bytes(gitattributes_bytes)
+            gitattributes_digest = hashlib.sha256(
+                gitattributes_bytes
+            ).hexdigest()
+            freeze_files.append(
+                {
+                    "path": ".gitattributes",
+                    "sha256": gitattributes_digest,
+                    "bytes": len(gitattributes_bytes),
+                }
+            )
             for path_text, _, _ in seam_specs:
                 source_path = root.joinpath(*path_text.split("/"))
                 source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -435,6 +448,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 ),
             }
             inventory_entries: list[dict[str, object]] = [
+                {
+                    "entry_id": "file:.gitattributes",
+                    "path": ".gitattributes",
+                    "kind": "repository_policy",
+                    "callable_name": "<byte-identity-policy>",
+                    "actor_type": "human",
+                    "content_sha256": gitattributes_digest,
+                    "disposition": "ADMIN_ONLY",
+                    "trust_state": "control_plane_policy",
+                    "declared_side_effects": [],
+                    "declared_phase": None,
+                    "resource_roots": [],
+                    "external_metadata": {},
+                    "source": "filesystem_inventory",
+                },
                 {
                     "entry_id": "external:scheduler:/A\u80a1\u9009\u80a1",
                     "path": "/A\u80a1\u9009\u80a1",
@@ -689,7 +717,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     }
                 )
                 task_report_bytes = canonical_json(task_report).encode("utf-8")
-                task_report_ref = "reports/gate.json"
+                task_report_ref = (
+                    "research_state/control_plane/p0r2/reports/gate.json"
+                )
                 task_report_path = root / task_report_ref
                 task_report_path.parent.mkdir(parents=True)
                 task_report_path.write_bytes(task_report_bytes)
@@ -911,6 +941,17 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
                     with self.assertRaises(GateEvidenceError):
                         fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_an_entry_added_after_final_inventory(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            added = fixture.root / "research_automation" / "late_entry.py"
+            added.write_text("raise RuntimeError('late entry')\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "executable surface",
+            ):
+                fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_semantically_invalid_gate_artifact(self) -> None:
         with self._trusted_gate_fixture() as fixture:
