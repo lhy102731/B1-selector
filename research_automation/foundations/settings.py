@@ -298,6 +298,10 @@ class ProjectSettings:
         """Return a fresh YAML-shaped view containing references, never credentials."""
         return copy.deepcopy(self._document)
 
+    def operational_document(self) -> dict[str, object]:
+        """Return the detached, resolved non-secret document for consumers."""
+        return copy.deepcopy(self._public_document)
+
     @property
     def public_identity_sha256(self) -> str:
         payload = canonical_json(self.public_manifest()).encode("utf-8")
@@ -580,9 +584,24 @@ def _normalized_field_name(value: str) -> str:
 
 def _is_secret_field_name(value: str) -> bool:
     normalized = _normalized_field_name(value)
+    tokens = tuple(token for token in normalized.split("_") if token)
+    token_index = tokens.index("token") if "token" in tokens else -1
     return (
         normalized in _SECRET_FIELD_EXACT
         or normalized.startswith(("secret_", "auth_", "bearer_"))
+        or normalized.startswith(("authorization_", "private_key_"))
+        or normalized.endswith("apikey")
+        or (
+            token_index >= 0
+            and (
+                token_index > 0
+                and any(
+                    token in {"api", "auth", "access", "refresh", "bearer"}
+                    for token in tokens[:token_index]
+                )
+                or tokens[-1] in {"token", "value", "header", "secret", "credential"}
+            )
+        )
         or normalized.endswith(
             (
                 "_api_key",
@@ -598,6 +617,57 @@ def _is_secret_field_name(value: str) -> bool:
             )
         )
     )
+
+
+def _validate_secret_environment_reference(
+    value: object,
+    credential_environment_names: frozenset[str],
+    *,
+    active_containers: set[int] | None = None,
+) -> None:
+    """Reject undeclared secret-shaped environment references.
+
+    Credentials have one explicit seam (``llm.profiles.*.api_key``).  Other
+    sections may use environment references for non-secret configuration, but
+    names that clearly carry credentials must not be projected into public
+    identity or operational metadata.
+    """
+    if isinstance(value, str):
+        match = _ENV_REFERENCE.fullmatch(value)
+        if (
+            match is not None
+            and _environment_name(match.group("name"))
+            not in credential_environment_names
+            and _is_secret_field_name(match.group("name"))
+        ):
+            raise ProjectSettingsError(
+                "secret environment reference must use a profile api_key"
+            )
+        return
+    if not isinstance(value, (dict, list)):
+        return
+    active = active_containers if active_containers is not None else set()
+    container_id = id(value)
+    if container_id in active:
+        raise ProjectSettingsError("project settings document is cyclic")
+    active.add(container_id)
+    try:
+        if isinstance(value, dict):
+            for child in value.values():
+                _validate_secret_environment_reference(
+                    child,
+                    credential_environment_names,
+                    active_containers=active,
+                )
+        else:
+            for child in value:
+                _validate_secret_environment_reference(
+                    child,
+                    credential_environment_names,
+                    active_containers=active,
+                )
+    finally:
+        active.remove(container_id)
 
 
 def _validate_secret_field_placement(
@@ -969,6 +1039,7 @@ def load_project_settings(
         )
     credential_names = frozenset(credential_environment_names)
     _validate_credential_reference_scope(raw, credential_names)
+    _validate_secret_environment_reference(raw, credential_names)
     _validate_reference_integrity(raw, set(profiles_raw))
     consumed_environment_names = (
         _referenced_environment_names(raw) - credential_names
@@ -1025,8 +1096,10 @@ def load_project_settings(
             sources,
             credential_names,
         )
-    default_profile = llm.get("default", "openai")
+    default_profile = _resolve_reference(llm.get("default", "openai"), sources)
     if not isinstance(default_profile, str):
+        raise ProjectSettingsError("default profile is invalid")
+    if not default_profile or default_profile != default_profile.strip():
         raise ProjectSettingsError("default profile is invalid")
     settings = ProjectSettings(
         default_profile=default_profile,

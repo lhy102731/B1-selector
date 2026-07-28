@@ -52,7 +52,11 @@ class ResearchConfig:
 
     @property
     def _raw(self) -> dict[str, Any]:
-        """Return a fresh unresolved document that cannot contain credential values."""
+        """Return the resolved, credential-free document used at runtime."""
+        return self._settings.operational_document()
+
+    def unresolved_document(self) -> dict[str, Any]:
+        """Return a detached YAML-shaped view retaining environment references."""
         return self._settings.unresolved_document()
 
     @property

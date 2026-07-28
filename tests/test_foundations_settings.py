@@ -191,12 +191,31 @@ control_layer: {}
                 "secret-like",
             ),
             (
+                "      extra_params:\n"
+                '        authorizationHeader: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        X_APIKEY: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        privateKeyMaterial: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
                 'control_layer:\n  service_token: "PLAINTEXT-MUST-NOT-LEAK"\n',
                 "secret-like",
             ),
             (
                 'control_layer:\n  note: "${TEST_API_KEY}"\n',
                 "credential environment",
+            ),
+            (
+                'control_layer:\n  note: "${SECONDARY_SECRET}"\n',
+                "secret environment",
             ),
         )
         for replacement, message in variants:
@@ -219,6 +238,7 @@ control_layer: {}
                         environ={
                             "TEST_API_KEY": "DUMMY-KEY",
                             "SECONDARY_KEY": "SECONDARY-MUST-NOT-LEAK",
+                            "SECONDARY_SECRET": "SECRET-MUST-NOT-LEAK",
                         },
                     )
                 self.assertNotIn("SECONDARY-MUST-NOT-LEAK", str(captured.exception))
@@ -1139,6 +1159,52 @@ class ResearchConfigAdapterTests(unittest.TestCase):
             ):
                 research_config.get_llm_config()
 
+    def test_adapter_runtime_views_use_resolved_non_secret_references(self) -> None:
+        with TemporaryDirectory() as temporary:
+            config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
+            text = config_path.read_text(encoding="utf-8")
+            text = text.replace(
+                "  default: primary\n",
+                '  default: "${DEFAULT_PROFILE:-primary}"\n',
+            )
+            text = text.replace(
+                "    name: Worker\n",
+                '    name: "${AGENT_NAME:-Worker}"\n',
+            )
+            text = text.replace(
+                "    description: Test worker\n",
+                '    description: "${AGENT_DESCRIPTION:-Test worker}"\n',
+            )
+            text = text.replace(
+                "control_layer: {}\n",
+                'control_layer:\n  state_root: "${STATE_ROOT:-default-root}"\n',
+            )
+            config_path.write_text(text, encoding="utf-8")
+            research_config = self._import_adapter_class()(
+                config_path,
+                environ={
+                    "TEST_API_KEY": "DUMMY-KEY",
+                    "AGENT_NAME": "Resolved worker",
+                    "AGENT_DESCRIPTION": "Resolved description",
+                    "STATE_ROOT": "resolved-root",
+                },
+            )
+
+            self.assertEqual(research_config.default_profile, "primary")
+            self.assertEqual(research_config._raw["agents"]["worker"]["name"], "Resolved worker")
+            self.assertEqual(
+                research_config.get_agent("worker")["description"],
+                "Resolved description",
+            )
+            self.assertEqual(
+                research_config._raw["control_layer"]["state_root"],
+                "resolved-root",
+            )
+            self.assertEqual(
+                research_config.unresolved_document()["control_layer"]["state_root"],
+                "${STATE_ROOT:-default-root}",
+            )
+
     def test_adapter_returns_detached_redacted_configuration_views(self) -> None:
         with TemporaryDirectory() as temporary:
             config_path = ProjectSettingsTests._write_minimal_config(Path(temporary))
@@ -1168,7 +1234,7 @@ class ResearchConfigAdapterTests(unittest.TestCase):
                 research_config.get_workflow("simple")["description"],
                 "Simple workflow",
             )
-            self.assertEqual(research_config.profiles["primary"]["model"], "${TEST_MODEL:-model-a}")
+            self.assertEqual(research_config.profiles["primary"]["model"], "model-a")
             redacted = json.dumps(
                 {
                     "raw": research_config._raw,
