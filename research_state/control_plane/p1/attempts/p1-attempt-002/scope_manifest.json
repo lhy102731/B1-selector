@@ -1,0 +1,136 @@
+{
+  "schema_version": "control_plane.scope_manifest.v3",
+  "created_at": "2026-07-28T19:43:06.2414969+08:00",
+  "hash_algorithm": "sha256(UTF-8 'control_plane.scope_bundle.v1' + NUL + canonical_json(payload))",
+  "payload": {
+    "schema_version": "control_plane.scope_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_generation": "P1R2",
+    "attempt_id": "p1-attempt-002",
+    "base_scope": {
+      "ref": "research_state/control_plane/p1/scope_manifest_v342_p1.json",
+      "file_sha256": "7b412739aa2d0763bd78e5fdfc3126727f106b43cef2c92821f924f778549364",
+      "scope_hash": "495e91e0ad27544ae822f79f3d50ad1fe2f3a3140d6c6b68c50e5e2b5754505e"
+    },
+    "failed_attempt": {
+      "attempt_id": "p1-attempt-001",
+      "incident_ref": "research_state/control_plane/p1/evidence/p1_attempt_001_lease_loss_incident.json",
+      "incident_sha256": "361c0b31dc562fd7831d95a0716ad611c42cd19a27c6fc5f182979398b7f0306",
+      "failure_class": "LOST_EPHEMERAL_TASK_LEASE_CAPABILITY",
+      "scientific_or_production_side_effect": false
+    },
+    "task_ids": [
+      "P1R2-T0-AUTHORITY-SCOPE",
+      "P1R2-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "P1R2-T2-TYPED-PROJECT-SETTINGS",
+      "P1R2-T3-EXECUTION-SPEC-PROTOCOL-COMPILER",
+      "P1R2-T4-INTEGRATION-FREEZE",
+      "P1R2-T5-FINAL-INVENTORY-POLICY",
+      "P1R2-T6-OFFICIAL-GATE"
+    ],
+    "allowed_write_roots": [
+      "research_state/control_plane/p1/",
+      "research_state/control_plane/authority/",
+      "research_state/control_plane/operational/",
+      "research_state/control_plane/inventories/",
+      "research_state/control_plane/policies/"
+    ],
+    "allowed_code_and_test_files": [
+      "ag2_research/config.py",
+      "requirements/control-plane.in",
+      "requirements/control-plane.lock",
+      "research_automation/foundations/__init__.py",
+      "research_automation/foundations/artifact_identity.py",
+      "research_automation/foundations/contract_registry.py",
+      "research_automation/foundations/dependency_preflight.py",
+      "research_automation/foundations/legacy_contract_adapters.py",
+      "research_automation/foundations/protocols.py",
+      "research_automation/foundations/settings.py",
+      "tests/test_foundations_artifact_identity.py",
+      "tests/test_foundations_contract_registry.py",
+      "tests/test_foundations_dependency_preflight.py",
+      "tests/test_foundations_legacy_contract_adapters.py",
+      "tests/test_foundations_protocols.py",
+      "tests/test_foundations_settings.py"
+    ],
+    "sealed_p0_files": [
+      "research_automation/control_plane/__init__.py",
+      "research_automation/control_plane/artifact_semantics.py",
+      "research_automation/control_plane/cli.py",
+      "research_automation/control_plane/contracts.py",
+      "research_automation/control_plane/entry_guard.py",
+      "research_automation/control_plane/gates.py",
+      "research_automation/control_plane/inventory.py",
+      "research_automation/control_plane/sqlite_uow.py",
+      "research_automation/control_plane/stores.py",
+      "research_automation/control_plane/task_reports.py"
+    ],
+    "forbidden_roots": [
+      ".env",
+      "artifacts/",
+      "config/",
+      "data/",
+      "data_ths/",
+      "data_pre_ths_backup_20260727_110350/",
+      "models/",
+      "outputs/",
+      "strategy/",
+      "D:/KBase/",
+      "ag2_research/knowledge_base/"
+    ],
+    "forbidden_actions": [
+      "backtest_or_research_execution",
+      "llm_or_network_invocation_for_research",
+      "parameter_sweep",
+      "cache_build_or_rebuild",
+      "data_update_or_data_byte_mutation",
+      "final_holdout_access",
+      "kbase_registry_snapshot_handoff_or_memory_content_write",
+      "production_config_model_parameter_signal_runner_or_strategy_change",
+      "real_campaign_start",
+      "process_stop_cancel_or_parameter_change",
+      "windows_scheduler_or_acl_mutation",
+      "modify_sealed_p0_trusted_computing_base",
+      "git_push_merge_pull_request_rebase_reset_checkout_cleanup_or_broad_stage"
+    ],
+    "adoption_policy": {
+      "attempt_001_draft_files_are_non_authoritative_inputs": true,
+      "attempt_002_independent_review_required": true,
+      "attempt_002_targeted_and_regression_tests_required": true,
+      "attempt_001_ticket_or_report_cannot_count_toward_pass": true,
+      "no_code_or_test_byte_is_grandfathered": true
+    },
+    "execution_constraints": {
+      "vertical_tdd_or_independent_draft_adoption": true,
+      "issue_recoverable_ticket_before_work": true,
+      "begin_and_finish_lease_in_same_trusted_process_after_evidence_ready": true,
+      "one_small_verified_git_commit_per_stage": true,
+      "reuse_before_new_framework": true,
+      "no_runtime_package_install": true,
+      "no_research_goal_drift": true,
+      "mainline_over_edge_case_optimization": true
+    },
+    "phase_authorization": {
+      "p1": true,
+      "p2": false,
+      "campaign": false,
+      "final_eval": false,
+      "auto_advance": false
+    },
+    "git_authorization": {
+      "stage_exact_intentional_files": true,
+      "local_commit_each_verified_stage": true,
+      "git_add_all": false,
+      "amend_or_rewrite_history": false,
+      "push": false,
+      "merge": false,
+      "pull_request": false,
+      "reset_or_checkout_cleanup": false
+    }
+  },
+  "computed": {
+    "canonical_payload_bytes": 4214,
+    "scope_hash": "4a5cca1c17111cade3c174dad48ea70ce550052103d4eb6c09af7477b06e96e6"
+  }
+}
