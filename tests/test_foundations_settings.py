@@ -206,6 +206,26 @@ control_layer: {}
                 "secret-like",
             ),
             (
+                "      extra_params:\n"
+                '        credentialBlob: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        clientSecretValue: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        apiKeyMaterial: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
+                "      extra_params:\n"
+                '        proxyAuthorizationHeader: "PLAINTEXT-MUST-NOT-LEAK"\n',
+                "secret-like",
+            ),
+            (
                 'control_layer:\n  service_token: "PLAINTEXT-MUST-NOT-LEAK"\n',
                 "secret-like",
             ),

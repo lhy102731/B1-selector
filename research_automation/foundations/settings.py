@@ -653,8 +653,24 @@ def _is_secret_field_name(value: str) -> bool:
     normalized = _normalized_field_name(value)
     tokens = tuple(token for token in normalized.split("_") if token)
     token_index = tokens.index("token") if "token" in tokens else -1
+    token_pairs = set(zip(tokens, tokens[1:]))
     return (
         normalized in _SECRET_FIELD_EXACT
+        or bool(
+            set(tokens)
+            & {
+                "auth",
+                "authorization",
+                "bearer",
+                "cookie",
+                "credential",
+                "credentials",
+                "passwd",
+                "password",
+                "secret",
+            }
+        )
+        or bool(token_pairs & {("api", "key"), ("private", "key")})
         or normalized.startswith(("secret_", "auth_", "bearer_"))
         or normalized.startswith(("authorization_", "private_key_"))
         or normalized.endswith("apikey")
