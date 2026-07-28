@@ -1,0 +1,186 @@
+{
+  "schema_version": "control_plane.p1_task_validation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p1_task_validation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-003",
+    "task_id": "P1R3-T3-EXECUTION-SPEC-PROTOCOL-COMPILER",
+    "validated_at": "2026-07-29T04:41:05.6735722+08:00",
+    "implementation_commit": "1744e8ad154493ea6d199bbda1e61278b13ff0a2",
+    "task_spec_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/task_specs/t3_protocols.json",
+    "task_spec_sha256": "839f5a8a08221480730ba3335683620480a6432c68aad8fef1af828e6f5657dc",
+    "baseline_sha256": "c8f8e01a99e8d5edcdaf80581e758c68787681f0c15df73891c74ca93d488c90",
+    "files": [
+      {
+        "path": "research_automation/foundations/protocols.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "sha256": "44beacc806845da2f01cea5043d5358b7897a6f669f1e388fabbfe0be2297d14",
+        "bytes": 53024
+      },
+      {
+        "path": "tests/test_foundations_protocols.py",
+        "change_type": "ADD",
+        "baseline_sha256": null,
+        "sha256": "47c7c740a76c8ebca8cd546f8fa719eeeb9bcbcb76fce23667104641d9e2a81e",
+        "bytes": 53986
+      }
+    ],
+    "test_receipts": [
+      {
+        "receipt_id": "foundations-protocol-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_protocols.ProtocolCompilerTests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 17
+      },
+      {
+        "receipt_id": "foundations-contract-regression-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_contract_registry tests.test_foundations_artifact_identity tests.test_foundations_legacy_contract_adapters tests.test_foundations_settings tests.test_foundations_dependency_preflight -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 81
+      },
+      {
+        "receipt_id": "protocol-import-purity",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_foundations_protocols.ProtocolImportPurityTests -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 1
+      },
+      {
+        "receipt_id": "p0-foundations-protocol-regression-tests",
+        "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -m unittest tests.test_control_plane_contracts tests.test_control_plane_artifact_semantics tests.test_control_plane_task_reports -q",
+        "exit_code": 0,
+        "result": "PASS",
+        "test_count": 133
+      }
+    ],
+    "controller_review": {
+      "receipt_id": "controller-protocol-review",
+      "reviewer_id": "codex-controller-protocol-reviewer",
+      "reviewer_actor_type": "llm",
+      "result": "PASS",
+      "exit_code": 0,
+      "findings_hash_helper": "review_findings_sha256",
+      "findings_sha256": "58b9bb8ca500e68c5230f2d833fed6f40776f48816fd8f89844b93b12760c9a8",
+      "blocking_findings": [],
+      "resolved_findings": [
+        "T3-REVIEW-PER-FOLD-THRESHOLD",
+        "T3-REVIEW-CONFORMANCE-AUTHORITY-SEPARATION",
+        "T3-REVIEW-APPROVAL-STATEMENT-BINDING",
+        "T3-REVIEW-RUNNER-DIRECTORY-PROFILE",
+        "T3-REVIEW-FUTURE-REFERENCE-ALIASES",
+        "T3-REVIEW-SECRET-NOTE-ASSIGNMENTS"
+      ],
+      "scope_match": true,
+      "p0_tcb_unchanged": true,
+      "reviewed_protocols_sha256": "44beacc806845da2f01cea5043d5358b7897a6f669f1e388fabbfe0be2297d14",
+      "reviewed_tests_sha256": "47c7c740a76c8ebca8cd546f8fa719eeeb9bcbcb76fce23667104641d9e2a81e"
+    },
+    "review_findings": [
+      {
+        "finding_id": "T3-REVIEW-PER-FOLD-THRESHOLD",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "A top-level threshold value could not preserve fold-specific validation choices and left later-fold leakage ambiguous.",
+        "resolution": "Move threshold source, selection datasets, and finite threshold value into each FoldSelection and reject cross-fold or fold-test selection."
+      },
+      {
+        "finding_id": "T3-REVIEW-CONFORMANCE-AUTHORITY-SEPARATION",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "The dry compiler exposed execution eligibility even though conformance is orthogonal to later authority, access, and evidence gates.",
+        "resolution": "Remove execution eligibility APIs and expose protocol conformance only, with explicit non-authorization documentation and strict revalidation."
+      },
+      {
+        "finding_id": "T3-REVIEW-APPROVAL-STATEMENT-BINDING",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Arbitrary bytes and self-reported identities could be presented as approval evidence without binding the evidence to the approval semantics.",
+        "resolution": "Bind approval and amendment ArtifactIdentity to canonical typed statement bytes, actor, hashes, paths, length, and explicit unverified trust status."
+      },
+      {
+        "finding_id": "T3-REVIEW-RUNNER-DIRECTORY-PROFILE",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "The protocol rejected the ordered directory-manifest identity already defined for multi-file Runner source.",
+        "resolution": "Use a small fail-closed Runner code profile allowlist that accepts source snapshots and ordered directory manifests without weakening dataset roles."
+      },
+      {
+        "finding_id": "T3-REVIEW-FUTURE-REFERENCE-ALIASES",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Signal-day-prefixed references containing exit, return, hold, T+1, or entry-date future fields could bypass the reference-specific token list.",
+        "resolution": "Use one shared future-data token check for feature names and references while retaining the explicit 9:25 entry-open allowlist."
+      },
+      {
+        "finding_id": "T3-REVIEW-SECRET-NOTE-ASSIGNMENTS",
+        "review_receipt_id": "controller-protocol-review",
+        "severity": "BLOCKING",
+        "status": "RESOLVED",
+        "summary": "Standalone protocol metadata accepted secret-shaped note assignments using colon or whitespace variants.",
+        "resolution": "Apply the shared credential-assignment detector to metadata notes and cover key, token, password, and secret variants."
+      }
+    ],
+    "dependency_evidence": {
+      "t1_security_correction": {
+        "report_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t1c_task_report.json",
+        "report_sha256": "cfa3b54ec2972cb31244f53661d93af49f3225e4204d65b65ee01120cb3a3606",
+        "outcome": "PASS"
+      },
+      "t2_settings_superseding_report": {
+        "report_ref": "research_state/control_plane/p1/attempts/p1-attempt-003/evidence/t2c_task_report.json",
+        "report_sha256": "f7f033f5768c47681abb2f7433751e61bb662aa42dfe2c208b28cc02762033c6",
+        "outcome": "PASS",
+        "supersedes_original_t2": true
+      }
+    },
+    "dirty_baseline": {
+      "status_command": "git status --short --untracked-files=no",
+      "baseline_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "post_validation_tracked_status_sha256": "4aaeaa1d3d01812adc964f761210d9140637f70537ac21ff283927f90b7cfaad",
+      "baseline_tracked_status_line_count": 27,
+      "post_validation_tracked_status_line_count": 27,
+      "protected_dirty_baseline_unchanged": true
+    },
+    "p0_tcb": {
+      "sealed_file_count": 10,
+      "changed_paths": [],
+      "result": "PASS"
+    },
+    "phase_boundary": {
+      "p2_authorized": false,
+      "campaign_authorized": false,
+      "final_holdout_authorized": false,
+      "auto_advance": false
+    },
+    "trusted_finalize_pre_begin_retry": {
+      "occurred": true,
+      "cause": "The deep finalizer script path did not initially place the repository root on sys.path.",
+      "failed_before_main": true,
+      "ticket_begun": false,
+      "trusted_receipts_recorded": 0,
+      "authority_or_operational_events_written": 0,
+      "root_capability_logged_or_persisted": false,
+      "repair": "Insert the resolved repository root before importing research_automation, then revalidate ticket and outbox state before retry."
+    },
+    "side_effects": {
+      "research_or_backtest_started": false,
+      "network_or_llm_research_call_started": false,
+      "data_kbase_scheduler_or_acl_mutated": false,
+      "production_strategy_or_parameter_changed": false,
+      "holdout_accessed": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "2053a9fa762a19b10965b3371d4167e1b11708cfeb20172ed7cfbc8c690cc708"
+  }
+}
