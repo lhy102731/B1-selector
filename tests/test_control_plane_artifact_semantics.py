@@ -10,6 +10,7 @@ from unittest.mock import patch
 from research_automation.control_plane.artifact_semantics import (
     ArtifactSemanticError,
     parse_strict_json,
+    reviewed_policy_receipt_sha256,
     validate_code_freeze_manifest,
     validate_final_inventory,
     validate_implementation_baseline,
@@ -503,6 +504,9 @@ class ReviewedEntryPolicyTests(unittest.TestCase):
             "entries": entries,
             "entry_count": len(entries),
         }
+        payload["review_receipt_sha256"] = reviewed_policy_receipt_sha256(
+            payload
+        )
         payload["policy_payload_sha256"] = canonical_sha256(payload)
         return payload
 
@@ -557,6 +561,25 @@ class ReviewedEntryPolicyTests(unittest.TestCase):
             )
 
             with self.assertRaises(ArtifactSemanticError):
+                self._validate(policy, inventory)
+
+    def test_reviewed_policy_rejects_an_unbound_receipt_hash(self) -> None:
+        with TemporaryDirectory() as tmp:
+            _, inventory = self._artifacts(Path(tmp))
+            policy = self._policy(inventory)
+            policy["review_receipt_sha256"] = "e" * 64
+            policy["policy_payload_sha256"] = canonical_sha256(
+                {
+                    key: value
+                    for key, value in policy.items()
+                    if key != "policy_payload_sha256"
+                }
+            )
+
+            with self.assertRaisesRegex(
+                ArtifactSemanticError,
+                "review receipt binding",
+            ):
                 self._validate(policy, inventory)
 
     def test_old_source_tree_policy_contract_is_rejected(self) -> None:

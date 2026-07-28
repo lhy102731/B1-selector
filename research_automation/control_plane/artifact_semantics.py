@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
-from .contracts import ACTOR_TYPES, Phase, SideEffect, canonical_sha256
+from .contracts import ACTOR_TYPES, Phase, SideEffect, canonical_json, canonical_sha256
 
 
 MAX_ARTIFACT_JSON_DEPTH = 64
@@ -797,7 +797,10 @@ def validate_reviewed_entry_policy(
     reviewer_id = _string(payload["reviewer_id"], "reviewed_policy.reviewer_id")
     if reviewer_id.casefold() in {"scanner", "automatic", "auto"}:
         raise ArtifactSemanticError("scanner output cannot self-approve a policy")
-    _sha256(payload["review_receipt_sha256"], "reviewed_policy.review_receipt_sha256")
+    review_receipt_sha256 = _sha256(
+        payload["review_receipt_sha256"],
+        "reviewed_policy.review_receipt_sha256",
+    )
     inventory_digest = _sha256(
         payload["inventory_payload_sha256"],
         "reviewed_policy.inventory_payload_sha256",
@@ -811,12 +814,47 @@ def validate_reviewed_entry_policy(
     inventory_entries = _validate_entry_records(final_inventory.get("entries"))
     if entries != inventory_entries:
         raise ArtifactSemanticError("reviewed policy entries differ from final inventory")
+    if review_receipt_sha256 != reviewed_policy_receipt_sha256(payload):
+        raise ArtifactSemanticError(
+            "reviewed policy review receipt binding is invalid"
+        )
     payload_without_hash = dict(payload)
     payload_without_hash["entries"] = entries
     payload_without_hash.pop("policy_payload_sha256", None)
     if payload["policy_payload_sha256"] != canonical_sha256(payload_without_hash):
         raise ArtifactSemanticError("reviewed policy payload hash mismatch")
     return payload
+
+
+def reviewed_policy_receipt_sha256(policy: Mapping[str, object]) -> str:
+    """Bind one independent reviewer to one exact inventory-derived policy."""
+    if not isinstance(policy, Mapping):
+        raise ArtifactSemanticError("reviewed policy receipt input is invalid")
+    required = {
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "reviewer_id",
+        "inventory_payload_sha256",
+        "entries",
+    }
+    if not required.issubset(policy):
+        raise ArtifactSemanticError("reviewed policy receipt input is incomplete")
+    binding = {
+        "schema_version": "control_plane.entry_policy_review_binding.v1",
+        "plan_version": policy["plan_version"],
+        "phase": policy["phase"],
+        "attempt_id": policy["attempt_id"],
+        "identity_binding": policy["identity_binding"],
+        "reviewer_id": policy["reviewer_id"],
+        "inventory_payload_sha256": policy["inventory_payload_sha256"],
+        "entries_sha256": canonical_sha256(policy["entries"]),
+    }
+    return hashlib.sha256(
+        b"control_plane.entry_policy_review_binding.v1\0"
+        + canonical_json(binding).encode("utf-8")
+    ).hexdigest()
 
 
 def _optional_string(value: object, field_name: str) -> str | None:
@@ -983,6 +1021,7 @@ __all__ = [
     "ArtifactSemanticError",
     "MAX_ARTIFACT_JSON_DEPTH",
     "parse_strict_json",
+    "reviewed_policy_receipt_sha256",
     "validate_code_freeze_manifest",
     "validate_final_inventory",
     "validate_reviewed_entry_policy",

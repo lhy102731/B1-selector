@@ -20,6 +20,9 @@ from research_automation.control_plane.contracts import (
     SideEffect,
     canonical_json,
 )
+from research_automation.control_plane.artifact_semantics import (
+    reviewed_policy_receipt_sha256,
+)
 from research_automation.control_plane.gates import (
     GateAuthorityMismatchError,
     GateBuildError,
@@ -572,6 +575,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 "entries": inventory_entries,
                 "entry_count": len(inventory_entries),
             }
+            policy_payload["review_receipt_sha256"] = (
+                reviewed_policy_receipt_sha256(policy_payload)
+            )
             policy_payload["policy_payload_sha256"] = hashlib.sha256(
                 canonical_json(policy_payload).encode("utf-8")
             ).hexdigest()
