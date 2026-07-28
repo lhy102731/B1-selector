@@ -75,18 +75,10 @@
           "evidence_sha256": "547ee97a73097b06102b2fbf03e7d6f7de77ed5dfa1728b67f1afca4627ea5f5",
           "status": "VERIFIED"
         }
-      ],
-      "revalidation_constraints": {
-        "implementation_commit": "4d6eb999c049f4e6736b327431be478bc1759db8",
-        "no_code_reimplementation": true,
-        "review_hash_helper": "review_findings_sha256",
-        "task_report_builder": "build_task_report_v2",
-        "prepare_and_validate_provisional_report_before_lease": true,
-        "trusted_lease_lifecycle_in_one_process": true
-      }
+      ]
     }
   },
   "computed": {
-    "payload_sha256": "db976889c74bad771906f85ea25bf23196c304bb5c1306f777499dc87cb2a9d3"
+    "payload_sha256": "f415a28a8d7f79f5589bc8c3d52f9e6e0390b6c2a5c184584057c6dfead7fa04"
   }
 }
