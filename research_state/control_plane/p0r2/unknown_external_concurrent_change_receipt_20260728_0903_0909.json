@@ -1,0 +1,128 @@
+{
+  "schema_version": "control_plane.external_concurrent_change_receipt.v1",
+  "created_at": "2026-07-28T17:55:59.954206+08:00",
+  "payload": {
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P0",
+    "attempt_id": "p0r2-attempt-001",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "e9a2e9fbc0bfcb0ab1fc90ccd17ddd592b99a5413a19bf3f9253eba988e3b5e1",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+      "identity_bundle_sha256": "187b211a8a3fc36b1eb27a8b0da867cdff96e93801f728296edc0f2a93f504a2"
+    },
+    "classification": "UNKNOWN_EXTERNAL_CONCURRENT_CHANGE",
+    "attributed_actor": null,
+    "must_not_attribute_to": [
+      "P0R2",
+      "Codex",
+      "Windows scheduler"
+    ],
+    "reported_window": {
+      "start": "2026-07-28T09:03:00+08:00",
+      "end": "2026-07-28T09:09:59.9999999+08:00"
+    },
+    "exact_observed_min": "2026-07-28T09:03:38.2077882+08:00",
+    "exact_observed_max": "2026-07-28T09:09:08.4748170+08:00",
+    "scheduler_observation": {
+      "observed_at": "2026-07-28T17:28:00+08:00",
+      "collection_mode": "READ_ONLY",
+      "task_path": "\\A???",
+      "action": "D:/workspace/a-share-quant-selector-main/run_select.bat",
+      "last_run": "2026-07-27T20:00:01+08:00",
+      "last_result": 0,
+      "next_run": "2026-07-28T20:00:00+08:00",
+      "state": "Ready",
+      "explains_reported_window": false
+    },
+    "git_observation": {
+      "window": "2026-07-28T09:00:00+08:00/2026-07-28T09:15:00+08:00",
+      "git_log_entries": 0,
+      "git_reflog_entries": 0,
+      "interpretation": "No commit or ref update was observed; this does not exclude an uncommitted workspace process."
+    },
+    "filesystem_metadata_observations": [
+      {
+        "path": "data/.update_cache.json",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:03:38.2077882+08:00"
+      },
+      {
+        "path": "data/etf/metadata.json",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:03:42.5946108+08:00"
+      },
+      {
+        "path": "data/_market_assets/latest_sync.json",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:03:56.4256103+08:00"
+      },
+      {
+        "path": "data/_daily_updates/2026-07-27/pcf_fallback_report.json",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:05:08.9385122+08:00"
+      },
+      {
+        "path": "data/.ths_dataset_manifest.json",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:05:08.9395644+08:00"
+      },
+      {
+        "path": "data/indicators_cache/",
+        "kind": "DIRECTORY_ENTRY_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:05:12.0207241+08:00"
+      },
+      {
+        "path": "data/_allpeers_daily_ret.parquet",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:05:36.3609427+08:00"
+      },
+      {
+        "path": "artifacts/daily/etf/signals_today.csv",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:06:54.5389518+08:00"
+      },
+      {
+        "path": "artifacts/daily/brick/signals_today.csv",
+        "kind": "FILE_MTIME_ONLY",
+        "last_write_time": "2026-07-28T09:09:08.4748170+08:00"
+      }
+    ],
+    "evidence_refs": [
+      {
+        "path": "docs/superpowers/plans/2026-07-28-v342-p0-change-request-005.md",
+        "sha256": "7b3945fea7a72d5d2b244cf02fc815c35532100bdc0d118186b4e1e8653278bd",
+        "bytes": 6547
+      },
+      {
+        "path": "research_state/control_plane/p0r2/change_request_approvals/P0-CR-005.json",
+        "sha256": "5cc5ae2e6821bd5b2a5065e7d570e2d6321f0273e65eddf26bb1d875c8123299",
+        "bytes": 1560
+      },
+      {
+        "path": "research_state/control_plane/p0/external_scheduler_inventory_p0_t2.json",
+        "sha256": "8cbc38e3a77cb7e3f7ed5c332e5c9e979ec5276af54592255614be3f7d919257",
+        "bytes": 1312
+      }
+    ],
+    "non_transferable_historical_data_audits": [
+      "data_ths/.ths_dataset_manifest.json",
+      "data_ths/.ths_independent_audit.json",
+      "data_ths/semantic_audit/semantic_summary.json"
+    ],
+    "limitations": [
+      "No process identity was recoverable for the reported historical window.",
+      "Filesystem observations are shallow metadata only; no data or output file content was read or hashed.",
+      "The isolated data_ths audit predates later writes to live data and cannot be transferred as a live-data PASS.",
+      "data/.ths_dataset_manifest.json is listed only as a write-time observation, not as a quality conclusion."
+    ],
+    "data_quality_assessed": false,
+    "live_data_pass_claimed": false,
+    "data_ths_audit_transferred_to_live_data": false,
+    "p0_implementation_evidence": false
+  },
+  "computed": {
+    "canonical_payload_bytes": 3776,
+    "receipt_payload_sha256": "8145a89e7c8d52424a8a59c2dc76cd892683449a2b7e7a9c76981c2e27f6ae8d"
+  }
+}
