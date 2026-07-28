@@ -1,0 +1,74 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P1",
+    "attempt_id": "p1-attempt-001",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "495e91e0ad27544ae822f79f3d50ad1fe2f3a3140d6c6b68c50e5e2b5754505e",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P1-T1-CONTRACT-REGISTRY-ARTIFACT-IDENTITY",
+      "objective": "Deliver strict versioned typed contracts, stable path-independent artifact identity, bounded directory manifests, and read-only legacy contract adapters without changing the sealed P0 validators.",
+      "dependencies": [
+        "P1-T0-AUTHORITY-SCOPE"
+      ],
+      "idempotency_key": "p1-attempt-001-t1-contract-registry-artifact-identity",
+      "task_spec_ref": "research_state/control_plane/p1/task_specs/p1_t1_contracts_v342.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "foundations-contracts-tests",
+          "p0-contract-regression-tests"
+        ],
+        "required_review_receipt_ids": [],
+        "required_evidence_ids": [
+          "p1-authorization",
+          "implementation-baseline"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/foundations/contract_registry.py",
+        "research_automation/foundations/artifact_identity.py",
+        "research_automation/foundations/legacy_contract_adapters.py",
+        "tests/test_foundations_contract_registry.py",
+        "tests/test_foundations_artifact_identity.py",
+        "tests/test_foundations_legacy_contract_adapters.py",
+        "research_state/control_plane/p1/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/config.py",
+        "artifacts/",
+        "config/",
+        "data/",
+        "data_ths/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/"
+      ],
+      "baseline_ref": "research_state/control_plane/p1/implementation_baseline_v342_p1.json",
+      "baseline_sha256": "389f55a66bf1aacf521c0c41460219a0cff1bbf4da2b29c2b7185e16e35643e6",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p1-authorization",
+          "evidence_ref": "research_state/control_plane/p1/evidence/trusted_p1_authorization_activation_receipt.json",
+          "evidence_sha256": "93f9f4a5abc199a48bff47c1f24f7e5d36b6f23004a4199b6e37fde3291cc9e7",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p1/implementation_baseline_v342_p1.json",
+          "evidence_sha256": "389f55a66bf1aacf521c0c41460219a0cff1bbf4da2b29c2b7185e16e35643e6",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "215461aa8b754207cb98a9c95f5a4c4d6d39c874f2a8b97b67ee7901ee1ee0c2"
+  }
+}
