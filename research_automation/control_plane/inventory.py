@@ -48,15 +48,51 @@ _EXCLUDED_TOP_LEVEL_DIRECTORIES = frozenset(
         "artifacts",
         "config",
         "data",
+        "data_pre_ths_backup_20260727_110350",
+        "data_ths",
         "discussions",
         "docs",
         "knowledge",
         "models",
         "node_modules",
+        "outputs",
         "research_state",
+        "ths-rebuild-1s3f37j2",
+        "ths-rebuild-2f8lznck",
+        "ths-rebuild-gzsqa360",
+        "ths-rebuild-rn72aj5e",
         "tmp",
         "venv",
         "web",
+    }
+)
+_APPROVED_NON_EXECUTABLE_TOP_LEVEL_DIRECTORIES = frozenset(
+    {
+        "data_pre_ths_backup_20260727_110350",
+        "data_ths",
+        "outputs",
+        "ths-rebuild-1s3f37j2",
+        "ths-rebuild-2f8lznck",
+        "ths-rebuild-gzsqa360",
+        "ths-rebuild-rn72aj5e",
+    }
+)
+_FORBIDDEN_DATA_TREE_EXECUTABLE_SUFFIXES = frozenset(
+    {
+        ".bat",
+        ".cmd",
+        ".cs",
+        ".dll",
+        ".exe",
+        ".jar",
+        ".js",
+        ".ps1",
+        ".pyd",
+        ".py",
+        ".pyw",
+        ".sh",
+        ".so",
+        ".ts",
     }
 )
 
@@ -113,6 +149,42 @@ def _resolve_stable_file(root: Path, relative: str) -> Path:
     return resolved
 
 
+def _assert_approved_data_tree_is_non_executable(path: Path) -> None:
+    if _is_reparse_point(path) or not path.is_dir():
+        raise UnstableInventoryError(
+            f"approved data/output root is unsafe: {path.name}"
+        )
+
+    def fail_walk(error: OSError) -> None:
+        raise UnstableInventoryError(
+            f"unable to inspect approved data/output root: {path.name}"
+        ) from error
+
+    for current, directory_names, file_names in os.walk(
+        path,
+        topdown=True,
+        followlinks=False,
+        onerror=fail_walk,
+    ):
+        current_path = Path(current)
+        for directory_name in directory_names:
+            child = current_path / directory_name
+            if _is_reparse_point(child) or not child.is_dir():
+                raise UnstableInventoryError(
+                    f"approved data/output root contains an unsafe directory: {child}"
+                )
+        for file_name in file_names:
+            child = current_path / file_name
+            if _is_reparse_point(child) or not child.is_file():
+                raise UnstableInventoryError(
+                    f"approved data/output root contains an unsafe file: {child}"
+                )
+            if child.suffix.casefold() in _FORBIDDEN_DATA_TREE_EXECUTABLE_SUFFIXES:
+                raise UnstableInventoryError(
+                    f"approved data/output root contains an executable file: {child}"
+                )
+
+
 def _assert_bounded_layout(root: Path) -> None:
     try:
         children = tuple(root.iterdir())
@@ -122,6 +194,9 @@ def _assert_bounded_layout(root: Path) -> None:
         ) from error
     for child in children:
         name = child.name.casefold()
+        if name in _APPROVED_NON_EXECUTABLE_TOP_LEVEL_DIRECTORIES:
+            _assert_approved_data_tree_is_non_executable(child)
+            continue
         if name in _EXCLUDED_TOP_LEVEL_DIRECTORIES:
             continue
         if name in _BOUNDED_TOP_LEVEL_DIRECTORIES:

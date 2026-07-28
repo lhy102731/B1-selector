@@ -1057,6 +1057,52 @@ class StableFreezeInventoryBuilderTests(unittest.TestCase):
             ):
                 self._freeze(root)
 
+    def test_t7_accepts_only_the_approved_ths_data_and_output_roots(self) -> None:
+        approved_roots = {
+            "data_ths",
+            "data_pre_ths_backup_20260727_110350",
+            "outputs",
+            "ths-rebuild-1s3f37j2",
+            "ths-rebuild-2f8lznck",
+            "ths-rebuild-gzsqa360",
+            "ths-rebuild-rn72aj5e",
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repository(root)
+            for directory in approved_roots:
+                path = root / directory
+                path.mkdir()
+                (path / "evidence.csv").write_text(
+                    "date,close\n2026-07-27,10\n",
+                    encoding="utf-8",
+                )
+
+            freeze = self._freeze(root)
+
+        frozen_paths = {item["path"] for item in freeze["files"]}
+        self.assertFalse(
+            any(
+                path == directory or path.startswith(directory + "/")
+                for path in frozen_paths
+                for directory in approved_roots
+            )
+        )
+
+    def test_t7_rejects_executable_content_hidden_in_an_approved_data_root(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repository(root)
+            hidden = root / "data_ths" / "nested" / "run.py"
+            hidden.parent.mkdir(parents=True)
+            hidden.write_text("raise RuntimeError('hidden')\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                UnstableInventoryError,
+                "executable file",
+            ):
+                self._freeze(root)
+
     def test_t8_preserves_explicit_unknown_scheduler_evidence(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
