@@ -289,7 +289,6 @@ class ImmutableReleaseStore:
 
             if (
                 not parked_current.exists()
-                and not parked_previous.exists()
                 and candidate.exists()
                 and self._current_id(current) == expected_current_id
             ):
@@ -297,6 +296,13 @@ class ImmutableReleaseStore:
                     raise ReleaseConflictError(
                         "interrupted candidate does not match the transaction"
                     )
+                if parked_previous.exists():
+                    if previous.exists():
+                        raise ReleaseConflictError(
+                            "interrupted previous slot has two occupants"
+                        )
+                    self._validate_release(parked_previous)
+                    os.replace(parked_previous, previous)
                 action = "ROLLED_BACK_INTERRUPTED_PROMOTION"
             elif parked_current.exists():
                 if current.exists():
