@@ -1,0 +1,113 @@
+{
+  "schema_version": "control_plane.implementation_baseline.v2",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)",
+  "baseline_payload_sha256": "18b7b68238a570933233912b3e39f5320f4c4205b1bfd2da8c3e787fa599b0dd",
+  "baseline": {
+    "attempt_id": "p2-attempt-003",
+    "git_head": "b0e1c50740a96747b1e828717476ee4da4a9fdaa",
+    "branch": "codex/v342-control-plane",
+    "tracked_user_status_sha256": "ebbf648b3e0c00bcb40bd96ed0cb6f5226872c84438845a4c6c35df29dc2a4e0",
+    "tracked_user_status_line_count": 2,
+    "protected_tracked_changes": [
+      " M CHANGELOG.md",
+      " M docs/b1_v3_results.md"
+    ],
+    "file_state_count": 23,
+    "file_states": {
+      "ag2_research/kbase/catalog_builder.py": {
+        "sha256": "e69bca1bda2ebe0e257e7de6f1f12815ccfc713ce411258e9999b960ea44e10f",
+        "bytes": 15388
+      },
+      "ag2_research/kbase/semantic_index.py": {
+        "sha256": "ac3e8745ddb3857505669000c4f6baea20e37456827265047288a8413be2f2a3",
+        "bytes": 54570
+      },
+      "build_indicators_cache.py": {
+        "sha256": "243f261da257485b555749d4870b15ff3c1746e6280a01a99719f9a6b31a28a4",
+        "bytes": 18143
+      },
+      "research_automation/data_generation/__init__.py": null,
+      "research_automation/data_generation/cache_identity.py": {
+        "sha256": "21d19b901b7cc99f7012753384bff9df2b02e7e066239b41e09fee0df3ff3044",
+        "bytes": 14240
+      },
+      "research_automation/data_generation/contracts.py": {
+        "sha256": "b33f4137ba71152e8d443ba1837ac2db7241446031f91c52c2d2e034187efcd6",
+        "bytes": 3917
+      },
+      "research_automation/data_generation/daily_staging.py": {
+        "sha256": "ab99f8c0a7f37b991c2a9057aa3c52490d13440ae364a3f0de9fd30c7ad7c9a8",
+        "bytes": 41712
+      },
+      "research_automation/data_generation/generation.py": {
+        "sha256": "463025e1ecb6285851fd5397db39f5aff39b2f24de71ea74f1d743caa1de9385",
+        "bytes": 23486
+      },
+      "research_automation/data_generation/market_data.py": {
+        "sha256": "db86b54d1881718a146ad115a09aeffa23db4112386f18f1e56f5eaf1cbaec07",
+        "bytes": 17126
+      },
+      "research_automation/foundations/immutable_release.py": {
+        "sha256": "9ddd9ccf0c0c1ca242a7d8823e8687a2ee9c5873c881a3d9eb02c7a72a205c02",
+        "bytes": 28839
+      },
+      "tests/test_daily_checkpoint_retention.py": {
+        "sha256": "72fb4c9aba4fd4fc9f2c9135aa2185f82be3a23c51455ec9305a23e0e5948cb2",
+        "bytes": 15744
+      },
+      "tests/test_daily_updater_staging.py": {
+        "sha256": "8105a7916558a5d2f8216e973d95bbb6ee0ebfef979b73c5cf9f399cbe89c5b3",
+        "bytes": 12720
+      },
+      "tests/test_data_generation.py": {
+        "sha256": "d37ec4ecc13b7843e0854ae4b45838053dff077b1f0fcf60fe514c405ff22ccc",
+        "bytes": 24931
+      },
+      "tests/test_foundations_immutable_release.py": {
+        "sha256": "d95bb87c17b8c5a4de0ec0bfc6555ea6b8b5d354efda22c4effc88117ecb27eb",
+        "bytes": 48195
+      },
+      "tests/test_generation_cache_identity.py": {
+        "sha256": "8b9f79449054d244fc02d91a72818d6dc666fb9f2d598909d54bde6aa7a77729",
+        "bytes": 33123
+      },
+      "tests/test_kbase_catalog.py": {
+        "sha256": "b3b839b92c49e1233eb23f0f88218cb24b4e210e7bde4b2f0a8436ace048ee3e",
+        "bytes": 9293
+      },
+      "tests/test_kbase_semantic.py": {
+        "sha256": "3365872eb6107033d308e96e9c9cf13a0f89df937d5712c608421722275b04f1",
+        "bytes": 25124
+      },
+      "tests/test_market_data_semantics.py": {
+        "sha256": "5af01c204526be0c90a00f58830019f29ba6e5e65f1347ef0e0f23ebbde9a1d5",
+        "bytes": 16891
+      },
+      "tests/test_raw_parquet_cache.py": {
+        "sha256": "98856a6a39833620d9d892f506226b32f0b1c14e70d926c4e563335fe220c6be",
+        "bytes": 30152
+      },
+      "tests/test_signal_cache_identity.py": {
+        "sha256": "677e1488df46c12a89d9ce2b24a1385f419fd989c0e3313db91d2031bbecf36a",
+        "bytes": 6511
+      },
+      "tests/test_update_today_em_client.py": {
+        "sha256": "b64e7c1bbe44cc9089f08ae5411a590ae2fa3ca74502ee7b198613ab8979bde2",
+        "bytes": 10510
+      },
+      "tools/update_today_em_client.py": {
+        "sha256": "d8c4d3379b998a8c257254fcb27e3563d400ce8f1843439afdd7b5be34170bae",
+        "bytes": 22191
+      },
+      "utils/raw_parquet_cache.py": {
+        "sha256": "25b99012c1bf89c8b649e43adec6af001db1e2a9048cc96f5ea08a3d374be9a3",
+        "bytes": 8719
+      }
+    },
+    "data_scan_policy": "No recursive data listing or hashing; inspect only exact P2R3 code/test paths, approved control-plane evidence, dependency locks, and Git metadata.",
+    "large_data_scanned": false,
+    "production_or_research_task_started": false
+  }
+}
