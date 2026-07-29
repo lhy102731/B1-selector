@@ -1,0 +1,34 @@
+{
+  "schema_version": "control_plane.task_in_doubt_reconciliation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "task_id": "P2R3-T5C-SCOPE-ADOPTION",
+  "ticket_id": "25e5b003a278b58030197aa21022d37013f303f8fd8f60b745f796fb213f5112",
+  "ticket_state": "IN_DOUBT",
+  "started_at": "2026-07-29T22:17:00+00:00",
+  "completed_at": "2026-07-29T22:20:30.165301+00:00",
+  "incident_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_lease_loss_incident.json",
+  "incident_sha256": "fff1a904c562dcd3eb4640f72c29901f4e2c96500b89a6f823fb02f34d81389f",
+  "trusted_receipt_count": 0,
+  "outbox": {
+    "scanned_events": 2,
+    "inserted_events": 2,
+    "acknowledged_events": 2,
+    "pending_after": 0
+  },
+  "recovery": {
+    "lease_capability_recovered": false,
+    "ticket_replayed_or_rewritten": false,
+    "new_attempt_required": "p2-attempt-004",
+    "canonical_fail_gate_required": true
+  },
+  "secret_handling": {
+    "root_capability_used_via_dpapi_current_user": true,
+    "root_capability_logged": false,
+    "root_capability_staged": false,
+    "authority_database_staged": false,
+    "operational_database_staged": false
+  },
+  "verdict": "PASS_FAIL_CLOSED"
+}
