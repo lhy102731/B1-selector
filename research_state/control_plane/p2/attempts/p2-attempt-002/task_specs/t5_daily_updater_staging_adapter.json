@@ -1,0 +1,98 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R2-T5-DAILY-UPDATER-STAGING-ADAPTER",
+      "objective": "Implement an explicit opt-in daily-updater staging adapter that writes only to caller-provided temporary/candidate roots, stages an immutable CSV delta overlay bound to its parent generation and exact staged-file identities, and publishes through the existing GenerationPublisher/ImmutableReleaseStore. The default tools/update_today_em_client.py production main behavior must remain unchanged. Use T4 typed MarketSessionKey/bar semantics: no_today_bar is not suspension evidence, only a matching NoBarConfirmation can confirm absence, and UNKNOWN_NO_BAR/FETCH_FAILED/NO_BAR_CONFIRMED never release feature/signal/entry/exit payloads. Any fetch, semantic, integrity, or checkpoint validation failure must leave CURRENT untouched; an active reader must yield PUBLISH_PENDING and block a new cycle. Do not access real data, network, backtests, KBase, scheduler state, or create a second publication/WAL framework.",
+      "dependencies": [
+        "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS"
+      ],
+      "idempotency_key": "p2-attempt-002-t5-daily-updater-staging-adapter",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t5_daily_updater_staging_adapter.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "daily-updater-staging-tests",
+          "daily-updater-publish-pending-tests",
+          "p2r2-t5-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "independent-daily-updater-staging-review"
+        ],
+        "required_evidence_ids": [
+          "p2r2-authorization",
+          "implementation-baseline",
+          "p2r2-t4-task-report",
+          "p2r2-t4-completion"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/data_generation/daily_staging.py",
+        "research_automation/data_generation/generation.py",
+        "research_automation/data_generation/contracts.py",
+        "research_automation/data_generation/market_data.py",
+        "tests/test_daily_updater_staging.py",
+        "tests/test_update_today_em_client.py",
+        "tests/test_data_generation.py",
+        "tools/update_today_em_client.py",
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/knowledge_base/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/",
+        "utils/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+      "baseline_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r2-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "bfc6e3fdf9ee61a01b005673bfc27370dea99f4666b6a773e162c16ad1b30faa",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+          "evidence_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t4-task-report",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_task_report.json",
+          "evidence_sha256": "a3b96749f53e35429da62b45f00e8ce7477a927311b6407b9d6af333614c9e4d",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t4-completion",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_completion_receipt.json",
+          "evidence_sha256": "9ce9b4e670289bf410dc17626fb8073f41674c43361d8a81d1bd5dc84204be8e",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "cd479df2e9d4a13eda6c060be08b42b51eeadc58bd08d443fe6dacd8a70d7d72"
+  }
+}
