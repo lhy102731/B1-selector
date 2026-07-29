@@ -1,0 +1,99 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+      "objective": "Add an explicit GenerationPin over the existing shared read lease, content-verify only touched artifacts, define one reusable strict cache-identity contract for raw, indicator, and signal caches, and optionally pin the raw-parquet/indicator helper path while leaving legacy mtime and backtest paths untrusted and unchanged.",
+      "dependencies": [
+        "P2R2-T2-READ-LEASE-FENCING-PUBLISH-PENDING"
+      ],
+      "idempotency_key": "p2-attempt-002-t3-generation-pin-cache-identity",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t3_generation_pin_cache_identity.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "generation-pin-tests",
+          "pinned-raw-parquet-tests",
+          "cache-identity-signal-tests",
+          "p2r2-t3-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "independent-generation-pin-cache-review"
+        ],
+        "required_evidence_ids": [
+          "p2r2-authorization",
+          "implementation-baseline",
+          "p2r2-t2-task-report",
+          "p2r2-t2-completion"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/data_generation/__init__.py",
+        "research_automation/data_generation/cache_identity.py",
+        "research_automation/data_generation/contracts.py",
+        "research_automation/data_generation/generation.py",
+        "build_indicators_cache.py",
+        "utils/raw_parquet_cache.py",
+        "tests/test_data_generation.py",
+        "tests/test_generation_cache_identity.py",
+        "tests/test_raw_parquet_cache.py",
+        "tests/test_signal_cache_identity.py",
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/knowledge_base/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+      "baseline_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r2-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "bfc6e3fdf9ee61a01b005673bfc27370dea99f4666b6a773e162c16ad1b30faa",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+          "evidence_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t2-task-report",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_task_report.json",
+          "evidence_sha256": "998258b357f2bc2f6f47c4dfb22df54396829b560bdc9f1551470eff4889a442",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t2-completion",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_completion_receipt.json",
+          "evidence_sha256": "1da775f174e95a3f8af21c4feb4846d384ee4ff4c729141bc73ca4bcc43fdd84",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "372d023829ed3fa133500048a61fc51691bc087cf111e8001c204dcbff5503af"
+  }
+}
