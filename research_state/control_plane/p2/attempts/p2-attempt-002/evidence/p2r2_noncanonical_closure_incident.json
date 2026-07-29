@@ -1,0 +1,50 @@
+{
+  "schema_version": "control_plane.noncanonical_phase_closure_incident.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "recorded_at": "2026-07-30T05:58:16.5981960+08:00",
+  "incident_class": "PRIVATE_PHASE_CLOSURE_API_USED_WITH_NON_GATE_ARTIFACT",
+  "summary": "The controller fail-closed p2-attempt-002 by calling the private AuthorityStore closure primitive with an administrative failure artifact rather than using PhaseGateCloser with a canonical GateReport.",
+  "cause": "The controller incorrectly treated a FAIL-only administrative closure as exempt from the public GateReport verification path while trying to avoid manufacturing PASS evidence for the discovered scope mismatch.",
+  "immutable_authority_state": {
+    "closure_id": "222ed4e2c58c3433633308c51b2a83064649876a1c69ee77fa6c5301a92541eb",
+    "grant_id": "grant_e0299c759090659689983dc6c7caf6f8",
+    "closed_at": "2026-07-29T21:54:47.459051+00:00",
+    "verdict": "FAIL",
+    "bound_artifact_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/gates/administrative_scope_failure.json",
+    "bound_artifact_sha256": "ed656b642f2499bf596a3b6001f52b816df1c3871f99c4df2112bb6c1a5f0eaf",
+    "artifact_is_canonical_gate_report": false,
+    "private_api_used": "_AuthorityStore._close_phase_gate"
+  },
+  "impact": {
+    "old_grant_remains_active": false,
+    "open_or_in_doubt_ticket_created": false,
+    "generic_gate_replay_supported": false,
+    "p2r2_may_be_claimed_as_pass": false,
+    "p2r2_closure_may_be_used_as_canonical_gate_evidence": false,
+    "p2r2_t1_t5_reports_remain_historical_inputs_only": true,
+    "p2r3_authority_provisioned_before_detection": false,
+    "tracked_implementation_code_changed": false,
+    "real_data_or_kbase_accessed_or_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "containment": {
+    "authority_database_rewrite_forbidden": true,
+    "p2r2_closure_rewrite_forbidden": true,
+    "p2r3_scope_must_label_predecessor_closure_noncanonical": true,
+    "p2r3_must_hash_bind_and_revalidate_t1_t5_without_trusting_predecessor_closure": true,
+    "all_p2r3_task_and_phase_closures_must_use_public_verified_paths": true,
+    "independent_review_required_before_p2r3_provision": true
+  },
+  "related_evidence": [
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t6_scope_mismatch_incident.json",
+      "sha256": "10b56c7067aeb805e7cb1a8f52edf96da079a36e26518459c5ada3b2aac953fc"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/p2r2_scope_failure_closure_receipt.json",
+      "sha256": "c1e9cef8d7f70ac93819bea3265d46213413d5cca8a93c160d470becba51dc13"
+    }
+  ]
+}
