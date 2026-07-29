@@ -50,6 +50,18 @@ def _exit_with_generation_read_lease(
 
 
 class GenerationManifestContractTests(unittest.TestCase):
+    def test_registry_version_changes_when_publish_pending_contract_is_added(self) -> None:
+        registry = generation_contract_registry()
+
+        self.assertEqual("research.data_generation.contract_registry.v2", registry.version)
+        self.assertEqual(
+            (
+                "research.data_generation.generation_manifest.v1",
+                "research.data_generation.publish_pending.v1",
+            ),
+            registry.versions,
+        )
+
     def test_active_generation_lease_records_pending_until_retry_can_publish(self) -> None:
         first = GenerationManifest(
             schema_version=GENERATION_MANIFEST_V1,

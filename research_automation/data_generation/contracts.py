@@ -106,7 +106,7 @@ class GenerationPublishPending(StrictContractModel):
 def generation_contract_registry() -> ContractRegistry:
     """Return the versioned registry for data-generation contracts."""
     return ContractRegistry(
-        version="research.data_generation.contract_registry.v1",
+        version="research.data_generation.contract_registry.v2",
         contracts={
             GENERATION_MANIFEST_V1: GenerationManifest,
             GENERATION_PUBLISH_PENDING_V1: GenerationPublishPending,
