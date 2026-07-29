@@ -1,0 +1,45 @@
+{
+  "schema_version": "control_plane.task_lease_loss_incident.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "task_id": "P2R3-T5C-SCOPE-ADOPTION",
+  "ticket_id": "25e5b003a278b58030197aa21022d37013f303f8fd8f60b745f796fb213f5112",
+  "recorded_at": "2026-07-30T06:19:48.5072918+08:00",
+  "failure_class": "LOST_EPHEMERAL_TASK_LEASE_CAPABILITY",
+  "cause": "The trusted closure process called review_findings_sha256 with one argument after begin_task; the function requires review_receipt_id and findings. The process exited before any receipt attestation, finish, mirror, TaskReport, or completion receipt.",
+  "preflight_failure": {
+    "all_deterministic_receipt_payloads_validated_before_begin": false,
+    "exception_type": "TypeError",
+    "exception_message": "review_findings_sha256() missing 1 required positional argument: 'findings'",
+    "private_phase_closure_called": false
+  },
+  "authority_observation": {
+    "ticket_state": "IN_PROGRESS",
+    "trusted_receipt_count": 0,
+    "pending_outbox_count": 1,
+    "active_grant_id": "grant_3f5024dcc8e7627fe11da83494760397"
+  },
+  "validated_work_preserved": {
+    "historical_bindings": "5/5 PASS",
+    "focused_tests": "175/175 PASS",
+    "scope_static_syntax": "22/22 present Python files PASS",
+    "implementation_code_changed": false
+  },
+  "side_effects": {
+    "authority_task_started": true,
+    "trusted_receipt_written": false,
+    "tracked_implementation_code_changed": false,
+    "real_data_or_kbase_accessed_or_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false
+  },
+  "required_recovery": {
+    "mark_ticket_in_doubt": true,
+    "close_p2r3_with_canonical_fail_gate": true,
+    "required_new_attempt": "p2-attempt-004",
+    "reuse_current_code_and_validation_evidence_after_hash_revalidation": true,
+    "do_not_reimplement_t1_t5": true,
+    "do_not_call_private_phase_closure": true
+  }
+}
