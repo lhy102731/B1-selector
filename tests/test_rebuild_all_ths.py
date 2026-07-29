@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -29,6 +30,16 @@ class _Source:
                 "turnover": [2.0, 4.0], "market_cap": [500000.0, 275000.0],
             }
         )
+
+
+class _SourceWithPendingListing(_Source):
+    def fetch_stock_universe(self):
+        return {"000001": {}, "001232": {}}
+
+    def fetch_history(self, code, start, end):
+        if code == "001232":
+            return pd.DataFrame()
+        return super().fetch_history(code, start, end)
 
 
 def _old_csv(path: Path):
@@ -217,6 +228,28 @@ class THSRebuildTests(unittest.TestCase):
             backups = list(Path(temp).glob("data_ths_backup_*"))
             self.assertEqual(1, len(backups))
             self.assertEqual(old, (backups[0] / "00" / "000001.csv").read_bytes())
+
+    def test_commit_records_current_listing_without_history_outside_stock_count(self):
+        with TemporaryDirectory() as temp:
+            data = Path(temp) / "data"
+            stage = Path(temp) / "stage"
+            (data / "00").mkdir(parents=True)
+            _old_csv(data / "00" / "000001.csv")
+
+            code = rebuild(
+                data,
+                stage_dir=stage,
+                source=_SourceWithPendingListing(),
+                commit=True,
+            )
+
+            self.assertEqual(0, code)
+            manifest = json.loads(
+                (data / ".ths_dataset_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(1, manifest["stock_count"])
+            self.assertEqual(2, manifest["requested_codes"])
+            self.assertEqual(["001232"], manifest["no_history_codes"])
 
 
 if __name__ == "__main__":

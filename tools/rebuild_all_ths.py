@@ -370,11 +370,23 @@ def rebuild(
             print(f"[BLOCKED] THSDK 历史换手率不可用: {probe.get('error')}")
             return 3
         failed = 0
+        staged = 0
+        no_history_codes: list[str] = []
         for index, code in enumerate(codes, 1):
             try:
                 history = _normalise_history(source.fetch_history(code, start, end))
-                validation = validate_history(history, code, min_cap_coverage=min_cap_coverage)
-                if not validation["valid"]:
+                if history.empty and code in current_codes and code not in existing_codes:
+                    no_history_codes.append(code)
+                    validation = {
+                        "code": code,
+                        "status": "no_history_yet",
+                        "reason": "empty_history",
+                    }
+                else:
+                    validation = validate_history(history, code, min_cap_coverage=min_cap_coverage)
+                if validation.get("status") == "no_history_yet":
+                    pass
+                elif not validation["valid"]:
                     failed += 1
                     validation["status"] = "failed_validation"
                 else:
@@ -382,6 +394,7 @@ def rebuild(
                     _atomic_write(history, target)
                     validation["status"] = "staged"
                     validation["sha256"] = _sha256(target)
+                    staged += 1
             except Exception as exc:
                 failed += 1
                 validation = {"code": code, "status": "failed", "error_type": type(exc).__name__, "error": str(exc)}
@@ -389,7 +402,8 @@ def rebuild(
             if index == 1 or index % 100 == 0 or validation.get("status", "").startswith("failed"):
                 print(f"{index}/{len(codes)} {code} {validation.get('status')}", flush=True)
         report["failed"] = failed
-        report["staged"] = len(codes) - failed
+        report["staged"] = staged
+        report["no_history_codes"] = sorted(no_history_codes)
         if failed:
             report["status"] = "FAILED_NO_COMMIT"
             report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -408,7 +422,9 @@ def rebuild(
                 "created_at": datetime.now().isoformat(timespec="seconds"),
                 "start": start,
                 "end": end,
-                "stock_count": len(codes),
+                "stock_count": len(stock_files(data_dir)),
+                "requested_codes": len(codes),
+                "no_history_codes": sorted(no_history_codes),
                 "price_adjustment": "backward",
                 "raw_close_column": "close_raw",
                 "market_cap_semantics": "circulating_market_cap_cny",
@@ -421,7 +437,10 @@ def rebuild(
             os.replace(temporary_manifest, manifest_path)
             report["dataset_manifest"] = str(manifest_path)
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"[OK] THS 重建完成: {report['status']} files={len(codes)}")
+        print(
+            f"[OK] THS 重建完成: {report['status']} "
+            f"files={staged} no_history={len(no_history_codes)}"
+        )
         if not commit:
             print(f"隔离目录: {stage_dir}; 如需切换请在复核报告后加 --commit")
         return 0
