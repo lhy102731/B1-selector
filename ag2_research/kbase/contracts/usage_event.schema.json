@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ag2/kbase/usage_event.schema.json",
+  "title": "KBase Usage Event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "timestamp", "event_type", "catalog_version", "tool", "query_hash",
+    "filters", "source_ids", "layer", "result_count", "latency_ms", "outcome"
+  ],
+  "properties": {
+    "timestamp": {"type": "string", "minLength": 1},
+    "event_type": {"enum": ["overview", "browse", "search", "open", "trace", "source_brief"]},
+    "catalog_version": {"type": ["string", "null"]},
+    "tool": {"type": "string", "minLength": 1},
+    "query_hash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "filters": {"type": "object"},
+    "source_ids": {"type": "array", "items": {"type": "string"}},
+    "layer": {"type": ["string", "null"]},
+    "result_count": {"type": ["integer", "null"], "minimum": 0},
+    "latency_ms": {"type": "number", "minimum": 0},
+    "outcome": {"enum": ["ok", "no_result", "refine", "error"]}
+  }
+}

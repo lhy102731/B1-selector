@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ag2/kbase/source_brief.schema.json",
+  "title": "KBase Source Brief",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "brief_id",
+    "catalog_version",
+    "research_gap",
+    "sources_consulted",
+    "source_observations",
+    "disagreements_and_limits",
+    "missing_evidence",
+    "agent_inference_boundary",
+    "handoff_questions"
+  ],
+  "properties": {
+    "brief_id": {"type": "string", "minLength": 1},
+    "catalog_version": {"type": "string", "minLength": 1},
+    "research_gap": {"type": "string", "minLength": 1},
+    "sources_consulted": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "voice_role", "date", "reliability", "evidence_refs"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "voice_role": {"type": "string", "minLength": 1},
+          "date": {"type": ["string", "null"]},
+          "reliability": {"enum": ["low", "medium", "high", "unverified"]},
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "source_observations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_id", "source_says", "context"],
+        "properties": {
+          "source_id": {"type": "string", "minLength": 1},
+          "source_says": {"type": "string", "minLength": 1},
+          "context": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "disagreements_and_limits": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "agent_inference_boundary": {
+      "const": "以下内容尚未进行AG2推断"
+    },
+    "handoff_questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

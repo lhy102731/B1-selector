@@ -1,0 +1,61 @@
+schema_version: 1
+description: Frozen P2 holdout queries not used while tuning the original 30-case regression set.
+max_results: 5
+forbidden_scopes:
+  - wiki/outputs/quality-audits
+  - wiki/outputs/event-cards
+  - wiki/outputs/projects
+acceptance:
+  known_item_recall_at_5: 0.80
+  output_pollution: 0.00
+cases:
+  - id: holdout-beijing-2021-11-24
+    intent: exact_person_date
+    query: 北京炒家 2021-11-24 扫太快了
+    expected: {source_ids: [209b7aaf7a436d727eb45569b467b2d46102bc9ba52104481e8fad558435336f]}
+    evidence_layer_required: true
+  - id: holdout-beijing-2021-10-11
+    intent: exact_person_date
+    query: 北京炒家 2021-10-11 杀猪盘亏损记录
+    expected: {source_ids: [22922244f987f7193a9a7e21f42551761fe5cde8d6ce27754e7639b17520e84f]}
+    evidence_layer_required: true
+  - id: holdout-beijing-2021-11-10
+    intent: exact_person_date
+    query: 北京炒家 2021-11-10 一度全军覆没
+    expected: {source_ids: [4347dac2c953b48ab127093d45e34573f36baaebf111ee7081df8ecd176456cf]}
+    evidence_layer_required: true
+  - id: holdout-trading-psychology-book
+    intent: concept
+    query: Trading in the Zone 自信 自律 赢家心态
+    expected: {source_ids: [7398e84d3b4740844de383fff52945a87e71309ce6f6190f2e372e13db5fb131]}
+    evidence_layer_required: true
+  - id: holdout-fupange-35
+    intent: family
+    query: 复盘哥 A股情绪周期战法 第35节 短线被套如何处理
+    expected: {source_ids: [0373c7dfdc32915c4c7075901523982eb3c3a7e8dc38931c406bb2374dd940d6]}
+    evidence_layer_required: true
+  - id: holdout-observe-sentiment
+    intent: concept
+    query: 游资训练营 如何观察市场情绪
+    expected: {source_ids: [fcced62a8ad9cd0a7dc10228bde8e41595c3082551547b8610a94c04a5702c0d]}
+    evidence_layer_required: true
+  - id: holdout-laoshou-qa
+    intent: family
+    query: 交易老手98 N形战法 留言问答1114
+    expected: {source_ids: [1c74a229a26af0549087bd7d217dd5391c42f0e5304c75d7acac8b57bff130fa]}
+    evidence_layer_required: true
+  - id: holdout-wyckoff-illustrated
+    intent: concept
+    query: 威科夫量价分析图解
+    expected: {source_ids: [ff2e6d17577e81331f84a44b23050584c3a9b3640c0200c1a014789c240f26bd]}
+    evidence_layer_required: true
+  - id: holdout-cross-discipline
+    intent: cross_source
+    query: 对比北京炒家“程序化打板破坏涨停板质量”与复盘哥“龙头接力”
+    expected: {source_ids: [7226f004c5681d772933515cfde78cf0fd471e034b0f8b0c555eb7ad6f91ce0c, c01577b169d43afbd343a74a232d557047d33d872f0ddba6519ab43f665b32db], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: holdout-negative
+    intent: negative
+    query: 木星租赁温度指数
+    expected: {no_result: true}
+    evidence_layer_required: false

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.ag2/kbase/catalog_entry.schema.json",
+  "title": "KBase Catalog Entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalog_schema_version",
+    "source_id",
+    "object_type",
+    "title",
+    "aliases",
+    "people",
+    "family_id",
+    "voice_role",
+    "source_type",
+    "date_start",
+    "date_end",
+    "topics",
+    "summary",
+    "reliability",
+    "review_status",
+    "available_layers",
+    "warnings",
+    "parent_ids",
+    "paths",
+    "content_fingerprint",
+    "source_schema_version"
+  ],
+  "properties": {
+    "catalog_schema_version": {"type": "integer", "minimum": 1},
+    "source_id": {"type": "string", "minLength": 1},
+    "object_type": {
+      "enum": ["source_packet", "family", "source_note", "book", "video", "event_card", "map"]
+    },
+    "title": {"type": "string", "minLength": 1},
+    "aliases": {"type": "array", "items": {"type": "string"}},
+    "people": {"type": "array", "items": {"type": "string"}},
+    "family_id": {"type": ["string", "null"]},
+    "voice_role": {"type": "string", "minLength": 1},
+    "source_type": {"type": "string", "minLength": 1},
+    "date_start": {"type": ["string", "null"]},
+    "date_end": {"type": ["string", "null"]},
+    "topics": {"type": "array", "items": {"type": "string"}},
+    "summary": {"type": "string"},
+    "reliability": {"enum": ["low", "medium", "high", "unverified"]},
+    "review_status": {"enum": ["source_only", "review_required", "reviewed", "blocked"]},
+    "available_layers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"enum": ["summary", "statements", "evidence", "raw", "visual"]}
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "parent_ids": {"type": "array", "items": {"type": "string"}},
+    "paths": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "content_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_schema_version": {"type": ["integer", "string", "null"]}
+  }
+}

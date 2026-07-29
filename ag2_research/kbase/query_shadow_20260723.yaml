@@ -1,0 +1,70 @@
+schema_version: 1
+suite_id: semantic-shadow-20260723-v1
+frozen_at: 2026-07-23T00:00:00+08:00
+tuning_status: never_used_for_model_or_fusion_selection
+description: Frozen post-release shadow queries selected from catalog metadata before first execution.
+max_results: 5
+forbidden_scopes:
+  - wiki/outputs/quality-audits
+  - wiki/outputs/event-cards
+  - wiki/outputs/projects
+acceptance:
+  known_item_recall_at_5: 0.80
+  output_pollution: 0.00
+  trace_success: 1.00
+  brief_compliance: 1.00
+cases:
+  - id: shadow-beijing-index-loss-2020-09-16
+    intent: exact_person_date
+    query: 北京炒家 2020-09-16 指数预判错误 亏肿了
+    expected: {source_ids: [03b9fa120f233f003f79ae1b308546fccbbd3bd57a95bdde28e09911e2d7ba4e]}
+    evidence_layer_required: true
+  - id: shadow-beijing-banker-risk-2020-01-10
+    intent: exact_person_date
+    query: 北京炒家 2020-01-10 垃圾庄股 直接剁
+    expected: {source_ids: [0a963c4bd81f44476642c8aba46010e0e8e076ac7fb4f03290fdae4e6d7cfdab]}
+    evidence_layer_required: true
+  - id: shadow-statistical-learning-bias-variance
+    intent: concept
+    query: 统计学习 偏差 方差权衡 监督学习
+    expected: {source_ids: [00b3467a97115c621c86766fbdd3f10dcf03df661b155a201a57f12e3458c5bb]}
+    evidence_layer_required: true
+  - id: shadow-cashflow-portrait
+    intent: concept
+    query: 现金流肖像 企业财报 选股筛选
+    expected: {source_ids: [05e87f28b5b6e3a8976cba548ae939559a811c81783707c62086717f2e02503d]}
+    evidence_layer_required: true
+  - id: shadow-market-emotion-four-stages
+    intent: concept
+    query: 大盘情绪周期 四阶段 龙头与指数关系
+    expected: {source_ids: [005d11cee30db47f656c68f44ab1143b6c33184315f008ee25cda4a6ae134fc6]}
+    evidence_layer_required: true
+  - id: shadow-new-wyckoff-supply-demand
+    intent: concept
+    query: 新威科夫 供求关系 主力资金行为
+    expected: {source_ids: [14e10143787b71e8839bae3d15138b8d1b7940e5aa6696fcd4188401479b1bb7]}
+    evidence_layer_required: true
+  - id: shadow-floating-chips-message-premium
+    intent: concept
+    query: 消息溢价 浮动筹码 涨停板稳定性
+    expected: {source_ids: [158b7075ed571372a5a88b988559c767e6e36dd5be019683b93e65141fc04a14]}
+    evidence_layer_required: true
+  - id: shadow-cross-emotion-evolution
+    intent: cross_source
+    query: 对比大盘情绪周期四阶段与赚钱效应拐点后的市场演变
+    expected:
+      source_ids: [005d11cee30db47f656c68f44ab1143b6c33184315f008ee25cda4a6ae134fc6, 0c281e71d443712ab7f84ad842286c361ac47e0c5b450d85de7be94ef29b2bcc]
+      minimum_distinct_sources: 2
+    evidence_layer_required: true
+  - id: shadow-cross-risk-frameworks
+    intent: cross_source
+    query: 对比以交易为生的资金风险规则与股市风险避坑指南
+    expected:
+      source_ids: [02b2ade9d74dc31b5392106aa0bfc37b40ba7fc75855ee140082a2c6387eeae1, 08a5486c6932a2ab221eb4d66e2b87ccab3570b6afe29955cf6c39021790ec5b]
+      minimum_distinct_sources: 2
+    evidence_layer_required: true
+  - id: shadow-negative
+    intent: negative
+    query: 土星房地产涨停情绪温度计771926
+    expected: {no_result: true}
+    evidence_layer_required: false

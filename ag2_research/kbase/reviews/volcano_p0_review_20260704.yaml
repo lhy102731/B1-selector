@@ -1,0 +1,45 @@
+reviewed_at: 2026-07-04
+scope: P0 governance, contracts, query baseline, and prompt boundaries
+authority: advisory_only
+summary:
+  accepted_directly: 0
+  rejected_or_nonresponsive: 5
+  governing_decision: deterministic contracts and local tests override model suggestions
+reviews:
+  - reviewer: DeepSeek
+    response_status: completed
+    decision: rejected
+    reason: Proposed storing factor lifecycle objects, formulas, parameters, and research queues in KBase, directly violating the source-library boundary.
+  - reviewer: GLM
+    response_status: completed
+    decision: rejected
+    reason: Misread the legacy baseline as the new system and required a traditional vector-RAG pipeline outside the approved progressive-disclosure scope.
+  - reviewer: Doubao
+    response_status: completed
+    decision: rejected
+    reason: Treated failing legacy metrics as P0 acceptance results and repeated unsupported assumptions about source pollution.
+  - reviewer: Kimi
+    response_status: empty
+    decision: rejected
+    reason: No auditable output was returned.
+  - reviewer: MiniMax
+    response_status: empty
+    decision: rejected
+    reason: No auditable output was returned.
+retained_observation:
+  - The low legacy retrieval baseline independently confirms the need for P1/P2 catalog and tool work; it does not authorize a RAG or factor layer inside KBase.
+second_round_after_p1_p4:
+  status: no_accepted_findings
+  reviews:
+    - reviewer: DeepSeek
+      result: timeout
+    - reviewer: GLM
+      result: rejected
+      reason: Hallucinated 0% retrieval, confused 2,284 source packets with 2,833 total catalog objects, and invented a required count of 21 telemetry events despite supplied contrary metrics.
+    - reviewer: Doubao
+      result: timeout
+    - reviewer: Kimi
+      result: empty
+    - reviewer: MiniMax
+      result: empty
+  action: Local contracts, frozen holdout queries, and deterministic tests remain authoritative.

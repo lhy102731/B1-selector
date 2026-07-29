@@ -1,0 +1,167 @@
+schema_version: 1
+description: P0 fixed queries grounded in real KBase source packets; targets are discovery expectations, not factor ideas.
+max_results: 5
+forbidden_scopes:
+  - wiki/outputs/quality-audits
+  - wiki/outputs/event-cards
+  - wiki/outputs/projects
+acceptance:
+  known_item_recall_at_5: 0.90
+  output_pollution: 0.00
+  trace_success: 1.00
+  brief_compliance: 1.00
+cases:
+  - id: exact-beijing-2021-11-25
+    intent: exact_person_date
+    query: 北京炒家 2021-11-25 20CM接盘大法
+    expected: {source_ids: [4a1bfa5bf94c7f40dd614346c063fc12fdec70642526d0f54a18470065db8fa6], title_contains: [20CM接盘大法]}
+    evidence_layer_required: true
+  - id: exact-beijing-2021-11-03
+    intent: exact_person_date
+    query: 北京炒家 2021-11-03 程序化打板
+    expected: {source_ids: [7226f004c5681d772933515cfde78cf0fd471e034b0f8b0c555eb7ad6f91ce0c], title_contains: [程序化打板]}
+    evidence_layer_required: true
+  - id: exact-beijing-2021-04-20
+    intent: exact_person_date
+    query: 北京炒家 2021-04-20 炸板率
+    expected: {source_ids: [4bf360c7c58e6afe7f37f0ec97d903c5b7f40f8999522b5f109e697117fe1f8f], title_contains: [炸板率]}
+    evidence_layer_required: true
+  - id: exact-fanbei-2018-12-02
+    intent: exact_person_date
+    query: 凡倍无名 2018-12-02 股票作手讲义答疑
+    expected: {source_ids: [4f54598cb695a7041f694bd394a70c38ba46a289b0b5e28d51e62051b022ef08], title_contains: [20181202凡倍无名]}
+    evidence_layer_required: true
+  - id: exact-fanbei-2018-12-12
+    intent: exact_person_date
+    query: 凡倍无名 2018-12-12 股票作手讲义
+    expected: {source_ids: [6f4b435772afc65802876eeb4e89eef1114f2643232399b9a8af8cef3aa83a92], title_contains: [2018.12.12]}
+    evidence_layer_required: true
+  - id: exact-laoshou-2019-10-24
+    intent: exact_person_date
+    query: 交易老手98 2019-10-24 N形战法
+    expected: {source_ids: [0904b3e0d6b8a44c74b020cf1f63cf88c12ff2d1c485597e513bf9e5a2f6d265, bbab89a129cdfecc0d3b4ebd46baea3b6afbbc016f98e03fdbec44c3c5028c0b], title_contains: [N形战法精华版20191024]}
+    evidence_layer_required: true
+
+  - id: family-beijing
+    intent: family
+    query: 浏览北京炒家本人盘后复盘家族
+    expected: {source_ids: [4a1bfa5bf94c7f40dd614346c063fc12fdec70642526d0f54a18470065db8fa6], family_ids: [primary_person/北京炒家/primary]}
+    evidence_layer_required: false
+  - id: family-fanbei
+    intent: family
+    query: 浏览凡倍无名股票作手培训资料家族
+    expected: {source_ids: [4f54598cb695a7041f694bd394a70c38ba46a289b0b5e28d51e62051b022ef08], family_ids: [primary_person/凡倍无名/primary]}
+    evidence_layer_required: false
+  - id: family-laoshou98
+    intent: family
+    query: 浏览交易老手98 N形战法及留言家族
+    expected: {source_ids: [0904b3e0d6b8a44c74b020cf1f63cf88c12ff2d1c485597e513bf9e5a2f6d265], family_ids: [primary_person/交易老手98/primary]}
+    evidence_layer_required: false
+  - id: family-yangjia
+    intent: family
+    query: 浏览炒股养家本人资料与音频转述
+    expected: {source_ids: [0ab93d8e7ee2b45d449491c043a34a435fee155b18cacc5c7f0caad1e32cf0bc], family_ids: [primary_person/炒股养家/narrated_adaptation]}
+    evidence_layer_required: false
+  - id: family-fupange
+    intent: family
+    query: 浏览复盘哥A股情绪周期课程
+    expected: {source_ids: [75480638a2157eb1af400624915bb6156ff6ef1d2a2e81bff160072010f7aef8], title_contains: [复盘哥]}
+    evidence_layer_required: false
+  - id: family-tonghuashun
+    intent: family
+    query: 浏览同花顺炒股软件从入门到精通课程
+    expected: {source_ids: [38e54a128d9d4d82a8c3cb0945faa6bd301d4e6e40976a15551a6281384cca22], family_ids: [exact_family_key/同花顺炒股软件从入门到精通/narrated_adaptation]}
+    evidence_layer_required: false
+
+  - id: concept-limit-break
+    intent: concept
+    query: 炸板 低流动性 承接
+    expected: {source_ids: [4bf360c7c58e6afe7f37f0ec97d903c5b7f40f8999522b5f109e697117fe1f8f], title_contains: [炸板]}
+    evidence_layer_required: true
+  - id: concept-sentiment-cycle
+    intent: concept
+    query: 市场情绪 退潮 修复 冰点
+    expected: {source_ids: [06a6875515077da50acaf1d1c653b1571c130e04a2799ce80a960c9bad832e31], title_contains: [市场情绪]}
+    evidence_layer_required: true
+  - id: concept-wyckoff-pullback
+    intent: concept
+    query: 威科夫 缩量 回调 量价关系
+    expected: {source_ids: [97cb57babfe7d41e3ecc572c273d8b6da92d12de8c9de171ece5239712d28383, 021b6470ca6c966696384497d86b62fb80344fe7a6881ec66232b23a1ed25d1b, a2e526a0021e607ac3ac2baabd2b3c16bf59d8d23926c0fef69900c348815f6e], title_contains: [威科夫]}
+    evidence_layer_required: true
+  - id: concept-n-pattern
+    intent: concept
+    query: N形战法 交易老手98
+    expected: {source_ids: [0904b3e0d6b8a44c74b020cf1f63cf88c12ff2d1c485597e513bf9e5a2f6d265], title_contains: [N形战法]}
+    evidence_layer_required: true
+  - id: concept-auction
+    intent: concept
+    query: 集合竞价 龙头 接力选择
+    expected: {source_ids: [75480638a2157eb1af400624915bb6156ff6ef1d2a2e81bff160072010f7aef8, 969d96cf2a30f8941f1ce41df7d98e9986d5f10fc904383c3f52c1619cbd17d9], title_contains: [集合竞价]}
+    evidence_layer_required: true
+  - id: concept-position-risk
+    intent: concept
+    query: 仓位管理 回撤控制 风险
+    expected: {source_ids: [dbb651126166c71eae7a570d5f09c3f21899393ae3848506ef56fe630b1dee19], title_contains: [短线仓位管理]}
+    evidence_layer_required: true
+  - id: concept-sector-effect
+    intent: concept
+    query: 板块轮动 赚钱效应 拐点
+    expected: {source_ids: [0c281e71d443712ab7f84ad842286c361ac47e0c5b450d85de7be94ef29b2bcc], title_contains: [赚钱效应拐点]}
+    evidence_layer_required: true
+  - id: concept-trading-psychology
+    intent: concept
+    query: 交易心理 自律 赢家心态
+    expected: {source_ids: [7398e84d3b4740844de383fff52945a87e71309ce6f6190f2e372e13db5fb131], title_contains: [交易心理分析]}
+    evidence_layer_required: true
+
+  - id: cross-sentiment-voices
+    intent: cross_source
+    query: 对比炒股养家“得市场情绪者得天下”与复盘哥“基于情绪周期的接力选择”
+    expected: {source_ids: [06a6875515077da50acaf1d1c653b1571c130e04a2799ce80a960c9bad832e31, 75480638a2157eb1af400624915bb6156ff6ef1d2a2e81bff160072010f7aef8], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: cross-limit-up-risk
+    intent: cross_source
+    query: 对比北京炒家2021-04-20炸板率复盘与“如何买卡位龙头股”的追涨风险
+    expected: {source_ids: [4bf360c7c58e6afe7f37f0ec97d903c5b7f40f8999522b5f109e697117fe1f8f, c758f0372c8e3f73c7a474cc7937f8605981cf64967ff72b955658fcaf79e46c], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: cross-discipline
+    intent: cross_source
+    query: 对比《交易心理分析》与炒股养家“交易是一件严谨的事情”
+    expected: {source_ids: [7398e84d3b4740844de383fff52945a87e71309ce6f6190f2e372e13db5fb131, 0ab93d8e7ee2b45d449491c043a34a435fee155b18cacc5c7f0caad1e32cf0bc], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: cross-volume-price
+    intent: cross_source
+    query: 对比《量价分析：威科夫盘口解读方法》与柚子小M“量价关系2”
+    expected: {source_ids: [021b6470ca6c966696384497d86b62fb80344fe7a6881ec66232b23a1ed25d1b, a2e526a0021e607ac3ac2baabd2b3c16bf59d8d23926c0fef69900c348815f6e], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: cross-risk-management
+    intent: cross_source
+    query: 对比“从小散到游资的短线仓位管理”与泽熙“风险控制”
+    expected: {source_ids: [dbb651126166c71eae7a570d5f09c3f21899393ae3848506ef56fe630b1dee19, 97366fd03fa5fd6b83460b6642566f0093b5c7b82f93972a08ae4bbfeac5f24e, 9595848c42617e27ac8280e1cce1b2fba21bce73dfc6572dd185fdb88a98ade1], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+  - id: cross-lhb
+    intent: cross_source
+    query: 对比“看龙虎榜最容易陷入的2个误区”与游资课程“打开游资大门的钥匙——溢价”
+    expected: {source_ids: [ec1a84d0590c3f8db5dc1878c706e16c1a2dd58e19d28a7277a6e213bc7f2506, 6971eca08b6449b93d7231c39443d12500790fad0b1ac4988de73ad15bb22e5b], minimum_distinct_sources: 2}
+    evidence_layer_required: true
+
+  - id: negative-no-source
+    intent: negative
+    query: 火星地产火星租金指数
+    expected: {no_result: true}
+    evidence_layer_required: false
+  - id: negative-gibberish
+    intent: negative
+    query: zzqv不存在词条991827
+    expected: {no_result: true}
+    evidence_layer_required: false
+  - id: negative-too-broad
+    intent: negative
+    query: 赚钱
+    expected: {requires_refinement: true}
+    evidence_layer_required: false
+  - id: negative-output-pollution
+    intent: negative
+    query: 北京炒家 事件卡 因子假设
+    expected: {exclude_outputs: true}
+    evidence_layer_required: false
