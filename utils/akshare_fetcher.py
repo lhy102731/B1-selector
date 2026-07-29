@@ -1,8 +1,7 @@
 """
 A股数据抓取模块 - 后复权 K线 + 历史流通市值
-优先级: baostock (后复权) > 东方财富 (后复权+市值+换手率) > akshare (后复权)
+优先级: baostock (后复权+PE/PB) > 腾讯K线 (后复权) > mootdx (前复权+因子转后复权)
 """
-import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 import time
@@ -12,11 +11,16 @@ import json
 import requests
 import random
 from http.client import RemoteDisconnected
-import multiprocessing
-from functools import partial
 import os
 import contextlib
 from tqdm import tqdm
+
+# mootdx TCP行情（通达信，不封IP）
+try:
+    from mootdx.quotes import Quotes
+    MOOTDX = Quotes.factory(market='std')
+except Exception:
+    MOOTDX = None
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -24,6 +28,7 @@ from utils.csv_manager import CSVManager
 
 # 设置请求会话
 session = requests.Session()
+session.trust_env = False
 session.headers.update({
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/javascript, */*',
@@ -84,7 +89,7 @@ DEFAULT_STOCK_LIST = {
 
 
 # ==================== 多进程任务函数（模块顶层） ====================
-def _update_one_stock_mp(code, days_to_fetch, market_cap_map, data_dir):
+def _update_one_stock_mp(code, days_to_fetch, quote_data, data_dir, skip_baostock=False):
     import time
     import random
     time.sleep(random.uniform(0.1, 0.5))
@@ -93,10 +98,68 @@ def _update_one_stock_mp(code, days_to_fetch, market_cap_map, data_dir):
         fetcher = AKShareFetcher(data_dir)
         existing_df = fetcher.csv_manager.read_stock(code)
         old_count = len(existing_df)
-        df = fetcher.fetch_stock_update(code, days=days_to_fetch, skip_baostock_login=False, verbose=False)
+        df = fetcher.fetch_stock_update(code, days=days_to_fetch, skip_baostock_login=skip_baostock, verbose=False)
         if df is not None and not df.empty:
-            if 'market_cap' not in df.columns or df['market_cap'].isna().all():
-                df['market_cap'] = market_cap_map.get(code, 0)
+            is_tencent_kline = skip_baostock or df.attrs.get('source') == 'tencent'
+            # 只保留新日期，防止腾讯K线(缺字段)覆盖baostock完整数据
+            if not existing_df.empty:
+                existing_dates = set(pd.to_datetime(existing_df['date']).dt.strftime('%Y-%m-%d'))
+                df['date_str'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+                df = df[~df['date_str'].isin(existing_dates)]
+                df = df.drop(columns=['date_str'])
+            if df.empty:
+                return (code, True, 0, None)  # 无新数据
+
+            # Tencent K-line rows do not carry the same complete fundamentals as
+            # baostock, and their hfq baseline can differ from existing baostock
+            # history. In fast mode, only persist the latest row after quote
+            # enrichment, then reject rows that create an obvious price-level
+            # discontinuity against the local history.
+            if is_tencent_kline and len(df) > 1:
+                df = df.sort_values('date', ascending=False).head(1).copy()
+
+            # 从腾讯行情数据补全腾讯K线缺失字段
+            stock_q = quote_data.get(code, {})
+            # 补 market_cap (整列)
+            has_mc = 'market_cap' in df.columns and not df['market_cap'].isna().all() and (df['market_cap'] > 0).any()
+            if not has_mc:
+                df['market_cap'] = stock_q.get('market_cap', 0)
+            # 补最新一行字段（腾讯K线缺失 turnover/PE/PB/amount/change_pct）
+            if stock_q:
+                latest_idx = df.index[0]  # 降序排列，第0行=最新
+                for col, key in [
+                    ('turnover', 'turnover'),
+                    ('pe_dynamic', 'pe_dynamic'),
+                    ('pb', 'pb'),
+                    ('change_pct', 'change_pct'),
+                    ('amount', 'amount'),
+                ]:
+                    val = stock_q.get(key)
+                    if col in df.columns and val is not None and val != 0:
+                        if pd.isna(df.at[latest_idx, col]) or df.at[latest_idx, col] == 0:
+                            df.at[latest_idx, col] = val
+
+            if is_tencent_kline and not existing_df.empty and not df.empty:
+                existing_sorted = existing_df.copy()
+                existing_sorted['date'] = pd.to_datetime(existing_sorted['date'])
+                existing_sorted = existing_sorted.sort_values('date', ascending=False)
+                anchor = existing_sorted.iloc[0]
+                anchor_close = pd.to_numeric(pd.Series([anchor.get('close')]), errors='coerce').iloc[0]
+
+                kept_rows = []
+                prev_close = anchor_close
+                for _, row in df.sort_values('date').iterrows():
+                    row_close = pd.to_numeric(pd.Series([row.get('close')]), errors='coerce').iloc[0]
+                    if pd.notna(prev_close) and prev_close > 0 and pd.notna(row_close) and row_close > 0:
+                        gap = abs(row_close / prev_close - 1)
+                        if gap > 0.35:
+                            continue
+                    kept_rows.append(row)
+                    prev_close = row_close
+                if not kept_rows:
+                    return (code, True, 0, None)
+                df = pd.DataFrame(kept_rows).sort_values('date', ascending=False)
+
             fetcher.csv_manager.update_stock(code, df)
             new_df = fetcher.csv_manager.read_stock(code)
             new_count = len(new_df)
@@ -128,6 +191,9 @@ def _init_one_stock_mp(code, market_cap_map, data_dir):
         return (code, False, str(e))
 
 
+from utils.baostock_lock import serialized_baostock
+
+
 class AKShareFetcher:
     def __init__(self, data_dir="data"):
         self.csv_manager = CSVManager(data_dir)
@@ -151,9 +217,186 @@ class AKShareFetcher:
         except Exception as e:
             print(f"  保存股票名称失败: {e}")
 
-    def _fetch_market_cap_tencent(self, stock_codes):
-        market_cap_map = {}
-        batch_size = 100
+    @serialized_baostock
+    def _fetch_stock_list_baostock(self):
+        """使用baostock获取全量A股列表（含退市股），30天磁盘缓存"""
+        import baostock as bs
+        from contextlib import redirect_stdout
+        import os
+        import re
+
+        cache_file = self.full_data_dir / 'all_stocks_baostock.json'
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                cache_time = cached.get('_cache_time', 0)
+                if time.time() - cache_time < 30 * 24 * 3600:
+                    stocks = {k: v for k, v in cached.items() if not k.startswith('_')}
+                    if len(stocks) > 4000:
+                        return stocks
+            except:
+                pass
+
+        stocks = {}
+        try:
+            with redirect_stdout(open(os.devnull, 'w')):
+                lg = bs.login()
+            if lg.error_code != '0':
+                print(f"  baostock登录失败: {lg.error_msg}")
+                return {}
+        except Exception as e:
+            print(f"  baostock登录异常: {e}")
+            return {}
+
+        try:
+            rs = bs.query_stock_basic()
+            if rs.error_code != '0':
+                print(f"  baostock query_stock_basic失败: {rs.error_msg}")
+                return {}
+
+            exclude_keywords = ['债', '基', 'ETF', 'LOF', '基金', '理财', '信托',
+                              'B股', '指数', '国债', '企债', '转债', '回购', 'R-', 'GC']
+            code_pattern = re.compile(r'^(00|30|60|68)\d{4}$')
+
+            while (rs.error_code == '0') & rs.next():
+                row = rs.get_row_data()
+                # fields: code, code_name, ipoDate, outDate, type, status
+                bs_code = row[0]
+                name = row[1]
+                stock_type = row[4]  # 1=股票
+
+                if stock_type != '1':
+                    continue
+
+                # 提取纯数字代码 (sh.600519 -> 600519)
+                if '.' in bs_code:
+                    pure_code = bs_code.split('.')[1]
+                else:
+                    continue
+
+                if not code_pattern.match(pure_code):
+                    continue
+                if any(kw in name for kw in exclude_keywords):
+                    continue
+
+                stocks[pure_code] = name
+
+            # 缓存30天
+            if stocks:
+                stocks['_cache_time'] = time.time()
+                try:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
+                        json.dump(stocks, f, ensure_ascii=False, indent=2)
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"  baostock股票列表查询异常: {e}")
+        finally:
+            try:
+                with redirect_stdout(open(os.devnull, 'w')):
+                    bs.logout()
+            except:
+                pass
+
+        # 返回不含元数据的纯股票字典
+        return {k: v for k, v in stocks.items() if not k.startswith('_')}
+
+    def _fetch_delisted_stocks_akshare(self):
+        """备选方案：使用akshare退市股API获取退市A股列表，7天磁盘缓存"""
+        cache_file = self.full_data_dir / 'delisted_stocks_akshare.json'
+        if cache_file.exists():
+            try:
+                with open(cache_file, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                cache_time = cached.get('_cache_time', 0)
+                if time.time() - cache_time < 7 * 24 * 3600:
+                    stocks = {k: v for k, v in cached.items() if not k.startswith('_')}
+                    if len(stocks) > 100:
+                        return stocks
+            except:
+                pass
+
+        stocks = {}
+        try:
+            import akshare as ak
+            # 上交所退市股
+            try:
+                sh = ak.stock_info_sh_delist()
+                if not sh.empty:
+                    for _, row in sh.iterrows():
+                        code = str(row.iloc[0]).strip()
+                        name = str(row.iloc[1]).strip()
+                        if not code.isdigit() or len(code) != 6:
+                            continue
+                        if not code.startswith(('60', '68')):
+                            continue
+                        stocks[code] = name
+            except Exception as e:
+                print(f"  akshare上交所退市股获取失败: {e}")
+
+            # 深交所退市股
+            try:
+                sz = ak.stock_info_sz_delist()
+                if not sz.empty:
+                    for _, row in sz.iterrows():
+                        code = str(row.iloc[0]).strip()
+                        name = str(row.iloc[1]).strip()
+                        if not code.isdigit() or len(code) != 6:
+                            continue
+                        if not code.startswith(('00', '30')):
+                            continue
+                        stocks[code] = name
+            except Exception as e:
+                print(f"  akshare深交所退市股获取失败: {e}")
+
+            # 为不含退/ST的退市股名称加退后缀，确保被现有过滤器识别
+            if stocks:
+                for code in list(stocks.keys()):
+                    if code.startswith('_'):
+                        continue
+                    name = stocks[code]
+                    if '退' not in name and 'ST' not in name:
+                        stocks[code] = name + '退'
+
+                stocks['_cache_time'] = time.time()
+                try:
+                    with open(cache_file, 'w', encoding='utf-8') as f:
+                        json.dump(stocks, f, ensure_ascii=False, indent=2)
+                except:
+                    pass
+
+        except Exception as e:
+            print(f"  akshare退市股列表获取异常: {e}")
+
+        return {k: v for k, v in stocks.items() if not k.startswith('_')}
+
+    def _fetch_supplemental_stocks(self):
+        """获取补充股票列表（退市/历史股票），优先baostock全量，备选akshare退市API"""
+        # 优先：baostock全量列表（含退市股+当前股，缓存30天）
+        stocks = self._fetch_stock_list_baostock()
+        if stocks:
+            print(f"  baostock全量列表: {len(stocks)} 只")
+            return stocks
+
+        # 备选：akshare退市股API
+        stocks = self._fetch_delisted_stocks_akshare()
+        if stocks:
+            print(f"  akshare退市股列表: {len(stocks)} 只")
+        return stocks
+
+    def _fetch_quote_batch_tencent(self, stock_codes):
+        """批量获取腾讯实时行情数据（流通市值+换手率+PE/PB+成交额+涨跌幅）
+
+        返回: {code: {market_cap, turnover, pe_dynamic, pb, change_pct, amount, volume_ratio, ...}}
+        腾讯 qt.gtimg.cn 字段映射:
+          [32] change_pct(%)  [37] amount(万)  [38] turnover(%)
+          [39] PE(TTM)  [44] 流通市值(亿)  [45] 总市值(亿)  [46] PB
+          [49] 量比  [33] high  [34] low  [43] 振幅(%)
+        """
+        quote_data = {}
+        batch_size = 80
         total = len(stock_codes)
         try:
             for i in range(0, total, batch_size):
@@ -165,7 +408,7 @@ class AKShareFetcher:
                     else:
                         query_codes.append(f"sz{code}")
                 url = f"https://qt.gtimg.cn/q={','.join(query_codes)}"
-                resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
+                resp = session.get(url, timeout=REQUEST_TIMEOUT, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 })
                 lines = resp.text.strip().split(';')
@@ -177,18 +420,45 @@ class AKShareFetcher:
                                 continue
                             code = code_match[2:]
                             parts = line.split('~')
-                            if len(parts) >= 46:
-                                cap = float(parts[45]) if parts[45] else 0
-                                if cap > 0:
-                                    market_cap_map[code] = int(cap * 1e8)
+                            if len(parts) < 50:
+                                continue
+
+                            def _f(idx):
+                                """安全取float字段"""
+                                try:
+                                    v = parts[idx].strip()
+                                    return float(v) if v else 0.0
+                                except:
+                                    return 0.0
+
+                            market_cap_raw = _f(45)  # 总市值(亿)
+                            circ_cap_raw = _f(44)    # 流通市值(亿)
+
+                            quote_data[code] = {
+                                'market_cap': int(market_cap_raw * 1e8) if market_cap_raw > 0 else 0,
+                                'circ_market_cap': int(circ_cap_raw * 1e8) if circ_cap_raw > 0 else 0,
+                                'turnover': _f(38),         # 换手率(%)
+                                'pe_dynamic': _f(39) if _f(39) > 0 else None,   # PE(TTM)
+                                'pb': _f(46) if _f(46) > 0 else None,           # PB
+                                'change_pct': _f(32),       # 涨跌幅(%)
+                                'amount': _f(37) * 10000,   # 成交额(万元→元)
+                                'volume_ratio': _f(49),     # 量比
+                                'amplitude': _f(43),        # 振幅(%)
+                            }
                         except:
                             continue
-                if i % 500 == 0 and i > 0:
-                    print(f"  已获取 {i}/{total} 只流通市值...")
+                if (i + batch_size) % 500 == 0 and i > 0:
+                    print(f"  已获取 {min(i + batch_size, total)}/{total} 只行情数据...")
                     time.sleep(0.1)
         except Exception as e:
-            print(f"  腾讯接口获取流通市值失败: {e}")
-        return market_cap_map
+            print(f"  腾讯行情接口获取失败: {e}")
+        return quote_data
+
+    def _fetch_market_cap_tencent(self, stock_codes):
+        """兼容旧接口：批量获取流通市值（从行情接口提取）"""
+        quote_data = self._fetch_quote_batch_tencent(stock_codes)
+        return {code: info['market_cap'] for code, info in quote_data.items()
+                if info.get('market_cap', 0) > 0}
 
     def get_all_stock_codes(self, max_retries=3):
         print("正在获取A股股票列表...")
@@ -208,6 +478,16 @@ class AKShareFetcher:
                             continue
                         filtered[code] = name
                     if filtered:
+                        # 补充退市/历史股票（用于回测，避免幸存者偏差）
+                        supplemental = self._fetch_supplemental_stocks()
+                        if supplemental:
+                            added = 0
+                            for code, name in supplemental.items():
+                                if code not in filtered:
+                                    filtered[code] = name
+                                    added += 1
+                            if added > 0:
+                                print(f"  补充退市/历史股票: {added} 只 (总计 {len(filtered)} 只)")
                         print(f"[OK] 腾讯获取成功: {len(filtered)} 只A股股票")
                         self._save_stock_names(filtered)
                         return filtered
@@ -227,6 +507,16 @@ class AKShareFetcher:
                 for keyword in exclude_keywords:
                     all_stocks = all_stocks[~all_stocks['名称'].str.contains(keyword, na=False)]
                 stock_dict = dict(zip(all_stocks['代码'], all_stocks['名称']))
+                # 补充退市/历史股票
+                supplemental = self._fetch_supplemental_stocks()
+                if supplemental:
+                    added = 0
+                    for code, name in supplemental.items():
+                        if code not in stock_dict:
+                            stock_dict[code] = name
+                            added += 1
+                    if added > 0:
+                        print(f"  补充退市/历史股票: {added} 只 (总计 {len(stock_dict)} 只)")
                 print(f"[OK] akshare获取成功: {len(stock_dict)} 只A股股票")
                 self._save_stock_names(stock_dict)
                 return stock_dict
@@ -290,7 +580,7 @@ class AKShareFetcher:
                 query_codes = ','.join(query_codes_list)
                 url = f"https://qt.gtimg.cn/q={query_codes}"
                 try:
-                    resp = requests.get(url, timeout=REQUEST_TIMEOUT, headers={
+                    resp = session.get(url, timeout=REQUEST_TIMEOUT, headers={
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     })
                     lines = resp.text.strip().split(';')
@@ -328,9 +618,10 @@ class AKShareFetcher:
 
     # CSV输出列（baostock提供，不含振幅/涨跌额/量比/静态PE）
     _OUTPUT_COLUMNS = [
-        'date', 'open', 'high', 'low', 'close', 'volume', 'amount',
+        'date', 'open', 'high', 'low', 'close', 'close_raw', 'volume', 'amount',
         'turnover', 'change_pct', 'pe_dynamic', 'pb', 'ps', 'pcf', 'market_cap',
     ]
+    @serialized_baostock
     def _fetch_stock_history_baostock(self, stock_code, years=30):
         """baostock: 后复权K线 + 换手率 + PE/PB/PS/PCF (不含市值)"""
         import baostock as bs
@@ -416,7 +707,7 @@ class AKShareFetcher:
         return None
 
     def fetch_stock_history(self, stock_code, years=30, market_cap=None):
-        """获取股票历史K线: baostock(后复权) → 东方财富(后复权+全量字段)"""
+        """获取股票历史K线: baostock(后复权) → 腾讯(后复权备选)"""
         # 主力: baostock 后复权
         df = self._fetch_stock_history_baostock(stock_code, years)
         if df is not None and not df.empty:
@@ -424,90 +715,328 @@ class AKShareFetcher:
                 df['market_cap'] = market_cap
             print(f"[OK] baostock {len(df)}条")
             return df
-        print(f"  [ERR] baostock {stock_code} 历史数据失败")
+        # baostock失败，尝试腾讯API备选
+        df = self._fetch_stock_history_tencent(stock_code, years)
+        if df is not None and not df.empty:
+            if market_cap is not None:
+                df['market_cap'] = market_cap
+            print(f"[OK] 腾讯备选 {len(df)}条")
+            return df
+        print(f"  [ERR] {stock_code} 历史数据失败 (baostock+腾讯均不可用)")
         return None
 
 
+    def _fetch_stock_update_eastmoney(self, stock_code, days=10):
+        """Eastmoney public daily K-line update with local adjusted-price anchoring."""
+        try:
+            from utils.eastmoney_fetcher import EastmoneyFetcher
+            em = EastmoneyFetcher()
+            df = em.fetch_recent_update(stock_code, days=days + 10, adjust="hfq")
+            if df is None or df.empty:
+                return None
+
+            existing = self.csv_manager.read_stock(stock_code)
+            if existing is not None and not existing.empty and 'date' in existing.columns and 'close' in existing.columns:
+                existing = existing.copy()
+                existing['date'] = pd.to_datetime(existing['date'])
+                existing = existing.sort_values('date', ascending=False)
+                anchor = existing.iloc[0]
+                anchor_date = pd.to_datetime(anchor['date']).strftime('%Y-%m-%d')
+                try:
+                    anchor_close = float(anchor['close'])
+                except Exception:
+                    anchor_close = 0.0
+                if anchor_close > 0:
+                    df, factor = em.rescale_ohlc_to_anchor(df, anchor_date, anchor_close)
+                    if factor is None:
+                        return None
+
+            for col in ['pe_dynamic', 'pb', 'ps', 'pcf']:
+                if col not in df.columns:
+                    df[col] = None
+            if 'market_cap' not in df.columns:
+                df['market_cap'] = 0
+            df = df.sort_values('date', ascending=False).head(days)
+            df.attrs['source'] = 'eastmoney'
+            return df
+        except Exception:
+            return None
+
     def fetch_stock_update(self, stock_code, days=10, skip_baostock_login=False, verbose=False):
-        """增量更新: baostock 后复权全字段 (唯一数据源)"""
+        """Incremental update with every BaoStock-capable path serialized."""
+        df = self._fetch_stock_update_eastmoney(stock_code, days)
+        if df is not None and not df.empty:
+            if verbose:
+                print(f"[OK](eastmoney update {len(df)} rows)")
+            return df
+        if skip_baostock_login:
+            df = self._fetch_stock_update_tencent(stock_code, days)
+            if df is not None and not df.empty:
+                if verbose: print(f"[OK](腾讯更新 {len(df)}条)")
+                return df
+            return None
+        return self._fetch_stock_update_serialized(
+            stock_code,
+            days=days,
+            verbose=verbose,
+        )
+
+    @serialized_baostock
+    def _fetch_stock_update_serialized(self, stock_code, days=10, verbose=False):
+        """增量更新: 东方财富后复权(本地锚定) → baostock后复权 → 腾讯后复权备选"""
         import baostock as bs
         from contextlib import redirect_stdout
         import os
+        import socket
         def sf(val):
             try: return float(val) if val not in ('', None) else None
             except: return None
         def si(val):
             try: return int(float(val)) if val not in ('', None) else 0
             except: return 0
-        for attempt in range(2):
-            try:
-                end_date = datetime.now()
-                start_date = end_date - timedelta(days=days + 10)
-                start_str = start_date.strftime('%Y-%m-%d')
-                end_str = end_date.strftime('%Y-%m-%d')
-                if stock_code.startswith('6'):
-                    bs_code = f'sh.{stock_code}'
-                else:
-                    bs_code = f'sz.{stock_code}'
-                with redirect_stdout(open(os.devnull, 'w')):
-                    lg = bs.login()
-                if lg.error_code != '0':
-                    if attempt < 1: time.sleep(2); continue
-                    break
-                fields = "date,code,open,high,low,close,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
-                rs = bs.query_history_k_data_plus(
-                    bs_code, fields,
-                    start_date=start_str, end_date=end_str,
-                    frequency="d", adjustflag="1"
-                )
-                if rs.error_code != '0':
-                    if attempt < 1:
+
+        # 设置socket超时防止baostock login挂死
+        old_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(8)
+        baostock_ok = False
+        try:
+            for attempt in range(1):
+                try:
+                    end_date = datetime.now()
+                    start_date = end_date - timedelta(days=days + 10)
+                    start_str = start_date.strftime('%Y-%m-%d')
+                    end_str = end_date.strftime('%Y-%m-%d')
+                    if stock_code.startswith('6'):
+                        bs_code = f'sh.{stock_code}'
+                    else:
+                        bs_code = f'sz.{stock_code}'
+                    with redirect_stdout(open(os.devnull, 'w')):
+                        lg = bs.login()
+                    if lg.error_code != '0':
+                        break
+                    fields = "date,code,open,high,low,close,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
+                    rs = bs.query_history_k_data_plus(
+                        bs_code, fields,
+                        start_date=start_str, end_date=end_str,
+                        frequency="d", adjustflag="1"
+                    )
+                    if rs.error_code != '0':
                         with redirect_stdout(open(os.devnull, 'w')): bs.logout()
-                        time.sleep(2); continue
+                        break
+                    data_list = []
+                    while (rs.error_code == '0') & rs.next():
+                        row = rs.get_row_data()
+                        data_list.append({
+                            'date': row[0],
+                            'open': sf(row[2]) or 0.0,
+                            'high': sf(row[3]) or 0.0,
+                            'low': sf(row[4]) or 0.0,
+                            'close': sf(row[5]) or 0.0,
+                            'volume': si(row[6]),
+                            'amount': sf(row[7]) or 0.0,
+                            'turnover': sf(row[8]) or 0.0,
+                            'change_pct': sf(row[9]) or 0.0,
+                            'pe_dynamic': sf(row[10]),
+                            'pb': sf(row[11]),
+                            'ps': sf(row[12]),
+                            'pcf': sf(row[13]),
+                        })
+                    with redirect_stdout(open(os.devnull, 'w')):
+                        bs.logout()
+                    if data_list:
+                        df = pd.DataFrame(data_list)
+                        df['date'] = pd.to_datetime(df['date'])
+                        df = df.sort_values('date', ascending=False)
+                        df = df.head(days)
+                        df.attrs['source'] = 'baostock'
+                        if verbose: print(f"[OK](baostock更新 {len(df)}条)")
+                        baostock_ok = True
+                        return df
                     break
-                data_list = []
-                while (rs.error_code == '0') & rs.next():
-                    row = rs.get_row_data()
-                    data_list.append({
-                        'date': row[0],
-                        'open': sf(row[2]) or 0.0,
-                        'high': sf(row[3]) or 0.0,
-                        'low': sf(row[4]) or 0.0,
-                        'close': sf(row[5]) or 0.0,
-                        'volume': si(row[6]),
-                        'amount': sf(row[7]) or 0.0,
-                        'turnover': sf(row[8]) or 0.0,
-                        'change_pct': sf(row[9]) or 0.0,
-                        'pe_dynamic': sf(row[10]),
-                        'pb': sf(row[11]),
-                        'ps': sf(row[12]),
-                        'pcf': sf(row[13]),
+                except Exception:
+                    break
+                finally:
+                    try:
+                        with redirect_stdout(open(os.devnull, 'w')):
+                            bs.logout()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            socket.setdefaulttimeout(old_timeout)
+
+        # baostock失败，尝试腾讯API备选
+        if verbose: print(f"  baostock不可用，尝试腾讯API...")
+        df = self._fetch_stock_update_tencent(stock_code, days)
+        if df is not None and not df.empty:
+            if verbose: print(f"[OK](腾讯更新 {len(df)}条)")
+            return df
+        return None
+
+
+    def _fetch_stock_update_tencent(self, stock_code, days=10):
+        """腾讯K线API增量更新（baostock封禁时的备选），后复权(hfq)，返回DataFrame或None"""
+        import requests
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days + 10)
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+
+        if stock_code.startswith(('6', '8')):
+            tk_code = f'sh{stock_code}'
+        else:
+            tk_code = f'sz{stock_code}'
+
+        url = 'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+        params = {'param': f'{tk_code},day,{start_str},{end_str},{days+10},hfq'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://gu.qq.com/',
+        }
+
+        for attempt in range(3):
+            try:
+                resp = session.get(url, params=params, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    if attempt < 2: time.sleep(2 ** attempt); continue
+                    return None
+                # 检测WAF拦截
+                if 'waf.tencent.com' in resp.text or '<html' in resp.text[:100].lower():
+                    if attempt < 2: time.sleep(5 * (attempt + 1)); continue
+                    return None
+                data = resp.json()
+                if data.get('code') != 0:
+                    if attempt < 2: time.sleep(1); continue
+                    return None
+                stock_data = data.get('data', {}).get(tk_code, {})
+                klines = stock_data.get('hfqday', [])
+                if not klines:
+                    return None  # 新股无历史数据，不算错误
+
+                rows = []
+                for k in klines:
+                    rows.append({
+                        'date': k[0],
+                        'open': float(k[1]),
+                        'close': float(k[2]),
+                        'high': float(k[3]),
+                        'low': float(k[4]),
+                        'volume': int(float(k[5]) * 100),
+                        'amount': 0.0,
+                        'turnover': 0.0,
+                        'change_pct': 0.0,
+                        'pe_dynamic': None,
+                        'pb': None,
+                        'ps': None,
+                        'pcf': None,
                     })
-                if data_list:
-                    df = pd.DataFrame(data_list)
+                if rows:
+                    df = pd.DataFrame(rows)
                     df['date'] = pd.to_datetime(df['date'])
                     df = df.sort_values('date', ascending=False)
                     df = df.head(days)
-                    if verbose: print(f"[OK](baostock更新 {len(df)}条)")
+                    df.attrs['source'] = 'tencent'
                     return df
-                break
+                return None
             except Exception:
-                if attempt < 1: time.sleep(2); continue
-                break
-            finally:
-                with redirect_stdout(open(os.devnull, 'w')):
-                    bs.logout()
+                if attempt < 2: time.sleep(2 ** attempt); continue
+        return None
+
+    def _fetch_stock_history_tencent(self, stock_code, years=30):
+        """腾讯K线API历史数据（baostock封禁时的备选），后复权，最多约640个交易日"""
+        import requests
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365 * years)
+        start_str = start_date.strftime('%Y-%m-%d')
+        end_str = end_date.strftime('%Y-%m-%d')
+
+        if stock_code.startswith(('6', '8')):
+            tk_code = f'sh{stock_code}'
+        else:
+            tk_code = f'sz{stock_code}'
+
+        url = 'http://web.ifzq.gtimg.cn/appstock/app/fqkline/get'
+        # 腾讯接口最多返回约640条，请求足够大的count
+        params = {'param': f'{tk_code},day,{start_str},{end_str},2000,hfq'}
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://gu.qq.com/',
+        }
+
+        for attempt in range(3):
+            try:
+                resp = session.get(url, params=params, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    if attempt < 2: time.sleep(2 ** attempt); continue
+                    return None
+                if 'waf.tencent.com' in resp.text or '<html' in resp.text[:100].lower():
+                    if attempt < 2: time.sleep(5 * (attempt + 1)); continue
+                    return None
+                data = resp.json()
+                if data.get('code') != 0:
+                    if attempt < 2: time.sleep(1); continue
+                    return None
+                stock_data = data.get('data', {}).get(tk_code, {})
+                klines = stock_data.get('hfqday', [])
+                if not klines:
+                    return None
+
+                rows = []
+                prev_close = None
+                for k in klines:
+                    close_val = float(k[2])
+                    change_pct = 0.0
+                    if prev_close is not None and prev_close > 0:
+                        change_pct = (close_val - prev_close) / prev_close * 100
+                    prev_close = close_val
+                    rows.append({
+                        'date': k[0],
+                        'open': float(k[1]),
+                        'close': close_val,
+                        'high': float(k[3]),
+                        'low': float(k[4]),
+                        'volume': int(float(k[5]) * 100),
+                        'amount': 0.0,
+                        'turnover': 0.0,
+                        'change_pct': change_pct,
+                        'pe_dynamic': None,
+                        'pb': None,
+                        'ps': None,
+                        'pcf': None,
+                    })
+                if rows:
+                    df = pd.DataFrame(rows)
+                    df['date'] = pd.to_datetime(df['date'])
+                    df['market_cap'] = 0
+                    df = df.sort_values('date', ascending=False)
+                    return df
+                return None
+            except Exception:
+                if attempt < 2: time.sleep(2 ** attempt); continue
         return None
 
 
     def init_full_data(self, max_stocks=None, skip_failed=False, retry_failed=True, force_full=False):
         """
-        首次全量抓取（多进程并发）
+        用 THSDK 重建全量历史（隔离 staging 校验后切换）。
         :param max_stocks: 限制总数
         :param skip_failed: 是否跳过之前失败的股票（True=跳过，False=重试）
         :param retry_failed: 如果存在失败列表，是否仅重试失败股票（True=仅重试失败，False=全量）
         :param force_full: 强制全量抓取，忽略失败列表
         """
+        # The repository's public ``init`` command now has one authoritative
+        # source.  A bounded run is staging-only for safe smoke tests; the
+        # unbounded command commits only after every stock passes validation.
+        from tools.rebuild_all_ths import rebuild as rebuild_ths
+        return rebuild_ths(
+            self.full_data_dir,
+            max_stocks=max_stocks,
+            commit=max_stocks is None,
+        )
+
+        # Legacy code is intentionally unreachable; it is retained below only
+        # for reference while old repair scripts are migrated separately.
         import baostock as bs
         from contextlib import redirect_stdout
         import os
@@ -573,28 +1102,12 @@ class AKShareFetcher:
 
         tasks = [(code, market_cap_map, self.data_dir) for code in target_codes]
 
-        import multiprocessing
-        use_multiprocessing = False
-        if sys.platform == 'win32':
-            if multiprocessing.current_process().name == 'MainProcess':
-                use_multiprocessing = True
-        else:
-            use_multiprocessing = True
-
-        if use_multiprocessing:
-            cpu_count = multiprocessing.cpu_count()
-            worker_count = 8
-            print(f"  使用 {worker_count} 个进程并行抓取")
-            with multiprocessing.Pool(processes=worker_count) as pool:
-                results = []
-                for result in tqdm(pool.starmap(_init_one_stock_mp, tasks), total=len(tasks), desc="抓取进度"):
-                    results.append(result)
-        else:
-            print("  使用单进程模式抓取...")
-            results = []
-            for task in tqdm(tasks, desc="抓取进度"):
-                result = _init_one_stock_mp(*task)
-                results.append(result)
+        # baostock 封禁多进程，统一使用单进程模式
+        print("  使用单进程模式抓取 (baostock禁多进程)...")
+        results = []
+        for task in tqdm(tasks, desc="抓取进度"):
+            result = _init_one_stock_mp(*task)
+            results.append(result)
 
         # 统计结果
         success = 0
@@ -626,13 +1139,49 @@ class AKShareFetcher:
         if failed_codes:
             print(f"提示: 再次运行 python main.py init 将自动重试失败股票")
 
-    def daily_update(self, max_stocks=None):
-        """每日增量更新 - 允许任意非盘中时间更新，盘中只拉取不写缓存"""
+    def daily_update(self, max_stocks=None, skip_baostock=False):
+        """每日增量更新 - 允许任意非盘中时间更新，盘中只拉取不写缓存
+
+        Args:
+            max_stocks: 限制更新股票数量
+            skip_baostock: 保留旧接口参数，仅为调用方兼容；日更统一走 THSDK。
+        """
         from datetime import datetime, timedelta
         import json
         import time
         import pandas as pd
         from tqdm import tqdm
+
+        # Production daily path: THSDK K-lines + THSDK snapshot fields.  The
+        # old Eastmoney/Tencent updater remains available as a standalone repair
+        # tool, but is deliberately not used here so a normal update cannot
+        # reintroduce mixed providers.
+        try:
+            from tools import update_today_ths as ths_update
+
+            cache_path = self.full_data_dir / ".update_cache.json"
+            cache = {}
+            if max_stocks is None and cache_path.exists():
+                try:
+                    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    cache = {}
+            completed_date = cache.get(
+                "last_update_completed_date",
+                cache.get("last_update_date"),
+            )
+            if max_stocks is None and completed_date == ths_update.TODAY_STR and cache.get("last_update_source") == "thsdk":
+                ths_update.validate_dataset_manifest(self.full_data_dir)
+                print(f"[OK] THSDK 数据已于 {ths_update.TODAY_STR} 更新过，跳过日更")
+                return 0
+            print(f"[UPDATE] 使用 THSDK K线 + 换手率/流通市值更新 {ths_update.TODAY_STR}")
+            exit_code = ths_update.run(data_dir=self.full_data_dir, max_stocks=max_stocks)
+        except Exception as exc:
+            print(f"[ERROR] THSDK 日更失败，已停止；不会回退到旧数据源: {exc}")
+            raise
+        if exit_code != 0:
+            raise RuntimeError(f"THSDK daily checkpoint validation failed with exit code {exit_code}")
+        return 0
 
         existing_stocks = self.csv_manager.list_all_stocks()
         if not existing_stocks:
@@ -705,6 +1254,22 @@ class AKShareFetcher:
                 print("=" * 60)
                 return
 
+        # 加载股票名称，过滤退市股（退市股无需每日更新）
+        stock_names = self._load_local_stock_names()
+        delisted_skipped = 0
+        if stock_names:
+            active_stocks = []
+            for code in existing_stocks:
+                name = stock_names.get(code, '')
+                if '退' in name:
+                    delisted_skipped += 1
+                    continue
+                active_stocks.append(code)
+            if delisted_skipped > 0:
+                print(f"  跳过 {delisted_skipped} 只退市股票（无需更新）")
+                existing_stocks = active_stocks
+                total = len(existing_stocks)
+
         # 检查哪些股票需要更新
         stocks_to_update = []
         print("  正在检查股票更新状态...")
@@ -756,42 +1321,32 @@ class AKShareFetcher:
             print("=" * 60)
             return
 
-        # 批量获取最新流通市值数据
-        print("\n正在批量获取最新流通市值数据...")
+        # 批量获取最新行情数据（市值+换手率+PE/PB+成交额+涨跌幅）
+        print("\n正在批量获取最新行情数据...")
         update_codes = [code for code, _ in stocks_to_update]
-        market_cap_map = self._fetch_market_cap_tencent(update_codes)
-        if not market_cap_map:
-            print("  [WARN] 市值获取失败")
+        quote_data = self._fetch_quote_batch_tencent(update_codes)
+        if not quote_data:
+            print("  [WARN] 行情数据获取失败")
 
-        def _update_stock_list(stock_tasks, market_cap_map):
-            results = []
-            tasks = [(code, days, market_cap_map, self.data_dir) for code, days in stock_tasks]
-            import multiprocessing
-            use_multiprocessing = False
-            if sys.platform == 'win32':
-                if multiprocessing.current_process().name == 'MainProcess':
-                    use_multiprocessing = True
-            else:
-                use_multiprocessing = True
-            if use_multiprocessing:
-                cpu_count = multiprocessing.cpu_count()
-                worker_count = 8
-                print(f"  使用 {worker_count} 个进程并行抓取")
-                with multiprocessing.Pool(processes=worker_count) as pool:
-                    async_results = [pool.apply_async(_update_one_stock_mp, args=task) for task in tasks]
-                    results = []
-                    for ar in tqdm(async_results, total=len(async_results), desc="更新进度"):
-                        try:
-                            result = ar.get(timeout=120)
-                            results.append(result)
-                        except:
-                            results.append((None, False, 0, "timeout"))
-            else:
-                print("  使用单进程模式进行更新...")
+        def _update_stock_list(stock_tasks, quote_data, use_threads=False):
+            tasks = [(code, days, quote_data, self.data_dir, skip_baostock) for code, days in stock_tasks]
+            if use_threads:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                workers = min(8, len(tasks))
+                print(f"  使用多线程模式 (腾讯API, {workers}线程)...")
                 results = []
-                for task in tqdm(tasks, desc="更新进度"):
-                    code, days, m_map, cf_map, d_dir = task
-                    result = _update_one_stock_mp(code, days, m_map, cf_map, d_dir)
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    future_map = {pool.submit(_update_one_stock_mp, *task): task[0] for task in tasks}
+                    from tqdm import tqdm as _tqdm
+                    for future in _tqdm(as_completed(future_map), total=len(future_map), desc="更新进度"):
+                        results.append(future.result())
+            else:
+                print("  使用单进程模式进行更新 (baostock禁多进程)...")
+                results = []
+                from tqdm import tqdm as _tqdm
+                for task in _tqdm(tasks, desc="更新进度"):
+                    code, days, qd, d_dir, _skip = task
+                    result = _update_one_stock_mp(code, days, qd, d_dir, skip_baostock=False)
                     results.append(result)
             success_list = []
             fail_list = []
@@ -810,10 +1365,11 @@ class AKShareFetcher:
             if not current_tasks:
                 break
             if retry == 0:
-                print(f"\n开始更新 {len(current_tasks)} 只股票...")
+                mode_label = "腾讯API" if skip_baostock else "baostock"
+                print(f"\n开始更新 {len(current_tasks)} 只股票... ({mode_label})")
             else:
                 print(f"\n[RETRY] 第 {retry} 次重试，剩余 {len(current_tasks)} 只股票...")
-            success_list, fail_list = _update_stock_list(current_tasks, market_cap_map)
+            success_list, fail_list = _update_stock_list(current_tasks, quote_data, use_threads=skip_baostock)
             final_success.extend(success_list)
             current_tasks = [(code, days) for code, days in current_tasks if code in [f[0] for f in fail_list]]
             final_fail = fail_list

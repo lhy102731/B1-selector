@@ -78,12 +78,20 @@ class CSVManager:
         combined = pd.concat([existing_df, new_df], ignore_index=True)
         return self.write_stock(stock_code, combined)
     
+    # A股有效交易所前缀
+    _STOCK_PREFIXES = {'00', '30', '60', '68'}
+
     def list_all_stocks(self):
-        """列出所有已保存的股票代码"""
+        """列出所有已保存的股票代码（仅限有效A股前缀目录）"""
         stocks = []
-        for csv_file in self.data_dir.rglob("*.csv"):
-            stock_code = csv_file.stem
-            stocks.append(stock_code)
+        for prefix in self._STOCK_PREFIXES:
+            subdir = self.data_dir / prefix
+            if not subdir.is_dir():
+                continue
+            for csv_file in subdir.glob("*.csv"):
+                stock_code = csv_file.stem
+                if stock_code[:2] in self._STOCK_PREFIXES:
+                    stocks.append(stock_code)
         return sorted(stocks)
     
     def get_stock_count(self):
