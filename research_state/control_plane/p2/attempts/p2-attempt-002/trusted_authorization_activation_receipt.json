@@ -1,0 +1,82 @@
+{
+  "schema_version": "control_plane.trusted_phase_authorization_activation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.trusted_phase_authorization_activation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "activated_at": "2026-07-30T00:24:59.993435+08:00",
+    "authorization_ref": "auth_f05e88c3367cfc99c40555bfbd3d647b",
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_e0299c759090659689983dc6c7caf6f8",
+    "grant_state": "ACTIVE",
+    "claim_recovered_idempotently": false,
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "active_entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+    "failed_attempt_binding": {
+      "attempt_id": "p2-attempt-001",
+      "incident_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t2_lease_loss_incident.json",
+      "incident_sha256": "fe44ba5ed90e790414030c9ad993ecfe3f3a65d8dc1620c85a449c5d108e53b8"
+    },
+    "input_artifacts": [
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-002/scope_manifest.json",
+        "sha256": "aaf2ada38cb34f56a012aa8bdf714632873109e197235ee062f87c1ad595fee9",
+        "bytes": 7318
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-002/identity_bundle.json",
+        "sha256": "0802017765ceaf8d5f99b4e050cd83242e7faf7ede6c6c37cc5a13d1af1fd52b",
+        "bytes": 693
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+        "sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+        "bytes": 3764
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_authorization_receipt.json",
+        "sha256": "bec8e4af28b4e6d5bf0e8d994b054ace75037b25dcbf3d3824b396b1d4e696eb",
+        "bytes": 2394
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-002/authorization_ref_receipt.json",
+        "sha256": "b5926a17cf809fbba439a14a5054487e131fb7140d43052f0ac1d58f2890e041",
+        "bytes": 1011
+      }
+    ],
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_e0299c759090659689983dc6c7caf6f8"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [],
+      "pending_outbox_count": 0
+    },
+    "secret_handling": {
+      "root_capability_recorded": false,
+      "authorization_bearer_recorded": false,
+      "grant_bearer_recorded": false,
+      "dpapi_ciphertext_staged": false,
+      "authority_database_staged": false,
+      "operational_database_staged": false
+    },
+    "phase_boundary": {
+      "P2_AUTHORIZED": true,
+      "P3_AUTHORIZED": false,
+      "CAMPAIGN_AUTHORIZED": false,
+      "FINAL_EVAL_AUTHORIZED": false,
+      "AUTO_ADVANCE": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "2de30eda356c73ab7f9b841b39969eb366ab9e7bec32372f8d9c99b041e872d7"
+  }
+}
