@@ -1,0 +1,177 @@
+{
+  "schema_version": "control_plane.scope_manifest.v3",
+  "created_at": "2026-07-30T00:16:26.459920+08:00",
+  "hash_algorithm": "sha256(UTF-8 'control_plane.scope_bundle.v1' + NUL + canonical_json(payload))",
+  "payload": {
+    "schema_version": "control_plane.scope_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_generation": "P2R2",
+    "attempt_id": "p2-attempt-002",
+    "base_scope": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-001/scope_manifest.json",
+      "file_sha256": "2c46f182c2e6ca1949a264a44cd019fb6efad2c220f633d16043c37e6ef02583",
+      "scope_hash": "a350ec8c18a364247fe66b7736e1e144a04ea5ac30e36195dbbf9e790c49d33e"
+    },
+    "failed_attempt": {
+      "attempt_id": "p2-attempt-001",
+      "incident_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t2_lease_loss_incident.json",
+      "incident_sha256": "fe44ba5ed90e790414030c9ad993ecfe3f3a65d8dc1620c85a449c5d108e53b8",
+      "failure_class": "LOST_EPHEMERAL_TASK_LEASE_CAPABILITY",
+      "implementation_failed": false,
+      "scientific_or_production_side_effect": false
+    },
+    "task_ids": [
+      "P2R2-T0-AUTHORITY-SCOPE",
+      "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+      "P2R2-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+      "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+      "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+      "P2R2-T5-DAILY-UPDATER-STAGING-ADAPTER",
+      "P2R2-T6-INTEGRATION-FREEZE",
+      "P2R2-T7-FINAL-INVENTORY-POLICY",
+      "P2R2-T8-OFFICIAL-GATE"
+    ],
+    "allowed_write_roots": [
+      "research_state/control_plane/p2/",
+      "research_state/control_plane/authority/",
+      "research_state/control_plane/operational/",
+      "research_state/control_plane/inventories/",
+      "research_state/control_plane/policies/"
+    ],
+    "allowed_code_and_test_files": [
+      "ag2_research/kbase/catalog_builder.py",
+      "ag2_research/kbase/semantic_index.py",
+      "build_indicators_cache.py",
+      "research_automation/data_generation/__init__.py",
+      "research_automation/data_generation/cache_identity.py",
+      "research_automation/data_generation/contracts.py",
+      "research_automation/data_generation/generation.py",
+      "research_automation/data_generation/market_data.py",
+      "research_automation/foundations/immutable_release.py",
+      "tests/test_daily_checkpoint_retention.py",
+      "tests/test_data_generation.py",
+      "tests/test_foundations_immutable_release.py",
+      "tests/test_generation_cache_identity.py",
+      "tests/test_kbase_catalog.py",
+      "tests/test_kbase_semantic.py",
+      "tests/test_market_data_semantics.py",
+      "tests/test_raw_parquet_cache.py",
+      "tests/test_signal_cache_identity.py",
+      "tests/test_update_today_em_client.py",
+      "tools/update_today_em_client.py",
+      "utils/raw_parquet_cache.py"
+    ],
+    "sealed_p0_files": [
+      "research_automation/control_plane/__init__.py",
+      "research_automation/control_plane/artifact_semantics.py",
+      "research_automation/control_plane/cli.py",
+      "research_automation/control_plane/contracts.py",
+      "research_automation/control_plane/entry_guard.py",
+      "research_automation/control_plane/gates.py",
+      "research_automation/control_plane/inventory.py",
+      "research_automation/control_plane/sqlite_uow.py",
+      "research_automation/control_plane/stores.py",
+      "research_automation/control_plane/task_reports.py"
+    ],
+    "forbidden_roots": [
+      ".env",
+      "artifacts/",
+      "config/",
+      "data/",
+      "data_ths/",
+      "data_pre_ths_backup_20260727_110350/",
+      "models/",
+      "outputs/",
+      "strategy/",
+      "D:/KBase/",
+      "ag2_research/knowledge_base/"
+    ],
+    "forbidden_actions": [
+      "backtest_or_research_execution",
+      "llm_or_network_invocation_for_research",
+      "parameter_sweep",
+      "real_cache_build_or_rebuild",
+      "real_data_update_or_data_byte_mutation",
+      "final_holdout_access",
+      "kbase_registry_snapshot_handoff_or_memory_content_write",
+      "production_config_model_parameter_signal_runner_or_strategy_change",
+      "real_campaign_start",
+      "process_stop_cancel_or_parameter_change",
+      "windows_scheduler_or_acl_mutation",
+      "modify_sealed_p0_trusted_computing_base",
+      "modify_backtest_optimized_or_run_verification_backtest",
+      "routine_recursive_data_scan_or_84gb_rehash",
+      "git_push_merge_pull_request_rebase_reset_checkout_cleanup_or_broad_stage"
+    ],
+    "architecture_constraints": {
+      "shared_immutable_release_store_only": true,
+      "extract_from_existing_kbase_publication": true,
+      "no_second_publication_framework": true,
+      "csv_source_of_truth": true,
+      "raw_parquet_ascending_cache": true,
+      "source_csv_gbk_reverse_chronological": true,
+      "production_research_cache_namespaces_isolated": true,
+      "touched_artifacts_only_validation": true,
+      "legacy_unpinned_paths_not_trusted_evidence": true,
+      "read_lease_uses_fencing_not_file_age": true,
+      "publish_pending_blocks_next_cycle": true,
+      "generation_never_switches_silently": true,
+      "missing_bar_states": [
+        "PRESENT",
+        "NO_BAR_CONFIRMED",
+        "UNKNOWN_NO_BAR",
+        "FETCH_FAILED"
+      ],
+      "only_confirmed_absence_means_suspension": true,
+      "no_bar_or_fetch_failure_cannot_feed_features_signals_or_trades": true,
+      "stale_valuation_portfolio_nav_only": true
+    },
+    "adoption_policy": {
+      "attempt_001_t1_t2_code_and_evidence_are_non_authoritative_inputs": true,
+      "attempt_002_independent_review_required": true,
+      "attempt_002_targeted_and_regression_tests_required": true,
+      "attempt_001_ticket_or_report_cannot_count_toward_pass": true,
+      "no_code_or_test_byte_is_grandfathered": true,
+      "no_reimplementation_when_current_bytes_pass_revalidation": true
+    },
+    "closure_safety": {
+      "all_actors_and_receipt_payloads_validated_before_begin": true,
+      "all_deterministic_task_report_inputs_preflighted_before_begin": true,
+      "begin_attest_finish_mirror_build_verify_in_one_trusted_process": true,
+      "lost_lease_requires_fail_closed_new_attempt": true
+    },
+    "execution_constraints": {
+      "issue_recoverable_ticket_before_each_task": true,
+      "one_public_behavior_red_then_minimal_green_or_independent_adoption": true,
+      "one_small_verified_git_commit_per_stage": true,
+      "stage_only_exact_intentional_files": true,
+      "reuse_before_new_framework": true,
+      "no_runtime_package_install": true,
+      "temporary_fixture_roots_only": true,
+      "no_research_goal_drift": true,
+      "mainline_over_edge_case_optimization": true
+    },
+    "phase_authorization": {
+      "p2": true,
+      "p3": false,
+      "campaign": false,
+      "final_eval": false,
+      "auto_advance": false
+    },
+    "git_authorization": {
+      "stage_exact_intentional_files": true,
+      "local_commit_each_verified_stage": true,
+      "git_add_all": false,
+      "amend_or_rewrite_history": false,
+      "push": false,
+      "merge": false,
+      "pull_request": false,
+      "reset_or_checkout_cleanup": false
+    }
+  },
+  "computed": {
+    "canonical_payload_bytes": 5766,
+    "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff"
+  }
+}
