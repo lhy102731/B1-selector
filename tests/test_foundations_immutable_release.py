@@ -142,15 +142,41 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             candidate = store.stage("v2")
             _write_release(candidate, "v2")
 
-            with patch(
-                "research_automation.foundations.immutable_release.os.fsync",
-                side_effect=OSError("injected disk full"),
+            with patch.object(
+                ImmutableReleaseStore,
+                "_write_transaction",
+                side_effect=OSError("injected journal disk full"),
             ):
-                with self.assertRaisesRegex(OSError, "injected disk full"):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "injected journal disk full",
+                ):
                     store.promote(candidate, expected_current_id="v1")
 
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(any(root.glob(".promotion.*.tmp")))
+
+    def test_fencing_token_disk_failure_does_not_move_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.fsync",
+                side_effect=OSError("injected fencing disk full"),
+            ):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "injected fencing disk full",
+                ):
+                    store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
             self.assertFalse(any(root.glob(".promotion.*.tmp")))
 
@@ -178,11 +204,15 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             _write_release(root / "previous", "v1")
             store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
 
-            with patch(
-                "research_automation.foundations.immutable_release.os.fsync",
-                side_effect=OSError("injected disk full"),
+            with patch.object(
+                ImmutableReleaseStore,
+                "_write_transaction",
+                side_effect=OSError("injected journal disk full"),
             ):
-                with self.assertRaisesRegex(OSError, "injected disk full"):
+                with self.assertRaisesRegex(
+                    OSError,
+                    "injected journal disk full",
+                ):
                     store.rollback(expected_current_id="v2")
 
             self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
