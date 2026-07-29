@@ -1,0 +1,113 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-003",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "2542ee98bc697e209683878f1033360a6a0b69181c046d0a7feede13de2f9f42",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R3-T5C-SCOPE-ADOPTION",
+      "objective": "Independently adopt the current hash-bound P2 T1-T5 implementation under the corrected P2R3 scope by verifying every historical TaskReport/completion binding, rerunning the complete offline focused P2 data-generation and compatibility suites, syntax-checking every present P2R3 Python path, and re-reviewing the two CR-003 files. Treat the P2R2 closure as noncanonical failed history only; do not reimplement code, access real data or KBase content, run a daily update, backtest, research task, Campaign, or Holdout, invoke network providers, enter P3, change scheduler/ACL state, or use a private phase-closure API.",
+      "dependencies": [
+        "P2R3-T0-AUTHORITY-SCOPE"
+      ],
+      "idempotency_key": "p2-attempt-003-t5c-scope-adoption",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/task_specs/t5c_scope_adoption.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "p2r3-t5c-historical-binding-check",
+          "p2r3-t5c-focused-tests",
+          "p2r3-t5c-scope-static-syntax-check"
+        ],
+        "required_review_receipt_ids": [
+          "independent-p2r3-scope-adoption-review"
+        ],
+        "required_evidence_ids": [
+          "p2r3-authorization",
+          "implementation-baseline",
+          "p2-cr-003-approval",
+          "p2r3-preprovision-review",
+          "p2r2-t1-t5-source-manifest",
+          "p2r2-noncanonical-closure-incident"
+        ]
+      },
+      "allowed_files": [
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/",
+        "apps/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "docs/",
+        "models/",
+        "outputs/",
+        "requirements/",
+        "research_automation/",
+        "research_state/control_plane/authority/",
+        "research_state/control_plane/inventories/",
+        "research_state/control_plane/operational/",
+        "research_state/control_plane/policies/",
+        "strategy/",
+        "tests/",
+        "tools/",
+        "utils/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_baseline.json",
+      "baseline_sha256": "7ce45f732c446d53fb1457464d14bfcfba5425decea03158da7d53d6d791a756",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r3-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "8cd3221e71269a24c3b9c16ea12b200a5212cfb6a15cc6963ccb9dd52f69443b",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_baseline.json",
+          "evidence_sha256": "7ce45f732c446d53fb1457464d14bfcfba5425decea03158da7d53d6d791a756",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2-cr-003-approval",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2_cr_003_approval_receipt.json",
+          "evidence_sha256": "6882dae3a23c13a84765313c1be144e9de53afcb1d5b336642e17cadf55b885c",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r3-preprovision-review",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
+          "evidence_sha256": "fade85ce8dc1ce1c99a115f8b11faeb9f41e0f32912f2f7617cf14e33bdd65d6",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t1-t5-source-manifest",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_adoption_source_manifest.json",
+          "evidence_sha256": "0ec6e357928513af9c42c281625adb78eb85cf7503ea407d8850c49d6d25dcaa",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-noncanonical-closure-incident",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/p2r2_noncanonical_closure_incident.json",
+          "evidence_sha256": "a4b1d4cab7c9acf5398d808ae7b22e8dfbe7a45f5e114aa5143cdda8a67d136a",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "9012e9f449c98f1681860acffeaeacc4857bf9efb01fd97a95ef87f0be8983be"
+  }
+}

@@ -1,0 +1,382 @@
+{
+  "schema_version": "control_plane.p2r3_t5c_adoption_source_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p2r3_t5c_adoption_source_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-003",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "2542ee98bc697e209683878f1033360a6a0b69181c046d0a7feede13de2f9f42",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "created_at": "2026-07-30T06:10:27.928113+08:00",
+    "predecessor": {
+      "attempt_id": "p2-attempt-002",
+      "closure_state": "CLOSED_FAIL_NONCANONICAL",
+      "closure_is_trusted_gate_evidence": false,
+      "task_reports_are_historical_inputs_only": true
+    },
+    "tasks": [
+      {
+        "sequence": 1,
+        "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+        "ticket_id": "af6f02d83cc1099e323a7b6f7c00eaab6525b4d3b07600e2479d5d386f8ef2fd",
+        "task_spec": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t1_immutable_release_generation_contracts.json",
+          "sha256": "c6b6a0265b335c168fa6a899be6085f4240681aa0017da4428eb387bbc55905c",
+          "bytes": 4717
+        },
+        "task_report": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_task_report.json",
+          "sha256": "5bc23692b4937c3f9f3000114f60b19a8055e159e5829fdc5b699c6e9d5858d6",
+          "bytes": 10816
+        },
+        "completion_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_completion_receipt.json",
+          "sha256": "4255894a0648be8546bbf91ae328d89287590f5c48e4e3ac8406fa4959381917",
+          "bytes": 1670
+        },
+        "validation_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_validation_receipt.json",
+          "sha256": "c249884db979ea230a17ba2f9f60304dd6c4cbfaf2090e6e53f3e77bf34baab9",
+          "bytes": 3888
+        },
+        "independent_review": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_independent_review.json",
+          "sha256": "15d25e0111520a26ca0fdb18b7572811e3bdf2cee39744fe8ec4188b6c353b75",
+          "bytes": 4964
+        },
+        "outcome": "PASS",
+        "ticket_state": "SUCCEEDED"
+      },
+      {
+        "sequence": 2,
+        "task_id": "P2R2-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+        "ticket_id": "b71284fcd41ab2d00e3d4365c2bb8bf1469bde2b395563df53be7e79cd1d13cb",
+        "task_spec": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t2_read_lease_fencing_publish_pending.json",
+          "sha256": "2a733d32c246f197cee2c202c50a799afa3392883e038fec8e0236c4c75161ba",
+          "bytes": 5259
+        },
+        "task_report": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_task_report.json",
+          "sha256": "998258b357f2bc2f6f47c4dfb22df54396829b560bdc9f1551470eff4889a442",
+          "bytes": 7897
+        },
+        "completion_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_completion_receipt.json",
+          "sha256": "1da775f174e95a3f8af21c4feb4846d384ee4ff4c729141bc73ca4bcc43fdd84",
+          "bytes": 1665
+        },
+        "validation_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_validation_receipt.json",
+          "sha256": "3a443637aac1aaeed38f77a676cec6ca74cf091d0c2e29369183d8ded34c0cce",
+          "bytes": 2671
+        },
+        "independent_review": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_independent_review.json",
+          "sha256": "f566f4c5fc19b2c1f39e7dc5b5b07abd5894cde3f0643c80b5a33ab422783c2f",
+          "bytes": 3108
+        },
+        "outcome": "PASS",
+        "ticket_state": "SUCCEEDED"
+      },
+      {
+        "sequence": 3,
+        "task_id": "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+        "ticket_id": "122f1af56216b135cbc06d1cdfe3eb0e32dcd3c26d04a95aa276da428544aca4",
+        "task_spec": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t3_generation_pin_cache_identity.json",
+          "sha256": "a527f273c92bc3090a3b7c4ed53176c4028a4d1f966cdd72f4961b90dd5f6f0f",
+          "bytes": 4350
+        },
+        "task_report": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_task_report.json",
+          "sha256": "aae9bdbbb33bb22e8fde7c8d1e477e5041dd278b3168b084f3043553a73ea495",
+          "bytes": 10434
+        },
+        "completion_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_completion_receipt.json",
+          "sha256": "ad953798f72a0f8208a5324ba48ab09eb42320e08a4ad00ff7d995f134319cae",
+          "bytes": 1645
+        },
+        "validation_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_validation_receipt.json",
+          "sha256": "2f191cb4b387546b91186c945afe88e085fb0fd6485a22bbe1552cbea640c2d1",
+          "bytes": 4051
+        },
+        "independent_review": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_independent_review.json",
+          "sha256": "ac50b503dc6363fe107cf9b899ff810c636a4db6385d09825e8f10d5cc361b91",
+          "bytes": 4711
+        },
+        "outcome": "PASS",
+        "ticket_state": "SUCCEEDED"
+      },
+      {
+        "sequence": 4,
+        "task_id": "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+        "ticket_id": "c35ce865325e535eb294481ff741abec22e9b11d4b5a126d57725f8f97a6404f",
+        "task_spec": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t4_missing_bar_valuation_semantics.json",
+          "sha256": "5211cf880cb556b44187ff958a1b4c35d200d384611ae88caaf04f20f15f378b",
+          "bytes": 4029
+        },
+        "task_report": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_task_report.json",
+          "sha256": "a3b96749f53e35429da62b45f00e8ce7477a927311b6407b9d6af333614c9e4d",
+          "bytes": 8690
+        },
+        "completion_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_completion_receipt.json",
+          "sha256": "9ce9b4e670289bf410dc17626fb8073f41674c43361d8a81d1bd5dc84204be8e",
+          "bytes": 1746
+        },
+        "validation_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_validation_receipt.json",
+          "sha256": "8bb8c3c9bcf8713a2a834ebe01ac4d4639b8cd8d539b27d7cfed02009ff8443d",
+          "bytes": 2331
+        },
+        "independent_review": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_independent_review.json",
+          "sha256": "b272819ea22d8f8637517a0dbe39c80ac7421aa4cdd4490e0e6ee9b8eff79291",
+          "bytes": 5233
+        },
+        "outcome": "PASS",
+        "ticket_state": "SUCCEEDED"
+      },
+      {
+        "sequence": 5,
+        "task_id": "P2R2-T5-DAILY-UPDATER-STAGING-ADAPTER",
+        "ticket_id": "c036c4e401db60029fc06798d7ae8b656057ec11dc1aac9994a1f48116670d02",
+        "task_spec": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t5_daily_updater_staging_adapter.json",
+          "sha256": "7564152880ba35cffaa4c8c895c828f0de327ff8be0a666554c13de9be1985d6",
+          "bytes": 4892
+        },
+        "task_report": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_task_report.json",
+          "sha256": "7700073526c995e851a556f8fdf275d21e016e2ec79928f885337f5671554a81",
+          "bytes": 7952
+        },
+        "completion_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_completion_receipt.json",
+          "sha256": "716be9693860958b534b6a423598dfb3514fcf7b0c6200690ffa2a71487e394b",
+          "bytes": 1729
+        },
+        "validation_receipt": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_validation_receipt.json",
+          "sha256": "c0d630ab0520284bd357f04ec90efa7dd5bfc274f6bac75b5be3947742df7bdb",
+          "bytes": 3587
+        },
+        "independent_review": {
+          "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_independent_review.json",
+          "sha256": "363f11fa84dffa2e4939b4f38bb0cefcdd2bac1121d97f01b5a6bb958034dec6",
+          "bytes": 2920
+        },
+        "outcome": "PASS",
+        "ticket_state": "SUCCEEDED"
+      }
+    ],
+    "task_count": 5,
+    "current_code_and_test_files": [
+      {
+        "path": "ag2_research/kbase/catalog_builder.py",
+        "present": true,
+        "sha256": "e69bca1bda2ebe0e257e7de6f1f12815ccfc713ce411258e9999b960ea44e10f",
+        "bytes": 15388,
+        "git_blob": "ba31725ebfe6862592bb11f7aad0ef4d94cf2beb"
+      },
+      {
+        "path": "ag2_research/kbase/semantic_index.py",
+        "present": true,
+        "sha256": "ac3e8745ddb3857505669000c4f6baea20e37456827265047288a8413be2f2a3",
+        "bytes": 54570,
+        "git_blob": "88f240e751cb79bdbcf4a6a18f977ebad0d389d3"
+      },
+      {
+        "path": "build_indicators_cache.py",
+        "present": true,
+        "sha256": "243f261da257485b555749d4870b15ff3c1746e6280a01a99719f9a6b31a28a4",
+        "bytes": 18143,
+        "git_blob": "88d9381877976214068a01d2c78fc786cb416a17"
+      },
+      {
+        "path": "research_automation/data_generation/__init__.py",
+        "present": false,
+        "sha256": null,
+        "bytes": null,
+        "git_blob": null
+      },
+      {
+        "path": "research_automation/data_generation/cache_identity.py",
+        "present": true,
+        "sha256": "21d19b901b7cc99f7012753384bff9df2b02e7e066239b41e09fee0df3ff3044",
+        "bytes": 14240,
+        "git_blob": "368a360ba5b9caf7732699027dd951e9b854817e"
+      },
+      {
+        "path": "research_automation/data_generation/contracts.py",
+        "present": true,
+        "sha256": "b33f4137ba71152e8d443ba1837ac2db7241446031f91c52c2d2e034187efcd6",
+        "bytes": 3917,
+        "git_blob": "3a0d3d39c19a577f3df776455de4fa23463c91b2"
+      },
+      {
+        "path": "research_automation/data_generation/daily_staging.py",
+        "present": true,
+        "sha256": "ab99f8c0a7f37b991c2a9057aa3c52490d13440ae364a3f0de9fd30c7ad7c9a8",
+        "bytes": 41712,
+        "git_blob": "5e7751bc289b28a0e461fe990d3b98da2f961fae"
+      },
+      {
+        "path": "research_automation/data_generation/generation.py",
+        "present": true,
+        "sha256": "463025e1ecb6285851fd5397db39f5aff39b2f24de71ea74f1d743caa1de9385",
+        "bytes": 23486,
+        "git_blob": "323fcfe5c302bd28fd1dfd2d2d3f998970b81e31"
+      },
+      {
+        "path": "research_automation/data_generation/market_data.py",
+        "present": true,
+        "sha256": "db86b54d1881718a146ad115a09aeffa23db4112386f18f1e56f5eaf1cbaec07",
+        "bytes": 17126,
+        "git_blob": "f8447fe761f0af1dfdd7cf1a1eff5c276e818f65"
+      },
+      {
+        "path": "research_automation/foundations/immutable_release.py",
+        "present": true,
+        "sha256": "9ddd9ccf0c0c1ca242a7d8823e8687a2ee9c5873c881a3d9eb02c7a72a205c02",
+        "bytes": 28839,
+        "git_blob": "b45a9eec6350eb060202884733d1bb0bc32960ca"
+      },
+      {
+        "path": "tests/test_daily_checkpoint_retention.py",
+        "present": true,
+        "sha256": "72fb4c9aba4fd4fc9f2c9135aa2185f82be3a23c51455ec9305a23e0e5948cb2",
+        "bytes": 15744,
+        "git_blob": "d4d55590f44082fba3e87a1c927db275f9dd04fb"
+      },
+      {
+        "path": "tests/test_daily_updater_staging.py",
+        "present": true,
+        "sha256": "8105a7916558a5d2f8216e973d95bbb6ee0ebfef979b73c5cf9f399cbe89c5b3",
+        "bytes": 12720,
+        "git_blob": "d5b15339bd33cc084d2df611f38bffad8cb71a6f"
+      },
+      {
+        "path": "tests/test_data_generation.py",
+        "present": true,
+        "sha256": "d37ec4ecc13b7843e0854ae4b45838053dff077b1f0fcf60fe514c405ff22ccc",
+        "bytes": 24931,
+        "git_blob": "ff339b6d7bae0e6ae5785d0558f20a780a3f10fa"
+      },
+      {
+        "path": "tests/test_foundations_immutable_release.py",
+        "present": true,
+        "sha256": "d95bb87c17b8c5a4de0ec0bfc6555ea6b8b5d354efda22c4effc88117ecb27eb",
+        "bytes": 48195,
+        "git_blob": "11428352e031c4092d28b61d48dd11fbb8597caf"
+      },
+      {
+        "path": "tests/test_generation_cache_identity.py",
+        "present": true,
+        "sha256": "8b9f79449054d244fc02d91a72818d6dc666fb9f2d598909d54bde6aa7a77729",
+        "bytes": 33123,
+        "git_blob": "bb032ceae9fb6881ce67100f40855fe87e7ceba7"
+      },
+      {
+        "path": "tests/test_kbase_catalog.py",
+        "present": true,
+        "sha256": "b3b839b92c49e1233eb23f0f88218cb24b4e210e7bde4b2f0a8436ace048ee3e",
+        "bytes": 9293,
+        "git_blob": "4cdb2f60b36d82ff1b3ed3c86b690fa4b2c35172"
+      },
+      {
+        "path": "tests/test_kbase_semantic.py",
+        "present": true,
+        "sha256": "3365872eb6107033d308e96e9c9cf13a0f89df937d5712c608421722275b04f1",
+        "bytes": 25124,
+        "git_blob": "331473e7b09a313e5eec1d2a8e2a930c651a84af"
+      },
+      {
+        "path": "tests/test_market_data_semantics.py",
+        "present": true,
+        "sha256": "5af01c204526be0c90a00f58830019f29ba6e5e65f1347ef0e0f23ebbde9a1d5",
+        "bytes": 16891,
+        "git_blob": "81e281ef8ee363109dbdae0971d2a987f73bb7ad"
+      },
+      {
+        "path": "tests/test_raw_parquet_cache.py",
+        "present": true,
+        "sha256": "98856a6a39833620d9d892f506226b32f0b1c14e70d926c4e563335fe220c6be",
+        "bytes": 30152,
+        "git_blob": "b8e84420e7d611c0ed1ef2b08bd6af34f989c7a6"
+      },
+      {
+        "path": "tests/test_signal_cache_identity.py",
+        "present": true,
+        "sha256": "677e1488df46c12a89d9ce2b24a1385f419fd989c0e3313db91d2031bbecf36a",
+        "bytes": 6511,
+        "git_blob": "cb93f41fc9308e30e21200a31f514f489cde7c3b"
+      },
+      {
+        "path": "tests/test_update_today_em_client.py",
+        "present": true,
+        "sha256": "b64e7c1bbe44cc9089f08ae5411a590ae2fa3ca74502ee7b198613ab8979bde2",
+        "bytes": 10510,
+        "git_blob": "5417b1712b02b6ff6af43def6c949a67c3a0b010"
+      },
+      {
+        "path": "tools/update_today_em_client.py",
+        "present": true,
+        "sha256": "d8c4d3379b998a8c257254fcb27e3563d400ce8f1843439afdd7b5be34170bae",
+        "bytes": 22191,
+        "git_blob": "f7e4e9b4d6a82c5342163d75b0fe1ef9a778c008"
+      },
+      {
+        "path": "utils/raw_parquet_cache.py",
+        "present": true,
+        "sha256": "25b99012c1bf89c8b649e43adec6af001db1e2a9048cc96f5ea08a3d374be9a3",
+        "bytes": 8719,
+        "git_blob": "cc653bfed856882148207922072bd1071ab2871b"
+      }
+    ],
+    "current_file_count": 23,
+    "open_nonblocking_findings": [
+      {
+        "source_task": 4,
+        "finding_id": "P2R2-T4-REVIEW-006",
+        "severity": "NON_BLOCKING",
+        "status": "OPEN",
+        "summary": "Caller-supplied current and last-known valuation numbers do not yet carry their own instrument and as-of provenance; T5 must bind adapter inputs before using this T4 factory."
+      },
+      {
+        "source_task": 5,
+        "finding_id": "P2R2-T5-REVIEW-003",
+        "severity": "NON_BLOCKING",
+        "status": "OPEN",
+        "summary": "Separate GenerationPublisher instances targeting one root rely on the underlying cross-process release lock rather than the in-process guard."
+      }
+    ],
+    "external_usage_summary": {
+      "invocation_count": 17,
+      "known_token_lower_bound": 392628,
+      "unknown_usage_count": 4,
+      "unknown_is_zero": false
+    },
+    "prechecks": {
+      "all_old_task_reports_parse": true,
+      "all_old_task_reports_authority_bind": true,
+      "all_old_tickets_succeeded": true,
+      "all_completion_hashes_match": true,
+      "scope_exactly_23_files": true,
+      "large_data_scanned": false,
+      "production_or_research_task_started": false
+    }
+  },
+  "computed": {
+    "payload_sha256": "08f385facfc57a553cdfd52c33e11044ee11434dde51cf07720f87ffacfde670"
+  }
+}
