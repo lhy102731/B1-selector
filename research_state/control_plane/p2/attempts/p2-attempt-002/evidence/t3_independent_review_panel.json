@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p2r2_t3_independent_review_panel.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+  "reviewed_git_head": "cb1fad43b07a49454576fe2628a0d2474da40294",
+  "review_scope_baseline": "8d0f1e8a",
+  "review_attempts": [
+    {
+      "invocation_id": "p2r2-t3-doubao-initial-001",
+      "profile": "doubao",
+      "model": "doubao-seed-2.0-pro",
+      "elapsed_seconds": 101.81,
+      "usage": {
+        "input_tokens": 25196,
+        "output_tokens": 8456,
+        "total_tokens": 33652,
+        "status": "REPORTED"
+      },
+      "verdict": "FAIL",
+      "counted_as_pass": false,
+      "findings": [
+        {
+          "finding_id": "T3-EXT-001",
+          "summary": "Claimed GenerationPin identity-map access lacked locking.",
+          "adjudication": "FALSE_POSITIVE",
+          "evidence": "verify_artifact holds _identity_lock across every _identities read/write and first identify_file call; verify_touched_artifact_ids also snapshots the map under the same lock."
+        },
+        {
+          "finding_id": "T3-EXT-002",
+          "summary": "Separate path verification and processing allowed an ABA/TOCTOU substitution window.",
+          "adjudication": "RESOLVED",
+          "resolution_commit": "cb1fad43",
+          "evidence": "GenerationPin.read_verified_bytes hashes the exact returned bytes; pinned CSV and Parquet processing consumes those bytes through in-memory parsers."
+        }
+      ]
+    },
+    {
+      "invocation_id": "p2r2-t3-doubao-rereview-002",
+      "profile": "doubao",
+      "model": "doubao-seed-2.0-pro",
+      "elapsed_seconds": 28.25,
+      "usage": {
+        "input_tokens": 27001,
+        "output_tokens": 1814,
+        "total_tokens": 28815,
+        "status": "REPORTED"
+      },
+      "verdict": "PASS",
+      "counted_as_pass": false,
+      "reason_not_counted": "The review baseline started after the first T3 GenerationPin implementation commit, so it was not complete-scope evidence."
+    },
+    {
+      "invocation_id": "p2r2-t3-doubao-final-003",
+      "profile": "doubao",
+      "model": "doubao-seed-2.0-pro",
+      "elapsed_seconds": 17.84,
+      "usage": {
+        "input_tokens": 28586,
+        "output_tokens": 1196,
+        "total_tokens": 29782,
+        "status": "REPORTED"
+      },
+      "review_baseline": "8d0f1e8a",
+      "verdict": "PASS",
+      "blocking_findings": [],
+      "non_blocking_findings": [],
+      "confidence": "HIGH",
+      "counted_as_pass": true
+    }
+  ],
+  "independent_subagent_review": {
+    "reviewer_id": "t3-indicator-review",
+    "initial_verdict": "DONE_WITH_CONCERNS",
+    "blocking_findings": [
+      {
+        "finding_id": "T3-SUB-001",
+        "summary": "Direct-CSV indicator helper did not bind data_dir to GenerationPin.data_root.",
+        "status": "RESOLVED",
+        "resolution_commit": "cb1fad43"
+      },
+      {
+        "finding_id": "T3-SUB-002",
+        "summary": "Indicator feature identity omitted effective defaults and implementation identity.",
+        "status": "RESOLVED",
+        "resolution_commit": "cb1fad43"
+      }
+    ],
+    "real_data_backtest_or_campaign_run": false
+  },
+  "reported_external_usage": {
+    "input_tokens": 80783,
+    "output_tokens": 11466,
+    "total_tokens": 92249,
+    "unknown_usage_invocations": 0
+  },
+  "final_result": {
+    "blocking_findings_open": 0,
+    "incomplete_review_counted_as_pass": false,
+    "failed_review_counted_as_pass": false,
+    "verdict": "PASS"
+  }
+}

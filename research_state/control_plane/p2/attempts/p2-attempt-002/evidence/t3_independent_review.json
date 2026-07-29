@@ -1,0 +1,100 @@
+{
+  "schema_version": "control_plane.p2r2_t3_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+  "review_receipt_id": "independent-generation-pin-cache-review",
+  "reviewed_at": "2026-07-29T18:50:24.6700057Z",
+  "reviewer_id": "independent-generation-pin-cache-reviewer",
+  "reviewer_type": "external_llm_with_controller_adjudication_and_independent_subagent",
+  "reviewed_git_head": "cb1fad43b07a49454576fe2628a0d2474da40294",
+  "source_evidence": {
+    "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_independent_review_panel.json",
+    "sha256": "44171dee6ff458b36c16703a66d8120c9c8d6dd763f72f0bf226589e0d30d1fb"
+  },
+  "validation_evidence": {
+    "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_validation_receipt.json",
+    "sha256": "2f191cb4b387546b91186c945afe88e085fb0fd6485a22bbe1552cbea640c2d1"
+  },
+  "review_findings": [
+    {
+      "finding_id": "P2R2-T3-REVIEW-001",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Cache source lineage initially accepted syntactically valid but unverified artifact IDs.",
+      "resolution": "Source IDs must now be touched and reverified by the same GenerationPin; empty, duplicate, unknown, changed, or self-referential lineage is rejected."
+    },
+    {
+      "finding_id": "P2R2-T3-REVIEW-002",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Invalid cache requests could record incompatible path semantics before strict model validation.",
+      "resolution": "All pure request fields are validated before touching a pin, and cache_kind is cross-checked against the nested artifact kind."
+    },
+    {
+      "finding_id": "P2R2-T3-REVIEW-003",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Default 64 KiB parsing and an arbitrary-path writer could leave unreadable or out-of-root sidecars.",
+      "resolution": "Reader and writer share a 1 MiB strict limit, validate before replacement, and writer publication requires GenerationPin plus a validated relative path."
+    },
+    {
+      "finding_id": "P2R2-T3-REVIEW-004",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Direct-CSV indicator helpers could mix the pin root with a different read/write root and under-bind the feature contract.",
+      "resolution": "Resolved roots must equal GenerationPin.data_root before access; physical cache namespaces are exact; effective defaults, algorithm source, normalizer source, and input mode are feature-bound."
+    },
+    {
+      "finding_id": "P2R2-T3-REVIEW-005",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Separate verify and parse operations permitted an ABA substitution between file reads.",
+      "resolution": "GenerationPin.read_verified_bytes returns bytes whose exact identity is checked, and pinned CSV/Parquet consumers parse only those in-memory bytes."
+    },
+    {
+      "finding_id": "P2R2-T3-REVIEW-006",
+      "review_receipt_id": "independent-generation-pin-cache-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "One PASS rereview began after the first T3 implementation commit and therefore did not cover the complete task diff.",
+      "resolution": "It was not counted as PASS; the final external review used the T3 ticket commit as its baseline and returned PASS with high confidence."
+    }
+  ],
+  "external_review_attempts": [
+    {
+      "invocation_id": "p2r2-t3-doubao-initial-001",
+      "result": "GATE_FAIL_WITH_ONE_FALSE_POSITIVE_AND_ONE_RESOLVED_BLOCKER",
+      "counted_as_pass": false
+    },
+    {
+      "invocation_id": "p2r2-t3-doubao-rereview-002",
+      "result": "PASS_INCOMPLETE_SCOPE",
+      "counted_as_pass": false
+    },
+    {
+      "invocation_id": "p2r2-t3-doubao-final-003",
+      "result": "GATE_PASS",
+      "counted_as_pass": true
+    }
+  ],
+  "reported_external_usage": {
+    "input_tokens": 80783,
+    "output_tokens": 11466,
+    "total_tokens": 92249,
+    "unreported_or_unknown_invocations": 0
+  },
+  "final_gate": {
+    "blocking_findings_open": 0,
+    "external_failures_counted_as_pass": false,
+    "incomplete_reviews_counted_as_pass": false,
+    "verdict": "PASS"
+  },
+  "result": "PASS"
+}

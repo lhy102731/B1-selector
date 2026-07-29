@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p2r2_t3_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY",
+  "validated_at": "2026-07-29T18:50:24.6700057Z",
+  "validated_git_head": "cb1fad43b07a49454576fe2628a0d2474da40294",
+  "task_spec_sha256": "a527f273c92bc3090a3b7c4ed53176c4028a4d1f966cdd72f4961b90dd5f6f0f",
+  "test_receipts": [
+    {
+      "receipt_id": "generation-pin-tests",
+      "command": "python -B -m unittest tests.test_data_generation tests.test_generation_cache_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 35
+    },
+    {
+      "receipt_id": "pinned-raw-parquet-tests",
+      "command": "python -B -m unittest tests.test_raw_parquet_cache -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 24
+    },
+    {
+      "receipt_id": "cache-identity-signal-tests",
+      "command": "python -B -m unittest tests.test_signal_cache_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 4
+    },
+    {
+      "receipt_id": "p2r2-t3-regression-tests",
+      "command": "python -B -m unittest tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic tests.test_foundations_settings tests.test_foundations_protocols tests.test_foundations_legacy_contract_adapters tests.test_foundations_dependency_preflight tests.test_foundations_contract_registry tests.test_foundations_artifact_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 128
+    }
+  ],
+  "combined_verification": {
+    "tests_run": 191,
+    "result": "PASS"
+  },
+  "behavior_proofs": {
+    "generation_pin_holds_existing_read_lease": true,
+    "only_explicitly_touched_artifacts_are_hashed": true,
+    "returned_processing_bytes_match_verified_identity": true,
+    "unverified_source_lineage_is_rejected": true,
+    "missing_malformed_foreign_or_mutated_sidecars_fail_closed": true,
+    "sidecar_size_is_bounded_and_validated_before_replace": true,
+    "sidecar_writer_is_generation_pin_root_bound": true,
+    "raw_csv_and_parquet_same_size_mutations_are_rejected": true,
+    "new_generation_requires_explicit_cache_rebuild": true,
+    "effective_params_and_indicator_implementation_are_bound": true,
+    "production_and_research_cache_paths_are_isolated": true,
+    "legacy_unpinned_mtime_and_backtest_paths_are_unchanged": true
+  },
+  "changed_files": [
+    {
+      "path": "research_automation/data_generation/cache_identity.py",
+      "sha256": "21d19b901b7cc99f7012753384bff9df2b02e7e066239b41e09fee0df3ff3044"
+    },
+    {
+      "path": "research_automation/data_generation/generation.py",
+      "sha256": "29400a7f0f2ece77ee0cb01e9960eb4b899003de4477e0b35950f6d08da5bfb9"
+    },
+    {
+      "path": "utils/raw_parquet_cache.py",
+      "sha256": "25b99012c1bf89c8b649e43adec6af001db1e2a9048cc96f5ea08a3d374be9a3"
+    },
+    {
+      "path": "build_indicators_cache.py",
+      "sha256": "243f261da257485b555749d4870b15ff3c1746e6280a01a99719f9a6b31a28a4"
+    },
+    {
+      "path": "tests/test_data_generation.py",
+      "sha256": "d37ec4ecc13b7843e0854ae4b45838053dff077b1f0fcf60fe514c405ff22ccc"
+    },
+    {
+      "path": "tests/test_generation_cache_identity.py",
+      "sha256": "8b9f79449054d244fc02d91a72818d6dc666fb9f2d598909d54bde6aa7a77729"
+    },
+    {
+      "path": "tests/test_raw_parquet_cache.py",
+      "sha256": "98856a6a39833620d9d892f506226b32f0b1c14e70d926c4e563335fe220c6be"
+    },
+    {
+      "path": "tests/test_signal_cache_identity.py",
+      "sha256": "677e1488df46c12a89d9ce2b24a1385f419fd989c0e3313db91d2031bbecf36a"
+    }
+  ],
+  "scope_audit": {
+    "all_changes_inside_t3_allowlist": true,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ],
+    "backtest_optimized_modified": false,
+    "real_data_or_kbase_content_accessed": false,
+    "update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_acl_or_external_state_mutated": false
+  },
+  "result": "PASS"
+}
