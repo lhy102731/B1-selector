@@ -131,6 +131,57 @@ class GenerationManifestContractTests(unittest.TestCase):
             self.assertEqual(second.generation_id, recovered.generation_id)
             self.assertIsNone(publisher.pending_publication())
 
+    def test_pending_recovery_finishes_committed_release_transaction_first(self) -> None:
+        first = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-27",
+            trading_calendar_identity="calendar-cn-a-share-20260727",
+            point_in_time_universe_identity="pit-universe-20260727",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260727",),
+        )
+        second = first.model_copy(update={"csv_cutoff": "2026-07-28"})
+        third = first.model_copy(update={"csv_cutoff": "2026-07-29"})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "generations"
+            publisher = GenerationPublisher(root)
+            publisher.publish(publisher.stage(first))
+            publisher.publish(publisher.stage(second))
+            staged = publisher.stage(third)
+            real_replace = os.replace
+
+            def fail_previous_archive(source: object, target: object) -> None:
+                source_path = Path(source)
+                target_path = Path(target)
+                if (
+                    source_path.name == "previous"
+                    and source_path.parent.name.startswith(".promotion.")
+                    and target_path.parent == root / "archive"
+                ):
+                    raise PermissionError("injected release cleanup crash")
+                real_replace(source, target)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=fail_previous_archive,
+            ):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected release cleanup crash",
+                ):
+                    publisher.publish(staged)
+
+            self.assertTrue(any(root.glob(".promotion.*.tmp")))
+            self.assertIsNotNone(publisher.pending_publication())
+
+            recovered = publisher.recover_pending_publication()
+
+            self.assertEqual(third.generation_id, recovered.generation_id)
+            self.assertFalse(any(root.glob(".promotion.*.tmp")))
+            self.assertIsNone(publisher.pending_publication())
+
     def test_cross_process_read_lease_prevents_generation_publication(self) -> None:
         first = GenerationManifest(
             schema_version=GENERATION_MANIFEST_V1,

@@ -199,6 +199,7 @@ class GenerationPublisher:
         pending = self.pending_publication()
         if pending is None:
             return None
+        self._store.recover()
         current = self.read_current()
         if current.generation_id != pending.candidate_generation_id:
             raise GenerationPublicationConflictError(
