@@ -201,6 +201,16 @@ class ImmutableReleaseStore:
             transaction = self._root / f".rollback.{uuid.uuid4().hex}.tmp"
             parked_current = transaction / "current"
             transaction.mkdir(parents=False)
+            transaction_record = transaction / "transaction.json"
+            self._write_transaction(
+                transaction_record,
+                {
+                    "schema_version": "immutable_release.transaction.v1",
+                    "operation": "ROLLBACK",
+                    "current_release_id": current_id,
+                    "previous_release_id": previous_id,
+                },
+            )
             moved_previous = False
             completed_swap = False
             try:
@@ -216,6 +226,7 @@ class ImmutableReleaseStore:
                     raise ReleaseConflictError(
                         "rollback release identities do not match the prior slots"
                     )
+                transaction_record.unlink()
                 transaction.rmdir()
             except Exception:
                 if completed_swap:
@@ -229,6 +240,7 @@ class ImmutableReleaseStore:
                         os.replace(parked_current, current)
                 elif parked_current.exists():
                     os.replace(parked_current, current)
+                transaction_record.unlink(missing_ok=True)
                 if transaction.exists():
                     transaction.rmdir()
                 raise
@@ -243,6 +255,7 @@ class ImmutableReleaseStore:
         self._root.mkdir(parents=True, exist_ok=True)
         with self._exclusive_lock():
             transactions = sorted(self._root.glob(".promotion.*.tmp"))
+            transactions.extend(sorted(self._root.glob(".rollback.*.tmp")))
             if not transactions:
                 return RecoveryReceipt(action="NO_ACTION", current_path=None)
             if len(transactions) != 1 or not transactions[0].is_dir():
@@ -257,6 +270,8 @@ class ImmutableReleaseStore:
                 raise ReleaseConflictError(
                     "immutable release transaction record is invalid"
                 ) from error
+            if record.get("operation") == "ROLLBACK":
+                return self._recover_rollback_transaction(transaction, record)
             required = {
                 "schema_version",
                 "operation",
@@ -345,6 +360,77 @@ class ImmutableReleaseStore:
             record_path.unlink()
             transaction.rmdir()
             return RecoveryReceipt(action=action, current_path=current)
+
+    def _recover_rollback_transaction(
+        self,
+        transaction: Path,
+        record: dict[str, object],
+    ) -> RecoveryReceipt:
+        required = {
+            "schema_version",
+            "operation",
+            "current_release_id",
+            "previous_release_id",
+        }
+        if (
+            set(record) != required
+            or record["schema_version"] != "immutable_release.transaction.v1"
+            or record["operation"] != "ROLLBACK"
+        ):
+            raise ReleaseConflictError(
+                "immutable release transaction record is invalid"
+            )
+        current_release_id = self._canonical_release_id(
+            record["current_release_id"]
+        )
+        previous_release_id = self._canonical_release_id(
+            record["previous_release_id"]
+        )
+        current = self._root / "current"
+        previous = self._root / "previous"
+        parked_current = transaction / "current"
+        if (
+            parked_current.exists()
+            and current.exists()
+            and not previous.exists()
+            and self._validate_release(parked_current) == current_release_id
+            and self._validate_release(current) == previous_release_id
+        ):
+            os.replace(current, previous)
+            os.replace(parked_current, current)
+            action = "ROLLED_BACK_INTERRUPTED_ROLLBACK"
+        elif (
+            parked_current.exists()
+            and not current.exists()
+            and previous.exists()
+            and self._validate_release(parked_current) == current_release_id
+            and self._validate_release(previous) == previous_release_id
+        ):
+            os.replace(parked_current, current)
+            action = "ROLLED_BACK_INTERRUPTED_ROLLBACK"
+        elif (
+            not parked_current.exists()
+            and current.exists()
+            and previous.exists()
+            and self._validate_release(current) == previous_release_id
+            and self._validate_release(previous) == current_release_id
+        ):
+            action = "COMPLETED_INTERRUPTED_ROLLBACK"
+        elif (
+            not parked_current.exists()
+            and current.exists()
+            and previous.exists()
+            and self._validate_release(current) == current_release_id
+            and self._validate_release(previous) == previous_release_id
+        ):
+            action = "ROLLED_BACK_INTERRUPTED_ROLLBACK"
+        else:
+            raise ReleaseConflictError(
+                "interrupted rollback state does not match the transaction"
+            )
+        (transaction / "transaction.json").unlink()
+        transaction.rmdir()
+        return RecoveryReceipt(action=action, current_path=current)
 
     @staticmethod
     def _canonical_release_id(release_id: str) -> str:

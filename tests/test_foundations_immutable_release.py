@@ -78,6 +78,124 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
 
+    def test_recover_cancels_rollback_before_the_first_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            real_replace = os.replace
+
+            def crash_before_first_move(source: object, target: object) -> None:
+                if (
+                    Path(source) == root / "current"
+                    and Path(target).parent.name.startswith(".rollback.")
+                ):
+                    raise SystemExit("injected rollback crash")
+                real_replace(source, target)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=crash_before_first_move,
+            ):
+                with self.assertRaisesRegex(SystemExit, "injected rollback crash"):
+                    store.rollback(expected_current_id="v2")
+
+            receipt = store.recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
+
+    def test_recover_restores_current_parked_by_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            real_replace = os.replace
+
+            def crash_after_first_move(source: object, target: object) -> None:
+                real_replace(source, target)
+                if (
+                    Path(source) == root / "current"
+                    and Path(target).parent.name.startswith(".rollback.")
+                ):
+                    raise SystemExit("injected rollback crash")
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=crash_after_first_move,
+            ):
+                with self.assertRaisesRegex(SystemExit, "injected rollback crash"):
+                    store.rollback(expected_current_id="v2")
+
+            receipt = store.recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
+
+    def test_recover_cancels_rollback_after_previous_moves_to_current(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            real_replace = os.replace
+
+            def crash_after_second_move(source: object, target: object) -> None:
+                real_replace(source, target)
+                if Path(source) == root / "previous" and Path(target) == root / "current":
+                    raise SystemExit("injected rollback crash")
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=crash_after_second_move,
+            ):
+                with self.assertRaisesRegex(SystemExit, "injected rollback crash"):
+                    store.rollback(expected_current_id="v2")
+
+            receipt = store.recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
+
+    def test_recover_completes_rollback_after_the_slot_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            real_replace = os.replace
+
+            def crash_after_slot_swap(source: object, target: object) -> None:
+                real_replace(source, target)
+                if (
+                    Path(source).parent.name.startswith(".rollback.")
+                    and Path(source).name == "current"
+                    and Path(target) == root / "previous"
+                ):
+                    raise SystemExit("injected rollback crash")
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=crash_after_slot_swap,
+            ):
+                with self.assertRaisesRegex(SystemExit, "injected rollback crash"):
+                    store.rollback(expected_current_id="v2")
+
+            receipt = store.recover()
+
+            self.assertEqual("COMPLETED_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
+
     def test_recover_restores_an_interrupted_promotion_without_lock_age(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
