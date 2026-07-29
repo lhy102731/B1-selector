@@ -10,7 +10,10 @@ from pydantic import field_validator, model_validator
 
 from research_automation.control_plane.contracts import canonical_json
 from research_automation.foundations.artifact_identity import ArtifactIdentity
-from research_automation.foundations.contract_registry import StrictContractModel
+from research_automation.foundations.contract_registry import (
+    ContractRegistry,
+    StrictContractModel,
+)
 
 from .generation import GenerationPin
 
@@ -87,6 +90,14 @@ class CacheIdentity(StrictContractModel):
     def cache_id(self) -> str:
         payload = canonical_json(self.model_dump(mode="json")).encode("utf-8")
         return hashlib.sha256(_CACHE_ID_DOMAIN + payload).hexdigest()
+
+
+def cache_identity_contract_registry() -> ContractRegistry:
+    """Return the strict versioned parser for cache identity sidecars."""
+    return ContractRegistry(
+        version="research.data_generation.cache_identity_registry.v1",
+        contracts={CACHE_IDENTITY_V1: CacheIdentity},
+    )
 
 
 def _validate_build_request(
@@ -186,4 +197,5 @@ __all__ = [
     "CACHE_IDENTITY_V1",
     "CacheIdentity",
     "build_cache_identity",
+    "cache_identity_contract_registry",
 ]
