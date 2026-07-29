@@ -386,7 +386,6 @@ class ImmutableReleaseStore:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
-                lock.unlink(missing_ok=True)
 
 
 __all__ = [

@@ -54,7 +54,7 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
             self.assertEqual(
-                ["candidate", "current", "previous"],
+                [".publish.lock", "candidate", "current", "previous"],
                 sorted(path.name for path in root.iterdir()),
             )
 
@@ -143,6 +143,23 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+
+    def test_public_operations_keep_one_stable_lock_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+
+            store.promote(candidate, expected_current_id="v1")
+            lock = root / ".publish.lock"
+            first_identity = lock.stat().st_ino
+            store.rollback(expected_current_id="v2")
+
+            self.assertTrue(lock.is_file())
+            self.assertEqual(first_identity, lock.stat().st_ino)
 
 
 if __name__ == "__main__":
