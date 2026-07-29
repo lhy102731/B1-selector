@@ -5,8 +5,8 @@
   "attempt_id": "p2-attempt-004",
   "task_id": "P2R4-T5C-SCOPE-ADOPTION",
   "receipt_id": "independent-p2r4-scope-adoption-review",
-  "reviewer_id": "codex-p2r4-state-auditor",
-  "reviewed_at": "2026-07-30T06:46:44.7238252+08:00",
+  "reviewer_id": "codex-p2r4-independent-scope-reviewer",
+  "reviewed_at": "2026-07-30T06:48:25.8196335+08:00",
   "source_reviews": [
     {
       "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
@@ -48,6 +48,13 @@
       "finding_id": "P2R4-T5C-REVIEW-001",
       "severity": "BLOCKING",
       "status": "RESOLVED",
+      "summary": "P2R2 used a private phase-closure primitive with a non-Gate artifact.",
+      "resolution": "P2R2 remains isolated as noncanonical FAIL-only history, is not consumed as Gate evidence, and P2R4 phase closure is restricted to PhaseGateVerifier plus PhaseGateCloser."
+    },
+    {
+      "finding_id": "P2R4-T5C-REVIEW-002",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
       "summary": "P2R3 lost its ephemeral task lease after beginning because a deterministic review-hash helper was called with the wrong signature.",
       "resolution": "P2R4 starts from a fresh authority attempt; every deterministic receipt, actor, findings hash, changed-file hash, TaskReport field, and output path must be preflighted before begin, and phase closure remains restricted to PhaseGateVerifier plus PhaseGateCloser."
     }
@@ -65,11 +72,14 @@
     }
   ],
   "external_usage": {
-    "invocation_id": "p2r4-t5c-state-audit-20260730-codex-subagent",
+    "invocation_id": "p2r4-t5c-independent-scope-review-20260730-codex-subagent",
     "status": "UNKNOWN",
     "input_tokens": null,
     "output_tokens": null,
-    "total_tokens": null
+    "total_tokens": null,
+    "historical_known_token_lower_bound": 392628,
+    "aggregate_unknown_invocation_lower_bound_after_review": 6,
+    "unknown_is_zero": false
   },
   "blocking_findings_open": 0,
   "verdict": "PASS"
