@@ -75,35 +75,32 @@ class QuantSystem:
         print("=" * 60)
         print("[START] 首次全量数据抓取")
         print("=" * 60)
-        self.fetcher.init_full_data(max_stocks=max_stocks, force_full=force_full)
+        result = self.fetcher.init_full_data(max_stocks=max_stocks, force_full=force_full)
+        if isinstance(result, int) and result != 0:
+            raise RuntimeError(f"THSDK full rebuild stopped with exit code {result}")
         print("\n[OK] 数据初始化完成")
 
-    def _smart_update(self, max_stocks=None):
+    def _smart_update(self, max_stocks=None, skip_baostock=False):
         print("\n[UPDATE] 执行数据更新...")
-        fetcher = AKShareFetcher()
-        fetcher.daily_update(max_stocks=max_stocks)
-        # 同步更新资金流数据
-        try:
-            from utils.fund_flow_collector import FundFlowCollector
-            FundFlowCollector().collect_all()
-        except Exception as e:
-            print(f'[WARN] 资金流数据采集失败: {e}')
+        self.fetcher.daily_update(max_stocks=max_stocks, skip_baostock=skip_baostock)
+        from utils.fund_flow_collector import FundFlowCollector
+
+        fund_flow_result = FundFlowCollector(Path(self.data_dir) / "block").collect_all()
+        if fund_flow_result not in (None, 0):
+            raise RuntimeError(
+                f"fund-flow update failed with exit code {fund_flow_result}"
+            )
         print("\n[OK] 数据更新完成")
 
-    def update_data(self, max_stocks=None):
+    def update_data(self, max_stocks=None, skip_baostock=False):
         print("=" * 60)
-        print("[UPDATE] 每日增量更新")
+        if max_stocks:
+            mode_str = "THSDK 小样本测试模式"
+        else:
+            mode_str = "THSDK K线 + 换手率/流通市值"
+        print(f"[UPDATE] 每日增量更新 ({mode_str})")
         print("=" * 60)
-        if __name__ == '__main__':
-            fetcher = AKShareFetcher()
-            fetcher.daily_update(max_stocks=max_stocks)
-            # 同步更新资金流数据
-            try:
-                from utils.fund_flow_collector import FundFlowCollector
-                FundFlowCollector().collect_all()
-            except Exception as e:
-                print(f'[WARN] 资金流数据采集失败: {e}')
-        print("\n[OK] 数据更新完成")
+        self._smart_update(max_stocks=max_stocks, skip_baostock=skip_baostock)
 
     @staticmethod
     def _check_b3_signal(df_indicators):
@@ -157,7 +154,7 @@ class QuantSystem:
             'vol_ratio': round(vol_ratio, 2),
         }
 
-    def run_simple_b1(self, max_stocks=None, min_similarity=None, lookback_days=None):
+    def run_simple_b1(self, max_stocks=None, min_similarity=None, lookback_days=None, skip_baostock=False):
         """
         简化版B1选股流程：统一B1策略 + B1相似度排序 + B3选股
         """
@@ -175,7 +172,7 @@ class QuantSystem:
         print(f"   回看天数: {lookback_days}天")
         print("=" * 60)
 
-        self._smart_update(max_stocks=max_stocks)
+        self._smart_update(max_stocks=max_stocks, skip_baostock=skip_baostock)
 
         self.registry.auto_register_from_directory("strategy")
         strategy = self.registry.get_strategy('UnifiedB1Strategy')
@@ -308,6 +305,7 @@ def main():
     parser.add_argument('--min-similarity', type=float, default=None, help='B1匹配最小相似度阈值')
     parser.add_argument('--lookback-days', type=int, default=None, help='B1匹配回看天数')
     parser.add_argument('--force-full', action='store_true', help='强制全量重新抓取，忽略失败列表')
+    parser.add_argument('--no-baostock', action='store_true', help='兼容旧参数；日更现在固定使用 THSDK')
 
     args = parser.parse_args()
 
@@ -325,7 +323,7 @@ def main():
     if args.command == 'init':
         quant.init_data(max_stocks=args.max_stocks, force_full=args.force_full)
     elif args.command == 'update':
-        quant.update_data(max_stocks=args.max_stocks)
+        quant.update_data(max_stocks=args.max_stocks, skip_baostock=args.no_baostock)
     elif args.command == 'run':
         from strategy.pattern_config import MIN_SIMILARITY_SCORE, DEFAULT_LOOKBACK_DAYS
         min_sim = args.min_similarity if args.min_similarity is not None else MIN_SIMILARITY_SCORE
@@ -333,7 +331,8 @@ def main():
         quant.run_simple_b1(
             max_stocks=args.max_stocks,
             min_similarity=min_sim,
-            lookback_days=lookback
+            lookback_days=lookback,
+            skip_baostock=args.no_baostock
         )
 
 
