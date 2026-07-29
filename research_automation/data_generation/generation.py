@@ -195,6 +195,18 @@ class GenerationPublisher:
             raise TypeError("generation registry returned the wrong contract")
         return parsed
 
+    def recover_pending_publication(self) -> GenerationManifest | None:
+        pending = self.pending_publication()
+        if pending is None:
+            return None
+        current = self.read_current()
+        if current.generation_id != pending.candidate_generation_id:
+            raise GenerationPublicationConflictError(
+                "pending publication does not match CURRENT"
+            )
+        self._clear_publish_pending(pending)
+        return current
+
     def read_current(self) -> GenerationManifest:
         return self._read_manifest(self._root / "current")
 

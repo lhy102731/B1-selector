@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from research_automation.data_generation.contracts import (
     GENERATION_MANIFEST_V1,
@@ -53,6 +54,46 @@ class GenerationManifestContractTests(unittest.TestCase):
             published = publisher.publish(staged)
 
             self.assertEqual(second.generation_id, published.generation_id)
+            self.assertIsNone(publisher.pending_publication())
+
+    def test_recovery_clears_pending_after_publish_committed_before_cleanup(self) -> None:
+        first = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-28",
+            trading_calendar_identity="calendar-cn-a-share-20260728",
+            point_in_time_universe_identity="pit-universe-20260728",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260728",),
+        )
+        second = first.model_copy(update={"csv_cutoff": "2026-07-29"})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "generations"
+            publisher = GenerationPublisher(root)
+            publisher.publish(publisher.stage(first))
+            staged = publisher.stage(second)
+            pending_path = root / ".publish_pending.json"
+            real_unlink = Path.unlink
+
+            def fail_pending_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+                if path == pending_path:
+                    raise PermissionError("injected pending cleanup crash")
+                real_unlink(path, *args, **kwargs)
+
+            with patch.object(Path, "unlink", new=fail_pending_cleanup):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected pending cleanup crash",
+                ):
+                    publisher.publish(staged)
+
+            self.assertEqual(second.generation_id, publisher.read_current().generation_id)
+            self.assertIsNotNone(publisher.pending_publication())
+
+            recovered = publisher.recover_pending_publication()
+
+            self.assertEqual(second.generation_id, recovered.generation_id)
             self.assertIsNone(publisher.pending_publication())
 
     def test_generation_manifest_strictly_binds_source_and_cache_identities(self) -> None:
