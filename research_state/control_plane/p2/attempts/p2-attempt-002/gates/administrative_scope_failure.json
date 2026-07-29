@@ -1,0 +1,51 @@
+{
+  "schema_version": "control_plane.administrative_phase_failure.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "identity_binding": {
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "closure_mode": "TRUSTED_ADMINISTRATIVE_FAIL_CLOSED",
+  "generic_pass_gate_claimed": false,
+  "verdict": "FAIL",
+  "reason_codes": [
+    "PHASE_SCOPE_OMITTED_T5_FILES"
+  ],
+  "authority_snapshot": {
+    "active_entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+    "active_grant_ids": [
+      "grant_e0299c759090659689983dc6c7caf6f8"
+    ],
+    "open_ticket_ids": [],
+    "succeeded_ticket_ids": [
+      "122f1af56216b135cbc06d1cdfe3eb0e32dcd3c26d04a95aa276da428544aca4",
+      "af6f02d83cc1099e323a7b6f7c00eaab6525b4d3b07600e2479d5d386f8ef2fd",
+      "b71284fcd41ab2d00e3d4365c2bb8bf1469bde2b395563df53be7e79cd1d13cb",
+      "c036c4e401db60029fc06798d7ae8b656057ec11dc1aac9994a1f48116670d02",
+      "c35ce865325e535eb294481ff741abec22e9b11d4b5a126d57725f8f97a6404f"
+    ],
+    "failed_ticket_ids": [],
+    "in_doubt_ticket_ids": [],
+    "pending_outbox_count": 0
+  },
+  "evidence": [
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t6_scope_mismatch_incident.json",
+      "sha256": "10b56c7067aeb805e7cb1a8f52edf96da079a36e26518459c5ada3b2aac953fc"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2_cr_003_approval_receipt.json",
+      "sha256": "6882dae3a23c13a84765313c1be144e9de53afcb1d5b336642e17cadf55b885c"
+    }
+  ],
+  "safety": {
+    "implementation_rollback_performed": false,
+    "real_data_or_kbase_accessed_or_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false,
+    "auto_advance": false
+  }
+}
