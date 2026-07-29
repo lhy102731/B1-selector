@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from utils.csv_manager import CSVManager
+from utils.checkpoint_retention import prune_checkpoint_history
 from utils.ths_data_source import THSDataSource, THSDataSourceError, THSHistoryPermissionError
 from tools.rebuild_all_ths import _normalise_history, validate_history
 
@@ -737,6 +738,19 @@ def run(
             cache["last_update_attempt_date"] = TODAY_STR
             cache["last_update_source"] = "thsdk"
             cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+            if require_ths_manifest:
+                cleanup = prune_checkpoint_history(
+                    data_dir / "_daily_updates",
+                    checkpoint_dir,
+                )
+                cleanup_path = checkpoint_dir / "checkpoint_cleanup.json"
+                _atomic_json(cleanup, cleanup_path)
+                print(
+                    f"checkpoint_cleanup={cleanup_path} "
+                    f"removed_files={cleanup['removed_files']} "
+                    f"removed_bytes={cleanup['removed_bytes']}",
+                    flush=True,
+                )
     print(f"THS daily update: updated={successful} unchanged={unchanged} failed={failed}")
     print(f"report={report_path}")
     return 0 if validation["valid"] else 2
