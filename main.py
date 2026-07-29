@@ -1,5 +1,5 @@
 """
-A股量化选股系统 - 主程序（简化版，仅统一B1策略 + B1相似度排序）
+A股量化选股系统 - 主程序（统一B1策略 + B1相似度排序 + L2桌面分析）
 
 使用方法:
     python main.py init                              # 首次全量抓取
@@ -7,6 +7,9 @@ A股量化选股系统 - 主程序（简化版，仅统一B1策略 + B1相似度
     python main.py run --b1-match                    # 执行统一B1选股
     python main.py run --b1-match --max-stocks 100   # 快速测试
     python main.py run --b1-match --min-similarity 70 --lookback-days 40
+    python main.py l2                                # 启动L2桌面分析GUI
+    python main.py l2 --cli --stock 600366           # CLI模式单股分析
+    python main.py l2 --backfill --days 30           # 回填历史逐笔数据
 """
 import sys
 import os
@@ -272,6 +275,118 @@ class QuantSystem:
         """保留原接口兼容，实际调用简化版"""
         return self.run_simple_b1(max_stocks=max_stocks)
 
+    def run_l2(self, cli_mode=False, stock=None, backfill_days=None):
+        """启动L2桌面分析系统 (Phase 3 GUI) 或 CLI 模式。
+
+        Args:
+            cli_mode: True=命令行分析模式, False=启动GUI
+            stock: CLI模式下指定股票代码，逗号分隔
+            backfill_days: 历史逐笔数据回填天数
+        """
+        from l2.data.config import L2Config
+
+        config = L2Config()
+
+        if backfill_days:
+            self._l2_backfill(config, backfill_days)
+        elif cli_mode:
+            self._l2_cli_analysis(config, stock)
+        else:
+            print("Starting L2 Desktop GUI...")
+            from l2.gui.app import main as l2_main
+            l2_main()
+
+    def _l2_backfill(self, config, days):
+        """回填历史逐笔数据。"""
+        from datetime import datetime, timedelta
+        from l2.data.collector import L2DataCollector
+        from l2.data.storage import TickStorage
+
+        print("=" * 60)
+        print(f"[L2 BACKFILL] 回填最近 {days} 天历史逐笔数据")
+        print("=" * 60)
+
+        collector = L2DataCollector(config)
+        collector.connect()
+        storage = TickStorage()
+
+        if not collector.has_l2:
+            print("[WARN] L2未连接，无法回填逐笔数据")
+            print("      回退到标准行情（mootdx std）仅能获取日K线，逐笔数据需要L2权限")
+            collector.close()
+            return
+
+        # Get watchlist from config or use default test stocks
+        stocks = config.DEFAULT_WATCHLIST or ["600366", "000001", "600519", "000977", "300750"]
+        end_date = datetime.now()
+        saved_total = 0
+
+        for d in range(days, 0, -1):
+            date = (end_date - timedelta(days=d)).strftime("%Y%m%d")
+            for code in stocks:
+                df = collector.get_historical_transactions(code, date)
+                if not df.empty:
+                    storage.save_transactions(code, date, df)
+                    saved_total += len(df)
+            print(f"  {date}: {saved_total} ticks total")
+
+        collector.close()
+        print(f"\n[OK] 回填完成，共保存 {saved_total} 条逐笔记录")
+
+    def _l2_cli_analysis(self, config, stock):
+        """CLI模式：对指定股票运行L2分析并打印结果。"""
+        from l2.data.collector import L2DataCollector
+        from l2.analysis.orderbook_analyzer import OrderBookAnalyzer
+
+        stocks = [s.strip() for s in stock.split(",")] if stock else ["600366"]
+        print("=" * 60)
+        print(f"[L2 CLI] 分析股票: {', '.join(stocks)}")
+        print("=" * 60)
+
+        collector = L2DataCollector(config)
+        collector.connect()
+        status = collector.get_connection_status()
+        print(f"L2: {status['l2_connected']}, Std: {status['std_connected']}")
+
+        # Get real-time quotes
+        df_quotes = collector.get_realtime_quotes(stocks)
+        if not df_quotes.empty:
+            print(f"\n--- 实时行情 ---")
+            for _, row in df_quotes.iterrows():
+                change_pct = (row['price'] / row['last_close'] - 1) * 100 if row['last_close'] else 0
+                print(f"  {row['code']}: {row['price']:.2f} "
+                      f"({change_pct:+.2f}%) "
+                      f"vol={row['volume']:,} "
+                      f"bid1={row['bid1']}/{row['bid_vol1']} "
+                      f"ask1={row['ask1']}/{row['ask_vol1']}")
+
+        # Order book analysis
+        print(f"\n--- 盘口分析 ---")
+        oba = OrderBookAnalyzer(config)
+        for code in stocks:
+            ob = collector.get_order_book_snapshot(code)
+            if ob:
+                imbalance = oba.compute_depth_imbalance(ob)
+                wall = oba.has_strong_wall(ob)
+                mid_price = oba.compute_weighted_mid_price(ob)
+                print(f"  {code}: spread={ob.get('spread', 0):.4f}, "
+                      f"imbalance={imbalance:.3f}, "
+                      f"mid_price={mid_price:.3f}, "
+                      f"strong_wall={'YES' if wall else 'no'}")
+
+        collector.close()
+
+        # Local L2 minute data
+        print(f"\n--- 本地L2分钟数据 ---")
+        c2 = L2DataCollector(config)
+        c2.connect()
+        for code in stocks:
+            df = c2.get_local_l2_minute(code)
+            if not df.empty:
+                print(f"  {code}: {len(df):,} rows, "
+                      f"range={df.index[0]} ~ {df.index[-1]}")
+        c2.close()
+
 
 def print_version():
     import akshare
@@ -285,7 +400,7 @@ def print_version():
 
 def main():
     parser = argparse.ArgumentParser(
-        description='A股量化选股系统（统一B1策略版）',
+        description='A股量化选股系统（统一B1策略 + L2桌面分析）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
@@ -294,11 +409,14 @@ def main():
   python main.py run --b1-match                    # 执行统一B1选股
   python main.py run --b1-match --max-stocks 100   # 快速测试
   python main.py run --b1-match --min-similarity 70 --lookback-days 40
+  python main.py l2                                # 启动L2桌面GUI
+  python main.py l2 --cli --stock 600366           # CLI模式单股分析
+  python main.py l2 --backfill --days 30           # 回填最近30天逐笔数据
         """
     )
 
     parser.add_argument('--version', action='store_true', help='显示版本信息并退出')
-    parser.add_argument('command', choices=['init', 'update', 'run'], nargs='?', help='要执行的命令')
+    parser.add_argument('command', choices=['init', 'update', 'run', 'l2'], nargs='?', help='要执行的命令')
     parser.add_argument('--max-stocks', type=int, default=None, help='限制处理的股票数量（用于快速测试）')
     parser.add_argument('--config', default='config/config.yaml', help='配置文件路径')
     parser.add_argument('--b1-match', action='store_true', help='启用B1完美图形匹配排序')
@@ -306,6 +424,11 @@ def main():
     parser.add_argument('--lookback-days', type=int, default=None, help='B1匹配回看天数')
     parser.add_argument('--force-full', action='store_true', help='强制全量重新抓取，忽略失败列表')
     parser.add_argument('--no-baostock', action='store_true', help='兼容旧参数；日更现在固定使用 THSDK')
+    # L2 arguments
+    parser.add_argument('--cli', action='store_true', help='[L2] CLI命令行模式（不启动GUI）')
+    parser.add_argument('--backfill', action='store_true', help='[L2] 回填历史逐笔数据到本地')
+    parser.add_argument('--stock', type=str, default=None, help='[L2] 指定股票代码，逗号分隔')
+    parser.add_argument('--days', type=int, default=30, help='[L2] 回填天数 (默认30)')
 
     args = parser.parse_args()
 
@@ -333,6 +456,12 @@ def main():
             min_similarity=min_sim,
             lookback_days=lookback,
             skip_baostock=args.no_baostock
+        )
+    elif args.command == 'l2':
+        quant.run_l2(
+            cli_mode=args.cli,
+            stock=args.stock,
+            backfill_days=args.days if args.backfill else None
         )
 
 
