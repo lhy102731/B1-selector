@@ -1,0 +1,24 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+  "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t4_missing_bar_valuation_semantics.json",
+  "task_spec_sha256": "5211cf880cb556b44187ff958a1b4c35d200d384611ae88caaf04f20f15f378b",
+  "authorization_ref": "auth_f05e88c3367cfc99c40555bfbd3d647b",
+  "grant_id": "grant_e0299c759090659689983dc6c7caf6f8",
+  "ticket_id": "c35ce865325e535eb294481ff741abec22e9b11d4b5a126d57725f8f97a6404f",
+  "ticket_state": "ISSUED",
+  "entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "dependency_ticket_id": "122f1af56216b135cbc06d1cdfe3eb0e32dcd3c26d04a95aa276da428544aca4",
+  "dependency_ticket_state": "SUCCEEDED",
+  "lease_custody_rule": "Implement and validate outside the lease; validate all closure inputs before begin; close in one trusted process.",
+  "lease_started": false,
+  "bearer_secret_recorded": false,
+  "pending_outbox_count_after_mirror": 0,
+  "recorded_at": "2026-07-29T19:53:14.985493+00:00"
+}

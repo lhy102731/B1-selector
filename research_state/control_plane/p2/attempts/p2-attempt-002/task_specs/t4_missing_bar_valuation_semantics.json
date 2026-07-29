@@ -1,0 +1,92 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+      "objective": "Define one pure public market-data semantics seam where PRESENT, NO_BAR_CONFIRMED, UNKNOWN_NO_BAR, and FETCH_FAILED remain distinct; only source-confirmed absence can mean suspension; non-present bars cannot feed features, signals, entries, or exits; and explicitly stale portfolio valuation is NAV-only and model-ineligible, without changing the daily updater or any backtest path.",
+      "dependencies": [
+        "P2R2-T3-GENERATION-PIN-CACHE-IDENTITY"
+      ],
+      "idempotency_key": "p2-attempt-002-t4-missing-bar-valuation-semantics",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t4_missing_bar_valuation_semantics.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "missing-bar-valuation-semantics-tests",
+          "p2r2-t4-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "independent-missing-bar-valuation-review"
+        ],
+        "required_evidence_ids": [
+          "p2r2-authorization",
+          "implementation-baseline",
+          "p2r2-t3-task-report",
+          "p2r2-t3-completion"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/data_generation/market_data.py",
+        "tests/test_market_data_semantics.py",
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/knowledge_base/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/",
+        "tools/",
+        "utils/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+      "baseline_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r2-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "bfc6e3fdf9ee61a01b005673bfc27370dea99f4666b6a773e162c16ad1b30faa",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+          "evidence_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t3-task-report",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_task_report.json",
+          "evidence_sha256": "aae9bdbbb33bb22e8fde7c8d1e477e5041dd278b3168b084f3043553a73ea495",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r2-t3-completion",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t3_completion_receipt.json",
+          "evidence_sha256": "ad953798f72a0f8208a5324ba48ab09eb42320e08a4ad00ff7d995f134319cae",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "511911d4f51952cc0c526cf5938cec9a889c37e61a45877f3ebc2e95f3ed646c"
+  }
+}
