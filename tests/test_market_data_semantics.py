@@ -1,11 +1,26 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pandas as pd
 
+from research_automation.data_generation.market_data import (
+    BarAvailability,
+    BarObservation,
+    BarUse,
+    FetchFailure,
+    MarketDataUseError,
+    MarketSessionKey,
+    NavValuation,
+    NoBarConfirmation,
+    PortfolioValuation,
+    ValuationState,
+    classify_bar_availability,
+    value_portfolio_position,
+)
 from tools.audit_market_data_semantics import scan_data_dir
 from utils.market_data_semantics import audit_frame, summarize_checks
 
@@ -173,6 +188,273 @@ class MarketDataSemanticsTests(unittest.TestCase):
             self.assertEqual([], bad_rows)
             for path, original in source_bytes.items():
                 self.assertEqual(original, path.read_bytes())
+
+
+class MissingBarSemanticsTests(unittest.TestCase):
+    def setUp(self):
+        self.key = MarketSessionKey("000001", date(2026, 7, 30))
+
+    def _confirmation(self):
+        return NoBarConfirmation(
+            key=self.key,
+            source_id="exchange-status",
+            evidence_ref="provider-response:2026-07-30:000001",
+        )
+
+    def _fetch_failure(self):
+        return FetchFailure(
+            key=self.key,
+            source_id="eastmoney",
+            error_ref="request-error:timeout",
+        )
+
+    def test_present_payload_is_released_read_only_through_the_use_gate(self):
+        present = classify_bar_availability(
+            key=self.key,
+            bar_payload={"close": 10.5, "volume": 1_000},
+        )
+
+        payload = present.require_usable_for(BarUse.FEATURE)
+
+        self.assertEqual({"close": 10.5, "volume": 1_000}, dict(payload))
+        self.assertFalse(hasattr(present, "bar_payload"))
+        with self.assertRaises(TypeError):
+            payload["close"] = 9.5
+
+    def test_present_payload_is_recursively_snapshotted_and_frozen(self):
+        source = {
+            "close": 10.5,
+            "metadata": {"quality": "valid", "flags": ["source-ok"]},
+        }
+        present = classify_bar_availability(
+            key=self.key,
+            bar_payload=source,
+        )
+
+        source["metadata"]["quality"] = "corrupt"
+        source["metadata"]["flags"].append("late-mutation")
+        payload = present.require_usable_for(BarUse.FEATURE)
+
+        self.assertEqual("valid", payload["metadata"]["quality"])
+        self.assertEqual(("source-ok",), payload["metadata"]["flags"])
+        with self.assertRaises(TypeError):
+            payload["metadata"]["quality"] = "corrupt"
+
+    def test_no_bar_confirmation_is_bound_to_instrument_and_session(self):
+        other_key = MarketSessionKey("000002", date(2026, 7, 30))
+        confirmation = NoBarConfirmation(
+            key=other_key,
+            source_id="exchange-status",
+            evidence_ref="provider-response:2026-07-30:000002",
+        )
+
+        with self.assertRaises(ValueError):
+            classify_bar_availability(
+                key=self.key,
+                no_bar_confirmation=confirmation,
+            )
+
+    def test_fetch_failure_is_bound_to_instrument_and_session(self):
+        other_key = MarketSessionKey("000002", date(2026, 7, 30))
+        failure = FetchFailure(
+            key=other_key,
+            source_id="eastmoney",
+            error_ref="request-error:timeout",
+        )
+
+        with self.assertRaises(ValueError):
+            classify_bar_availability(key=self.key, fetch_failure=failure)
+
+    def test_only_source_confirmed_absence_is_suspension(self):
+        confirmed = classify_bar_availability(
+            key=self.key,
+            no_bar_confirmation=self._confirmation(),
+        )
+        unknown = classify_bar_availability(key=self.key)
+
+        self.assertEqual(BarAvailability.NO_BAR_CONFIRMED, confirmed.availability)
+        self.assertTrue(confirmed.is_suspended)
+        self.assertEqual(BarAvailability.UNKNOWN_NO_BAR, unknown.availability)
+        self.assertFalse(unknown.is_suspended)
+
+    def test_fetch_failure_remains_distinct_from_unknown_or_suspension(self):
+        failed = classify_bar_availability(
+            key=self.key,
+            fetch_failure=self._fetch_failure(),
+        )
+
+        self.assertEqual(BarAvailability.FETCH_FAILED, failed.availability)
+        self.assertFalse(failed.is_suspended)
+        self.assertEqual("request-error:timeout", failed.fetch_failure.error_ref)
+
+    def test_classification_rejects_conflicting_or_noncanonical_evidence(self):
+        invalid_inputs = (
+            {
+                "key": self.key,
+                "bar_payload": {"close": 10.5},
+                "no_bar_confirmation": self._confirmation(),
+            },
+            {
+                "key": self.key,
+                "bar_payload": {"close": 10.5},
+                "fetch_failure": self._fetch_failure(),
+            },
+            {
+                "key": self.key,
+                "no_bar_confirmation": self._confirmation(),
+                "fetch_failure": self._fetch_failure(),
+            },
+        )
+
+        for values in invalid_inputs:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                classify_bar_availability(**values)
+        with self.assertRaises(ValueError):
+            NoBarConfirmation(
+                key=self.key,
+                source_id="  ",
+                evidence_ref="provider-response:invalid",
+            )
+        with self.assertRaises(ValueError):
+            NoBarConfirmation(
+                key=self.key,
+                source_id=None,
+                evidence_ref="provider-response:invalid",
+            )
+        with self.assertRaises(ValueError):
+            FetchFailure(
+                key=self.key,
+                source_id="eastmoney",
+                error_ref=None,
+            )
+
+    def test_only_present_bar_can_feed_features_signals_entries_or_exits(self):
+        present = classify_bar_availability(
+            key=self.key,
+            bar_payload={"close": 10.5},
+        )
+        unavailable = (
+            classify_bar_availability(
+                key=self.key,
+                no_bar_confirmation=self._confirmation(),
+            ),
+            classify_bar_availability(key=self.key),
+            classify_bar_availability(
+                key=self.key,
+                fetch_failure=self._fetch_failure(),
+            ),
+        )
+
+        for use in BarUse:
+            with self.subTest(use=use, availability=BarAvailability.PRESENT):
+                self.assertEqual(
+                    {"close": 10.5},
+                    dict(present.require_usable_for(use)),
+                )
+            for observation in unavailable:
+                with (
+                    self.subTest(use=use, availability=observation.availability),
+                    self.assertRaises(MarketDataUseError),
+                ):
+                    observation.require_usable_for(use)
+
+    def test_stale_valuation_is_nav_only_and_cannot_feed_a_model(self):
+        missing = classify_bar_availability(key=self.key)
+
+        valuation = value_portfolio_position(
+            missing,
+            current_value=None,
+            last_known_value=125_000.0,
+        )
+        nav_value = valuation.for_portfolio_nav()
+
+        self.assertEqual(ValuationState.STALE_VALUATION, valuation.state)
+        self.assertTrue(valuation.is_stale)
+        self.assertNotIsInstance(nav_value, (int, float))
+        self.assertEqual(ValuationState.STALE_VALUATION, nav_value.state)
+        self.assertEqual(125_000.0, nav_value.amount)
+        self.assertFalse(hasattr(valuation, "value"))
+        with self.assertRaises(MarketDataUseError):
+            valuation.for_model_feature()
+
+    def test_stale_valuation_preserves_each_missing_state_and_session_key(self):
+        observations = (
+            classify_bar_availability(
+                key=self.key,
+                no_bar_confirmation=self._confirmation(),
+            ),
+            classify_bar_availability(key=self.key),
+            classify_bar_availability(
+                key=self.key,
+                fetch_failure=self._fetch_failure(),
+            ),
+        )
+
+        for observation in observations:
+            valuation = value_portfolio_position(
+                observation,
+                current_value=None,
+                last_known_value=125_000.0,
+            )
+            nav_value = valuation.for_portfolio_nav()
+            with self.subTest(availability=observation.availability):
+                self.assertEqual(
+                    observation.availability,
+                    valuation.source_availability,
+                )
+                self.assertEqual(
+                    observation.availability,
+                    nav_value.source_availability,
+                )
+                self.assertEqual(self.key, nav_value.key)
+
+    def test_present_bar_requires_current_valuation_before_model_use(self):
+        present = classify_bar_availability(
+            key=self.key,
+            bar_payload={"close": 10.5},
+        )
+
+        with self.assertRaises(ValueError):
+            value_portfolio_position(
+                present,
+                current_value=None,
+                last_known_value=120_000.0,
+            )
+
+        valuation = value_portfolio_position(
+            present,
+            current_value=125_000.0,
+            last_known_value=120_000.0,
+        )
+        self.assertEqual(ValuationState.CURRENT, valuation.state)
+        self.assertFalse(valuation.is_stale)
+        self.assertEqual(125_000.0, valuation.for_model_feature())
+
+    def test_presence_without_a_bound_payload_is_rejected(self):
+        with self.assertRaises((TypeError, ValueError)):
+            classify_bar_availability(bar_present=True)
+
+    def test_classified_and_valuation_objects_cannot_bypass_public_factories(self):
+        with self.assertRaises(TypeError):
+            BarObservation(
+                availability=BarAvailability.PRESENT,
+                key=self.key,
+                _bar_payload={"close": 10.5},
+            )
+        with self.assertRaises(TypeError):
+            PortfolioValuation(
+                _value=125_000.0,
+                state=ValuationState.CURRENT,
+                source_availability=BarAvailability.PRESENT,
+                key=self.key,
+            )
+        with self.assertRaises(ValueError):
+            NavValuation(
+                amount=125_000.0,
+                state=ValuationState.STALE_VALUATION,
+                source_availability=BarAvailability.PRESENT,
+                key=self.key,
+            )
 
 
 if __name__ == "__main__":
