@@ -1,0 +1,49 @@
+{
+  "schema_version": "control_plane.p2_scope_mismatch_incident.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "detected_before_task": "P2R2-T6-INTEGRATION-FREEZE",
+  "detected_at": "2026-07-30T05:52:30.6343482+08:00",
+  "failure_class": "PHASE_SCOPE_OMITTED_T5_FILES",
+  "old_scope": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/scope_manifest.json",
+    "file_sha256": "aaf2ada38cb34f56a012aa8bdf714632873109e197235ee062f87c1ad595fee9",
+    "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff"
+  },
+  "omitted_paths": [
+    {
+      "path": "research_automation/data_generation/daily_staging.py",
+      "sha256": "ab99f8c0a7f37b991c2a9057aa3c52490d13440ae364a3f0de9fd30c7ad7c9a8",
+      "bytes": 41712
+    },
+    {
+      "path": "tests/test_daily_updater_staging.py",
+      "sha256": "8105a7916558a5d2f8216e973d95bbb6ee0ebfef979b73c5cf9f399cbe89c5b3",
+      "bytes": 12720
+    }
+  ],
+  "t5_binding": {
+    "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t5_daily_updater_staging_adapter.json",
+    "task_spec_sha256": "7564152880ba35cffaa4c8c895c828f0de327ff8be0a666554c13de9be1985d6",
+    "ticket_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_ticket_receipt.json",
+    "ticket_sha256": "98866cf4d6dc4cbd826a2e3a1baa7f47ef139620e145036f2adccfa235ebf998",
+    "task_report_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_task_report.json",
+    "task_report_sha256": "7700073526c995e851a556f8fdf275d21e016e2ec79928f885337f5671554a81",
+    "completion_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_completion_receipt.json",
+    "completion_sha256": "716be9693860958b534b6a423598dfb3514fcf7b0c6200690ffa2a71487e394b"
+  },
+  "impact": {
+    "implementation_failed": false,
+    "test_or_review_failed": false,
+    "authority_scope_integrity_failed": true,
+    "scientific_or_production_side_effect": false,
+    "real_data_kbase_backtest_research_campaign_or_holdout_started": false
+  },
+  "required_recovery": {
+    "change_request": "P2-CR-003",
+    "new_attempt": "p2-attempt-003",
+    "do_not_reimplement_t1_t5": true,
+    "combined_revalidation_required": true
+  }
+}
