@@ -1,0 +1,64 @@
+{
+  "schema_version": "control_plane.independent_preprovision_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "reviewed_at": "2026-07-30T06:06:04.7694165+08:00",
+  "reviewer_id": "codex-t5-spec-reviewer-franklin",
+  "reviewer_type": "independent_subagent",
+  "reviewed_git_head": "5299f1404288d6cfe96fc08bc0980966d17c742a",
+  "reviewed_git_tree": "df3c5706ad28cdf2b8213df430630ec726a0a472",
+  "reviewed_artifacts": [
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/scope_manifest.json",
+      "sha256": "78dd2c4f75bd17fba0bf6078b4b2a503847a88c096e23955154850c5893cd7d1"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/identity_bundle.json",
+      "sha256": "fa1c0b2bd58ee7f6b5b8442c58ff9097144d537c0eb28c06d6557752db45d787"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_baseline.json",
+      "sha256": "7ce45f732c446d53fb1457464d14bfcfba5425decea03158da7d53d6d791a756"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/p2r2_noncanonical_closure_incident.json",
+      "sha256": "a4b1d4cab7c9acf5398d808ae7b22e8dfbe7a45f5e114aa5143cdda8a67d136a"
+    }
+  ],
+  "checks": {
+    "scope_identity_baseline_and_reference_hashes": "PASS",
+    "exact_scope_delta_only_two_approved_paths": "PASS",
+    "allowed_code_and_test_path_count": 23,
+    "attempt_003_authorization_or_grant_preexisting": false,
+    "pending_outbox_count": 0,
+    "daily_staging_tests": {
+      "passed": 10,
+      "failed": 0,
+      "result": "PASS"
+    },
+    "real_data_update_backtest_research_or_campaign_started": false
+  },
+  "findings": [
+    {
+      "finding_id": "P2R3-PREPROVISION-001",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "P2R2 was closed through a private Authority primitive with a non-Gate artifact.",
+      "resolution": "The immutable P2R2 state is explicitly classified CLOSED/FAIL and noncanonical in b0e1c507; P2R3 binds that incident, does not trust the predecessor closure as Gate evidence, and requires public verified TaskReport/Gate paths for every new closure."
+    }
+  ],
+  "constraints_for_continuation": [
+    "Do not treat the P2R2 closure as trusted Gate evidence.",
+    "Hash-bind and independently revalidate T1-T5 in P2R3.",
+    "Use public verified TaskReport and Gate paths for P2R3.",
+    "Do not call the private phase-closure primitive directly again."
+  ],
+  "external_usage": {
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null
+  },
+  "verdict": "PASS"
+}
