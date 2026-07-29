@@ -1,0 +1,106 @@
+{
+  "schema_version": "control_plane.p2r4_t6_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T6-INTEGRATION-FREEZE",
+  "ticket_id": "c3af5969c06642c88a3353c622e5d1c31b4b96610377251e157aa2c1ef8fdab5",
+  "validated_at": "2026-07-30T07:04:51.1877553+08:00",
+  "validation_git_head": "d6249ba713b4e195a4c92b6c628c012f7f1e9c29",
+  "validation_git_tree": "c6fad6ff0c991ae4b2b579dce2e4dad664deeffb",
+  "frozen_source_git_head": "e18025480d9c1a87cd22d770665ed8ca399967cf",
+  "frozen_source_git_tree": "f06c5bd05f8902c378c920fca034e57ea02a68f4",
+  "test_receipts": [
+    {
+      "receipt_id": "p2r4-t6-focused-integration-tests",
+      "command": "python -B -m unittest tests.test_foundations_immutable_release tests.test_data_generation tests.test_generation_cache_identity tests.test_market_data_semantics tests.test_daily_updater_staging tests.test_raw_parquet_cache tests.test_signal_cache_identity tests.test_update_today_em_client tests.test_daily_checkpoint_retention tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 175,
+      "tests_failed": 0,
+      "unittest_elapsed_seconds": "6.461",
+      "process_elapsed_ms": 12266
+    },
+    {
+      "receipt_id": "p2r4-t6-dependency-environment-preflight",
+      "command": "C:/Users/Administrator/AppData/Local/Temp/codex-p1-t2-locked-runtime/Scripts/python.exe -B -c \"require_dependency_environment('requirements/control-plane.lock')\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "checked_distributions": 33,
+      "lock_sha256": "32cec4f59e8a4b291cc20d1b88c4763912d8f779eeab75f1ee2e77478b43be42",
+      "python_version": "3.13.12",
+      "elapsed_ms": 206
+    },
+    {
+      "receipt_id": "p2r4-t6-scope-static-syntax-check",
+      "command": "python -B -c \"compile all 22 present Python paths in the 23-path P2R4 scope and validate the persisted Git code-freeze manifest\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "files_compiled": 22,
+      "scope_paths": 23,
+      "freeze_commit": "e18025480d9c1a87cd22d770665ed8ca399967cf",
+      "elapsed_ms": 142
+    },
+    {
+      "receipt_id": "p2r4-t6-full-unittest-suite",
+      "command": "python -B -m unittest discover -s tests -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 1122,
+      "tests_failed": 0,
+      "unittest_elapsed_seconds": "129.813",
+      "process_elapsed_ms": 139770,
+      "dummy_provider_environment": true
+    },
+    {
+      "receipt_id": "p2r4-t6-task-report-authority-set-check",
+      "command": "python -B -c \"Authority-bind the P2R4 T5C TaskReport and prove it equals the complete succeeded-ticket set while T6 is the sole open ticket\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "authority_bound_task_reports": 1,
+      "succeeded_ticket_count": 1,
+      "open_ticket_count": 1,
+      "failed_ticket_count": 0,
+      "in_doubt_ticket_count": 0,
+      "pending_outbox_count": 0,
+      "elapsed_ms": 128
+    }
+  ],
+  "prevalidation_incidents": [
+    {
+      "incident_id": "P2R4-T6-PREVALIDATION-001",
+      "classification": "NON_AUTHORITATIVE_RUNTIME_SELECTION_ERROR",
+      "summary": "The first parallel invocation incorrectly used the control-plane-only locked runtime for repository tests; that environment intentionally lacks pandas and numpy.",
+      "resolution": "All unchanged test commands were rerun with the repository system Python, while the locked runtime remained limited to dependency-lock verification.",
+      "ticket_lease_started": false,
+      "production_side_effect": false
+    },
+    {
+      "incident_id": "P2R4-T6-PREVALIDATION-002",
+      "classification": "NON_AUTHORITATIVE_COMMAND_QUOTING_ERROR",
+      "summary": "One inline static-check command lost nested quotes in PowerShell before Python could execute it.",
+      "resolution": "The exact static and freeze validation was rerun through a Python stdin script and passed for 22 of 22 present files.",
+      "ticket_lease_started": false,
+      "production_side_effect": false
+    }
+  ],
+  "code_freeze": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t6_code_freeze_manifest_v2.json",
+    "sha256": "48fd31452781b1c7d0ee66b0bbdd9ea03ffe0ff9de974950debf80b855615cee",
+    "freeze_payload_sha256": "2eb5e10662f0aea4ca664f01eacd57daa15b602114d2f0394f1cfee3b675ebc5",
+    "source_identity_sha256": "8dafa9149db2c6ae19ae6170eec607034c622a0281b6d78e0047a98248c21e93",
+    "legacy_quarantine_entries": 122,
+    "external_runtime_dependencies": 1,
+    "capture_elapsed_seconds": "1.4",
+    "large_data_scanned": false
+  },
+  "environment": {
+    "fixtures_and_temp_directories_only": true,
+    "real_data_or_kbase_content_read_or_mutated": false,
+    "network_provider_called": false,
+    "production_daily_update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false,
+    "source_code_mutated": false
+  },
+  "verdict": "PASS"
+}
