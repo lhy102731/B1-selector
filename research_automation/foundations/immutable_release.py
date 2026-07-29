@@ -119,10 +119,8 @@ class ImmutableReleaseStore:
             transaction = self._root / f".promotion.{uuid.uuid4().hex}.tmp"
             parked_current = transaction / "current"
             parked_previous = transaction / "previous"
-            transaction.mkdir(parents=False)
-            transaction_record = transaction / "transaction.json"
-            self._write_transaction(
-                transaction_record,
+            transaction_record = self._start_transaction(
+                transaction,
                 {
                     "schema_version": "immutable_release.transaction.v1",
                     "operation": "PROMOTE",
@@ -196,10 +194,8 @@ class ImmutableReleaseStore:
 
             transaction = self._root / f".rollback.{uuid.uuid4().hex}.tmp"
             parked_current = transaction / "current"
-            transaction.mkdir(parents=False)
-            transaction_record = transaction / "transaction.json"
-            self._write_transaction(
-                transaction_record,
+            transaction_record = self._start_transaction(
+                transaction,
                 {
                     "schema_version": "immutable_release.transaction.v1",
                     "operation": "ROLLBACK",
@@ -344,6 +340,18 @@ class ImmutableReleaseStore:
                     os.replace(parked_previous, previous)
                 action = "ROLLED_BACK_INTERRUPTED_PROMOTION"
             elif parked_current.exists():
+                if (
+                    expected_current_id is None
+                    or self._validate_release(parked_current)
+                    != expected_current_id
+                ):
+                    raise ReleaseConflictError(
+                        "parked CURRENT does not match the transaction"
+                    )
+                if parked_previous.exists() and previous.exists():
+                    raise ReleaseConflictError(
+                        "interrupted previous slot has two occupants"
+                    )
                 if current.exists():
                     if self._validate_release(current) != candidate_release_id:
                         raise ReleaseConflictError(
@@ -371,6 +379,18 @@ class ImmutableReleaseStore:
                 if self._validate_release(current) != candidate_release_id:
                     raise ReleaseConflictError(
                         "completed CURRENT does not match the transaction"
+                    )
+                if expected_current_id is None:
+                    previous_matches = not previous.exists()
+                else:
+                    previous_matches = (
+                        previous.exists()
+                        and self._validate_release(previous)
+                        == expected_current_id
+                    )
+                if not previous_matches:
+                    raise ReleaseConflictError(
+                        "completed PREVIOUS does not match the transaction"
                     )
                 if parked_previous.exists():
                     archive = self._root / "archive"
@@ -484,6 +504,21 @@ class ImmutableReleaseStore:
             raise ReleaseConflictError(
                 "immutable release recovery required before another write"
             )
+
+    def _start_transaction(
+        self,
+        transaction: Path,
+        payload: dict[str, object],
+    ) -> Path:
+        transaction.mkdir(parents=False)
+        record = transaction / "transaction.json"
+        try:
+            self._write_transaction(record, payload)
+        except Exception:
+            record.unlink(missing_ok=True)
+            transaction.rmdir()
+            raise
+        return record
 
     @staticmethod
     def _write_transaction(path: Path, payload: dict[str, object]) -> None:

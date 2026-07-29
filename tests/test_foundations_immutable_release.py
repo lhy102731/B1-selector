@@ -84,6 +84,27 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
                 sorted(path.name for path in root.iterdir()),
             )
 
+    def test_promotion_journal_disk_failure_leaves_no_pending_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.fsync",
+                side_effect=OSError("injected disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected disk full"):
+                    store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(any(root.glob(".promotion.*.tmp")))
+
     def test_rollback_swaps_current_and_previous_after_promotion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
@@ -100,6 +121,24 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v2", receipt.previous_release_id)
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
+
+    def test_rollback_journal_disk_failure_leaves_no_pending_transaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.fsync",
+                side_effect=OSError("injected disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "injected disk full"):
+                    store.rollback(expected_current_id="v2")
+
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
 
     def test_recover_cancels_rollback_before_the_first_move(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -521,6 +560,121 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertFalse((root / "current").exists())
             self.assertFalse((root / "previous").exists())
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertEqual(
+                "v0",
+                _ManifestAdapter().validate(transaction / "previous"),
+            )
+
+    def test_recover_rejects_a_parked_current_with_the_wrong_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v2",
+                expected_current_id="v1",
+            )
+            os.replace(root / "previous", transaction / "previous")
+            os.replace(root / "current", transaction / "current")
+            (transaction / "current" / "manifest.json").write_text(
+                json.dumps({"release_id": "wrong"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "parked CURRENT does not match",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertFalse((root / "current").exists())
+            self.assertFalse((root / "previous").exists())
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertEqual(
+                "wrong",
+                _ManifestAdapter().validate(transaction / "current"),
+            )
+            self.assertEqual(
+                "v0",
+                _ManifestAdapter().validate(transaction / "previous"),
+            )
+
+    def test_recover_rejects_a_committed_promotion_with_the_wrong_previous(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v2",
+                expected_current_id="v1",
+            )
+            os.replace(root / "previous", transaction / "previous")
+            os.replace(root / "current", transaction / "current")
+            os.replace(candidate, root / "current")
+            os.replace(transaction / "current", root / "previous")
+            (root / "previous" / "manifest.json").write_text(
+                json.dumps({"release_id": "wrong"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "PREVIOUS does not match",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("wrong", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual(
+                "v0",
+                _ManifestAdapter().validate(transaction / "previous"),
+            )
+
+    def test_recover_rejects_two_previous_occupants_before_moving_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v2",
+                expected_current_id="v1",
+            )
+            os.replace(root / "previous", transaction / "previous")
+            os.replace(root / "current", transaction / "current")
+            os.replace(candidate, root / "current")
+            _write_release(root / "previous", "wrong")
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "previous slot has two occupants",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("wrong", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(candidate.exists())
+            self.assertEqual(
+                "v1",
+                _ManifestAdapter().validate(transaction / "current"),
+            )
             self.assertEqual(
                 "v0",
                 _ManifestAdapter().validate(transaction / "previous"),
