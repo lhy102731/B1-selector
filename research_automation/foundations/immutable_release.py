@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -44,6 +45,7 @@ class ReleaseReadLease:
         "_root",
         "_descriptor",
         "_released",
+        "_state_lock",
     )
 
     def __init__(
@@ -59,27 +61,39 @@ class ReleaseReadLease:
         self._root = root
         self._descriptor = descriptor
         self._released = False
+        self._state_lock = threading.Lock()
 
     @property
     def active(self) -> bool:
-        return not self._released
+        with self._state_lock:
+            return not self._released
 
     def release(self) -> None:
-        if self._released:
-            return
-        try:
-            os.lseek(self._descriptor, 0, os.SEEK_SET)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(self._descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(self._descriptor)
+        with self._state_lock:
+            if self._released:
+                return
             self._released = True
+            try:
+                os.lseek(self._descriptor, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(self._descriptor, msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(self._descriptor)
+
+    @contextmanager
+    def _active_descriptor(self) -> Iterator[int]:
+        with self._state_lock:
+            if self._released:
+                raise ReleaseLeaseExpiredError(
+                    "release read lease is no longer active"
+                )
+            yield self._descriptor
 
     def __enter__(self) -> ReleaseReadLease:
         return self
@@ -163,18 +177,21 @@ class ImmutableReleaseStore:
             raise
 
     def validate_read_lease(self, lease: ReleaseReadLease) -> str:
-        if not isinstance(lease, ReleaseReadLease) or not lease.active:
+        if not isinstance(lease, ReleaseReadLease):
             raise ReleaseLeaseExpiredError("release read lease is no longer active")
-        if lease._root != self._root.resolve():
-            raise ReleaseLeaseExpiredError(
-                "release read lease belongs to a different store"
-            )
-        if self._read_fencing_token_locked(lease._descriptor) != lease.fencing_token:
-            raise ReleaseLeaseExpiredError("release read lease fencing token expired")
-        current_id = self._validate_release(self._root / "current")
-        if current_id != lease.release_id:
-            raise ReleaseLeaseExpiredError("release read lease identity expired")
-        return current_id
+        with lease._active_descriptor() as descriptor:
+            if lease._root != self._root.resolve():
+                raise ReleaseLeaseExpiredError(
+                    "release read lease belongs to a different store"
+                )
+            if self._read_fencing_token_locked(descriptor) != lease.fencing_token:
+                raise ReleaseLeaseExpiredError(
+                    "release read lease fencing token expired"
+                )
+            current_id = self._validate_release(self._root / "current")
+            if current_id != lease.release_id:
+                raise ReleaseLeaseExpiredError("release read lease identity expired")
+            return current_id
 
     def promote(
         self,

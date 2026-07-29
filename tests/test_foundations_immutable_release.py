@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -99,6 +101,50 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertGreater(promotion.fencing_token, first_token)
             self.assertEqual(promotion.fencing_token, next_lease.fencing_token)
             next_lease.release()
+
+    def test_concurrent_release_closes_the_read_lease_descriptor_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            lease = store.acquire_read_lease(expected_release_id="v1")
+            descriptor = lease._descriptor
+            start = threading.Barrier(3)
+            close_count = 0
+            close_count_lock = threading.Lock()
+            errors: list[BaseException] = []
+            real_close = os.close
+
+            def slow_close(value: int) -> None:
+                nonlocal close_count
+                if value == descriptor:
+                    with close_count_lock:
+                        close_count += 1
+                    time.sleep(0.05)
+                real_close(value)
+
+            def release() -> None:
+                start.wait()
+                try:
+                    lease.release()
+                except BaseException as error:
+                    errors.append(error)
+
+            workers = [threading.Thread(target=release) for _ in range(2)]
+            with patch(
+                "research_automation.foundations.immutable_release.os.close",
+                side_effect=slow_close,
+            ):
+                for worker in workers:
+                    worker.start()
+                start.wait()
+                for worker in workers:
+                    worker.join(2)
+
+            self.assertFalse(any(worker.is_alive() for worker in workers))
+            self.assertEqual([], errors)
+            self.assertEqual(1, close_count)
+            self.assertFalse(lease.active)
 
     def test_promote_failure_restores_current_previous_and_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
