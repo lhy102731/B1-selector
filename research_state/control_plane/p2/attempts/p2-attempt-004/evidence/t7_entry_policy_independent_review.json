@@ -1,0 +1,122 @@
+{
+  "schema_version": "control_plane.p2r4_entry_policy_boundary_review.v1",
+  "review_id": "p2r4-t7-entry-policy-boundary-review",
+  "receipt_id": "independent-p2r4-entry-policy-review",
+  "reviewed_at": "2026-07-30T07:18:39.6651595+08:00",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "candidate": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_entry_policy_review_candidate.json",
+    "sha256": "126f8718b8464f429df8d8434ebf02188e4cdc721e8f0e4bf731f7d38651cb0d"
+  },
+  "reviewer": {
+    "actor_id": "independent-p2r4-entry-policy-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p2r4-t7-entry-policy-review-20260730-codex",
+    "independent_from_task_actor": true
+  },
+  "decision": "PASS",
+  "counts_as_policy_approval": true,
+  "checks": [
+    {
+      "check_id": "persisted_byte_hashes",
+      "status": "PASS",
+      "details": {
+        "code_freeze_sha256": "bb64b3ceab1f4dfc201246effc55514719bc85eef34b7a93a3afb6bddf219e90",
+        "final_inventory_sha256": "11458767c3a901a4789eb5bf9456e23185b673dfd396b3ca4068b2037a4f88cc",
+        "scheduler_inventory_sha256": "857f4ea55bcaad600da706cb265365eca7c0ed2a8c663e72ca9a33b24a6993d7",
+        "candidate_sha256": "126f8718b8464f429df8d8434ebf02188e4cdc721e8f0e4bf731f7d38651cb0d",
+        "terminal_newline_included": true
+      }
+    },
+    {
+      "check_id": "git_source_and_inventory",
+      "status": "PASS",
+      "details": {
+        "git_commit": "e4775e5038b9251fcb42b36c51f4a68f22d0c76f",
+        "git_tree": "684f0234c8fc43653142c4168a8ca250683eec72",
+        "source_identity_sha256": "e645732c3c94880182b2be100babaa5ac6530f0a2038b70512687d6f39a3a9ae",
+        "inventory_payload_sha256": "276cd39550ba474cc2f5ff029257df3a700eeea1751d0fa3cb81a3efa99f37c2",
+        "entry_count": 489,
+        "live_inventory_verification": "PASS"
+      }
+    },
+    {
+      "check_id": "inventory_delta_from_p1",
+      "status": "PASS",
+      "details": {
+        "prior_entry_count": 479,
+        "added_entry_count": 10,
+        "changed_entry_count": 11,
+        "removed_entry_count": 0,
+        "added_entries_all_in_p2_scope": true,
+        "changed_entries_in_p2_scope": 9,
+        "pre_p2_baseline_control_plane_changes": [
+          "research_automation/control_plane/task_reports.py",
+          "tests/test_control_plane_task_reports.py"
+        ]
+      }
+    },
+    {
+      "check_id": "quarantine_and_runtime_bindings",
+      "status": "PASS",
+      "details": {
+        "legacy_quarantine_entries": 122,
+        "quarantine_hash_mismatches": [],
+        "external_runtime_dependencies": 1,
+        "ths_dll_sha256": "f2378ea08cd0e9847f7366b1cf276866808c45fa5181fb23afdbb1667750c991"
+      }
+    },
+    {
+      "check_id": "scheduler_read_only_binding",
+      "status": "PASS",
+      "details": {
+        "task_state": "Ready",
+        "last_task_result_observed_separately": 0,
+        "task_xml_sha256": "200c98df8867e503a33634383bd699a84b8c691e2a16f0352d33b106b35930cd",
+        "run_select_sha256": "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
+        "semantic_status": "VERIFIED",
+        "mutation_performed": false
+      }
+    },
+    {
+      "check_id": "reviewed_policy_projection",
+      "status": "PASS",
+      "details": {
+        "policy_file_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+        "policy_payload_sha256": "91052574ddbe25315999dc94a11948f49a272800d5da47fd48399d30fc18d0ac",
+        "review_receipt_sha256": "3d427bf4b60cecda62ccac79c1ec55fb28d01979fce5228b3f8e4ebace7a8aca",
+        "entries_exactly_equal_final_inventory": true,
+        "old_policy_preserved_immutable": true
+      }
+    },
+    {
+      "check_id": "data_and_mutation_boundary",
+      "status": "PASS",
+      "details": {
+        "data_or_kbase_content_reads_or_hashes": 0,
+        "scheduler_or_acl_mutations": 0,
+        "research_backtest_campaign_or_holdout_started": false
+      }
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "advisories": [
+    {
+      "finding_id": "P2R2-T4-REVIEW-006",
+      "status": "CARRIED_NON_BLOCKING"
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-003",
+      "status": "CARRIED_NON_BLOCKING"
+    }
+  ],
+  "external_usage": {
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "unknown_is_zero": false
+  }
+}

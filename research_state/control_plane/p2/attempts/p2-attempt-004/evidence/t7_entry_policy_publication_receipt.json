@@ -1,0 +1,19 @@
+{
+  "schema_version": "control_plane.p2r4_entry_policy_publication_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "published_at": "2026-07-30T07:19:48.3735903+08:00",
+  "policy_ref": "research_state/control_plane/policies/d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14.json",
+  "policy_file_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+  "policy_payload_sha256": "91052574ddbe25315999dc94a11948f49a272800d5da47fd48399d30fc18d0ac",
+  "inventory_payload_sha256": "276cd39550ba474cc2f5ff029257df3a700eeea1751d0fa3cb81a3efa99f37c2",
+  "review_receipt_sha256": "3d427bf4b60cecda62ccac79c1ec55fb28d01979fce5228b3f8e4ebace7a8aca",
+  "reviewer_id": "independent-p2r4-entry-policy-reviewer",
+  "entry_count": 489,
+  "publication_mode": "CREATE_ONLY_CONTENT_ADDRESSED",
+  "existing_policy_overwritten": false,
+  "active_policy_changed": false,
+  "activation_requires_live_t7_lease": true,
+  "verdict": "PASS"
+}
