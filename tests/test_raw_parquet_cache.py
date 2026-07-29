@@ -9,6 +9,16 @@ import pandas as pd
 
 from backtest_optimized import OptimizedBacktester, _indicator_cache_path
 from build_indicators_cache import build_etf_one, build_one, build_raw_one, result_exit_code, safe_cache_name
+from research_automation.data_generation.cache_identity import (
+    CacheIdentityMismatchError,
+    CacheIdentityMissingError,
+    read_cache_identity_sidecar,
+)
+from research_automation.data_generation.contracts import (
+    GENERATION_MANIFEST_V1,
+    GenerationManifest,
+)
+from research_automation.data_generation.generation import GenerationPublisher
 from utils.market_asset_store import MarketAssetStore
 from utils.raw_parquet_cache import RawParquetCache, normalize_raw_stock_frame
 
@@ -32,6 +42,21 @@ def _write_stock_csv(data_dir: Path, code: str, rows: int = 70) -> Path:
     return path
 
 
+def _publish_generation(root: Path, cutoff: str = "2026-07-30"):
+    publisher = GenerationPublisher(root / "generations")
+    manifest = GenerationManifest(
+        schema_version=GENERATION_MANIFEST_V1,
+        csv_cutoff=cutoff,
+        trading_calendar_identity=f"calendar-{cutoff}",
+        point_in_time_universe_identity=f"universe-{cutoff}",
+        adjustment_scheme="qfq-v1",
+        missing_data_policy="four-state-v1",
+        cache_manifest_references=("raw-parquet-production",),
+    )
+    publisher.publish(publisher.stage(manifest))
+    return publisher, manifest
+
+
 class FakeStrategy:
     def __init__(self):
         self.params = {}
@@ -44,6 +69,168 @@ class FakeStrategy:
 
 
 class RawParquetCacheTests(unittest.TestCase):
+    def test_pinned_research_raw_cache_is_physically_isolated(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "cache name does not match its namespace",
+                ):
+                    RawParquetCache(
+                        data_dir,
+                        generation_pin=pin,
+                        cache_namespace="research",
+                    )
+                cache = RawParquetCache(
+                    data_dir,
+                    cache_name="research_raw_parquet",
+                    generation_pin=pin,
+                    cache_namespace="research",
+                )
+                cache.read_stock("000001")
+                identity = read_cache_identity_sidecar(
+                    cache.parquet_path("000001")
+                )
+
+            self.assertEqual("research", identity.cache_namespace)
+            self.assertFalse(
+                (data_dir / "raw_parquet" / "00" / "000001.parquet").exists()
+            )
+
+    def test_pinned_raw_parquet_requires_rebuild_for_new_generation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            _write_stock_csv(data_dir, "000001")
+            publisher, first = _publish_generation(root, "2026-07-29")
+            with publisher.pin_current(
+                expected_generation_id=first.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                RawParquetCache(data_dir, generation_pin=pin).read_stock(
+                    "000001"
+                )
+
+            publisher, second = _publish_generation(root, "2026-07-30")
+            with publisher.pin_current(
+                expected_generation_id=second.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                cache = RawParquetCache(data_dir, generation_pin=pin)
+                with self.assertRaises(CacheIdentityMismatchError):
+                    cache.read_stock("000001")
+                rebuilt = cache.read_stock("000001", refresh=True)
+                identity = read_cache_identity_sidecar(
+                    cache.parquet_path("000001")
+                )
+
+            self.assertFalse(rebuilt.empty)
+            self.assertEqual(second.generation_id, identity.generation_id)
+
+    def test_pinned_raw_parquet_rejects_source_csv_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            csv_path = _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                RawParquetCache(data_dir, generation_pin=pin).read_stock(
+                    "000001"
+                )
+
+            content = csv_path.read_bytes()
+            mutated = content.replace(b"10.", b"11.", 1)
+            self.assertEqual(len(content), len(mutated))
+            self.assertNotEqual(content, mutated)
+            csv_path.write_bytes(mutated)
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                with self.assertRaises(CacheIdentityMismatchError):
+                    RawParquetCache(data_dir, generation_pin=pin).read_stock(
+                        "000001"
+                    )
+
+    def test_pinned_raw_parquet_rejects_same_size_cache_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                cache = RawParquetCache(data_dir, generation_pin=pin)
+                cache.read_stock("000001")
+                parquet_path = cache.parquet_path("000001")
+
+            content = bytearray(parquet_path.read_bytes())
+            content[-1] ^= 1
+            parquet_path.write_bytes(bytes(content))
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                cache = RawParquetCache(data_dir, generation_pin=pin)
+                with self.assertRaises(CacheIdentityMismatchError):
+                    cache.read_stock("000001")
+
+    def test_pinned_raw_parquet_builds_sidecar_and_reuses_cache(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                cache = RawParquetCache(data_dir, generation_pin=pin)
+                first = cache.read_stock("000001")
+                second = cache.read_stock("000001")
+                identity = read_cache_identity_sidecar(
+                    cache.parquet_path("000001")
+                )
+
+            self.assertFalse(first.empty)
+            self.assertTrue(first.equals(second))
+            self.assertEqual(manifest.generation_id, identity.generation_id)
+            self.assertEqual("production", identity.cache_namespace)
+
+    def test_pinned_raw_parquet_rejects_unversioned_existing_cache(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            _write_stock_csv(data_dir, "000001")
+            RawParquetCache(data_dir).read_stock("000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                cache = RawParquetCache(data_dir, generation_pin=pin)
+                with self.assertRaises(CacheIdentityMissingError):
+                    cache.is_current("000001")
+                with self.assertRaises(CacheIdentityMissingError):
+                    cache.read_stock("000001")
+
     def test_normalize_raw_stock_frame_sorts_and_filters(self):
         df = pd.DataFrame({
             "date": ["2024-01-03", "2024-01-01", "bad"],

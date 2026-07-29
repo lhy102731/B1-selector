@@ -117,6 +117,10 @@ class GenerationPin:
         return self.generation_id
 
     @property
+    def data_root(self) -> Path:
+        return self._data_root
+
+    @property
     def manifest(self) -> GenerationManifest:
         return self._manifest
 
