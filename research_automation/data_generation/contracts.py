@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
+from pydantic import field_validator
+
 from research_automation.control_plane.contracts import canonical_json
 from research_automation.foundations.contract_registry import (
     ContractRegistry,
@@ -28,6 +30,19 @@ class GenerationManifest(StrictContractModel):
     adjustment_scheme: str
     missing_data_policy: str
     cache_manifest_references: tuple[str, ...]
+
+    @field_validator(
+        "csv_cutoff",
+        "trading_calendar_identity",
+        "point_in_time_universe_identity",
+        "adjustment_scheme",
+        "missing_data_policy",
+    )
+    @classmethod
+    def _require_canonical_text(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("generation identity text must be canonical")
+        return value
 
     @property
     def generation_id(self) -> str:
