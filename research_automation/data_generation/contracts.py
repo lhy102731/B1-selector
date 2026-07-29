@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Literal
 
+from research_automation.control_plane.contracts import canonical_json
 from research_automation.foundations.contract_registry import (
     ContractRegistry,
     StrictContractModel,
@@ -11,6 +13,7 @@ from research_automation.foundations.contract_registry import (
 
 
 GENERATION_MANIFEST_V1 = "research.data_generation.generation_manifest.v1"
+_GENERATION_ID_DOMAIN = b"research.data_generation.generation_manifest.v1\0"
 
 
 class GenerationManifest(StrictContractModel):
@@ -25,6 +28,11 @@ class GenerationManifest(StrictContractModel):
     adjustment_scheme: str
     missing_data_policy: str
     cache_manifest_references: tuple[str, ...]
+
+    @property
+    def generation_id(self) -> str:
+        payload = canonical_json(self.model_dump(mode="json")).encode("utf-8")
+        return hashlib.sha256(_GENERATION_ID_DOMAIN + payload).hexdigest()
 
 
 def generation_contract_registry() -> ContractRegistry:

@@ -34,6 +34,28 @@ class GenerationManifestContractTests(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             registry.parse_mapping(GENERATION_MANIFEST_V1, invalid)
 
+    def test_generation_id_is_stable_and_content_addressed(self) -> None:
+        baseline = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-28",
+            trading_calendar_identity="calendar-cn-a-share-20260728",
+            point_in_time_universe_identity="pit-universe-20260728",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260728",),
+        )
+        same = GenerationManifest.model_validate(
+            baseline.model_dump(mode="python"),
+            strict=True,
+        )
+        changed = baseline.model_copy(
+            update={"trading_calendar_identity": "calendar-cn-a-share-20260729"}
+        )
+
+        self.assertEqual(baseline.generation_id, same.generation_id)
+        self.assertNotEqual(baseline.generation_id, changed.generation_id)
+        self.assertRegex(baseline.generation_id, r"^[0-9a-f]{64}$")
+
 
 if __name__ == "__main__":
     unittest.main()
