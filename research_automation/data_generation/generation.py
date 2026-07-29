@@ -84,6 +84,7 @@ class GenerationPublisher:
         self._store.promote(
             staged.path,
             expected_current_id=staged.expected_current_id,
+            expected_candidate_id=staged.generation_id,
         )
         return self.read_current()
 

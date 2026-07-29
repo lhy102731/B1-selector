@@ -85,14 +85,30 @@ class ImmutableReleaseStore:
         candidate: Path,
         *,
         expected_current_id: str | None,
+        expected_candidate_id: str | None = None,
     ) -> PromotionReceipt:
         candidate = self._candidate_path(candidate)
         release_id = self._validate_release(candidate)
+        if expected_candidate_id is not None:
+            expected_candidate_id = self._canonical_release_id(
+                expected_candidate_id
+            )
+            if release_id != expected_candidate_id:
+                raise ReleaseConflictError(
+                    "candidate identity changed before promotion"
+                )
         current = self._root / "current"
         previous = self._root / "previous"
 
         with self._exclusive_lock():
-            release_id = self._validate_release(candidate)
+            locked_release_id = self._validate_release(candidate)
+            if locked_release_id != release_id or (
+                expected_candidate_id is not None
+                and locked_release_id != expected_candidate_id
+            ):
+                raise ReleaseConflictError(
+                    "candidate identity changed while acquiring the lock"
+                )
             current_id = self._current_id(current)
             if current_id != expected_current_id:
                 raise ReleaseConflictError(
