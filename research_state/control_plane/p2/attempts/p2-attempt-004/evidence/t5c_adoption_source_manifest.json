@@ -1,0 +1,228 @@
+{
+  "schema_version": "control_plane.p2r4_t5c_adoption_source_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p2r4_t5c_adoption_source_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-004",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "25d11e3d5457c128c57ba34e8694aef2c30e3bb021c0c53a8bd95d6a4a283abc",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "created_at": "2026-07-30T06:31:46.742759+08:00",
+    "source_artifacts": [
+      {
+        "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_adoption_source_manifest.json",
+        "sha256": "0ec6e357928513af9c42c281625adb78eb85cf7503ea407d8850c49d6d25dcaa",
+        "bytes": 16370
+      },
+      {
+        "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_validation_receipt.json",
+        "sha256": "28d41ffd65fed862e1221d7bbe7053dcca240e89c739e6863838e943c0b37739",
+        "bytes": 2283
+      },
+      {
+        "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_independent_review.json",
+        "sha256": "c823552b3252fa7c1b928d2ce2e18cbd8500ef826c5ee42c84352f1df42ef479",
+        "bytes": 2714
+      },
+      {
+        "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_lease_loss_incident.json",
+        "sha256": "fff1a904c562dcd3eb4640f72c29901f4e2c96500b89a6f823fb02f34d81389f",
+        "bytes": 1983
+      },
+      {
+        "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_canonical_failure_closure_receipt.json",
+        "sha256": "a285b9a7f93cc12c9c8f324437a83214e8f965bd2c1daa691a75e5c09a2f7f37",
+        "bytes": 2955
+      }
+    ],
+    "current_code_and_test_files": [
+      {
+        "path": "ag2_research/kbase/catalog_builder.py",
+        "present": true,
+        "sha256": "e69bca1bda2ebe0e257e7de6f1f12815ccfc713ce411258e9999b960ea44e10f",
+        "bytes": 15388,
+        "git_blob": "ba31725ebfe6862592bb11f7aad0ef4d94cf2beb"
+      },
+      {
+        "path": "ag2_research/kbase/semantic_index.py",
+        "present": true,
+        "sha256": "ac3e8745ddb3857505669000c4f6baea20e37456827265047288a8413be2f2a3",
+        "bytes": 54570,
+        "git_blob": "88f240e751cb79bdbcf4a6a18f977ebad0d389d3"
+      },
+      {
+        "path": "build_indicators_cache.py",
+        "present": true,
+        "sha256": "243f261da257485b555749d4870b15ff3c1746e6280a01a99719f9a6b31a28a4",
+        "bytes": 18143,
+        "git_blob": "88d9381877976214068a01d2c78fc786cb416a17"
+      },
+      {
+        "path": "research_automation/data_generation/__init__.py",
+        "present": false,
+        "sha256": null,
+        "bytes": null,
+        "git_blob": null
+      },
+      {
+        "path": "research_automation/data_generation/cache_identity.py",
+        "present": true,
+        "sha256": "21d19b901b7cc99f7012753384bff9df2b02e7e066239b41e09fee0df3ff3044",
+        "bytes": 14240,
+        "git_blob": "368a360ba5b9caf7732699027dd951e9b854817e"
+      },
+      {
+        "path": "research_automation/data_generation/contracts.py",
+        "present": true,
+        "sha256": "b33f4137ba71152e8d443ba1837ac2db7241446031f91c52c2d2e034187efcd6",
+        "bytes": 3917,
+        "git_blob": "3a0d3d39c19a577f3df776455de4fa23463c91b2"
+      },
+      {
+        "path": "research_automation/data_generation/daily_staging.py",
+        "present": true,
+        "sha256": "ab99f8c0a7f37b991c2a9057aa3c52490d13440ae364a3f0de9fd30c7ad7c9a8",
+        "bytes": 41712,
+        "git_blob": "5e7751bc289b28a0e461fe990d3b98da2f961fae"
+      },
+      {
+        "path": "research_automation/data_generation/generation.py",
+        "present": true,
+        "sha256": "463025e1ecb6285851fd5397db39f5aff39b2f24de71ea74f1d743caa1de9385",
+        "bytes": 23486,
+        "git_blob": "323fcfe5c302bd28fd1dfd2d2d3f998970b81e31"
+      },
+      {
+        "path": "research_automation/data_generation/market_data.py",
+        "present": true,
+        "sha256": "db86b54d1881718a146ad115a09aeffa23db4112386f18f1e56f5eaf1cbaec07",
+        "bytes": 17126,
+        "git_blob": "f8447fe761f0af1dfdd7cf1a1eff5c276e818f65"
+      },
+      {
+        "path": "research_automation/foundations/immutable_release.py",
+        "present": true,
+        "sha256": "9ddd9ccf0c0c1ca242a7d8823e8687a2ee9c5873c881a3d9eb02c7a72a205c02",
+        "bytes": 28839,
+        "git_blob": "b45a9eec6350eb060202884733d1bb0bc32960ca"
+      },
+      {
+        "path": "tests/test_daily_checkpoint_retention.py",
+        "present": true,
+        "sha256": "72fb4c9aba4fd4fc9f2c9135aa2185f82be3a23c51455ec9305a23e0e5948cb2",
+        "bytes": 15744,
+        "git_blob": "d4d55590f44082fba3e87a1c927db275f9dd04fb"
+      },
+      {
+        "path": "tests/test_daily_updater_staging.py",
+        "present": true,
+        "sha256": "8105a7916558a5d2f8216e973d95bbb6ee0ebfef979b73c5cf9f399cbe89c5b3",
+        "bytes": 12720,
+        "git_blob": "d5b15339bd33cc084d2df611f38bffad8cb71a6f"
+      },
+      {
+        "path": "tests/test_data_generation.py",
+        "present": true,
+        "sha256": "d37ec4ecc13b7843e0854ae4b45838053dff077b1f0fcf60fe514c405ff22ccc",
+        "bytes": 24931,
+        "git_blob": "ff339b6d7bae0e6ae5785d0558f20a780a3f10fa"
+      },
+      {
+        "path": "tests/test_foundations_immutable_release.py",
+        "present": true,
+        "sha256": "d95bb87c17b8c5a4de0ec0bfc6555ea6b8b5d354efda22c4effc88117ecb27eb",
+        "bytes": 48195,
+        "git_blob": "11428352e031c4092d28b61d48dd11fbb8597caf"
+      },
+      {
+        "path": "tests/test_generation_cache_identity.py",
+        "present": true,
+        "sha256": "8b9f79449054d244fc02d91a72818d6dc666fb9f2d598909d54bde6aa7a77729",
+        "bytes": 33123,
+        "git_blob": "bb032ceae9fb6881ce67100f40855fe87e7ceba7"
+      },
+      {
+        "path": "tests/test_kbase_catalog.py",
+        "present": true,
+        "sha256": "b3b839b92c49e1233eb23f0f88218cb24b4e210e7bde4b2f0a8436ace048ee3e",
+        "bytes": 9293,
+        "git_blob": "4cdb2f60b36d82ff1b3ed3c86b690fa4b2c35172"
+      },
+      {
+        "path": "tests/test_kbase_semantic.py",
+        "present": true,
+        "sha256": "3365872eb6107033d308e96e9c9cf13a0f89df937d5712c608421722275b04f1",
+        "bytes": 25124,
+        "git_blob": "331473e7b09a313e5eec1d2a8e2a930c651a84af"
+      },
+      {
+        "path": "tests/test_market_data_semantics.py",
+        "present": true,
+        "sha256": "5af01c204526be0c90a00f58830019f29ba6e5e65f1347ef0e0f23ebbde9a1d5",
+        "bytes": 16891,
+        "git_blob": "81e281ef8ee363109dbdae0971d2a987f73bb7ad"
+      },
+      {
+        "path": "tests/test_raw_parquet_cache.py",
+        "present": true,
+        "sha256": "98856a6a39833620d9d892f506226b32f0b1c14e70d926c4e563335fe220c6be",
+        "bytes": 30152,
+        "git_blob": "b8e84420e7d611c0ed1ef2b08bd6af34f989c7a6"
+      },
+      {
+        "path": "tests/test_signal_cache_identity.py",
+        "present": true,
+        "sha256": "677e1488df46c12a89d9ce2b24a1385f419fd989c0e3313db91d2031bbecf36a",
+        "bytes": 6511,
+        "git_blob": "cb93f41fc9308e30e21200a31f514f489cde7c3b"
+      },
+      {
+        "path": "tests/test_update_today_em_client.py",
+        "present": true,
+        "sha256": "b64e7c1bbe44cc9089f08ae5411a590ae2fa3ca74502ee7b198613ab8979bde2",
+        "bytes": 10510,
+        "git_blob": "5417b1712b02b6ff6af43def6c949a67c3a0b010"
+      },
+      {
+        "path": "tools/update_today_em_client.py",
+        "present": true,
+        "sha256": "d8c4d3379b998a8c257254fcb27e3563d400ce8f1843439afdd7b5be34170bae",
+        "bytes": 22191,
+        "git_blob": "f7e4e9b4d6a82c5342163d75b0fe1ef9a778c008"
+      },
+      {
+        "path": "utils/raw_parquet_cache.py",
+        "present": true,
+        "sha256": "25b99012c1bf89c8b649e43adec6af001db1e2a9048cc96f5ea08a3d374be9a3",
+        "bytes": 8719,
+        "git_blob": "cc653bfed856882148207922072bd1071ab2871b"
+      }
+    ],
+    "current_file_count": 23,
+    "prechecks": {
+      "p2r2_reports_authority_bound": 5,
+      "p2r3_focused_tests": "175/175 PASS",
+      "p2r3_static_syntax": "22/22 PASS",
+      "p2r3_ticket_state": "IN_DOUBT",
+      "p2r3_closure": "CANONICAL FAIL",
+      "current_code_or_test_drift_since_p2r3_validation": false,
+      "large_data_scanned": false,
+      "production_or_research_task_started": false
+    },
+    "external_usage_summary": {
+      "known_token_lower_bound": 392628,
+      "unknown_usage_lower_bound": 5,
+      "unknown_is_zero": false
+    },
+    "carried_advisories": [
+      "P2R2-T4-REVIEW-006",
+      "P2R2-T5-REVIEW-003"
+    ]
+  },
+  "computed": {
+    "payload_sha256": "bc79a1bb565d0ed53d1f7cb30af015eaf3277e360b5373f889edf9e652285169"
+  }
+}

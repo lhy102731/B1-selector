@@ -1,0 +1,127 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-004",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "25d11e3d5457c128c57ba34e8694aef2c30e3bb021c0c53a8bd95d6a4a283abc",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R4-T5C-SCOPE-ADOPTION",
+      "objective": "Adopt the unchanged, hash-bound P2 T1-T5 implementation under the exact P2R4 retry identity by replaying the offline focused suite, historical authority bindings, and scope syntax checks; independently rebind the reviewed T5 staging bytes; preflight every deterministic trusted receipt, actor, findings hash, changed-file hash, TaskReport field, and output path before beginning the task lease. Do not reimplement code, trust a predecessor phase closure as PASS evidence, access real data or KBase content, run a daily update, backtest, research task, Campaign, or Holdout, invoke network providers, enter P3, mutate scheduler/ACL state, or call a private phase-closure API.",
+      "dependencies": [
+        "P2R4-T0-AUTHORITY-SCOPE"
+      ],
+      "idempotency_key": "p2-attempt-004-t5c-scope-adoption",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/task_specs/t5c_scope_adoption.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "p2r4-t5c-historical-binding-check",
+          "p2r4-t5c-focused-tests",
+          "p2r4-t5c-scope-static-syntax-check"
+        ],
+        "required_review_receipt_ids": [
+          "independent-p2r4-scope-adoption-review"
+        ],
+        "required_evidence_ids": [
+          "p2r4-authorization",
+          "implementation-baseline",
+          "p2-cr-003-approval",
+          "p2r4-adoption-source-manifest",
+          "p2r3-validation",
+          "p2r3-independent-review",
+          "p2r3-lease-loss-incident",
+          "p2r3-canonical-fail-closure"
+        ]
+      },
+      "allowed_files": [
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/",
+        "apps/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "docs/",
+        "models/",
+        "outputs/",
+        "requirements/",
+        "research_automation/",
+        "research_state/control_plane/authority/",
+        "research_state/control_plane/inventories/",
+        "research_state/control_plane/operational/",
+        "research_state/control_plane/policies/",
+        "strategy/",
+        "tests/",
+        "tools/",
+        "utils/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/implementation_baseline.json",
+      "baseline_sha256": "f4349691c17c93d88e162c4a22797344680fd9665b9057493c43dc71375d8942",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r4-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "809d7d63693c7a38917e6ab09de6ba2a66442b412b38a3060b4e870a1e9cae8b",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/implementation_baseline.json",
+          "evidence_sha256": "f4349691c17c93d88e162c4a22797344680fd9665b9057493c43dc71375d8942",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2-cr-003-approval",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2_cr_003_approval_receipt.json",
+          "evidence_sha256": "6882dae3a23c13a84765313c1be144e9de53afcb1d5b336642e17cadf55b885c",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r4-adoption-source-manifest",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t5c_adoption_source_manifest.json",
+          "evidence_sha256": "577e5423fb3fa9684cd21869d74d19c69684d219d18195b1b387007621675c01",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r3-validation",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_validation_receipt.json",
+          "evidence_sha256": "28d41ffd65fed862e1221d7bbe7053dcca240e89c739e6863838e943c0b37739",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r3-independent-review",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_independent_review.json",
+          "evidence_sha256": "c823552b3252fa7c1b928d2ce2e18cbd8500ef826c5ee42c84352f1df42ef479",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r3-lease-loss-incident",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_lease_loss_incident.json",
+          "evidence_sha256": "fff1a904c562dcd3eb4640f72c29901f4e2c96500b89a6f823fb02f34d81389f",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r3-canonical-fail-closure",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_canonical_failure_closure_receipt.json",
+          "evidence_sha256": "a285b9a7f93cc12c9c8f324437a83214e8f965bd2c1daa691a75e5c09a2f7f37",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "06a38feb261ba9619c2b68c88cf7c3d360cbfcaad71373c740d79bf48c6fd15a"
+  }
+}
