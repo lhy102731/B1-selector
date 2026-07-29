@@ -1,0 +1,143 @@
+{
+  "schema_version": "control_plane.p2_t2_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-001",
+  "task_id": "P2R1-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+  "reviewed_at": "2026-07-29T15:52:22.756591+00:00",
+  "reviewer_id": "independent-read-lease-fencing-reviewer",
+  "reviewer_type": "external_llm_panel_with_controller_adjudication",
+  "reviewed_git_range": {
+    "baseline": "c4f291b1",
+    "head": "c9a2c97ccc59536003c550b00786f6a6fda2951a"
+  },
+  "review_sources": [
+    "claude-opus-release-shard",
+    "claude-opus-generation-shard",
+    "deepseek-v4-pro-incremental-final-gate"
+  ],
+  "review_findings": [
+    {
+      "finding_id": "P2T2-REVIEW-001",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Concurrent release calls could double-close or race lease validation on one descriptor.",
+      "resolution": "Commit 85998630 serializes release and validation with one lease state lock; the deterministic two-thread regression proves exactly one close."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-002",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Concurrent callers publishing the same staged generation could report failure after another caller completed it.",
+      "resolution": "Commit 508929ca reconciles the exact current identity and makes same-candidate completion idempotent; a forced two-thread interleaving passes."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-003",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Pending cleanup keyed only by candidate could delete a replacement intent with a different expected CURRENT.",
+      "resolution": "Commit c9a2c97c binds the marker filename and cleanup target to both candidate and expected CURRENT; the final DeepSeek incremental review returned GATE PASS."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-004",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "External review claimed a fresh lock file had no fencing-token bootstrap.",
+      "resolution": "Rejected as a false positive: _acquire_lock_descriptor writes b'0' when size is zero, and cold-root publish/read-lease tests pass on Windows."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-005",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "External review claimed generation.py omitted uuid and os imports.",
+      "resolution": "Rejected as a false positive: both imports are present and every pending-publication test executes those paths successfully."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-006",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "External review described a marker created after lease admission as a fencing bypass.",
+      "resolution": "Rejected after concurrency review: the second marker check is the lease admission linearization point; a marker created later sees an existing reader, which the approved plan explicitly permits to finish."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-007",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "A conflict after CURRENT changed retains its pending marker and requires reconciliation.",
+      "resolution": "Accepted as intentional fail-closed policy; commit c9a2c97c wraps the raw release error in an explicit reconciliation conflict instead of silently clearing audit state."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-008",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Directory-entry fsync is not portable on Windows, leaving a power-loss durability advisory for the pending hard link.",
+      "resolution": "Bounded to the P2 T6 integration/power-loss gate; process-crash recovery and file-content fsync are proven in T2 without adding a Windows-specific handle framework to this slice."
+    },
+    {
+      "finding_id": "P2T2-REVIEW-009",
+      "review_receipt_id": "independent-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Final incremental review noted old marker format and dot-delimited identity advisories.",
+      "resolution": "Not applicable to deployment: T2 has not published a real marker, and both IDs are strict lowercase SHA-256 values that cannot contain dots."
+    }
+  ],
+  "external_review_attempts": [
+    {
+      "invocation_id": "codex-cli-t2-full-review-001",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "elapsed_seconds": 304,
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "codex-cli-t2-split-review-002",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "elapsed_seconds": 244,
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "claude-opus-t2-split-review-003",
+      "result": "FINDINGS_RETURNED",
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "deepseek-v4-pro-t2-full-rereview-004",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "elapsed_seconds": 304,
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "deepseek-v4-pro-t2-incremental-final-005",
+      "result": "GATE_PASS",
+      "usage_status": "REPORTED",
+      "input_tokens": 5150,
+      "output_tokens": 4193,
+      "total_tokens": 9343,
+      "cost_usd": 0.130575,
+      "auxiliary_model_usage": {
+        "model": "deepseek-v4-flash",
+        "input_tokens": 1045,
+        "output_tokens": 214,
+        "total_tokens": 1259,
+        "cost_usd": 0.010575
+      },
+      "aggregate_total_tokens": 10602,
+      "aggregate_cost_usd": 0.14115
+    }
+  ],
+  "final_gate": {
+    "reviewed_delta_baseline": "508929ca",
+    "reviewed_head": "c9a2c97ccc59536003c550b00786f6a6fda2951a",
+    "blocking_findings_open": 0,
+    "verdict": "PASS"
+  },
+  "result": "PASS"
+}

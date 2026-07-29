@@ -1,0 +1,60 @@
+{
+  "schema_version": "control_plane.p2_t2_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-001",
+  "task_id": "P2R1-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+  "validated_at": "2026-07-29T15:52:22.756591+00:00",
+  "git_head": "c9a2c97ccc59536003c550b00786f6a6fda2951a",
+  "test_receipts": [
+    {
+      "receipt_id": "immutable-release-read-lease-tests",
+      "command": "python -B -m unittest tests.test_foundations_immutable_release -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 33
+    },
+    {
+      "receipt_id": "generation-publish-pending-tests",
+      "command": "python -B -m unittest tests.test_data_generation -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 14
+    },
+    {
+      "receipt_id": "p2-t2-regression-tests",
+      "command": "python -B -m unittest tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic tests.test_foundations_settings tests.test_foundations_protocols tests.test_foundations_legacy_contract_adapters tests.test_foundations_dependency_preflight tests.test_foundations_contract_registry tests.test_foundations_artifact_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 127
+    }
+  ],
+  "combined_verification": {
+    "tests_run": 174,
+    "result": "PASS"
+  },
+  "behavior_proofs": {
+    "shared_read_lease_blocks_current_move": true,
+    "existing_reader_finishes_while_publish_pending": true,
+    "pending_blocks_later_read_lease": true,
+    "publication_epoch_is_monotonic_and_fsync_bound": true,
+    "process_exit_releases_os_lease_without_mtime_reaping": true,
+    "restart_resumes_waiting_candidate_from_pending_identity": true,
+    "committed_release_wal_recovers_before_pending_clear": true,
+    "concurrent_same_candidate_publish_is_idempotent": true,
+    "pending_identity_binds_candidate_and_expected_current": true,
+    "generation_contract_registry_version_bumped": true
+  },
+  "scope_audit": {
+    "all_t2_changes_inside_task_allowlist": true,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ],
+    "real_data_or_kbase_content_accessed": false,
+    "backtest_research_campaign_or_holdout_started": false,
+    "sealed_p0_code_modified": false,
+    "new_lock_file_or_database_framework_added": false
+  },
+  "result": "PASS"
+}
