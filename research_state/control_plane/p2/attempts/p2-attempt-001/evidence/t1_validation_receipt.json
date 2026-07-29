@@ -1,0 +1,56 @@
+{
+  "schema_version": "control_plane.p2_t1_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-001",
+  "task_id": "P2R1-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+  "validated_at": "2026-07-29T12:13:51.5307141+00:00",
+  "git_head": "9c9a3b62152bef0273b877de7adf964faf6d2d54",
+  "test_receipts": [
+    {
+      "receipt_id": "immutable-release-public-behavior-tests",
+      "command": "python -m unittest tests.test_foundations_immutable_release -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 29
+    },
+    {
+      "receipt_id": "generation-contract-tests",
+      "command": "python -B -m unittest tests.test_data_generation -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 6
+    },
+    {
+      "receipt_id": "kbase-publication-regression-tests",
+      "command": "python -B -m unittest tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 28
+    },
+    {
+      "receipt_id": "foundations-regression-tests",
+      "command": "python -m unittest tests.test_foundations_settings tests.test_foundations_protocols tests.test_foundations_legacy_contract_adapters tests.test_foundations_immutable_release tests.test_foundations_dependency_preflight tests.test_foundations_contract_registry tests.test_foundations_artifact_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 128
+    }
+  ],
+  "combined_parallel_verification": {
+    "foundations_tests": 128,
+    "generation_and_kbase_tests": 34,
+    "total_tests": 162,
+    "result": "PASS"
+  },
+  "scope_audit": {
+    "all_t1_changes_inside_task_allowlist": true,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ],
+    "real_data_or_kbase_content_accessed": false,
+    "backtest_research_campaign_or_holdout_started": false,
+    "sealed_p0_code_modified": false
+  },
+  "result": "PASS"
+}

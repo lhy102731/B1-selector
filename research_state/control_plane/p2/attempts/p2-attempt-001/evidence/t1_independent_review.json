@@ -1,0 +1,92 @@
+{
+  "schema_version": "control_plane.p2_t1_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-001",
+  "task_id": "P2R1-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+  "reviewed_at": "2026-07-29T12:13:51.5307141+00:00",
+  "reviewer_id": "independent-release-generation-reviewer",
+  "reviewer_type": "llm_panel",
+  "reviewed_git_range": {
+    "baseline": "8043220c5d5a9272acde88df86688faafe5d18dd",
+    "head": "9c9a3b62152bef0273b877de7adf964faf6d2d54"
+  },
+  "review_sources": [
+    "git_identity_api_audit",
+    "git_identity_api_audit/p2_commit_review",
+    "p2_recovery_matrix",
+    "t5_completion_map"
+  ],
+  "review_findings": [
+    {
+      "finding_id": "P2T1-REVIEW-001",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Candidate identity could change between caller validation and publication lock acquisition.",
+      "resolution": "Commit 08d2ba1d pins expected_candidate_id and revalidates the candidate inside the stable publication lock; Generation and KBase publishers pass the pinned identity."
+    },
+    {
+      "finding_id": "P2T1-REVIEW-002",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Promotion recovery covered only part of the rename matrix and rollback had no durable recovery journal.",
+      "resolution": "Commits 9980f46c through 216c75ff add pending-write blocking, intent journals, promotion and rollback crash matrices, commit-point-consistent forward recovery, strict identity checks, disk-full cleanup, and fail-closed corrupt-state handling."
+    },
+    {
+      "finding_id": "P2T1-REVIEW-003",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Removing and recreating the publication lock could split lock ownership across different inodes.",
+      "resolution": "Commit 28f3813e keeps one stable OS lock file and the regression suite verifies its identity across promote and rollback operations."
+    },
+    {
+      "finding_id": "P2T1-REVIEW-004",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Catalog validation accepted structurally valid content and facet tampering while retaining the old publication identity.",
+      "resolution": "Commits fba76b68 and ca4a1db2 recompute catalog source identity and facets, bind catalog_version to content, use the full source fingerprint internally, and pin candidate identity during publication."
+    },
+    {
+      "finding_id": "P2T1-REVIEW-005",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Semantic rollback still used an unjournaled second three-rename implementation.",
+      "resolution": "Commit 9c9a3b62 routes semantic rollback through ImmutableReleaseStore and proves recovery after a hard crash at the first slot move."
+    },
+    {
+      "finding_id": "P2T1-REVIEW-006",
+      "review_receipt_id": "independent-release-generation-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "A bare reader can observe CURRENT absent during the directory swap.",
+      "resolution": "The guarantee is explicitly limited to writer crash consistency in T1; compliant reader visibility is assigned to P2R1-T2 read leases and fencing, avoiding a pointer-framework expansion."
+    }
+  ],
+  "codex_cli_attempts": [
+    {
+      "attempt": 1,
+      "scope": "8043220c...HEAD complete T1 diff",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "elapsed_seconds": 304
+    },
+    {
+      "attempt": 2,
+      "scope": "parallel split release and generation/KBase reviews",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "elapsed_seconds": 244
+    }
+  ],
+  "codex_cli_attempts_counted_as_pass": false,
+  "verification": {
+    "foundations_tests": 128,
+    "generation_and_kbase_tests": 34,
+    "total_tests": 162,
+    "result": "PASS"
+  },
+  "result": "PASS"
+}
