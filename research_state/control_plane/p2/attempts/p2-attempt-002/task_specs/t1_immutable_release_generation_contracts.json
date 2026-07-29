@@ -1,0 +1,106 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "013ecd99bc7bdb2645573cce100956e5cc599bb2e28bfa4463f5dca27b82c6ff",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+      "objective": "Independently adopt and verify the P2R1 immutable release, generation contract, KBase publication identity, crash recovery, and rollback implementation without treating the failed attempt's ticket or report as authoritative.",
+      "dependencies": [
+        "P2R2-T0-AUTHORITY-SCOPE"
+      ],
+      "idempotency_key": "p2-attempt-002-t1-immutable-release-generation-contracts",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/task_specs/t1_immutable_release_generation_contracts.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "immutable-release-public-behavior-tests",
+          "generation-contract-tests",
+          "kbase-publication-regression-tests",
+          "foundations-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "independent-p2r2-release-generation-review"
+        ],
+        "required_evidence_ids": [
+          "p2r2-authorization",
+          "implementation-baseline",
+          "attempt-001-incident",
+          "attempt-001-t1-task-report-source",
+          "attempt-001-t1-completion-source"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/foundations/immutable_release.py",
+        "research_automation/data_generation/__init__.py",
+        "research_automation/data_generation/contracts.py",
+        "research_automation/data_generation/generation.py",
+        "ag2_research/kbase/catalog_builder.py",
+        "ag2_research/kbase/semantic_index.py",
+        "tests/test_foundations_immutable_release.py",
+        "tests/test_data_generation.py",
+        "tests/test_kbase_catalog.py",
+        "tests/test_kbase_semantic.py",
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "artifacts/",
+        "backtest_optimized.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/",
+        "D:/KBase/",
+        "ag2_research/knowledge_base/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+      "baseline_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2r2-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "bfc6e3fdf9ee61a01b005673bfc27370dea99f4666b6a773e162c16ad1b30faa",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/implementation_baseline.json",
+          "evidence_sha256": "6347b9b22919403ac27eb48c5d8d6887e76ba83f5d70b2fa8c914af7a6d30330",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "attempt-001-incident",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t2_lease_loss_incident.json",
+          "evidence_sha256": "fe44ba5ed90e790414030c9ad993ecfe3f3a65d8dc1620c85a449c5d108e53b8",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "attempt-001-t1-task-report-source",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t1_task_report.json",
+          "evidence_sha256": "4dcee3e201a7437453fdb7f4db45b4525b3efdc67bf3ced8aba648d82354a349",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "attempt-001-t1-completion-source",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t1_completion_receipt.json",
+          "evidence_sha256": "252fc0d02776b87b57aa6c5ad65921995cc87292bf4890a59a45f8453eff0b5d",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "cb11ffa7e1097e332776bfc6f48336b1d48069ee42ead82ae5ca687015a0d6e4"
+  }
+}
