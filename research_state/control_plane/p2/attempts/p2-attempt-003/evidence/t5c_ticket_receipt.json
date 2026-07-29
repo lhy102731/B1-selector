@@ -1,0 +1,22 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "task_id": "P2R3-T5C-SCOPE-ADOPTION",
+  "ticket_id": "25e5b003a278b58030197aa21022d37013f303f8fd8f60b745f796fb213f5112",
+  "ticket_state": "ISSUED",
+  "authorization_ref": "auth_0aa40d6f151c65a4ede3a1331bb48f94",
+  "grant_id": "grant_3f5024dcc8e7627fe11da83494760397",
+  "entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+  "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/task_specs/t5c_scope_adoption.json",
+  "task_spec_sha256": "3db4ae1931d26e43fe64bb6d69aa4937ec377f0a993029479fa7abebb928769d",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "recorded_at": "2026-07-30T06:11:57.7827610+08:00",
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "bearer_secret_recorded": false,
+  "closure_rule": "Begin, attest, record, finish, mirror, build, and verify TaskReport in one trusted process; use the public verified TaskReport path and never call a private phase-closure primitive."
+}
