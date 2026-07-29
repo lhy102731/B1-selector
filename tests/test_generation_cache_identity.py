@@ -3,12 +3,19 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from research_automation.data_generation.cache_identity import (
     CACHE_IDENTITY_V1,
     CacheIdentity,
+    CacheIdentityInvalidError,
+    CacheIdentityMismatchError,
+    CacheIdentityMissingError,
     build_cache_identity,
     cache_identity_contract_registry,
+    load_verified_cache_identity,
+    read_cache_identity_sidecar,
+    write_cache_identity_sidecar,
 )
 from research_automation.data_generation.contracts import (
     GENERATION_MANIFEST_V1,
@@ -64,7 +71,247 @@ def _contract_identity() -> CacheIdentity:
     )
 
 
+def _published_cache(
+    root: Path,
+) -> tuple[Path, Path, Path, GenerationPublisher, GenerationManifest]:
+    data_root = root / "data"
+    source = data_root / "00" / "000001.csv"
+    cache = data_root / "raw_parquet" / "00" / "000001.parquet"
+    source.parent.mkdir(parents=True)
+    cache.parent.mkdir(parents=True)
+    source.write_bytes(b"source")
+    cache.write_bytes(b"cache")
+    publisher = GenerationPublisher(root / "generations")
+    manifest = _manifest("2026-07-30")
+    publisher.publish(publisher.stage(manifest))
+    return data_root, source, cache, publisher, manifest
+
+
+def _built_identity(root: Path) -> tuple[Path, CacheIdentity]:
+    data_root, _source, cache, publisher, manifest = _published_cache(root)
+    with publisher.pin_current(
+        expected_generation_id=manifest.generation_id,
+        data_root=data_root,
+    ) as pin:
+        source_identity = pin.verify_artifact(
+            "00/000001.csv",
+            content_schema="a-share.gbk_csv.v1",
+            kind="source_csv",
+            logical_role="raw_stock_bars",
+        )
+        identity = build_cache_identity(
+            pin,
+            relative_path="raw_parquet/00/000001.parquet",
+            cache_namespace="production",
+            cache_kind="raw_parquet",
+            source_artifact_ids=(source_identity.artifact_id,),
+            feature_contract_id="f" * 64,
+            content_schema="parquet.v1",
+            producer="tests.raw_parquet",
+            logical_role="ascending_raw_bars",
+        )
+    return cache, identity
+
+
 class GenerationCacheIdentityTests(unittest.TestCase):
+    def test_generation_pin_rejects_traversal_before_outside_stat(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root, _source, _cache, publisher, manifest = _published_cache(
+                Path(temporary)
+            )
+            outside_candidate = data_root / ".." / "outside.csv"
+            outside_candidate.write_bytes(b"outside")
+            outside_stats: list[Path] = []
+            original_stat = Path.stat
+
+            def guarded_stat(path: Path, *args: object, **kwargs: object):
+                if path == outside_candidate:
+                    outside_stats.append(path)
+                return original_stat(path, *args, **kwargs)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin, patch.object(Path, "stat", guarded_stat):
+                with self.assertRaisesRegex(
+                    GenerationMutatedError,
+                    "GENERATION_MUTATED",
+                ):
+                    pin.verify_artifact(
+                        "../outside.csv",
+                        content_schema="a-share.gbk_csv.v1",
+                        kind="source_csv",
+                        logical_role="raw_stock_bars",
+                    )
+
+            self.assertEqual([], outside_stats)
+
+    def test_pinned_loader_reconstructs_and_verifies_sidecar_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root, _source, cache, publisher, manifest = _published_cache(
+                Path(temporary)
+            )
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                source_identity = pin.verify_artifact(
+                    "00/000001.csv",
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+                arguments = {
+                    "relative_path": "raw_parquet/00/000001.parquet",
+                    "cache_namespace": "production",
+                    "cache_kind": "raw_parquet",
+                    "source_artifact_ids": (source_identity.artifact_id,),
+                    "feature_contract_id": "f" * 64,
+                    "content_schema": "parquet.v1",
+                    "producer": "tests.raw_parquet",
+                    "logical_role": "ascending_raw_bars",
+                }
+                identity = build_cache_identity(pin, **arguments)
+                write_cache_identity_sidecar(cache, identity)
+
+                loaded = load_verified_cache_identity(pin, **arguments)
+
+            self.assertEqual(identity, loaded)
+
+    def test_pinned_loader_rejects_missing_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root, _source, _cache, publisher, manifest = _published_cache(
+                Path(temporary)
+            )
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                source_identity = pin.verify_artifact(
+                    "00/000001.csv",
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+
+                with self.assertRaisesRegex(
+                    CacheIdentityMissingError,
+                    "CACHE_IDENTITY_MISSING",
+                ):
+                    load_verified_cache_identity(
+                        pin,
+                        relative_path="raw_parquet/00/000001.parquet",
+                        cache_namespace="production",
+                        cache_kind="raw_parquet",
+                        source_artifact_ids=(source_identity.artifact_id,),
+                        feature_contract_id="f" * 64,
+                        content_schema="parquet.v1",
+                        producer="tests.raw_parquet",
+                        logical_role="ascending_raw_bars",
+                    )
+
+    def test_pinned_loader_rejects_cache_mutated_before_first_touch(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root, _source, cache, publisher, manifest = _published_cache(
+                Path(temporary)
+            )
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                source_identity = pin.verify_artifact(
+                    "00/000001.csv",
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+                arguments = {
+                    "relative_path": "raw_parquet/00/000001.parquet",
+                    "cache_namespace": "production",
+                    "cache_kind": "raw_parquet",
+                    "source_artifact_ids": (source_identity.artifact_id,),
+                    "feature_contract_id": "f" * 64,
+                    "content_schema": "parquet.v1",
+                    "producer": "tests.raw_parquet",
+                    "logical_role": "ascending_raw_bars",
+                }
+                identity = build_cache_identity(pin, **arguments)
+                write_cache_identity_sidecar(cache, identity)
+
+            cache.write_bytes(b"other")
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                current_source = pin.verify_artifact(
+                    "00/000001.csv",
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+                arguments["source_artifact_ids"] = (
+                    current_source.artifact_id,
+                )
+
+                with self.assertRaisesRegex(
+                    CacheIdentityMismatchError,
+                    "CACHE_IDENTITY_MISMATCH",
+                ):
+                    load_verified_cache_identity(pin, **arguments)
+
+    def test_cache_identity_sidecar_round_trips_strict_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache, identity = _built_identity(Path(temporary))
+
+            sidecar = write_cache_identity_sidecar(cache, identity)
+
+            self.assertEqual(
+                cache.with_name(f"{cache.name}.cache-identity.json"),
+                sidecar,
+            )
+            self.assertEqual(identity, read_cache_identity_sidecar(cache))
+
+    def test_cache_identity_sidecar_missing_and_malformed_fail_closed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache, _identity = _built_identity(Path(temporary))
+
+            with self.assertRaisesRegex(
+                CacheIdentityMissingError,
+                "CACHE_IDENTITY_MISSING",
+            ):
+                read_cache_identity_sidecar(cache)
+            sidecar = cache.with_name(f"{cache.name}.cache-identity.json")
+            sidecar.write_bytes(b"{}")
+            with self.assertRaisesRegex(
+                CacheIdentityInvalidError,
+                "CACHE_IDENTITY_INVALID",
+            ):
+                read_cache_identity_sidecar(cache)
+
+    def test_sidecar_write_rejects_stale_cache_identity_before_replace(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cache, identity = _built_identity(Path(temporary))
+            sidecar = write_cache_identity_sidecar(cache, identity)
+            before = sidecar.read_bytes()
+            cache.write_bytes(b"other")
+
+            with self.assertRaisesRegex(
+                CacheIdentityMismatchError,
+                "CACHE_IDENTITY_MISMATCH",
+            ):
+                write_cache_identity_sidecar(cache, identity)
+
+            self.assertEqual(before, sidecar.read_bytes())
+
     def test_cache_identity_registry_round_trips_canonical_json(self) -> None:
         identity = _contract_identity()
         raw = canonical_json(identity.model_dump(mode="json")).encode("utf-8")

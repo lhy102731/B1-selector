@@ -124,6 +124,17 @@ class GenerationPin:
     def active(self) -> bool:
         return self._lease.active
 
+    def artifact_path(self, relative_path: str) -> Path:
+        """Validate a relative artifact path before any filesystem access."""
+        locator = ArtifactLocator(
+            schema_version="research.artifact_locator.v1",
+            storage_root=self._data_root.as_posix(),
+            path=relative_path,
+            size_bytes=0,
+            mtime_ns=0,
+        )
+        return self._data_root / locator.path
+
     def verify_artifact(
         self,
         relative_path: str,
@@ -134,10 +145,10 @@ class GenerationPin:
         producer: str = "research.data_generation.GenerationPin",
     ) -> ArtifactIdentity:
         try:
+            artifact_path = self.artifact_path(relative_path)
             current = self._publisher.read(self._lease)
             if current.generation_id != self.generation_id:
                 raise GenerationMutatedError("GENERATION_MUTATED")
-            artifact_path = self._data_root / relative_path
             observed = artifact_path.stat()
             locator = ArtifactLocator(
                 schema_version="research.artifact_locator.v1",

@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import re
+import tempfile
+from pathlib import Path
 from typing import Literal
 
 from pydantic import field_validator, model_validator
 
 from research_automation.control_plane.contracts import canonical_json
-from research_automation.foundations.artifact_identity import ArtifactIdentity
+from research_automation.foundations.artifact_identity import (
+    ArtifactIdentity,
+    ArtifactIdentityMismatchError,
+    ArtifactLocationError,
+    ArtifactLocator,
+    verify_file_identity,
+)
 from research_automation.foundations.contract_registry import (
     ContractRegistry,
+    ContractValidationError,
     StrictContractModel,
 )
 
-from .generation import GenerationPin
+from .generation import GenerationMutatedError, GenerationPin
 
 
 CACHE_IDENTITY_V1 = "research.data_generation.cache_identity.v1"
@@ -23,6 +34,23 @@ _CACHE_ID_DOMAIN = b"research.data_generation.cache_identity.v1\0"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CACHE_NAMESPACES = frozenset({"production", "research"})
 _CACHE_KINDS = frozenset({"raw_parquet", "indicator", "signal"})
+_SIDECAR_SUFFIX = ".cache-identity.json"
+
+
+class CacheIdentitySidecarError(ValueError):
+    """Base error for missing, malformed, or byte-mismatched sidecars."""
+
+
+class CacheIdentityMissingError(CacheIdentitySidecarError):
+    """Raised when a trusted cache has no identity sidecar."""
+
+
+class CacheIdentityInvalidError(CacheIdentitySidecarError):
+    """Raised when sidecar bytes fail the strict cache contract."""
+
+
+class CacheIdentityMismatchError(CacheIdentitySidecarError):
+    """Raised when cache bytes do not match the supplied identity."""
 
 
 class CacheIdentity(StrictContractModel):
@@ -98,6 +126,138 @@ def cache_identity_contract_registry() -> ContractRegistry:
         version="research.data_generation.cache_identity_registry.v1",
         contracts={CACHE_IDENTITY_V1: CacheIdentity},
     )
+
+
+def cache_identity_sidecar_path(cache_path: str | Path) -> Path:
+    """Return the unambiguous adjacent identity path for one cache file."""
+    path = Path(cache_path)
+    if not path.name:
+        raise ValueError("cache path must name a file")
+    return path.with_name(f"{path.name}{_SIDECAR_SUFFIX}")
+
+
+def read_cache_identity_sidecar(cache_path: str | Path) -> CacheIdentity:
+    """Strictly parse one cache identity sidecar without trusting its claims."""
+    sidecar = cache_identity_sidecar_path(cache_path)
+    try:
+        raw = sidecar.read_bytes()
+    except FileNotFoundError as error:
+        raise CacheIdentityMissingError("CACHE_IDENTITY_MISSING") from error
+    except OSError as error:
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID") from error
+    try:
+        parsed = cache_identity_contract_registry().parse_json(
+            CACHE_IDENTITY_V1,
+            raw,
+        )
+    except ContractValidationError as error:
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID") from error
+    if not isinstance(parsed, CacheIdentity):
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
+    return parsed
+
+
+def write_cache_identity_sidecar(
+    cache_path: str | Path,
+    identity: CacheIdentity,
+) -> Path:
+    """Atomically replace a sidecar only after rechecking exact cache bytes."""
+    if not isinstance(identity, CacheIdentity):
+        raise TypeError("identity must be a CacheIdentity")
+    path = Path(cache_path)
+    try:
+        resolved = path.resolve(strict=True)
+        observed = resolved.stat()
+        verify_file_identity(
+            ArtifactLocator(
+                schema_version="research.artifact_locator.v1",
+                storage_root=resolved.parent.as_posix(),
+                path=resolved.name,
+                size_bytes=observed.st_size,
+                mtime_ns=observed.st_mtime_ns,
+            ),
+            identity.artifact,
+        )
+    except (
+        ArtifactIdentityMismatchError,
+        ArtifactLocationError,
+        OSError,
+        ValueError,
+    ) as error:
+        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH") from error
+
+    destination = cache_identity_sidecar_path(resolved)
+    payload = canonical_json(identity.model_dump(mode="json")).encode("utf-8")
+    descriptor: int | None = None
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            dir=destination.parent,
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = None
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+    except OSError as error:
+        raise CacheIdentitySidecarError("CACHE_IDENTITY_WRITE_FAILED") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+    if read_cache_identity_sidecar(resolved) != identity:
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
+    return destination
+
+
+def load_verified_cache_identity(
+    pin: GenerationPin,
+    *,
+    relative_path: str,
+    cache_namespace: Literal["production", "research"],
+    cache_kind: Literal["raw_parquet", "indicator", "signal"],
+    source_artifact_ids: tuple[str, ...],
+    feature_contract_id: str,
+    content_schema: str,
+    producer: str,
+    logical_role: str,
+) -> CacheIdentity:
+    """Rebuild the expected pinned identity and match one strict sidecar."""
+    if not isinstance(pin, GenerationPin):
+        raise TypeError("pin must be a GenerationPin")
+    verified_request_sources = _validate_build_request(
+        cache_namespace=cache_namespace,
+        cache_kind=cache_kind,
+        source_artifact_ids=source_artifact_ids,
+        feature_contract_id=feature_contract_id,
+        content_schema=content_schema,
+        producer=producer,
+        logical_role=logical_role,
+    )
+    stored = read_cache_identity_sidecar(pin.artifact_path(relative_path))
+    try:
+        expected = build_cache_identity(
+            pin,
+            relative_path=relative_path,
+            cache_namespace=cache_namespace,
+            cache_kind=cache_kind,
+            source_artifact_ids=verified_request_sources,
+            feature_contract_id=feature_contract_id,
+            content_schema=content_schema,
+            producer=producer,
+            logical_role=logical_role,
+        )
+    except GenerationMutatedError as error:
+        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH") from error
+    if not hmac.compare_digest(stored.cache_id, expected.cache_id):
+        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH")
+    return stored
 
 
 def _validate_build_request(
@@ -196,6 +356,14 @@ def build_cache_identity(
 __all__ = [
     "CACHE_IDENTITY_V1",
     "CacheIdentity",
+    "CacheIdentityInvalidError",
+    "CacheIdentityMismatchError",
+    "CacheIdentityMissingError",
+    "CacheIdentitySidecarError",
     "build_cache_identity",
     "cache_identity_contract_registry",
+    "cache_identity_sidecar_path",
+    "load_verified_cache_identity",
+    "read_cache_identity_sidecar",
+    "write_cache_identity_sidecar",
 ]
