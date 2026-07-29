@@ -334,6 +334,12 @@ class GenerationPublisher:
         self._publication_guard = threading.RLock()
 
     def stage(self, manifest: GenerationManifest) -> StagedGeneration:
+        """Stage one manifest under the same guard used for publication."""
+
+        with self._publication_guard:
+            return self._stage_impl(manifest)
+
+    def _stage_impl(self, manifest: GenerationManifest) -> StagedGeneration:
         if not isinstance(manifest, GenerationManifest):
             raise TypeError("manifest must be a GenerationManifest")
         current = self._root / "current"
@@ -510,6 +516,7 @@ class GenerationPublisher:
             current is not None
             and current.generation_id == pending.candidate_generation_id
         ):
+            self._adapter.validate(current_path)
             self._clear_publish_pending(pending)
             return current
         current_id = None if current is None else current.generation_id
@@ -592,6 +599,11 @@ class GenerationPublisher:
         current_path = self._root / "current"
         if not current_path.is_dir():
             return None
+        # A completed promotion can leave its pending marker behind after a
+        # process crash.  Re-run the active candidate validator before
+        # accepting the marker as reconciled; manifest identity alone is not
+        # sufficient for data-generation candidates.
+        self._adapter.validate(current_path)
         current = self._read_manifest(current_path)
         if current.generation_id != pending.candidate_generation_id:
             return None

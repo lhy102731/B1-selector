@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import patch
 
 from research_automation.data_generation.contracts import (
     GENERATION_MANIFEST_V1,
@@ -231,6 +232,63 @@ class DailyUpdaterStagingTests(unittest.TestCase):
                     candidate_validator=validator,
                 )
             self.assertEqual(first.generation_id, adapter.publisher.read_current().generation_id)
+
+    def test_completed_pending_recovery_revalidates_current_delta_before_clearing(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            adapter = DailyUpdaterStagingAdapter(Path(td) / "staging")
+            first = adapter.stage(_manifest("2026-07-30"), [_present()])
+            self.assertEqual(DailyPublishStatus.PUBLISHED, adapter.publish(first).status)
+            staged = adapter.stage(
+                _manifest("2026-07-31"),
+                [_present("000002", date(2026, 7, 31))],
+            )
+            with patch.object(
+                adapter.publisher,
+                "_clear_publish_pending",
+                side_effect=PermissionError("simulated pending-marker crash"),
+            ):
+                with self.assertRaises(PermissionError):
+                    adapter.publish(staged)
+            self.assertEqual(staged.generation_id, adapter.publisher.read_current().generation_id)
+            self.assertIsNotNone(adapter.publisher.pending_publication())
+
+            calls = 0
+            # Promotion moves the candidate into the immutable current
+            # generation before the pending-marker cleanup is attempted.
+            # Mutate the promoted path so recovery must re-run the validator
+            # against the bytes that are actually current.
+            csv_path = (
+                Path(td)
+                / "staging"
+                / "generations"
+                / "current"
+                / "delta"
+                / "00"
+                / "000002.csv"
+            )
+            csv_path.write_bytes(
+                b"date,open,high,low,close,volume\n2026-07-31,1,1,1,1,1\n"
+            )
+
+            def validator(path: Path, manifest: GenerationManifest) -> None:
+                nonlocal calls
+                if manifest.generation_id != staged.generation_id:
+                    return
+                calls += 1
+                adapter._validate_candidate(
+                    path,
+                    expected_generation_id=staged.generation_id,
+                    expected_parent_id=staged.parent_generation_id,
+                    expected_delta_hash=staged.delta_manifest_sha256,
+                )
+
+            with self.assertRaises(DailyStagingValidationError):
+                adapter.publisher.recover_pending_publication(
+                    candidate_validator=validator,
+                )
+            self.assertGreaterEqual(calls, 1)
+            self.assertIsNotNone(adapter.publisher.pending_publication())
+            self.assertEqual(staged.generation_id, adapter.publisher.read_current().generation_id)
 
 
 if __name__ == "__main__":

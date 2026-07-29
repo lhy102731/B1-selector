@@ -438,6 +438,10 @@ class DailyUpdaterStagingAdapter:
     ) -> tuple[BarObservation, str | None, int]:
         status = update.status
         if status in _PRESENT_STATUSES:
+            if update.no_bar_confirmation is not None or update.fetch_failure is not None:
+                raise DailyStagingValidationError(
+                    "present status cannot carry missing-data evidence"
+                )
             if update.csv_bytes is None or not update.csv_bytes:
                 raise DailyStagingValidationError(
                     f"{status} requires non-empty csv_bytes"
