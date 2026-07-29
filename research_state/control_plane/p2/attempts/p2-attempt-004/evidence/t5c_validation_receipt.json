@@ -1,0 +1,59 @@
+{
+  "schema_version": "control_plane.p2r4_t5c_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T5C-SCOPE-ADOPTION",
+  "ticket_id": "29c84bbb4ed839ac2b260d3af2cd878bc6f24425d0a5550e548efe86213b6f3b",
+  "validated_at": "2026-07-30T06:39:18.1486002+08:00",
+  "git_head": "97a364622a892f517abdcff479568aa67277ef36",
+  "git_tree": "ab489c667d8d0fc03b37597fc89d2e51f9da30e9",
+  "test_receipts": [
+    {
+      "receipt_id": "p2r4-t5c-historical-binding-check",
+      "command": "python -B -c \"parse and Authority-bind P2R2 T1-T5 TaskReports, match five completion receipts, verify every P2R4 adoption source and all 23 current scope identities\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "observed": "reports=5 completions=5 scope_paths=23 known_token_lower_bound=392628 p2r2_unknown_usage=4 p2r4_unknown_usage_lower_bound=5",
+      "elapsed_ms": 565
+    },
+    {
+      "receipt_id": "p2r4-t5c-focused-tests",
+      "command": "python -B -m unittest tests.test_foundations_immutable_release tests.test_data_generation tests.test_generation_cache_identity tests.test_market_data_semantics tests.test_daily_updater_staging tests.test_raw_parquet_cache tests.test_signal_cache_identity tests.test_update_today_em_client tests.test_daily_checkpoint_retention tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 175,
+      "tests_failed": 0,
+      "unittest_elapsed_seconds": "6.427",
+      "process_elapsed_ms": 12500
+    },
+    {
+      "receipt_id": "p2r4-t5c-scope-static-syntax-check",
+      "command": "python -B -c \"compile every present Python path in the P2R4 current_code_and_test_files list without writing bytecode\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "files_compiled": 22,
+      "scope_paths": 23,
+      "intentionally_absent_paths": [
+        "research_automation/data_generation/__init__.py"
+      ],
+      "elapsed_ms": 60
+    }
+  ],
+  "scope_binding": {
+    "current_scope_paths": 23,
+    "current_scope_identity_matches": 23,
+    "drifted_scope_paths": 0,
+    "input_evidence_hashes_verified": 8,
+    "adoption_manifest_sha256": "577e5423fb3fa9684cd21869d74d19c69684d219d18195b1b387007621675c01"
+  },
+  "environment": {
+    "fixtures_and_temp_directories_only": true,
+    "real_data_scanned_or_mutated": false,
+    "network_provider_called": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false,
+    "kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false
+  },
+  "verdict": "PASS"
+}
