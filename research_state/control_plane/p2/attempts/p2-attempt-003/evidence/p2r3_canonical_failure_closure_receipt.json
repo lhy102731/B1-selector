@@ -1,0 +1,64 @@
+{
+  "schema_version": "control_plane.p2r3_canonical_failure_closure_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "closure": {
+    "closure_id": "ea1bf5c64ce9990cc37431b2763bebadb4f9940df194b86c0013201ef4c8d5df",
+    "closed_at": "2026-07-29T22:26:09.572063+00:00",
+    "verdict": "FAIL",
+    "gate_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/gates/p2r3_canonical_failure_gate.json",
+    "gate_file_sha256": "c01c29ca2a1a1910991927ade6e8cf7f728ede15e711988d981dbc64e6163553",
+    "gate_report_payload_sha256": "3b9047aa59cdf6bfe03a8eac28f3e1803cb26013945f714bb81850058ddc3489",
+    "public_gate_verifier_passed": true,
+    "public_gate_closer_used": true,
+    "private_phase_closure_called_directly": false
+  },
+  "reason_codes": [
+    "MISSING_TASK_REPORTS",
+    "MISSING_GATE_TEST_RECEIPTS",
+    "ACTIVE_ENTRY_POLICY_MISMATCH",
+    "IN_DOUBT_TICKET:25e5b003a278b58030197aa21022d37013f303f8fd8f60b745f796fb213f5112"
+  ],
+  "git_source_identity": {
+    "git_commit": "32449e3782867c1bd0b9f5c1e0d7bdd2b273acb6",
+    "git_tree": "23c28688b6ea334dc897b8511468ae6604293056",
+    "untracked_executable_count": 122,
+    "runtime_dependency_count": 1,
+    "large_data_scanned": false
+  },
+  "artifacts": {
+    "code_freeze_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_failure_code_freeze.json",
+    "code_freeze_sha256": "181d90799e063a9793b61cf4ce7b0db963a3b8b113bb8c2e0e9256a0a91ecc7c",
+    "final_inventory_ref": "research_state/control_plane/inventories/final_inventory_v342_p2r3_failure_git_v3.json",
+    "final_inventory_sha256": "9333128391d8c0b893be406a3bf0e63edd25ca7b2abf695afb12fb6cd3adaa9d",
+    "final_inventory_entry_count": 489,
+    "reviewed_policy_ref": "research_state/control_plane/policies/be01c8d22d5ce0019827ebad08188c40affa79334761072aeb0a8f0473b74bc9.json",
+    "reviewed_policy_sha256": "be01c8d22d5ce0019827ebad08188c40affa79334761072aeb0a8f0473b74bc9",
+    "scheduler_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_failure_scheduler_inventory.json",
+    "scheduler_sha256": "0de3fffcdef31f0e862090976408b0e53644b6d714ef3d25fb71d69b5d5f422c",
+    "scheduler_status": "VERIFIED"
+  },
+  "authority_final_state": {
+    "active_grant_count": 0,
+    "open_ticket_count": 0,
+    "succeeded_ticket_count": 0,
+    "failed_ticket_count": 0,
+    "in_doubt_ticket_count": 1,
+    "pending_outbox_count": 0,
+    "mirrored_outbox_event_count": 1
+  },
+  "next_attempt": {
+    "required": "p2-attempt-004",
+    "scope_change": false,
+    "implementation_rework_required": false,
+    "revalidate_current_bytes_before_adoption": true
+  },
+  "side_effects": {
+    "control_plane_state_written": true,
+    "tracked_implementation_code_changed": false,
+    "real_data_or_kbase_accessed_or_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false
+  }
+}
