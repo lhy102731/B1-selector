@@ -50,7 +50,7 @@ python apps/web_server.py
 
 ## 运行环境
 
-- `requirements/quant-runtime.in/.lock`：每日更新、选股、回测、Web 和 L2 桌面入口使用的量化生产环境。
+- `requirements/quant-runtime.in/.lock`：每日更新、选股、回测、Research-only 数值 runner、Web 和 L2 桌面入口使用的量化环境。
 - `requirements/control-plane.in/.lock`：AG2 与研究控制面使用的独立环境。
 
 两套环境不能合并安装：生产入口依赖的 `mootdx 0.11.7` 要求 `httpx < 0.26`，控制面则要求 `httpx >= 0.28.1`。不要用 `--no-deps` 绕过解析器。
