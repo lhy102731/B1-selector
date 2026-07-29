@@ -58,6 +58,23 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
                 sorted(path.name for path in root.iterdir()),
             )
 
+    def test_rollback_swaps_current_and_previous_after_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+
+            store.promote(candidate, expected_current_id="v1")
+            receipt = store.rollback(expected_current_id="v2")
+
+            self.assertEqual("v1", receipt.release_id)
+            self.assertEqual("v2", receipt.previous_release_id)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
+
 
 if __name__ == "__main__":
     unittest.main()

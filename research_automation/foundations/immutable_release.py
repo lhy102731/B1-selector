@@ -36,6 +36,13 @@ class PromotionReceipt:
     current_path: Path
 
 
+@dataclass(frozen=True, slots=True)
+class RollbackReceipt:
+    release_id: str
+    previous_release_id: str
+    current_path: Path
+
+
 class ImmutableReleaseStore:
     """Promote validated same-volume candidates without exposing half-state."""
 
@@ -116,6 +123,59 @@ class ImmutableReleaseStore:
             current_path=current,
         )
 
+    def rollback(self, *, expected_current_id: str) -> RollbackReceipt:
+        expected_id = self._canonical_release_id(expected_current_id)
+        current = self._root / "current"
+        previous = self._root / "previous"
+        with self._exclusive_lock():
+            current_id = self._validate_release(current)
+            previous_id = self._validate_release(previous)
+            if current_id != expected_id:
+                raise ReleaseConflictError(
+                    "CURRENT identity changed before rollback"
+                )
+
+            transaction = self._root / f".rollback.{uuid.uuid4().hex}.tmp"
+            parked_current = transaction / "current"
+            transaction.mkdir(parents=False)
+            moved_previous = False
+            completed_swap = False
+            try:
+                os.replace(current, parked_current)
+                os.replace(previous, current)
+                moved_previous = True
+                os.replace(parked_current, previous)
+                completed_swap = True
+                if (
+                    self._validate_release(current) != previous_id
+                    or self._validate_release(previous) != current_id
+                ):
+                    raise ReleaseConflictError(
+                        "rollback release identities do not match the prior slots"
+                    )
+                transaction.rmdir()
+            except Exception:
+                if completed_swap:
+                    parked_rollback = transaction / "rolled-back-current"
+                    os.replace(current, parked_rollback)
+                    os.replace(previous, current)
+                    os.replace(parked_rollback, previous)
+                elif moved_previous:
+                    os.replace(current, previous)
+                    if parked_current.exists():
+                        os.replace(parked_current, current)
+                elif parked_current.exists():
+                    os.replace(parked_current, current)
+                if transaction.exists():
+                    transaction.rmdir()
+                raise
+
+        return RollbackReceipt(
+            release_id=previous_id,
+            previous_release_id=current_id,
+            current_path=current,
+        )
+
     @staticmethod
     def _canonical_release_id(release_id: str) -> str:
         if not isinstance(release_id, str) or _RELEASE_ID.fullmatch(release_id) is None:
@@ -155,6 +215,7 @@ class ImmutableReleaseStore:
 __all__ = [
     "ImmutableReleaseStore",
     "PromotionReceipt",
+    "RollbackReceipt",
     "ReleaseAdapter",
     "ReleaseBusyError",
     "ReleaseConflictError",
