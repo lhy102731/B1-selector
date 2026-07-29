@@ -1,0 +1,32 @@
+{
+  "schema_version": "control_plane.authorization_ref_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "authorization_ref": "auth_7af72ccea1b9d909318a2f7628e09d61",
+  "expires_at": "2026-08-02T22:29:33.169621+00:00",
+  "actor": {
+    "actor_id": "operator",
+    "actor_type": "human",
+    "invocation_id": "codex-thread-019f8fbf-6816-7663-af83-35b4279848ae"
+  },
+  "identity_binding": {
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "25d11e3d5457c128c57ba34e8694aef2c30e3bb021c0c53a8bd95d6a4a283abc",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "state_at_receipt": "PENDING",
+  "bearer_secret_recorded": false,
+  "recoverable_with_dpapi_root": true,
+  "retry_of_attempt": "p2-attempt-003",
+  "retry_scope_changed": false,
+  "pending_outbox_count_after_mirror": 0,
+  "p2_authorized": true,
+  "p3_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false,
+  "auto_advance": false
+}
