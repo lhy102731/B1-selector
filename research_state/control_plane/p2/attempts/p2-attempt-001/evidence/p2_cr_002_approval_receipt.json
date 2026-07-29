@@ -1,0 +1,54 @@
+{
+  "schema_version": "control_plane.change_request_approval.v2",
+  "change_request_id": "P2-CR-002",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-001",
+  "approval_kind": "EXACT_OPERATOR_COMMAND",
+  "operator_statement": "APPROVE_CHANGE_REQUEST id=P2-CR-002",
+  "operator_statement_sha256": "23fe67dae28b24edc2978ffbc73eddd6f8534ef4e26f435b8d87cca7208ff9e8",
+  "operator_statement_hash_rule": "SHA-256 of the exact UTF-8 statement, no BOM or trailing newline",
+  "exact_approval_token_observed": true,
+  "command": "APPROVE_CHANGE_REQUEST id=P2-CR-002",
+  "hash_preapproved": false,
+  "hash_binding_kind": "EXACT_COMMAND_TO_PREVIOUSLY_DESCRIBED_BOUNDED_CHANGE_REQUEST_ID",
+  "observed_at": "2026-07-29T21:51:57.9314336+08:00",
+  "pre_change_git_head": "efbeb6e8458507ebc81d4d17974107e3059cc369",
+  "pre_change_git_tree": "b13647b6bf1aa9ded79acfe9a8ac4a39538e9601",
+  "reason": "The issued T1 task specification contains D:/KBase/ in forbidden_files, while TaskReport V2 previously accepted repository-relative scope rules only. That mismatch blocked trusted T1 closure before the task lease began.",
+  "approved_change": {
+    "production_files": [
+      "research_automation/control_plane/task_reports.py"
+    ],
+    "test_files": [
+      "tests/test_control_plane_task_reports.py"
+    ],
+    "behavior": "Allow canonical uppercase-drive Windows absolute directory prefixes only in forbidden_files.",
+    "must_continue_to_reject": [
+      "absolute paths in allowed_files",
+      "absolute paths in changed_files",
+      "lowercase or noncanonical drive forms",
+      "paths without a trailing slash",
+      "dot or dot-dot traversal segments",
+      "duplicate separators",
+      "trailing-dot or trailing-space segments",
+      "backslashes",
+      "UNC paths",
+      "drive-relative paths",
+      "wildcards",
+      "alternate data streams"
+    ]
+  },
+  "authorization": {
+    "bounded_tcb_change_authorized": true,
+    "tests_authorized": true,
+    "git_commit_authorized": true,
+    "task_spec_mutation_authorized": false,
+    "ticket_or_authority_database_mutation_authorized": false,
+    "data_or_kbase_mutation_authorized": false,
+    "research_backtest_campaign_or_holdout_authorized": false,
+    "scheduler_or_acl_mutation_authorized": false,
+    "git_push_authorized": false,
+    "auto_advance_beyond_p2_authorized": false
+  }
+}

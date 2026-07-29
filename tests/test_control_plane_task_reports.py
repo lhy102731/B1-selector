@@ -1271,6 +1271,53 @@ class TaskReportV2TracerTests(unittest.TestCase):
                     ):
                         validate_task_report_v2(report)
 
+    def test_forbidden_files_accepts_a_canonical_windows_directory_prefix(self) -> None:
+        report = self._complete_report()
+        report["forbidden_files"] = ["D:/KBase/"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        validate_task_report_v2(report)
+
+    def test_allowed_files_rejects_a_windows_absolute_directory_prefix(self) -> None:
+        report = self._complete_report()
+        report["allowed_files"] = ["D:/KBase/"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            r"allowed_files\[0\] must be a repository-relative POSIX path or directory prefix",
+        ):
+            validate_task_report_v2(report)
+
+    def test_forbidden_files_rejects_noncanonical_windows_absolute_rules(self) -> None:
+        invalid_rules = [
+            "d:/KBase/",
+            "D:/KBase",
+            "D:/KBase/../Data/",
+            "D:/KBase//Data/",
+            "D:/KBase./",
+            "D:/KBase /",
+            "D:\\KBase\\",
+            "//server/share/",
+            "D:relative/",
+            "D:/KBase/*/",
+            "D:/KBase/:stream/",
+            "D://",
+        ]
+        for invalid_rule in invalid_rules:
+            with self.subTest(rule=repr(invalid_rule)):
+                report = self._complete_report()
+                report["forbidden_files"] = [invalid_rule]
+                report["report_payload_sha256"] = task_report_v2_payload_sha256(
+                    report
+                )
+
+                with self.assertRaisesRegex(
+                    TaskReportValidationError,
+                    r"forbidden_files\[0\] must be a repository-relative POSIX path or directory prefix",
+                ):
+                    validate_task_report_v2(report)
+
     def test_task_report_timestamps_must_be_timezone_aware(self) -> None:
         for field_name in ("started_at", "completed_at"):
             with self.subTest(field=field_name):

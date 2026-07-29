@@ -281,6 +281,34 @@ def _require_repo_relative_posix_scope_rule(
     return value
 
 
+def _is_canonical_windows_absolute_directory_prefix(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or len(value) < 3
+        or not ("A" <= value[0] <= "Z")
+        or value[1:3] != ":/"
+        or not value.endswith("/")
+        or value != value.strip()
+        or "\\" in value
+        or ":" in value[2:]
+        or any(character in '<>"|?*' for character in value)
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in value
+        )
+    ):
+        return False
+    if len(value) == 3:
+        return True
+    parts = value[3:-1].split("/")
+    return bool(parts) and all(
+        part not in ("", ".", "..")
+        and part == part.strip()
+        and not part.endswith(".")
+        for part in parts
+    )
+
+
 def _require_closed_mapping(
     value: object,
     field_name: str,
@@ -656,10 +684,14 @@ def _validate_scope_file_rules(report: Mapping[str, object]) -> None:
                 raise TaskReportValidationError(
                     f"{field_name} must not contain duplicates"
                 )
-            _require_repo_relative_posix_scope_rule(
-                rule,
-                f"{field_name}[{index}]",
-            )
+            if not (
+                field_name == "forbidden_files"
+                and _is_canonical_windows_absolute_directory_prefix(rule)
+            ):
+                _require_repo_relative_posix_scope_rule(
+                    rule,
+                    f"{field_name}[{index}]",
+                )
             seen_rules.add(rule)
 
 
