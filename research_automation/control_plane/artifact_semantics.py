@@ -196,6 +196,30 @@ _FREEZE_TOP_LEVEL_FIELDS = frozenset(
     }
 )
 _FREEZE_FILE_FIELDS = frozenset({"path", "sha256", "bytes"})
+_GIT_FREEZE_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "git_commit",
+        "git_tree",
+        "active_tracked_dirty_paths",
+        "nonblocking_tracked_dirty_paths",
+        "untracked_executables",
+        "runtime_dependencies",
+        "legacy_policy_path",
+        "legacy_policy_sha256",
+        "legacy_quarantine_sha256",
+        "source_identity_sha256",
+        "freeze_payload_sha256",
+    }
+)
+_GIT_FREEZE_EXECUTABLE_FIELDS = frozenset(
+    {"path", "sha256", "disposition", "trust_state"}
+)
+_GIT_FREEZE_RUNTIME_FIELDS = frozenset({"path", "sha256"})
 _FORBIDDEN_FREEZE_ROOTS = frozenset(
     {
         ".git",
@@ -241,6 +265,19 @@ _INVENTORY_TOP_LEVEL_FIELDS = frozenset(
         "attempt_id",
         "identity_binding",
         "freeze_payload_sha256",
+        "entries",
+        "entry_count",
+        "inventory_payload_sha256",
+    }
+)
+_GIT_INVENTORY_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_version",
+        "phase",
+        "attempt_id",
+        "identity_binding",
+        "source_identity_sha256",
         "entries",
         "entry_count",
         "inventory_payload_sha256",
@@ -451,8 +488,20 @@ def validate_code_freeze_manifest(
     expected_identity: Mapping[str, str],
     repository_root: str | Path | None = None,
 ) -> dict[str, object]:
-    """Validate a source/test code-freeze manifest and current file bytes."""
+    """Validate freeze semantics; v1 also checks bytes when a root is supplied.
+
+    Operational v2 callers separately recapture and compare the live Git source
+    identity plus bounded entry inventory.
+    """
     payload = parse_strict_json(raw, artifact_name="code_freeze_manifest")
+    if payload.get("schema_version") == "control_plane.code_freeze_manifest.v2":
+        return _validate_git_code_freeze_manifest(
+            payload,
+            expected_plan_version=expected_plan_version,
+            expected_phase=expected_phase,
+            expected_attempt_id=expected_attempt_id,
+            expected_identity=expected_identity,
+        )
     if set(payload) != _FREEZE_TOP_LEVEL_FIELDS:
         raise ArtifactSemanticError(
             "code_freeze_manifest has an invalid top-level contract"
@@ -518,6 +567,162 @@ def validate_code_freeze_manifest(
                 )
     payload_without_hash = dict(payload)
     payload_without_hash["files"] = normalized_files
+    payload_without_hash.pop("freeze_payload_sha256", None)
+    if payload["freeze_payload_sha256"] != canonical_sha256(payload_without_hash):
+        raise ArtifactSemanticError("code-freeze payload hash mismatch")
+    return payload
+
+
+def _validate_git_code_freeze_manifest(
+    payload: dict[str, object],
+    *,
+    expected_plan_version: str,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_identity: Mapping[str, str],
+) -> dict[str, object]:
+    if set(payload) != _GIT_FREEZE_TOP_LEVEL_FIELDS:
+        raise ArtifactSemanticError(
+            "code_freeze_manifest has an invalid top-level contract"
+        )
+    if payload["plan_version"] != expected_plan_version:
+        raise ArtifactBindingError("code-freeze plan identity mismatch")
+    if payload["phase"] != expected_phase:
+        raise ArtifactBindingError("code-freeze phase mismatch")
+    if payload["attempt_id"] != expected_attempt_id:
+        raise ArtifactBindingError("code-freeze attempt mismatch")
+    _validate_identity(payload["identity_binding"], expected=expected_identity)
+    for field_name in ("git_commit", "git_tree"):
+        value = _string(payload[field_name], f"code-freeze {field_name}")
+        if GIT_COMMIT_RE.fullmatch(value) is None:
+            raise ArtifactSemanticError(
+                f"code-freeze {field_name} must be a lowercase Git object id"
+            )
+    dirty_paths: dict[str, list[str]] = {}
+    for field_name in (
+        "active_tracked_dirty_paths",
+        "nonblocking_tracked_dirty_paths",
+    ):
+        values = payload[field_name]
+        if not isinstance(values, list):
+            raise ArtifactSemanticError(
+                f"code-freeze {field_name} must be a list"
+            )
+        normalized = [
+            _repo_path(value, f"code-freeze {field_name}[{index}]")
+            for index, value in enumerate(values)
+        ]
+        if normalized != sorted(set(normalized)):
+            raise ArtifactSemanticError(
+                f"code-freeze {field_name} must be unique and sorted"
+            )
+        dirty_paths[field_name] = normalized
+    if dirty_paths["active_tracked_dirty_paths"]:
+        raise ArtifactSemanticError("code-freeze tracked source is dirty")
+    executable_entries = payload["untracked_executables"]
+    if not isinstance(executable_entries, list):
+        raise ArtifactSemanticError(
+            "code-freeze untracked_executables must be a list"
+        )
+    normalized_executables: list[dict[str, str]] = []
+    for index, item in enumerate(executable_entries):
+        entry = _exact_mapping(
+            item,
+            _GIT_FREEZE_EXECUTABLE_FIELDS,
+            f"code-freeze untracked_executables[{index}]",
+        )
+        normalized_executables.append(
+            {
+                "path": _repo_path(
+                    entry["path"],
+                    f"code-freeze untracked_executables[{index}].path",
+                ),
+                "sha256": _sha256(
+                    entry["sha256"],
+                    f"code-freeze untracked_executables[{index}].sha256",
+                ),
+                "disposition": _string(
+                    entry["disposition"],
+                    f"code-freeze untracked_executables[{index}].disposition",
+                ),
+                "trust_state": _string(
+                    entry["trust_state"],
+                    f"code-freeze untracked_executables[{index}].trust_state",
+                ),
+            }
+        )
+    if normalized_executables != sorted(
+        normalized_executables,
+        key=lambda item: item["path"],
+    ) or len({item["path"] for item in normalized_executables}) != len(
+        normalized_executables
+    ):
+        raise ArtifactSemanticError(
+            "code-freeze untracked executables must be unique and sorted"
+        )
+    runtime_entries = payload["runtime_dependencies"]
+    if not isinstance(runtime_entries, list):
+        raise ArtifactSemanticError(
+            "code-freeze runtime_dependencies must be a list"
+        )
+    normalized_runtime: list[dict[str, str]] = []
+    for index, item in enumerate(runtime_entries):
+        entry = _exact_mapping(
+            item,
+            _GIT_FREEZE_RUNTIME_FIELDS,
+            f"code-freeze runtime_dependencies[{index}]",
+        )
+        normalized_runtime.append(
+            {
+                "path": _repo_path(
+                    entry["path"],
+                    f"code-freeze runtime_dependencies[{index}].path",
+                ),
+                "sha256": _sha256(
+                    entry["sha256"],
+                    f"code-freeze runtime_dependencies[{index}].sha256",
+                ),
+            }
+        )
+    if normalized_runtime != sorted(
+        normalized_runtime,
+        key=lambda item: item["path"],
+    ) or len({item["path"] for item in normalized_runtime}) != len(
+        normalized_runtime
+    ):
+        raise ArtifactSemanticError(
+            "code-freeze runtime dependencies must be unique and sorted"
+        )
+    legacy_policy_path = _repo_path(
+        payload["legacy_policy_path"],
+        "code-freeze legacy_policy_path",
+    )
+    legacy_policy_sha256 = _sha256(
+        payload["legacy_policy_sha256"],
+        "code-freeze legacy_policy_sha256",
+    )
+    legacy_quarantine_sha256 = _sha256(
+        payload["legacy_quarantine_sha256"],
+        "code-freeze legacy_quarantine_sha256",
+    )
+    expected_source_identity = canonical_sha256(
+        {
+            "schema_version": "control_plane.git_source_identity.v1",
+            "git_commit": payload["git_commit"],
+            "git_tree": payload["git_tree"],
+            "active_tracked_dirty_paths": dirty_paths[
+                "active_tracked_dirty_paths"
+            ],
+            "untracked_executables": normalized_executables,
+            "runtime_dependencies": normalized_runtime,
+            "legacy_policy_path": legacy_policy_path,
+            "legacy_policy_sha256": legacy_policy_sha256,
+            "legacy_quarantine_sha256": legacy_quarantine_sha256,
+        }
+    )
+    if payload["source_identity_sha256"] != expected_source_identity:
+        raise ArtifactSemanticError("code-freeze source identity hash mismatch")
+    payload_without_hash = dict(payload)
     payload_without_hash.pop("freeze_payload_sha256", None)
     if payload["freeze_payload_sha256"] != canonical_sha256(payload_without_hash):
         raise ArtifactSemanticError("code-freeze payload hash mismatch")
@@ -651,10 +856,17 @@ def validate_final_inventory(
 ) -> dict[str, object]:
     """Validate a final executable inventory against the code freeze."""
     payload = parse_strict_json(raw, artifact_name="final_inventory")
-    if set(payload) != _INVENTORY_TOP_LEVEL_FIELDS:
-        raise ArtifactSemanticError("final_inventory has an invalid top-level contract")
-    if payload["schema_version"] != "control_plane.entry_inventory.v2":
+    inventory_schema = payload.get("schema_version")
+    if inventory_schema == "control_plane.entry_inventory.v2":
+        expected_fields = _INVENTORY_TOP_LEVEL_FIELDS
+    elif inventory_schema == "control_plane.entry_inventory.v3":
+        expected_fields = _GIT_INVENTORY_TOP_LEVEL_FIELDS
+    else:
         raise ArtifactSemanticError("unsupported final inventory schema")
+    if set(payload) != expected_fields:
+        raise ArtifactSemanticError(
+            "final_inventory has an invalid top-level contract"
+        )
     if payload["plan_version"] != expected_plan_version:
         raise ArtifactBindingError("final inventory plan identity mismatch")
     if payload["phase"] != expected_phase:
@@ -662,12 +874,33 @@ def validate_final_inventory(
     if payload["attempt_id"] != expected_attempt_id:
         raise ArtifactBindingError("final inventory attempt mismatch")
     _validate_identity(payload["identity_binding"], expected=expected_identity)
-    freeze_digest = _sha256(
-        payload["freeze_payload_sha256"],
-        "final_inventory.freeze_payload_sha256",
-    )
-    if freeze_digest != freeze_manifest.get("freeze_payload_sha256"):
-        raise ArtifactSemanticError("final inventory is not bound to the code freeze")
+    if inventory_schema == "control_plane.entry_inventory.v2":
+        freeze_digest = _sha256(
+            payload["freeze_payload_sha256"],
+            "final_inventory.freeze_payload_sha256",
+        )
+        if freeze_digest != freeze_manifest.get("freeze_payload_sha256"):
+            raise ArtifactSemanticError(
+                "final inventory is not bound to the code freeze"
+            )
+    else:
+        if (
+            freeze_manifest.get("schema_version")
+            != "control_plane.code_freeze_manifest.v2"
+        ):
+            raise ArtifactSemanticError(
+                "Git final inventory requires a Git code freeze"
+            )
+        source_identity_sha256 = _sha256(
+            payload["source_identity_sha256"],
+            "final_inventory.source_identity_sha256",
+        )
+        if source_identity_sha256 != freeze_manifest.get(
+            "source_identity_sha256"
+        ):
+            raise ArtifactSemanticError(
+                "final inventory is not bound to the Git source identity"
+            )
     entries = _validate_entry_records(payload["entries"])
     _exact_nonnegative_int(payload["entry_count"], "final inventory entry_count")
     if payload["entry_count"] != len(entries):
@@ -733,33 +966,81 @@ def validate_final_inventory(
         "source": "external_scheduler_inventory",
     }:
         raise ArtifactSemanticError("required scheduler binding is invalid")
-    freeze_files = freeze_manifest.get("files")
-    if not isinstance(freeze_files, list):
-        raise ArtifactSemanticError("code-freeze files are unavailable")
-    freeze_by_path = {
-        str(item["path"]): (str(item["sha256"]), int(item["bytes"]))
-        for item in freeze_files
-        if isinstance(item, Mapping)
-    }
-    inventory_by_path: dict[str, str] = {}
-    for entry in entries:
-        if entry["kind"] == "external_scheduler":
-            continue
-        path = str(entry["path"])
-        digest = str(entry["content_sha256"])
-        prior = inventory_by_path.setdefault(path, digest)
-        if prior != digest:
+    if inventory_schema == "control_plane.entry_inventory.v3":
+        frozen_untracked = freeze_manifest.get("untracked_executables")
+        frozen_runtime = freeze_manifest.get("runtime_dependencies")
+        if not isinstance(frozen_untracked, list) or not isinstance(
+            frozen_runtime,
+            list,
+        ):
             raise ArtifactSemanticError(
-                "inventory records disagree about one frozen file"
+                "Git code freeze non-Git dependencies are unavailable"
             )
-        if path not in freeze_by_path or freeze_by_path[path][0] != digest:
+        for frozen in frozen_untracked:
+            if not isinstance(frozen, Mapping):
+                raise ArtifactSemanticError(
+                    "Git code freeze quarantined executable is invalid"
+                )
+            matching = [
+                entry
+                for entry in entries
+                if entry["path"] == frozen.get("path")
+                and entry["content_sha256"] == frozen.get("sha256")
+                and entry["disposition"] == frozen.get("disposition")
+                and entry["trust_state"] == frozen.get("trust_state")
+                and entry["source"] == "filesystem_inventory"
+            ]
+            if len(matching) != 1:
+                raise ArtifactSemanticError(
+                    "final inventory is missing a quarantined executable"
+                )
+        for frozen in frozen_runtime:
+            if not isinstance(frozen, Mapping):
+                raise ArtifactSemanticError(
+                    "Git code freeze runtime dependency is invalid"
+                )
+            matching = [
+                entry
+                for entry in entries
+                if entry["path"] == frozen.get("path")
+                and entry["content_sha256"] == frozen.get("sha256")
+                and entry["kind"] == "runtime_dependency"
+                and entry["disposition"] == "PRODUCTION_DAILY"
+                and entry["trust_state"] == "production_daily"
+                and entry["source"] == "runtime_dependency_inventory"
+            ]
+            if len(matching) != 1:
+                raise ArtifactSemanticError(
+                    "final inventory is missing a runtime dependency"
+                )
+    if inventory_schema == "control_plane.entry_inventory.v2":
+        freeze_files = freeze_manifest.get("files")
+        if not isinstance(freeze_files, list):
+            raise ArtifactSemanticError("code-freeze files are unavailable")
+        freeze_by_path = {
+            str(item["path"]): (str(item["sha256"]), int(item["bytes"]))
+            for item in freeze_files
+            if isinstance(item, Mapping)
+        }
+        inventory_by_path: dict[str, str] = {}
+        for entry in entries:
+            if entry["kind"] == "external_scheduler":
+                continue
+            path = str(entry["path"])
+            digest = str(entry["content_sha256"])
+            prior = inventory_by_path.setdefault(path, digest)
+            if prior != digest:
+                raise ArtifactSemanticError(
+                    "inventory records disagree about one frozen file"
+                )
+            if path not in freeze_by_path or freeze_by_path[path][0] != digest:
+                raise ArtifactSemanticError(
+                    f"final inventory differs from the code freeze: {path}"
+                )
+        if set(inventory_by_path) != set(freeze_by_path):
             raise ArtifactSemanticError(
-                f"final inventory differs from the code freeze: {path}"
+                "final inventory and code-freeze file sets differ"
             )
-    if set(inventory_by_path) != set(freeze_by_path):
-        raise ArtifactSemanticError(
-            "final inventory and code-freeze file sets differ"
-        )
     payload_without_hash = dict(payload)
     payload_without_hash["entries"] = entries
     payload_without_hash.pop("inventory_payload_sha256", None)

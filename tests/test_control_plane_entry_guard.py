@@ -34,7 +34,7 @@ from research_automation.control_plane.entry_guard import (
 )
 from research_automation.control_plane.inventory import (
     UnstableInventoryError,
-    build_code_freeze_manifest,
+    build_legacy_code_freeze_manifest,
     build_final_entry_inventory,
     unavailable_scheduler_sha256,
 )
@@ -984,7 +984,7 @@ class StableFreezeInventoryBuilderTests(unittest.TestCase):
         }
 
     def _freeze(self, root: Path) -> dict[str, object]:
-        return build_code_freeze_manifest(
+        return build_legacy_code_freeze_manifest(
             root,
             plan_version="V3.4.2-P0R2",
             phase="P0",

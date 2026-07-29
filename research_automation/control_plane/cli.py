@@ -31,6 +31,7 @@ from .gates import (
     _project_task_report_evidence,
     parse_gate_report_v1_bytes,
 )
+from .inventory import UnstableInventoryError, verify_current_git_inventory
 from .sqlite_uow import SqliteUnitOfWorkError
 from .stores import (
     AuthorityReader,
@@ -395,6 +396,13 @@ def _build_gate_candidate(
             expected_identity=expected_identity,
             repository_root=repository_root,
         )
+        if (
+            freeze_manifest["schema_version"]
+            != "control_plane.code_freeze_manifest.v2"
+        ):
+            raise ArtifactSemanticError(
+                "new phase gates require Git source identity evidence"
+            )
         final_inventory = validate_final_inventory(
             artifact_payloads["final_inventory"],
             expected_plan_version=str(primary_task_report["plan_version"]),
@@ -403,6 +411,16 @@ def _build_gate_candidate(
             expected_identity=expected_identity,
             freeze_manifest=freeze_manifest,
         )
+        try:
+            verify_current_git_inventory(
+                repository_root,
+                freeze_manifest=freeze_manifest,
+                final_inventory=final_inventory,
+            )
+        except UnstableInventoryError as error:
+            raise ArtifactSemanticError(
+                f"current executable surface cannot be verified: {error}"
+            ) from error
         validate_reviewed_entry_policy(
             artifact_payloads["reviewed_entry_policy"],
             expected_plan_version=str(primary_task_report["plan_version"]),

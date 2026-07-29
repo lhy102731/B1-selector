@@ -21,7 +21,10 @@ from .artifact_semantics import (
     validate_reviewed_entry_policy,
     validate_scheduler_inventory,
 )
-from .inventory import UnstableInventoryError, build_code_freeze_manifest
+from .inventory import (
+    UnstableInventoryError,
+    verify_current_git_inventory,
+)
 from .stores import (
     AuthorityIdentity,
     AuthorityReader,
@@ -861,24 +864,10 @@ class PhaseGateVerifier:
                 expected_identity=expected_identity,
                 repository_root=self._repository_root,
             )
-            try:
-                current_freeze = build_code_freeze_manifest(
-                    self._repository_root,
-                    plan_version=str(report["plan_version"]),
-                    phase=str(report["phase"]),
-                    attempt_id=str(report["attempt_id"]),
-                    identity_binding=expected_identity,
-                )
-            except UnstableInventoryError as error:
+            freeze_schema = artifacts["code_freeze_manifest"]["schema_version"]
+            if freeze_schema != "control_plane.code_freeze_manifest.v2":
                 raise ArtifactSemanticError(
-                    f"current executable surface cannot be verified: {error}"
-                ) from error
-            if (
-                current_freeze["freeze_payload_sha256"]
-                != artifacts["code_freeze_manifest"]["freeze_payload_sha256"]
-            ):
-                raise ArtifactSemanticError(
-                    "current executable surface differs from the code freeze"
+                    "new phase gates require Git source identity evidence"
                 )
             if (
                 str(report["implementation_baseline"]["ref"])
@@ -895,6 +884,16 @@ class PhaseGateVerifier:
                 expected_identity=expected_identity,
                 freeze_manifest=artifacts["code_freeze_manifest"],
             )
+            try:
+                verify_current_git_inventory(
+                    self._repository_root,
+                    freeze_manifest=artifacts["code_freeze_manifest"],
+                    final_inventory=artifacts["final_inventory"],
+                )
+            except UnstableInventoryError as error:
+                raise ArtifactSemanticError(
+                    f"current executable surface cannot be verified: {error}"
+                ) from error
             artifacts["reviewed_entry_policy"] = validate_reviewed_entry_policy(
                 raw_artifacts["reviewed_entry_policy"],
                 expected_plan_version=str(report["plan_version"]),

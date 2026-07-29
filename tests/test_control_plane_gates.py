@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -45,6 +46,10 @@ from research_automation.control_plane.stores import (
 from research_automation.control_plane.task_reports import (
     build_task_report_v2,
     parse_task_report_v2_bytes,
+)
+from research_automation.control_plane.inventory import (
+    build_code_freeze_manifest,
+    build_final_entry_inventory,
 )
 
 
@@ -310,6 +315,7 @@ class PhaseGateBuilderTests(unittest.TestCase):
         *,
         activate_policy: bool = True,
         active_policy_payload_sha256: str | None = None,
+        git_source_identity: bool = True,
     ) -> Iterator[_TrustedGateFixture]:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")
@@ -461,18 +467,97 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 }
             )
             freeze_files.sort(key=lambda item: str(item["path"]))
-            freeze_payload: dict[str, object] = {
-                "schema_version": "control_plane.code_freeze_manifest.v1",
-                "plan_version": "V3.4.2-P0R2",
-                "phase": "P0",
-                "attempt_id": "p0r2-attempt-001",
-                "identity_binding": identity_dict,
-                "files": freeze_files,
-                "file_count": len(freeze_files),
-            }
-            freeze_payload["freeze_payload_sha256"] = hashlib.sha256(
-                canonical_json(freeze_payload).encode("utf-8")
-            ).hexdigest()
+            if git_source_identity:
+                (root / "CHANGELOG.md").write_text(
+                    "baseline\n",
+                    encoding="utf-8",
+                )
+                eligibility_payload = {
+                    "schema_version": (
+                        "control_plane.legacy_quarantine_paths.v1"
+                    ),
+                    "paths": [],
+                }
+                source_policy_path = (
+                    root
+                    / "research_automation"
+                    / "control_plane"
+                    / "entry_policy.json"
+                )
+                source_policy_path.parent.mkdir(parents=True, exist_ok=True)
+                source_policy_path.write_text(
+                    canonical_json(
+                        {
+                            "entries": [],
+                            "plan_hash": "1" * 64,
+                            "policy_hash": "2" * 64,
+                            "review_state": "APPROVED",
+                            "schema_version": "control_plane.entry_policy.v1",
+                            "scope_hash": "3" * 64,
+                            "quarantine_eligible_paths": [],
+                            "quarantine_eligible_paths_sha256": hashlib.sha256(
+                                canonical_json(eligibility_payload).encode("utf-8")
+                            ).hexdigest(),
+                        }
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                subprocess.run(
+                    ["git", "init", "--quiet"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "add",
+                        ".gitattributes",
+                        "CHANGELOG.md",
+                        "run_select.bat",
+                        "research_automation",
+                    ],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Control Plane Tests",
+                        "-c",
+                        "user.email=control-plane@example.invalid",
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        "gate fixture",
+                    ],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                freeze_payload = build_code_freeze_manifest(
+                    root,
+                    plan_version="V3.4.2-P0R2",
+                    phase="P0",
+                    attempt_id="p0r2-attempt-001",
+                    identity_binding=identity_dict,
+                )
+            else:
+                freeze_payload = {
+                    "schema_version": "control_plane.code_freeze_manifest.v1",
+                    "plan_version": "V3.4.2-P0R2",
+                    "phase": "P0",
+                    "attempt_id": "p0r2-attempt-001",
+                    "identity_binding": identity_dict,
+                    "files": freeze_files,
+                    "file_count": len(freeze_files),
+                }
+                freeze_payload["freeze_payload_sha256"] = hashlib.sha256(
+                    canonical_json(freeze_payload).encode("utf-8")
+                ).hexdigest()
             freeze_ref = (
                 "research_state/control_plane/p0r2/evidence/"
                 "code_freeze_manifest.json"
@@ -566,13 +651,25 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 )
             )
             inventory_payload: dict[str, object] = {
-                "schema_version": "control_plane.entry_inventory.v2",
+                "schema_version": (
+                    "control_plane.entry_inventory.v3"
+                    if git_source_identity
+                    else "control_plane.entry_inventory.v2"
+                ),
                 "plan_version": "V3.4.2-P0R2",
                 "phase": "P0",
                 "attempt_id": "p0r2-attempt-001",
                 "identity_binding": identity_dict,
-                "freeze_payload_sha256": freeze_payload[
-                    "freeze_payload_sha256"
+                (
+                    "source_identity_sha256"
+                    if git_source_identity
+                    else "freeze_payload_sha256"
+                ): freeze_payload[
+                    (
+                        "source_identity_sha256"
+                        if git_source_identity
+                        else "freeze_payload_sha256"
+                    )
                 ],
                 "entries": inventory_entries,
                 "entry_count": len(inventory_entries),
@@ -580,6 +677,35 @@ class PhaseGateBuilderTests(unittest.TestCase):
             inventory_payload["inventory_payload_sha256"] = hashlib.sha256(
                 canonical_json(inventory_payload).encode("utf-8")
             ).hexdigest()
+            if git_source_identity:
+                inventory_payload = build_final_entry_inventory(
+                    root,
+                    plan_version="V3.4.2-P0R2",
+                    phase="P0",
+                    attempt_id="p0r2-attempt-001",
+                    identity_binding=identity_dict,
+                    freeze_manifest=freeze_payload,
+                    scheduler_records=[
+                        {
+                            "task_path": r"\A股选股",
+                            "command": "D:/workspace/run_select.bat",
+                            "task_xml_sha256": "d" * 64,
+                            "state": "Ready",
+                            "principal": (
+                                "Administrator|Interactive|Limited"
+                            ),
+                            "trigger": (
+                                "MSFT_TaskDailyTrigger|"
+                                "start=2026-03-16T20:00:00|"
+                                "days_interval=1|enabled=true"
+                            ),
+                            "acl_summary": (
+                                "owner=BUILTIN\\Administrators;sddl=O:BA"
+                            ),
+                        }
+                    ],
+                )
+                inventory_entries = list(inventory_payload["entries"])
             inventory_ref = (
                 "research_state/control_plane/p0r2/evidence/"
                 "final_inventory.json"
@@ -1077,6 +1203,40 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
             fixture.verifier.verify_bytes(raw)
 
+    def test_verifier_accepts_git_source_identity_and_inventory_v3(self) -> None:
+        with self._trusted_gate_fixture(git_source_identity=True) as fixture:
+            fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_legacy_freeze_from_operational_gate(self) -> None:
+        with self._trusted_gate_fixture(git_source_identity=False) as fixture:
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "require Git source identity",
+            ):
+                fixture.verifier.verify(fixture.report)
+
+    def test_git_gate_records_but_does_not_bind_non_authoritative_report_drift(
+        self,
+    ) -> None:
+        with self._trusted_gate_fixture(git_source_identity=True) as fixture:
+            (fixture.root / "CHANGELOG.md").write_text(
+                "operator notes\n",
+                encoding="utf-8",
+            )
+
+            fixture.verifier.verify(fixture.report)
+
+    def test_git_gate_rejects_tracked_source_drift(self) -> None:
+        with self._trusted_gate_fixture(git_source_identity=True) as fixture:
+            source = fixture.root / "research_automation" / "autonomous_runner.py"
+            source.write_text("# changed after freeze\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "current executable surface",
+            ):
+                fixture.verifier.verify(fixture.report)
+
     def test_verifier_checks_task_report_file_hash(self) -> None:
         with self._trusted_gate_fixture() as fixture:
             fixture.task_report_path.write_bytes(
@@ -1510,6 +1670,46 @@ class PhaseGateBuilderTests(unittest.TestCase):
             fixture.verifier.verify(built)
             self.assertIn('"status":"BUILT"', stdout.getvalue())
             self.assertEqual(stderr.getvalue(), "")
+
+    def test_cli_build_rejects_source_drift_before_writing_pass(self) -> None:
+        with self._trusted_gate_fixture() as fixture:
+            output_path = fixture.root / "drifted-gate-report.json"
+            source = fixture.root / "research_automation" / "autonomous_runner.py"
+            source.write_text("# drifted after freeze\n", encoding="utf-8")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                self._gate_build_cli_args(fixture, output_path),
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 3)
+            self.assertFalse(output_path.exists())
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("current executable surface", stderr.getvalue())
+
+    def test_cli_build_rejects_legacy_freeze_evidence(self) -> None:
+        with self._trusted_gate_fixture(git_source_identity=False) as fixture:
+            output_path = fixture.root / "legacy-gate-report.json"
+            stdout = StringIO()
+            stderr = StringIO()
+
+            exit_code = gate_cli_main(
+                self._gate_build_cli_args(fixture, output_path),
+                stdout=stdout,
+                stderr=stderr,
+                authority_reader=fixture.reader,
+                repository_root=fixture.root,
+            )
+
+            self.assertEqual(exit_code, 3)
+            self.assertFalse(output_path.exists())
+            self.assertEqual(stdout.getvalue(), "")
+            self.assertIn("require Git source identity", stderr.getvalue())
 
     def test_cli_aggregates_multiple_trusted_task_reports(self) -> None:
         with self._trusted_gate_fixture() as fixture:
