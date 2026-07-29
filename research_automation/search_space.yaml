@@ -1,0 +1,46 @@
+# ============================================================
+# search_space.yaml -- deterministic parameter search spaces.
+# Consumed by research_automation/proposer.py::ParameterProposer.
+# Each candidate = champion_params + ONE grid override (isolates a single variable).
+# Only list parameters CONFIRMED effective + CLI-tunable
+# (see archive/reports/parameter_inventory.yaml).
+# ============================================================
+b1:
+  # Bounded validation scope by default (override via CLI). max_stocks 0 = all.
+  scope:
+    start: "2024-01-01"
+    end: "2024-06-30"
+    max_stocks: 60
+  # B1 champion config (CLI-reproducible subset of snapshot_b1.current_champion).
+  # Baseline runs with these; each candidate overrides exactly one grid param.
+  champion_params:
+    j_max: 20
+    pe_max: 80
+    pb_max: 8
+    turnover: 6
+    vol_mode: "v1"
+    top_n: 5
+  mode: one_factor_at_a_time
+  grid:
+    top_n: [3, 4, 5]
+    pe_max: [30, 50, 80]
+    turnover: [2, 4, 6]
+    vol_peak: [0.5, 0.7, 0.9]
+    j_max: [10, 20, 30]
+
+# Brick = backtest_brick_v2.py (V2 28-feature ranking backtest).
+# CAVEAT: champion is V2.1 (V2 + 高管减持, a signal post-filter outside the backtest).
+# Baseline here = V2 backtest defaults, NOT the V2.1 champion. Experimental.
+brick:
+  scope:
+    start: "2024-01-01"
+    end: "2024-03-31"
+  champion_params: {}        # no CLI-reproducible champion (V2.1 filter is out-of-backtest)
+  mode: one_factor_at_a_time
+  grid:
+    top_n: [2, 3, 5]
+    method: ["A", "B", "ml"]
+    max_per_ind: [1, 2, 999]
+    entry_ma_source: ["t0", "t1_open"]
+
+# b3 intentionally absent: no backtest harness -> strategies.py rejects it.

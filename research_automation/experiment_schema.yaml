@@ -1,0 +1,124 @@
+# ============================================================
+# Research Automation Layer v1 -- Experiment Schema
+# ------------------------------------------------------------
+# Canonical schema for the unified Experiment object, its lifecycle
+# state machine, standardized backtest metrics, registry taxonomy,
+# and the human-approval gate rules. This file is the contract that
+# all research_automation/*.py modules implement against.
+# It does NOT modify any strategy, Research Memory, or Registry content.
+# ============================================================
+schema_version: "1.0"
+
+# ---- Phase 2: unified Experiment object --------------------
+experiment:
+  experiment_id: "str  -- stable id, e.g. b1-auto-20260620-001"
+  strategy: "str  -- b1 | b3 | brick"
+  proposal:
+    hypothesis: "str  -- one falsifiable statement (from AG2 / Research_Proposer)"
+    alpha_source: "str -- which family; must stay in-boundary"
+    scope: "str -- date range, universe, TopN, exit rules, 口径"
+    success_criteria: "str -- account-level, phase-aware"
+  registry_reference:
+    registry_status: "duplicate | partial_overlap | failed | verified | open | none"
+    matched_id: "str | null"
+    overlap: "float"
+    action: "pass | modify | reject"
+  changed_files: "list[str]  -- files touched by the code-change step"
+  deleted_files: "list[str]  -- files deleted (triggers approval gate)"
+  schema_changes: "bool  -- DB/schema migration touched (triggers approval gate)"
+  git_commit: "str | null  -- commit hash produced by the code-change step"
+  start_time: "iso8601 str | null"
+  end_time: "iso8601 str | null"
+  status: "see lifecycle.states"
+  metrics: "see standardized_metrics"
+  report_path: "str | null"
+  registry_update: "dict | null  -- generated registry_entry delta"
+  snapshot_update: "dict | null  -- generated snapshot_delta (incremental)"
+  handoff_update: "dict | null   -- generated handoff delta"
+  escalation:
+    escalated: "bool"
+    reasons: "list[str]"
+  logs: "list[str]"
+
+# ---- Phase 3: lifecycle state machine ----------------------
+lifecycle:
+  states:
+    - PROPOSED          # created from an AG2 proposal
+    - APPROVED          # passed pre-registry gate + approval gate
+    - IMPLEMENTING      # Claude Code applies the code change
+    - BACKTESTING       # backtest executed
+    - REPORTING         # report.md generated from parsed metrics
+    - REGISTRY_UPDATE   # registry_entry delta generated
+    - SNAPSHOT_UPDATE   # snapshot_delta generated
+    - HANDOFF_UPDATE    # handoff delta generated
+    - COMPLETED         # loop closed; ready to return to AG2
+  failure_states:
+    - FAILED            # an internal step errored
+    - ESCALATED_TO_USER # human-approval gate tripped
+    - REJECTED          # registry says duplicate/failed/verified (out of reopen)
+  transitions:
+    PROPOSED:        [APPROVED, REJECTED, ESCALATED_TO_USER]
+    APPROVED:        [IMPLEMENTING, ESCALATED_TO_USER, FAILED]
+    IMPLEMENTING:    [BACKTESTING, ESCALATED_TO_USER, FAILED]
+    BACKTESTING:     [REPORTING, ESCALATED_TO_USER, FAILED]
+    REPORTING:       [REGISTRY_UPDATE, FAILED]
+    REGISTRY_UPDATE: [SNAPSHOT_UPDATE, ESCALATED_TO_USER, FAILED]
+    SNAPSHOT_UPDATE: [HANDOFF_UPDATE, FAILED]
+    HANDOFF_UPDATE:  [COMPLETED, FAILED]
+    COMPLETED:       []
+    FAILED:          []
+    ESCALATED_TO_USER: []
+    REJECTED:        []
+
+# ---- Phase 5: standardized backtest metrics ----------------
+standardized_metrics:
+  sharpe: "float | null"
+  cagr: "float | null"
+  win_rate: "float | null"
+  max_drawdown: "float | null"   # negative or magnitude, normalized to magnitude
+  ndcg: "float | null"
+  ic: "float | null"
+  rank_ic: "float | null"
+  turnover: "float | null"
+  trades: "int | null"
+  extra: "dict  -- any additional raw fields kept verbatim"
+  source: "metrics_json | report_md | equity_csv | none"
+
+# ---- Phase 6: registry taxonomy (reused from Research OS) ---
+registry_taxonomy: [duplicate, partial_overlap, failed, verified, open, none]
+registry_actions:
+  duplicate: reject
+  failed: reject
+  verified: reject
+  partial_overlap: modify
+  open: pass
+  none: pass
+
+# ---- Phase 9: human-approval gate rules --------------------
+approval_gate:
+  escalate_if:
+    - changed_files_count_gt: 5
+    - any_deleted_files: true
+    - schema_changes: true
+    - backtest_anomaly: true        # anomaly_flag set, or metrics wildly out of range
+    - registry_conflict: true       # status in {duplicate, failed, verified}
+    - memory_conflict: true         # snapshot/handoff delta contradicts a frozen direction
+  on_trip:
+    status: ESCALATED_TO_USER
+
+# ---- Output staging (does NOT overwrite real memory) -------
+output:
+  staging_dir: "research_automation/_output/<experiment_id>/"
+  artifacts:
+    - experiment_task.md
+    - result/metrics.json
+    - report.md
+    - registry_entry.yaml
+    - snapshot_delta.yaml
+    - handoff_delta.yaml
+    - experiment.json
+  apply_policy: >
+    Updaters write DELTA artifacts to the staging dir only. Merging deltas into the
+    real registry_/snapshot_/handoff_ files is an explicit, separately-gated step and
+    is OFF by default, so existing Research Memory / Project Memory is never mutated
+    automatically.
