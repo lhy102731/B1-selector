@@ -13,13 +13,7 @@ from typing import Literal
 from pydantic import field_validator, model_validator
 
 from research_automation.control_plane.contracts import canonical_json
-from research_automation.foundations.artifact_identity import (
-    ArtifactIdentity,
-    ArtifactIdentityMismatchError,
-    ArtifactLocationError,
-    ArtifactLocator,
-    verify_file_identity,
-)
+from research_automation.foundations.artifact_identity import ArtifactIdentity
 from research_automation.foundations.contract_registry import (
     ContractRegistry,
     ContractValidationError,
@@ -30,6 +24,7 @@ from .generation import GenerationMutatedError, GenerationPin
 
 
 CACHE_IDENTITY_V1 = "research.data_generation.cache_identity.v1"
+MAX_CACHE_IDENTITY_BYTES = 1024 * 1024
 _CACHE_ID_DOMAIN = b"research.data_generation.cache_identity.v1\0"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _CACHE_NAMESPACES = frozenset({"production", "research"})
@@ -125,6 +120,7 @@ def cache_identity_contract_registry() -> ContractRegistry:
     return ContractRegistry(
         version="research.data_generation.cache_identity_registry.v1",
         contracts={CACHE_IDENTITY_V1: CacheIdentity},
+        max_json_bytes=MAX_CACHE_IDENTITY_BYTES,
     )
 
 
@@ -136,9 +132,22 @@ def cache_identity_sidecar_path(cache_path: str | Path) -> Path:
     return path.with_name(f"{path.name}{_SIDECAR_SUFFIX}")
 
 
+def _is_reparse_path(path: Path) -> bool:
+    try:
+        return path.is_symlink() or getattr(
+            path,
+            "is_junction",
+            lambda: False,
+        )()
+    except OSError:
+        return True
+
+
 def read_cache_identity_sidecar(cache_path: str | Path) -> CacheIdentity:
     """Strictly parse one cache identity sidecar without trusting its claims."""
     sidecar = cache_identity_sidecar_path(cache_path)
+    if _is_reparse_path(sidecar):
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
     try:
         raw = sidecar.read_bytes()
     except FileNotFoundError as error:
@@ -158,36 +167,50 @@ def read_cache_identity_sidecar(cache_path: str | Path) -> CacheIdentity:
 
 
 def write_cache_identity_sidecar(
-    cache_path: str | Path,
+    pin: GenerationPin,
+    *,
+    relative_path: str,
     identity: CacheIdentity,
 ) -> Path:
     """Atomically replace a sidecar only after rechecking exact cache bytes."""
+    if not isinstance(pin, GenerationPin):
+        raise TypeError("pin must be a GenerationPin")
     if not isinstance(identity, CacheIdentity):
         raise TypeError("identity must be a CacheIdentity")
-    path = Path(cache_path)
-    try:
-        resolved = path.resolve(strict=True)
-        observed = resolved.stat()
-        verify_file_identity(
-            ArtifactLocator(
-                schema_version="research.artifact_locator.v1",
-                storage_root=resolved.parent.as_posix(),
-                path=resolved.name,
-                size_bytes=observed.st_size,
-                mtime_ns=observed.st_mtime_ns,
-            ),
-            identity.artifact,
-        )
-    except (
-        ArtifactIdentityMismatchError,
-        ArtifactLocationError,
-        OSError,
-        ValueError,
-    ) as error:
-        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH") from error
-
-    destination = cache_identity_sidecar_path(resolved)
     payload = canonical_json(identity.model_dump(mode="json")).encode("utf-8")
+    try:
+        parsed = cache_identity_contract_registry().parse_json(
+            CACHE_IDENTITY_V1,
+            payload,
+        )
+    except ContractValidationError as error:
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID") from error
+    if parsed != identity:
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
+    try:
+        current = pin.verify_artifact(
+            relative_path,
+            content_schema=identity.artifact.content_schema,
+            producer=identity.artifact.producer,
+            kind=identity.artifact.kind,
+            logical_role=identity.artifact.logical_role,
+        )
+        pin.verify_touched_artifact_ids(
+            identity.source_artifact_ids,
+            exclude_artifact_id=identity.artifact.artifact_id,
+        )
+    except (GenerationMutatedError, ValueError) as error:
+        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH") from error
+    if not hmac.compare_digest(
+        current.artifact_id,
+        identity.artifact.artifact_id,
+    ):
+        raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH")
+
+    cache_path = pin.artifact_path(relative_path)
+    destination = cache_identity_sidecar_path(cache_path)
+    if _is_reparse_path(destination):
+        raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
     descriptor: int | None = None
     temporary_path: Path | None = None
     try:
@@ -211,7 +234,7 @@ def write_cache_identity_sidecar(
             os.close(descriptor)
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    if read_cache_identity_sidecar(resolved) != identity:
+    if read_cache_identity_sidecar(cache_path) != identity:
         raise CacheIdentityInvalidError("CACHE_IDENTITY_INVALID")
     return destination
 
@@ -240,7 +263,6 @@ def load_verified_cache_identity(
         producer=producer,
         logical_role=logical_role,
     )
-    stored = read_cache_identity_sidecar(pin.artifact_path(relative_path))
     try:
         expected = build_cache_identity(
             pin,
@@ -255,6 +277,7 @@ def load_verified_cache_identity(
         )
     except GenerationMutatedError as error:
         raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH") from error
+    stored = read_cache_identity_sidecar(pin.artifact_path(relative_path))
     if not hmac.compare_digest(stored.cache_id, expected.cache_id):
         raise CacheIdentityMismatchError("CACHE_IDENTITY_MISMATCH")
     return stored
@@ -324,6 +347,9 @@ def build_cache_identity(
         producer=producer,
         logical_role=logical_role,
     )
+    verified_source_ids = pin.verify_touched_artifact_ids(
+        verified_request_sources,
+    )
     artifact = pin.verify_artifact(
         relative_path,
         content_schema=content_schema,
@@ -331,10 +357,8 @@ def build_cache_identity(
         kind=f"{cache_kind}_cache",
         logical_role=logical_role,
     )
-    verified_source_ids = pin.verify_touched_artifact_ids(
-        verified_request_sources,
-        exclude_artifact_id=artifact.artifact_id,
-    )
+    if artifact.artifact_id in verified_source_ids:
+        raise ValueError("cache artifact cannot be its own source")
     manifest = pin.manifest
     return CacheIdentity(
         schema_version=CACHE_IDENTITY_V1,
@@ -355,6 +379,7 @@ def build_cache_identity(
 
 __all__ = [
     "CACHE_IDENTITY_V1",
+    "MAX_CACHE_IDENTITY_BYTES",
     "CacheIdentity",
     "CacheIdentityInvalidError",
     "CacheIdentityMismatchError",

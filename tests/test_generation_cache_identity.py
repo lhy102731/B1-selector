@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import contextmanager
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
 from research_automation.data_generation.cache_identity import (
     CACHE_IDENTITY_V1,
+    MAX_CACHE_IDENTITY_BYTES,
     CacheIdentity,
     CacheIdentityInvalidError,
     CacheIdentityMismatchError,
@@ -23,6 +26,7 @@ from research_automation.data_generation.contracts import (
 )
 from research_automation.data_generation.generation import (
     GenerationMutatedError,
+    GenerationPin,
     GenerationPublisher,
 )
 from research_automation.foundations.artifact_identity import (
@@ -71,6 +75,27 @@ def _contract_identity() -> CacheIdentity:
     )
 
 
+def _identity_with_sources(
+    identity: CacheIdentity,
+    source_artifact_ids: tuple[str, ...],
+) -> CacheIdentity:
+    return CacheIdentity(
+        schema_version=CACHE_IDENTITY_V1,
+        generation_id=identity.generation_id,
+        data_snapshot_id=identity.data_snapshot_id,
+        cache_namespace=identity.cache_namespace,
+        cache_kind=identity.cache_kind,
+        artifact=identity.artifact,
+        source_artifact_ids=source_artifact_ids,
+        feature_contract_id=identity.feature_contract_id,
+        trading_calendar_identity=identity.trading_calendar_identity,
+        point_in_time_universe_identity=(
+            identity.point_in_time_universe_identity
+        ),
+        adjustment_scheme=identity.adjustment_scheme,
+    )
+
+
 def _published_cache(
     root: Path,
 ) -> tuple[Path, Path, Path, GenerationPublisher, GenerationManifest]:
@@ -87,7 +112,10 @@ def _published_cache(
     return data_root, source, cache, publisher, manifest
 
 
-def _built_identity(root: Path) -> tuple[Path, CacheIdentity]:
+@contextmanager
+def _pinned_identity(
+    root: Path,
+) -> Iterator[tuple[GenerationPin, Path, CacheIdentity]]:
     data_root, _source, cache, publisher, manifest = _published_cache(root)
     with publisher.pin_current(
         expected_generation_id=manifest.generation_id,
@@ -110,10 +138,46 @@ def _built_identity(root: Path) -> tuple[Path, CacheIdentity]:
             producer="tests.raw_parquet",
             logical_role="ascending_raw_bars",
         )
-    return cache, identity
+        yield pin, cache, identity
 
 
 class GenerationCacheIdentityTests(unittest.TestCase):
+    def test_sidecar_writer_rejects_unpinned_absolute_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with _pinned_identity(root) as (_pin, _cache, identity):
+                outside = root / "outside" / "cache.parquet"
+                outside.parent.mkdir()
+                outside.write_bytes(b"cache")
+
+                with self.assertRaises(TypeError):
+                    write_cache_identity_sidecar(  # type: ignore[call-arg]
+                        outside,
+                        identity,
+                    )
+
+                self.assertFalse(
+                    outside.with_name(
+                        f"{outside.name}.cache-identity.json"
+                    ).exists()
+                )
+
+    def test_cache_identity_registry_accepts_expected_a_share_source_count(
+        self,
+    ) -> None:
+        identity = _identity_with_sources(
+            _contract_identity(),
+            tuple(f"{index:064x}" for index in range(1500)),
+        )
+        raw = canonical_json(identity.model_dump(mode="json")).encode("utf-8")
+
+        parsed = cache_identity_contract_registry().parse_json(
+            CACHE_IDENTITY_V1,
+            raw,
+        )
+
+        self.assertEqual(identity, parsed)
+
     def test_generation_pin_rejects_traversal_before_outside_stat(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data_root, _source, _cache, publisher, manifest = _published_cache(
@@ -175,7 +239,11 @@ class GenerationCacheIdentityTests(unittest.TestCase):
                     "logical_role": "ascending_raw_bars",
                 }
                 identity = build_cache_identity(pin, **arguments)
-                write_cache_identity_sidecar(cache, identity)
+                write_cache_identity_sidecar(
+                    pin,
+                    relative_path="raw_parquet/00/000001.parquet",
+                    identity=identity,
+                )
 
                 loaded = load_verified_cache_identity(pin, **arguments)
 
@@ -241,7 +309,11 @@ class GenerationCacheIdentityTests(unittest.TestCase):
                     "logical_role": "ascending_raw_bars",
                 }
                 identity = build_cache_identity(pin, **arguments)
-                write_cache_identity_sidecar(cache, identity)
+                write_cache_identity_sidecar(
+                    pin,
+                    relative_path="raw_parquet/00/000001.parquet",
+                    identity=identity,
+                )
 
             cache.write_bytes(b"other")
             with publisher.pin_current(
@@ -266,21 +338,26 @@ class GenerationCacheIdentityTests(unittest.TestCase):
 
     def test_cache_identity_sidecar_round_trips_strict_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            cache, identity = _built_identity(Path(temporary))
+            with _pinned_identity(Path(temporary)) as (pin, cache, identity):
+                sidecar = write_cache_identity_sidecar(
+                    pin,
+                    relative_path="raw_parquet/00/000001.parquet",
+                    identity=identity,
+                )
 
-            sidecar = write_cache_identity_sidecar(cache, identity)
-
-            self.assertEqual(
-                cache.with_name(f"{cache.name}.cache-identity.json"),
-                sidecar,
-            )
-            self.assertEqual(identity, read_cache_identity_sidecar(cache))
+                self.assertEqual(
+                    cache.with_name(f"{cache.name}.cache-identity.json"),
+                    sidecar,
+                )
+                self.assertEqual(identity, read_cache_identity_sidecar(cache))
 
     def test_cache_identity_sidecar_missing_and_malformed_fail_closed(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            cache, _identity = _built_identity(Path(temporary))
+            _data_root, _source, cache, _publisher, _manifest = (
+                _published_cache(Path(temporary))
+            )
 
             with self.assertRaisesRegex(
                 CacheIdentityMissingError,
@@ -299,18 +376,61 @@ class GenerationCacheIdentityTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            cache, identity = _built_identity(Path(temporary))
-            sidecar = write_cache_identity_sidecar(cache, identity)
-            before = sidecar.read_bytes()
-            cache.write_bytes(b"other")
+            with _pinned_identity(Path(temporary)) as (pin, cache, identity):
+                sidecar = write_cache_identity_sidecar(
+                    pin,
+                    relative_path="raw_parquet/00/000001.parquet",
+                    identity=identity,
+                )
+                before = sidecar.read_bytes()
+                cache.write_bytes(b"other")
 
-            with self.assertRaisesRegex(
-                CacheIdentityMismatchError,
-                "CACHE_IDENTITY_MISMATCH",
-            ):
-                write_cache_identity_sidecar(cache, identity)
+                with self.assertRaisesRegex(
+                    CacheIdentityMismatchError,
+                    "CACHE_IDENTITY_MISMATCH",
+                ):
+                    write_cache_identity_sidecar(
+                        pin,
+                        relative_path="raw_parquet/00/000001.parquet",
+                        identity=identity,
+                    )
 
-            self.assertEqual(before, sidecar.read_bytes())
+                self.assertEqual(before, sidecar.read_bytes())
+
+    def test_sidecar_writer_rejects_oversize_before_replacing_valid_sidecar(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            with _pinned_identity(Path(temporary)) as (pin, _cache, identity):
+                sidecar = write_cache_identity_sidecar(
+                    pin,
+                    relative_path="raw_parquet/00/000001.parquet",
+                    identity=identity,
+                )
+                before = sidecar.read_bytes()
+                oversized = _identity_with_sources(
+                    identity,
+                    tuple(f"{index:064x}" for index in range(16000)),
+                )
+                oversized_bytes = canonical_json(
+                    oversized.model_dump(mode="json")
+                ).encode("utf-8")
+                self.assertGreater(
+                    len(oversized_bytes),
+                    MAX_CACHE_IDENTITY_BYTES,
+                )
+
+                with self.assertRaisesRegex(
+                    CacheIdentityInvalidError,
+                    "CACHE_IDENTITY_INVALID",
+                ):
+                    write_cache_identity_sidecar(
+                        pin,
+                        relative_path="raw_parquet/00/000001.parquet",
+                        identity=oversized,
+                    )
+
+                self.assertEqual(before, sidecar.read_bytes())
 
     def test_cache_identity_registry_round_trips_canonical_json(self) -> None:
         identity = _contract_identity()
