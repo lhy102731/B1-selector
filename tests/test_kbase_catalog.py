@@ -110,6 +110,44 @@ class KBaseCatalogTests(unittest.TestCase):
             self.assertTrue(result["published"])
             self.assertEqual(hashlib.sha256(packet_path.read_bytes()).hexdigest(), before)
 
+    def test_validate_release_rejects_structurally_valid_catalog_and_facets_tampering(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, packets = self._vault(Path(tmp))
+            sha = "a" * 64
+            (packets / f"{sha}.json").write_text(
+                json.dumps(packet(sha, 2, "tamper target"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            published = publish_catalog(vault)
+            current = Path(published["current"])
+
+            entries = [
+                json.loads(line)
+                for line in (current / "catalog.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            entries[0]["title"] += " tampered"
+            (current / "catalog.jsonl").write_text(
+                "".join(
+                    json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n"
+                    for entry in entries
+                ),
+                encoding="utf-8",
+            )
+
+            facets = json.loads((current / "facets.json").read_text(encoding="utf-8"))
+            facets["object_type"]["source_packet"] += 1
+            (current / "facets.json").write_text(
+                json.dumps(facets, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            validation = validate_release(current)
+
+            self.assertFalse(validation["ok"])
+            self.assertIn("catalog_source_fingerprint_mismatch", validation["errors"])
+            self.assertIn("catalog_facets_mismatch", validation["errors"])
+
     def test_shared_promotion_failure_keeps_current_catalog_readable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault, packets = self._vault(Path(tmp))

@@ -237,7 +237,12 @@ def _validate_catalog_release(directory: Path) -> dict[str, Any]:
             for entry in entries:
                 validate_catalog_entry(entry)
             manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+            facets = json.loads((directory / "facets.json").read_text(encoding="utf-8"))
             report = json.loads((directory / "build-report.json").read_text(encoding="utf-8"))
+            if manifest.get("source_fingerprint") != _json_fingerprint(entries):
+                errors.append("catalog_source_fingerprint_mismatch")
+            if facets != _facets(entries):
+                errors.append("catalog_facets_mismatch")
             if len(entries) != int(manifest["counts"]["entries"]):
                 errors.append("catalog_count_mismatch")
             if int(manifest["counts"]["source_packets"]) != int(report["input_packet_files"]):
