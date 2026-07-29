@@ -75,6 +75,75 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
 
+    def test_recover_restores_an_interrupted_promotion_without_lock_age(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "immutable_release.transaction.v1",
+                        "operation": "PROMOTE",
+                        "candidate_name": "v2",
+                        "candidate_release_id": "v2",
+                        "expected_current_id": "v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.replace(root / "previous", transaction / "previous")
+            os.replace(root / "current", transaction / "current")
+            os.replace(candidate, root / "current")
+            (root / ".publish.lock").write_text("stale marker", encoding="ascii")
+
+            receipt = store.recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_PROMOTION", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(transaction.exists())
+
+    def test_late_promotion_failure_restores_archived_previous_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+            real_replace = os.replace
+
+            def fail_previous_rotation(source: object, target: object) -> None:
+                source_path = Path(source)
+                if (
+                    source_path.name == "current"
+                    and source_path.parent.name.startswith(".promotion.")
+                    and Path(target) == root / "previous"
+                ):
+                    raise PermissionError("injected previous rotation failure")
+                real_replace(source, target)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=fail_previous_rotation,
+            ):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected previous rotation failure",
+                ):
+                    store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+
 
 if __name__ == "__main__":
     unittest.main()
