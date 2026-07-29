@@ -279,20 +279,24 @@ def provision_models(
     return {"status": "PUBLISHED", "current": str(current), "manifest": validate_model_release(current)}
 
 
+class _ValidatorReleaseAdapter:
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def validate(self, release: Path) -> str:
+        result = self._validator(release)
+        manifest_path = release / "manifest.json"
+        if manifest_path.is_file():
+            return _sha256_file(manifest_path)
+        if isinstance(result, str) and result:
+            return result
+        raise ValueError("release validator returned no immutable identity")
+
+
 def _publish_directory(*, root: Path, candidate: Path, validator: Any) -> None:
     candidate = _assert_inside(candidate, root / "candidate")
 
-    class _ValidatorAdapter:
-        def validate(self, release: Path) -> str:
-            result = validator(release)
-            manifest_path = release / "manifest.json"
-            if manifest_path.is_file():
-                return _sha256_file(manifest_path)
-            if isinstance(result, str) and result:
-                return result
-            raise ValueError("release validator returned no immutable identity")
-
-    adapter = _ValidatorAdapter()
+    adapter = _ValidatorReleaseAdapter(validator)
     current = root / "current"
     expected_current_id = adapter.validate(current) if current.exists() else None
     expected_candidate_id = adapter.validate(candidate)
@@ -1166,19 +1170,15 @@ def rollback_semantic(*, vault: Path, apply: bool) -> dict[str, Any]:
     validate_semantic_release(previous, active_catalog_dir=catalog_dir, require_gates=True)
     if not apply:
         return {"status": "DRY_RUN", "previous": str(previous)}
-    with _exclusive_lock(root / ".publish.lock"):
-        temporary = root / f".rollback.{uuid.uuid4().hex}.tmp"
-        os.replace(current, temporary)
-        try:
-            os.replace(previous, current)
-            validate_semantic_release(current, active_catalog_dir=catalog_dir, require_gates=True)
-            os.replace(temporary, previous)
-        except Exception:
-            if current.exists():
-                os.replace(current, previous)
-            if temporary.exists():
-                os.replace(temporary, current)
-            raise
+    validator = lambda release: validate_semantic_release(
+        release,
+        active_catalog_dir=catalog_dir,
+        require_gates=True,
+    )
+    adapter = _ValidatorReleaseAdapter(validator)
+    ImmutableReleaseStore(root, adapter=adapter).rollback(
+        expected_current_id=adapter.validate(current),
+    )
     return {"status": "ROLLED_BACK", "current": str(current)}
 
 

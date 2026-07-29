@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -16,12 +17,15 @@ from ag2_research.kbase.hybrid_ranking import (
 )
 from ag2_research.kbase.semantic_client import merge_semantic_results
 from ag2_research.kbase.semantic_index import (
+    SEMANTIC_ROOT,
     _compatible_cached_requests,
     _evaluate_suite,
     _publish_directory,
     _semantic_payload_identity,
+    rollback_semantic,
     validate_semantic_release,
 )
+from research_automation.foundations.immutable_release import ImmutableReleaseStore
 
 
 def _entry(source_id: str, title: str, *, family: str = "family") -> dict:
@@ -234,6 +238,69 @@ class SemanticReleaseValidationTests(unittest.TestCase):
 
             self.assertEqual("current", (current / "marker").read_text(encoding="utf-8"))
             self.assertEqual("candidate", (candidate / "marker").read_text(encoding="utf-8"))
+
+    def test_semantic_rollback_crash_is_recovered_by_the_shared_store(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / SEMANTIC_ROOT
+            current = root / "current"
+            previous = root / "previous"
+            current.mkdir(parents=True)
+            previous.mkdir(parents=True)
+            (current / "manifest.json").write_text(
+                json.dumps({"release": "v2"}),
+                encoding="utf-8",
+            )
+            (previous / "manifest.json").write_text(
+                json.dumps({"release": "v1"}),
+                encoding="utf-8",
+            )
+
+            class ManifestAdapter:
+                def validate(self, release: Path) -> str:
+                    return hashlib.sha256(
+                        (release / "manifest.json").read_bytes()
+                    ).hexdigest()
+
+            real_replace = os.replace
+
+            def crash_after_current_is_parked(source: object, target: object) -> None:
+                real_replace(source, target)
+                source_path = Path(source)
+                target_path = Path(target)
+                if source_path == current and (
+                    target_path.name.startswith(".rollback.")
+                    or target_path.parent.name.startswith(".rollback.")
+                ):
+                    raise SystemExit("injected semantic rollback crash")
+
+            with patch(
+                "ag2_research.kbase.semantic_index.validate_semantic_release",
+                return_value={"status": "PASS"},
+            ), patch(
+                "ag2_research.kbase.semantic_index.os.replace",
+                side_effect=crash_after_current_is_parked,
+            ):
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "injected semantic rollback crash",
+                ):
+                    rollback_semantic(vault=vault, apply=True)
+
+            receipt = ImmutableReleaseStore(
+                root,
+                adapter=ManifestAdapter(),
+            ).recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual(
+                {"release": "v2"},
+                json.loads((current / "manifest.json").read_text(encoding="utf-8")),
+            )
+            self.assertEqual(
+                {"release": "v1"},
+                json.loads((previous / "manifest.json").read_text(encoding="utf-8")),
+            )
 
     def test_metadata_identity_ignores_gates_but_binds_index_payload(self) -> None:
         base = {
