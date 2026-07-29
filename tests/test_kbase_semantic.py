@@ -212,12 +212,17 @@ class SemanticReleaseValidationTests(unittest.TestCase):
             real_replace = os.replace
 
             def deny_current_move(source, target):
-                if Path(source) == current and Path(target).name.startswith(".previous."):
+                target_path = Path(target)
+                if (
+                    Path(source) == current
+                    and target_path.name == "current"
+                    and target_path.parent.name.startswith(".promotion.")
+                ):
                     raise PermissionError("simulated live bind lock")
                 return real_replace(source, target)
 
             with patch(
-                "ag2_research.kbase.semantic_index.os.replace",
+                "research_automation.foundations.immutable_release.os.replace",
                 side_effect=deny_current_move,
             ):
                 with self.assertRaisesRegex(PermissionError, "live bind lock"):

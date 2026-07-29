@@ -23,6 +23,8 @@ from typing import Any, Iterable
 import numpy as np
 import yaml
 
+from research_automation.foundations.immutable_release import ImmutableReleaseStore
+
 from .hybrid_ranking import is_navigation_query, lexical_rank_with_anchors
 from .query_regression import evaluate_case
 from .semantic_client import merge_semantic_results
@@ -279,38 +281,24 @@ def provision_models(
 
 def _publish_directory(*, root: Path, candidate: Path, validator: Any) -> None:
     candidate = _assert_inside(candidate, root / "candidate")
-    validator(candidate)
+
+    class _ValidatorAdapter:
+        def validate(self, release: Path) -> str:
+            result = validator(release)
+            manifest_path = release / "manifest.json"
+            if manifest_path.is_file():
+                return _sha256_file(manifest_path)
+            if isinstance(result, str) and result:
+                return result
+            raise ValueError("release validator returned no immutable identity")
+
+    adapter = _ValidatorAdapter()
     current = root / "current"
-    previous = root / "previous"
-    archive = root / "archive"
-    temporary_previous = root / f".previous.{uuid.uuid4().hex}.tmp"
-    with _exclusive_lock(root / ".publish.lock"):
-        archived_previous: Path | None = None
-        if previous.exists():
-            archive.mkdir(parents=True, exist_ok=True)
-            archived_previous = archive / f"previous-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
-            os.replace(previous, archived_previous)
-        moved_current = False
-        moved_candidate = False
-        try:
-            if current.exists():
-                validator(current)
-                os.replace(current, temporary_previous)
-                moved_current = True
-            os.replace(candidate, current)
-            moved_candidate = True
-            validator(current)
-            if moved_current:
-                os.replace(temporary_previous, previous)
-        except Exception:
-            failed = root / "candidate" / f"failed-{uuid.uuid4().hex}"
-            if moved_candidate and current.exists():
-                os.replace(current, failed)
-            if temporary_previous.exists():
-                os.replace(temporary_previous, current)
-            if archived_previous is not None and not previous.exists() and archived_previous.exists():
-                os.replace(archived_previous, previous)
-            raise
+    expected_current_id = adapter.validate(current) if current.exists() else None
+    ImmutableReleaseStore(root, adapter=adapter).promote(
+        candidate,
+        expected_current_id=expected_current_id,
+    )
 
 
 def _semantic_payload_identity(manifest: dict[str, Any]) -> bytes:
@@ -360,7 +348,13 @@ def _publish_semantic_metadata_update(
     if _semantic_payload_identity(_read_json(candidate / "manifest.json")) != _semantic_payload_identity(_read_json(current / "manifest.json")):
         raise ValueError("metadata-only promotion requires an identical semantic payload")
 
-    metadata_files = ("regression-fixed.json", "regression-holdout.json", "gate-report.json", "manifest.json")
+    metadata_files = (
+        "regression-fixed.json",
+        "regression-holdout.json",
+        "gate-report.json",
+        "validation.json",
+        "manifest.json",
+    )
     promoted_archive: Path | None = None
     with _exclusive_lock(root / ".publish.lock"):
         # Re-check inside the lock so a concurrent catalog or semantic release
@@ -1055,6 +1049,15 @@ def publish_semantic(*, vault: Path, candidate: Path, apply: bool) -> dict[str, 
     if not apply:
         return {"status": "DRY_RUN", "candidate": str(candidate), "validation": validation}
     root = vault / SEMANTIC_ROOT
+    manifest = _read_json(candidate / "manifest.json")
+    manifest["promotion_status"] = "current"
+    _atomic_json(candidate / "manifest.json", manifest)
+    validation = validate_semantic_release(
+        candidate,
+        active_catalog_dir=catalog_dir,
+        require_gates=True,
+    )
+    _atomic_json(candidate / "validation.json", validation)
     validator = lambda release: validate_semantic_release(
         release, active_catalog_dir=catalog_dir, require_gates=True,
     )
@@ -1075,10 +1078,7 @@ def publish_semantic(*, vault: Path, candidate: Path, apply: bool) -> dict[str, 
         promotion_mode = "directory_swap"
     current = root / "current"
     manifest = _read_json(current / "manifest.json")
-    manifest["promotion_status"] = "current"
-    _atomic_json(current / "manifest.json", manifest)
     validation = validate_semantic_release(current, active_catalog_dir=catalog_dir, require_gates=True)
-    _atomic_json(current / "validation.json", validation)
     return {
         "status": "PUBLISHED", "current": str(current), "validation": validation,
         "manifest": manifest, "promotion_mode": promotion_mode,
