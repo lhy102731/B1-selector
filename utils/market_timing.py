@@ -4,10 +4,10 @@
 
 状态机逻辑:
   多头区间开始:
-    - 连续两天涨幅总和 >= 4%（两天都为正）
-    - 或单日涨幅 >= 4.1%
+    - 单日涨幅 >= 4%
+    - 或连续两日累计涨幅 >= 4%
   空头区间开始:
-    - 单日跌幅 > 2.3%
+    - 单日跌幅 <= -2.3%
 
   初始状态: 空头区间（保守）
   状态切换: 当天信号优先，空头信号优先于多头信号检查
@@ -24,7 +24,7 @@ class MarketTiming:
         self.states = {}            # date -> 'bullish' | 'bearish'
         self._initial_state = 'bearish'
         self._bullish_threshold = 4.0     # 连续两日涨幅总和的触发阈值
-        self._bullish_single = 4.1        # 单日涨幅触发阈值
+        self._bullish_single = 4.0        # 单日涨幅触发阈值
         self._bearish_threshold = -2.3    # 单日跌幅触发阈值（负值）
 
         if csv_path:
@@ -79,16 +79,16 @@ class MarketTiming:
                 self.states[date] = current_state
                 continue
 
-            # 多头信号：单日 >= 4.1%
+            # 多头信号：单日 >= 4%
             if pct >= self._bullish_single:
                 current_state = 'bullish'
                 self.states[date] = current_state
                 continue
 
-            # 多头信号：连续两日涨幅总和 >= 4%
+            # 多头信号：连续两日累计涨幅 >= 4%
             if i >= 1:
                 prev_pct = df.iloc[i - 1]['pct_chg']
-                if not pd.isna(prev_pct) and pct > 0 and prev_pct > 0:
+                if not pd.isna(prev_pct):
                     if pct + prev_pct >= self._bullish_threshold:
                         current_state = 'bullish'
                         self.states[date] = current_state

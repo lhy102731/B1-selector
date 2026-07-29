@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 from strategy.base_strategy import BaseStrategy
+from utils.asset_policy import AssetPolicy
 from utils.technical import KDJ, calculate_zhixing_trend
 from utils.s1_filter import detect_s1_signal
 
@@ -515,11 +516,12 @@ class UnifiedB1Strategy(BaseStrategy):
             return False
         return True
 
-    def select_stocks(self, df, stock_name=''):
+    def select_stocks(self, df, stock_name='', *, asset_type='stock'):
         if df.empty or len(df) < self.params['M4']:  # M4=114
             return []
 
-        if stock_name:
+        policy = AssetPolicy.for_asset_type(asset_type)
+        if policy.apply_stock_name_filter and stock_name:
             invalid_keywords = ['退', '未知', '退市', '已退']
             if any(kw in stock_name for kw in invalid_keywords):
                 return []
@@ -546,7 +548,7 @@ class UnifiedB1Strategy(BaseStrategy):
             return []
 
         # 市值检查
-        if 'market_cap' in df.columns:
+        if policy.apply_market_cap and 'market_cap' in df.columns:
             if latest['market_cap'] < self.params['cap_threshold']:
                 return []
 
@@ -556,6 +558,9 @@ class UnifiedB1Strategy(BaseStrategy):
 
         # 建仓波质量检测
         build_quality = self._calc_build_position_quality(df)
+        if not policy.apply_stock_price_limits:
+            for field in ('has_limit_up', 'has_shrink_limit_up', 'has_one_word_limit'):
+                build_quality[field] = False
         if not build_quality['is_qualified']:
             return []
 
@@ -603,7 +608,7 @@ class UnifiedB1Strategy(BaseStrategy):
         near_pct = self.params['near_pct'] / 100.0
         near_yellow = (close >= yellow) and ((close - yellow) / yellow <= near_pct)
         near_white = abs(close - white) / white <= near_pct
-        position_ok = (fall_in_bowl or near_yellow or near_white)
+        position_ok = (fall_in_bowl or near_white)
         is_washout = False if self.params.get('skip_washout') else self._detect_washout_exception(df, surge_start_date)
 
         if not position_ok and not is_washout:

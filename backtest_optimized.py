@@ -24,6 +24,8 @@ import json
 import pickle
 import hashlib
 import os as _os
+import re
+import tempfile
 
 warnings.filterwarnings('ignore')
 sys.path.insert(0, str(Path(__file__).parent))
@@ -39,12 +41,148 @@ _worker_strategy = None
 _worker_scorer = None
 _worker_stock_names = None
 _worker_data_dir = None
+_worker_indicators_cache_name = "indicators_cache"
 _worker_parquet_cache = {}       # ★ 内存缓存：code -> full DataFrame，消除磁盘 I/O
 _worker_exclude_limit = False
 
-def _process_initializer(strategy_params_path, data_dir, stock_names, exclude_limit_state=False, skip_params=None):
+
+def _indicator_cache_path(data_dir, cache_name, code):
+    return Path(data_dir) / cache_name / f"{code}.parquet"
+
+
+def _safe_cache_name(cache_name):
+    value = str(cache_name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+        raise ValueError("indicator cache name may contain only letters, numbers, '_' and '-'")
+    return value
+
+
+def _exact_latest_index(dates, target_date):
+    """Return the target session row, never an earlier stock-specific bar."""
+    target = pd.Timestamp(target_date).normalize()
+    cutoff = np.searchsorted(dates, target.to_datetime64(), side='right')
+    if cutoff == 0:
+        return None
+    latest_idx = cutoff - 1
+    if pd.Timestamp(dates[latest_idx]).normalize() != target:
+        return None
+    return latest_idx
+
+
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _build_signal_cache_identity(
+    data_dir,
+    indicator_cache_name,
+    codes,
+    trading_days,
+    *,
+    contract_paths=None,
+):
+    """Bind signal results to exact data, universe, calendar, and code bytes."""
+    data_root = Path(data_dir)
+    normalized_codes = sorted({str(code).zfill(6) for code in codes})
+
+    data_digest = hashlib.sha256()
+    for code in normalized_codes:
+        path = _indicator_cache_path(data_root, indicator_cache_name, code)
+        data_digest.update(code.encode('ascii'))
+        data_digest.update(b'\0')
+        data_digest.update(
+            _sha256_path(path).encode('ascii') if path.exists() else b'MISSING'
+        )
+        data_digest.update(b'\n')
+
+    if contract_paths is None:
+        root = Path(__file__).resolve().parent
+        contract_paths = [
+            Path(__file__).resolve(),
+            root / 'strategy' / 'unified_b1_strategy.py',
+            root / 'strategy' / 'pattern_matcher.py',
+            root / 'strategy' / 'pattern_config.py',
+            root / 'utils' / 's1_filter.py',
+            root / 'utils' / 'stock_scorer.py',
+        ]
+    contract_digest = hashlib.sha256()
+    for path_value in sorted((Path(path).resolve() for path in contract_paths), key=str):
+        contract_digest.update(str(path_value).encode('utf-8'))
+        contract_digest.update(b'\0')
+        contract_digest.update(
+            _sha256_path(path_value).encode('ascii')
+            if path_value.exists()
+            else b'MISSING'
+        )
+        contract_digest.update(b'\n')
+
+    return {
+        'schema_version': 1,
+        'data_snapshot_id': data_digest.hexdigest(),
+        'universe_id': hashlib.sha256(
+            '\n'.join(normalized_codes).encode('utf-8')
+        ).hexdigest(),
+        'calendar_id': hashlib.sha256(
+            '\n'.join(str(day) for day in trading_days).encode('utf-8')
+        ).hexdigest(),
+        'feature_contract_id': contract_digest.hexdigest(),
+        'indicator_cache_name': str(indicator_cache_name),
+    }
+
+
+def _load_signal_cache(path, expected_identity):
+    try:
+        with Path(path).open('rb') as handle:
+            payload = pickle.load(handle)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get('schema_version') != 1:
+        return None
+    if payload.get('identity') != expected_identity:
+        return None
+    signals = payload.get('signals')
+    return signals if isinstance(signals, dict) else None
+
+
+def _save_signal_cache(path, identity, signals):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='wb',
+            dir=destination.parent,
+            prefix=f'.{destination.name}.',
+            suffix='.tmp',
+            delete=False,
+        ) as handle:
+            pickle.dump(
+                {
+                    'schema_version': 1,
+                    'identity': identity,
+                    'signals': signals,
+                },
+                handle,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            handle.flush()
+            _os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        _os.replace(temporary, destination)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+def _process_initializer(strategy_params_path, data_dir, stock_names, exclude_limit_state=False, skip_params=None, indicators_cache_name="indicators_cache"):
     """子进程初始化：加载策略、评分器、股票名称（静默）"""
-    global _worker_strategy, _worker_scorer, _worker_stock_names, _worker_data_dir, _worker_exclude_limit
+    global _worker_strategy, _worker_scorer, _worker_stock_names, _worker_data_dir, _worker_exclude_limit, _worker_indicators_cache_name
     import os
     old_stdout = sys.stdout
     sys.stdout = open(os.devnull, 'w', encoding='utf-8')
@@ -62,6 +200,7 @@ def _process_initializer(strategy_params_path, data_dir, stock_names, exclude_li
         _worker_scorer = StockScorer(CSVManager(data_dir), registry, exclude_limit_state=exclude_limit_state)
         _worker_stock_names = stock_names
         _worker_data_dir = data_dir
+        _worker_indicators_cache_name = indicators_cache_name
         _worker_exclude_limit = exclude_limit_state
     finally:
         sys.stdout = old_stdout
@@ -80,7 +219,7 @@ def _load_and_evaluate(code, end_date, min_similarity):
         if entry is None:
             if code in _worker_parquet_cache:  # 已标记为不存在
                 return None
-            cache_path = Path(_worker_data_dir) / "indicators_cache" / f"{code}.parquet"
+            cache_path = _indicator_cache_path(_worker_data_dir, _worker_indicators_cache_name, code)
             if not cache_path.exists():
                 _worker_parquet_cache[code] = None
                 return None
@@ -95,10 +234,10 @@ def _load_and_evaluate(code, end_date, min_similarity):
             df_cache, dates = entry
 
         # ★ 用 searchsorted 二分定位截至日期行号（O(log N)），替代全量布尔掩码（O(N)）
-        cutoff = np.searchsorted(dates, np.datetime64(end_date), side='right')
-        if cutoff == 0:
+        latest_idx = _exact_latest_index(dates, end_date)
+        if latest_idx is None:
             return None
-        latest_idx = cutoff - 1
+        cutoff = latest_idx + 1
 
         # 快速预筛选：直接从原始 DataFrame 读最新行的列（O(1)，无需创建过滤 DataFrame）
         row = df_cache.iloc[latest_idx]
@@ -197,7 +336,7 @@ def _precompute_stock(code, trading_dates, trading_date_strs, min_similarity, de
         if entry is None:
             if code in _worker_parquet_cache:
                 return []
-            cache_path = Path(_worker_data_dir) / "indicators_cache" / f"{code}.parquet"
+            cache_path = _indicator_cache_path(_worker_data_dir, _worker_indicators_cache_name, code)
             if not cache_path.exists():
                 _worker_parquet_cache[code] = None
                 return []
@@ -220,10 +359,10 @@ def _precompute_stock(code, trading_dates, trading_date_strs, min_similarity, de
 
         results = []
         for i, end_ts in enumerate(trading_dates):
-            cutoff = np.searchsorted(dates, end_ts, side='right')
-            if cutoff == 0:
+            latest_idx = _exact_latest_index(dates, end_ts)
+            if latest_idx is None:
                 continue
-            latest_idx = cutoff - 1
+            cutoff = latest_idx + 1
             row = df_cache.iloc[latest_idx]
 
             # 参数无关的硬性预筛
@@ -332,7 +471,7 @@ def _precompute_stock(code, trading_dates, trading_date_strs, min_similarity, de
 
 # ======================== 主回测类 ========================
 class OptimizedBacktester:
-    def __init__(self, data_dir='data', use_cache=False, initial_cash=1_000_000, strategy_config="config/strategy_params.yaml"):
+    def __init__(self, data_dir='data', use_cache=False, initial_cash=1_000_000, strategy_config="config/strategy_params.yaml", indicators_cache_name="indicators_cache"):
         self.data_dir = Path(data_dir)
         self.cache_dir = self.data_dir / "cache"
         self.use_cache = use_cache
@@ -340,6 +479,7 @@ class OptimizedBacktester:
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.strategy_config = strategy_config
+        self.indicators_cache_name = _safe_cache_name(indicators_cache_name)
 
         self.registry = get_registry(strategy_config)
         self.registry.auto_register_from_directory("strategy")
@@ -378,6 +518,23 @@ class OptimizedBacktester:
         self._daily_indicators = {}     # 日内缓存 (code, end_date) -> filtered DataFrame
         self.trading_days = []
         self.market_timing = None       # 活跃市值择时开关，默认关闭
+        self.use_ai_scorer = False     # 使用AI多因子评分替代相似度排序
+        self.ai_scorer = None          # AIScorer实例
+
+    def _init_ai_scorer(self):
+        if self.ai_scorer is None:
+            from strategy.ai_scorer import AIScorer
+            self.ai_scorer = AIScorer(str(self.data_dir))
+            # 尝试加载信号缓存用于概念共振
+            import pickle
+            cache_dir = Path(self.data_dir) / 'signal_cache'
+            for f in sorted(cache_dir.glob('*.pkl'), reverse=True):
+                try:
+                    with open(f, 'rb') as pf:
+                        self.ai_scorer.signal_cache = pickle.load(pf)
+                    break
+                except:
+                    pass
 
     def _load_stock_names(self):
         names_file = self.data_dir / 'stock_names.json'
@@ -394,7 +551,7 @@ class OptimizedBacktester:
 
         # 持久缓存：首次加载 parquet，后续从内存读取
         if code not in self._indicators_cache:
-            cache_path = Path(self.data_dir) / "indicators_cache" / f"{code}.parquet"
+            cache_path = _indicator_cache_path(self.data_dir, self.indicators_cache_name, code)
             if self.use_indicators_cache and cache_path.exists():
                 try:
                     df_full = pd.read_parquet(cache_path)
@@ -438,13 +595,32 @@ class OptimizedBacktester:
             return 0
         return df.iloc[0]['close']
 
+    def _get_tradable_indicators_on_date(self, code, date):
+        """Return indicators only for an actual tradable bar on exactly date."""
+        if date is None:
+            return pd.DataFrame()
+        df = self._get_realtime_indicators(code, date)
+        if df.empty:
+            return pd.DataFrame()
+        latest = df.iloc[0]
+        latest_date = pd.to_datetime(latest.get('date'), errors='coerce')
+        target_date = pd.to_datetime(date, errors='coerce')
+        if pd.isna(latest_date) or pd.isna(target_date):
+            return pd.DataFrame()
+        if latest_date.normalize() != target_date.normalize():
+            return pd.DataFrame()
+        volume = pd.to_numeric(pd.Series([latest.get('volume')]), errors='coerce').iloc[0]
+        if pd.isna(volume) or float(volume) <= 0:
+            return pd.DataFrame()
+        return df
+
     def _get_next_trading_day(self, date):
         if date not in self.trading_days:
-            return date
+            return None
         idx = self.trading_days.index(date)
         if idx + 1 < len(self.trading_days):
             return self.trading_days[idx + 1]
-        return date
+        return None
 
     def run_selection_on_date(self, date, pool, sample_size=None):
         target_date = pd.to_datetime(date)
@@ -467,10 +643,12 @@ class OptimizedBacktester:
         """连续B1逐日建仓1/3，三批共用最后一次的止损和计时"""
         code = stock_info['code']
         next_date = self._get_next_trading_day(signal_date)
-        df = self._get_realtime_indicators(code, next_date)
+        df = self._get_tradable_indicators_on_date(code, next_date)
         if df.empty:
             return False
         buy_price = df.iloc[0]['open']
+        if not np.isfinite(buy_price) or buy_price <= 0:
+            return False
         target_money = current_total_asset * self.position_pct
         batch_money = target_money / 3
         shares = int(batch_money / buy_price / 100) * 100
@@ -520,6 +698,7 @@ class OptimizedBacktester:
             'is_washout': stock_info['is_washout'],
             'is_super_b1': stock_info.get('is_super_b1', False),
             'signal_j': stock_info.get('raw_j'),        # ★ 买入信号时的J值
+            'ai_score': stock_info.get('ai_score'),      # ★ AI多因子评分
             'signal_vol_ratio': stock_info.get('raw_vol_ratio'),  # ★ 买入信号时的缩量比
             'surge_start_date': stock_info.get('surge_start_date'),  # ★ 异动起点
             'stop_loss_ref': stop_ref, 'stop_loss_ref_active': stop_ref,
@@ -563,7 +742,7 @@ class OptimizedBacktester:
         for pos in self.positions:
             if pos['batch_count'] >= 3: continue
             code = pos['code']
-            df = self._get_realtime_indicators(code, date)
+            df = self._get_tradable_indicators_on_date(code, date)
             if df.empty or len(df) < 5: continue
             latest = df.iloc[0]
 
@@ -573,7 +752,7 @@ class OptimizedBacktester:
                 cond2 = self._is_super_b1_on_position(pos, df)
                 if cond1 or cond2:
                     next_date = self._get_next_trading_day(date)
-                    next_df = self._get_realtime_indicators(code, next_date)
+                    next_df = self._get_tradable_indicators_on_date(code, next_date)
                     if not next_df.empty:
                         buy_price = next_df.iloc[0]['open']
                         self._add_batch(pos, date, buy_price, '第二批加仓', signal_low=latest['low'])
@@ -581,7 +760,7 @@ class OptimizedBacktester:
             elif pos['batch_count'] == 2:
                 if self.strategy.detect_b2_signal(df):
                     next_date = self._get_next_trading_day(date)
-                    next_df = self._get_realtime_indicators(code, next_date)
+                    next_df = self._get_tradable_indicators_on_date(code, next_date)
                     if not next_df.empty:
                         buy_price = next_df.iloc[0]['open']
                         self._add_batch(pos, date, buy_price, '第三批B2加仓', signal_low=latest['low'])
@@ -606,6 +785,7 @@ class OptimizedBacktester:
             'shares': shares, 'pnl': pnl,
             'pnl_pct': (pnl / cost_part) * 100 if cost_part > 0 else 0, 'reason': reason,
             'signal_j': pos.get('signal_j'),           # ★ 买入时的J值
+            'ai_score': pos.get('ai_score'),            # ★ AI评分
             'signal_vol_ratio': pos.get('signal_vol_ratio'),  # ★ 买入时的缩量比
         })
         pos['shares'] -= shares
@@ -626,7 +806,7 @@ class OptimizedBacktester:
     def check_exits_master(self, date):
         to_remove = []
         for pos in self.positions:
-            df = self._get_realtime_indicators(pos['code'], date)
+            df = self._get_tradable_indicators_on_date(pos['code'], date)
             if df.empty or len(df) < 5: continue
             latest = df.iloc[0]
             sell_price = latest['close']
@@ -674,15 +854,12 @@ class OptimizedBacktester:
                 self._sell_shares(pos, date, sell_price, pos['shares'], '基础止损')
                 to_remove.append(pos); continue
 
-            # 3. 持有4天盈利不足4%
-            if hold_days >= 4 and profit_pct < 0.04:
-                self._sell_shares(pos, date, sell_price, pos['shares'], '持有4天盈利不足4%')
+            # 3. T+3 盈利不足2%（仅检测一次）
+            if hold_days == 3 and profit_pct < 0.02:
+                self._sell_shares(pos, date, sell_price, pos['shares'], 'T+3盈利不足4%')
                 to_remove.append(pos); continue
 
-            # 4. 盈转亏
-            if pos.get('has_been_profitable', False) and sell_price < avg_cost:
-                self._sell_shares(pos, date, sell_price, pos['shares'], '盈转亏清仓')
-                to_remove.append(pos); continue
+            # 4. 盈转亏已移除
 
             # 5. S1减仓≥50%
             if self._detect_s1_on_position(df, start_date=pos.get('surge_start_date')) and pos.get('s1_sold', 0) == 0:
@@ -759,7 +936,7 @@ class OptimizedBacktester:
         self.trading_days = self._build_trading_calendar(start_date, end_date)
         print(f"   交易日数: {len(self.trading_days)}")
         # ★ 预热OS页缓存：主进程读一遍所有 parquet，后续 worker 读取时命中内存
-        cache_dir = Path(self.data_dir) / "indicators_cache"
+        cache_dir = Path(self.data_dir) / self.indicators_cache_name
         if cache_dir.exists():
             import time as _t
             _t0 = _t.time()
@@ -809,18 +986,34 @@ class OptimizedBacktester:
             else:
                 skip_parts.append(k)
         skip_tag = "_" + "_".join(skip_parts) if skip_parts else ""
-        cache_key = f"sig_v3_{start_date}_{end_date}_{self.min_similarity}_{params_hash}_{dc_tag}_{len(codes)}{ls_tag}{skip_tag}"
+        cache_identity = _build_signal_cache_identity(
+            self.data_dir,
+            self.indicators_cache_name,
+            codes,
+            self.trading_days,
+        )
+        identity_hash = hashlib.sha256(
+            json.dumps(cache_identity, sort_keys=True).encode('utf-8')
+        ).hexdigest()[:16]
+        print(
+            f"   signal-cache identity: data={cache_identity['data_snapshot_id'][:12]} "
+            f"universe={cache_identity['universe_id'][:12]} "
+            f"calendar={cache_identity['calendar_id'][:12]}"
+        )
+        cache_key = f"sig_v4_{start_date}_{end_date}_{self.min_similarity}_{params_hash}_{dc_tag}_{identity_hash}{ls_tag}{skip_tag}"
         cache_hash = hashlib.md5(cache_key.encode()).hexdigest()[:12]
         cache_dir = Path(self.data_dir) / "signal_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         cache_path = cache_dir / f"{start_date}_{end_date}_{dc_tag}_{cache_hash}.pkl"
 
-        if cache_path.exists():
+        cached_signals = _load_signal_cache(cache_path, cache_identity) if cache_path.exists() else None
+        if cached_signals is not None:
             print(f"\n   加载预计算缓存 [{dc_tag}]: {cache_path.name}")
-            with open(cache_path, 'rb') as f:
-                self._precomputed_signals = pickle.load(f)
+            self._precomputed_signals = cached_signals
             print(f"   加载完成，共 {sum(len(v) for v in self._precomputed_signals.values())} 条信号")
         else:
+            if cache_path.exists():
+                print(f"   rejected legacy or mismatched signal cache: {cache_path.name}")
             print(f"\n   预计算信号日 [{dc_tag}] ({n_workers} workers)...")
             trading_dates_ts = [np.datetime64(d) for d in self.trading_days]
             tasks = [(code, trading_dates_ts, self.trading_days, self.min_similarity, decouple_j, decouple_vol, decouple_near) for code in codes]
@@ -828,7 +1021,7 @@ class OptimizedBacktester:
             self._precomputed_signals = {}  # date_str → [signal_dict, ...]
             with mp.Pool(processes=n_workers,
                          initializer=_process_initializer,
-                         initargs=(self.strategy_config, str(self.data_dir), self.stock_names, self.exclude_limit_state, skip_params)) as pool:
+                         initargs=(self.strategy_config, str(self.data_dir), self.stock_names, self.exclude_limit_state, skip_params, self.indicators_cache_name)) as pool:
                 chunksize = max(1, len(tasks) // (n_workers * 4))
                 for stock_results in tqdm(pool.imap_unordered(_precompute_stock_unpack, tasks, chunksize=chunksize),
                                            total=len(tasks), desc="预计算信号"):
@@ -843,8 +1036,7 @@ class OptimizedBacktester:
 
             print(f"   预计算完成，共 {sum(len(v) for v in self._precomputed_signals.values())} 条信号")
             print(f"   保存缓存到: {cache_path.name}")
-            with open(cache_path, 'wb') as f:
-                pickle.dump(self._precomputed_signals, f, protocol=pickle.HIGHEST_PROTOCOL)
+            _save_signal_cache(cache_path, cache_identity, self._precomputed_signals)
 
         # ★ 回测主循环：只需查字典 + 解耦参数后筛，无需进程池
         print(f"\n   回测主循环...")
@@ -894,6 +1086,18 @@ class OptimizedBacktester:
                         else:
                             continue
                 filtered.append(s)
+            # AI多因子重新评分
+            if self.use_ai_scorer and filtered:
+                self._init_ai_scorer()
+                for s in filtered:
+                    ind = self._get_realtime_indicators(s['code'], date)
+                    if not ind.empty and len(ind) >= 20:
+                        result = self.ai_scorer.score(s, ind)
+                        s['ai_score'] = result['ai_score']
+                        s['ai_breakdown'] = result['breakdown']
+                    else:
+                        s['ai_score'] = 0
+                filtered.sort(key=lambda x: -x.get('ai_score', 0))
             selected = filtered[:self.max_stocks_per_day]
 
             if selected:
@@ -949,8 +1153,10 @@ class OptimizedBacktester:
         print(f"平均盈利: {avg_win:,.0f}")
         print(f"平均亏损: {avg_loss:,.0f}")
 
-        eq_file = 'backtest_equity.csv'
-        trades_file = 'backtest_trades.csv'
+        output_dir = Path(getattr(self, 'output_dir', 'artifacts/backtests/b1'))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        eq_file = output_dir / 'backtest_equity.csv'
+        trades_file = output_dir / 'backtest_trades.csv'
         df_equity.to_csv(eq_file, index=False)
         if not df_trades.empty:
             df_trades.to_csv(trades_file, index=False)
@@ -975,6 +1181,10 @@ if __name__ == '__main__':
                         help='缩量比允许区间，如 0.1~0.6')
     parser.add_argument('--strategy-config', type=str, default='config/strategy_params.yaml',
                         help='策略参数配置文件路径')
+    parser.add_argument('--indicators-cache', type=str, default='indicators_cache',
+                        help='Indicator cache folder under data/, default=indicators_cache')
+    parser.add_argument('--research-indicators-cache', action='store_true',
+                        help='Read data/research_indicators_cache instead of production indicators_cache')
     parser.add_argument('--near-pct', type=float, default=None,
                         help='覆盖 near_pct 值（需配合 --decouple near_pct 使用，无需改YAML即可扫参）')
     parser.add_argument('--near-pct-bull', type=float, default=None,
@@ -1001,9 +1211,14 @@ if __name__ == '__main__':
                         help='单只股票仓位占比')
     parser.add_argument('--output-prefix', type=str, default='',
                         help='输出文件前缀，如 _iter1 则输出 _iter1_equity.csv')
+    parser.add_argument('--output-dir', type=str, default='artifacts/backtests/b1',
+                        help='Directory for generated equity/trades CSV files')
     args = parser.parse_args()
     prefix = args.output_prefix
-    backtester = OptimizedBacktester(data_dir='data', use_cache=False, strategy_config=args.strategy_config, initial_cash=args.initial_cash)
+    indicators_cache_name = 'research_indicators_cache' if args.research_indicators_cache else args.indicators_cache
+    backtester = OptimizedBacktester(data_dir='data', use_cache=False, strategy_config=args.strategy_config, initial_cash=args.initial_cash, indicators_cache_name=indicators_cache_name)
+    backtester.output_dir = Path(args.output_dir)
+    print(f"Indicator cache: data/{backtester.indicators_cache_name}")
     backtester.max_stocks_per_day = args.max_stocks
     backtester.min_similarity = args.min_similarity
     backtester.position_pct = args.position_pct

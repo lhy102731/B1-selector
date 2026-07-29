@@ -87,7 +87,7 @@ def EXIST(cond, n):
 def FINANCE(df, field_code):
     """
     财务数据获取
-    39: 总市值（注意：原通达信39是流通市值，本项目使用总市值）
+    39: 流通市值（元）；生产 CSV 的 market_cap 统一采用该口径。
     """
     if field_code == 39:
         return df.get('market_cap', pd.Series([0] * len(df), index=df.index))
