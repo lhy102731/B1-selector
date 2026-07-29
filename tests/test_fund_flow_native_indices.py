@@ -5,10 +5,41 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pandas as pd
+
 from utils.fund_flow_collector import FundFlowCollector
 
 
 class FundFlowNativeIndexTests(unittest.TestCase):
+    def test_empty_required_layers_fail_without_marking_cache_current(self):
+        with TemporaryDirectory() as directory:
+            collector = FundFlowCollector(Path(directory) / "block")
+            with (
+                patch.object(collector, "_is_trading_day", return_value=False),
+                patch.object(collector, "_check_block_cache", return_value=False),
+                patch.object(
+                    collector,
+                    "collect_concept_fund_flow",
+                    return_value=pd.DataFrame(),
+                ),
+                patch.object(
+                    collector,
+                    "collect_stock_fund_flow",
+                    return_value=pd.DataFrame(),
+                ),
+                patch.object(
+                    collector,
+                    "collect_big_deal",
+                    return_value=pd.DataFrame(),
+                ),
+                patch.object(collector, "collect_native_indices", return_value=0),
+                patch.object(collector, "_write_block_cache") as write_cache,
+            ):
+                result = collector.collect_all("2024-01-03")
+
+            self.assertEqual(2, result)
+            write_cache.assert_not_called()
+
     def test_native_index_update_delegates_to_ths_without_member_synthesis(self):
         with TemporaryDirectory() as directory:
             block_dir = Path(directory) / "data" / "block"
@@ -37,9 +68,17 @@ class FundFlowNativeIndexTests(unittest.TestCase):
                     "collect_concept_fund_flow",
                     side_effect=RuntimeError("source unavailable"),
                 ),
-                patch.object(collector, "collect_stock_fund_flow"),
-                patch.object(collector, "collect_big_deal"),
-                patch.object(collector, "collect_native_indices"),
+                patch.object(
+                    collector,
+                    "collect_stock_fund_flow",
+                    return_value=pd.DataFrame({"rows": [1]}),
+                ),
+                patch.object(
+                    collector,
+                    "collect_big_deal",
+                    return_value=pd.DataFrame({"rows": [1]}),
+                ),
+                patch.object(collector, "collect_native_indices", return_value=0),
                 patch.object(collector, "_write_block_cache") as write_cache,
             ):
                 result = collector.collect_all("2024-01-03")

@@ -515,7 +515,10 @@ class FundFlowCollector:
 
         print('\n--- Layer 1: Concept flow ---')
         try:
-            self.collect_concept_fund_flow(date_str)
+            concept_flow = self.collect_concept_fund_flow(date_str)
+            if concept_flow is None or getattr(concept_flow, "empty", True):
+                failures.append("concept_flow")
+                print('[ERR] concept flow returned no rows')
         except Exception as e:
             failures.append("concept_flow")
             print(f'[ERR] concept flow failed: {e}')
@@ -524,7 +527,10 @@ class FundFlowCollector:
 
         print('\n--- Layer 2: Stock flow ---')
         try:
-            self.collect_stock_fund_flow(date_str)
+            stock_flow = self.collect_stock_fund_flow(date_str)
+            if stock_flow is None or getattr(stock_flow, "empty", True):
+                failures.append("stock_flow")
+                print('[ERR] stock flow returned no rows')
         except Exception as e:
             failures.append("stock_flow")
             print(f'[ERR] stock flow failed: {e}')
@@ -533,7 +539,10 @@ class FundFlowCollector:
 
         print('\n--- Layer 3: Big deal ---')
         try:
-            self.collect_big_deal(date_str)
+            big_deal = self.collect_big_deal(date_str)
+            if big_deal is None or getattr(big_deal, "empty", True):
+                failures.append("big_deal")
+                print('[ERR] big deal returned no rows')
         except Exception as e:
             failures.append("big_deal")
             print(f'[ERR] big deal failed: {e}')
