@@ -8,6 +8,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from research_automation.control_plane.contracts import canonical_json
 from research_automation.foundations.immutable_release import (
@@ -289,6 +290,17 @@ class GenerationPin:
 
 
 class _GenerationReleaseAdapter:
+    def __init__(self) -> None:
+        self._candidate_validator: Callable[[Path, GenerationManifest], None] | None = None
+
+    def set_candidate_validator(
+        self,
+        validator: Callable[[Path, GenerationManifest], None] | None,
+    ) -> None:
+        if validator is not None and not callable(validator):
+            raise TypeError("candidate validator must be callable")
+        self._candidate_validator = validator
+
     def validate(self, release: Path) -> str:
         raw = (release / "manifest.json").read_bytes()
         parsed = generation_contract_registry().parse_json(
@@ -297,6 +309,9 @@ class _GenerationReleaseAdapter:
         )
         if not isinstance(parsed, GenerationManifest):
             raise TypeError("generation registry returned the wrong contract")
+        validator = self._candidate_validator
+        if validator is not None:
+            validator(release, parsed)
         return parsed.generation_id
 
 
@@ -316,6 +331,7 @@ class GenerationPublisher:
             adapter=self._adapter,
             lock_timeout_seconds=lock_timeout_seconds,
         )
+        self._publication_guard = threading.RLock()
 
     def stage(self, manifest: GenerationManifest) -> StagedGeneration:
         if not isinstance(manifest, GenerationManifest):
@@ -349,7 +365,22 @@ class GenerationPublisher:
             expected_current_id=expected_current_id,
         )
 
-    def publish(self, staged: StagedGeneration) -> GenerationManifest:
+    def publish(
+        self,
+        staged: StagedGeneration,
+        *,
+        candidate_validator: Callable[[Path, GenerationManifest], None] | None = None,
+    ) -> GenerationManifest:
+        """Publish one candidate, optionally revalidating it under the store lock."""
+
+        with self._publication_guard:
+            self._adapter.set_candidate_validator(candidate_validator)
+            try:
+                return self._publish_impl(staged)
+            finally:
+                self._adapter.set_candidate_validator(None)
+
+    def _publish_impl(self, staged: StagedGeneration) -> GenerationManifest:
         if not isinstance(staged, StagedGeneration):
             raise TypeError("staged must be a StagedGeneration")
         pending = GenerationPublishPending(
@@ -454,7 +485,21 @@ class GenerationPublisher:
             )
         return parsed
 
-    def recover_pending_publication(self) -> GenerationManifest | None:
+    def recover_pending_publication(
+        self,
+        *,
+        candidate_validator: Callable[[Path, GenerationManifest], None] | None = None,
+    ) -> GenerationManifest | None:
+        """Recover a pending publication with optional lock-held validation."""
+
+        with self._publication_guard:
+            self._adapter.set_candidate_validator(candidate_validator)
+            try:
+                return self._recover_pending_publication_impl()
+            finally:
+                self._adapter.set_candidate_validator(None)
+
+    def _recover_pending_publication_impl(self) -> GenerationManifest | None:
         pending = self.pending_publication()
         if pending is None:
             return None
