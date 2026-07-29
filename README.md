@@ -1,6 +1,6 @@
 # A股量化选股系统 (B1-Selector)
 
-基于 Python + akshare 的 A 股量化选股系统，实现**统一 B1 碗口反弹策略**与**多维相似度图形匹配**，支持钉钉自动通知、Web 管理界面和完整回测引擎。
+基于 Python 的 A 股量化选股系统，实现**统一 B1 碗口反弹策略**与**多维相似度图形匹配**，支持钉钉自动通知、Web 管理界面和完整回测引擎。
 
 ## 核心功能
 
@@ -9,37 +9,60 @@
 - **超级B1检测** — 识别 20 日内曾出现 B1 信号、J 值反弹后再次回落的二次买点
 - **B2 信号检测** — 识别跳空半阳、涨幅 4%+、倍量的接力信号
 - **击穿对手盘识别** — 检测缩量击穿黄线后快速修复的洗盘模式
-- **智能数据更新** — 三数据源冗余（baostock → 腾讯 → akshare），多进程并行抓取，自动判断是否需要增量更新
+- **统一行情数据** — THSDK 后复权 K 线 + 未复权 `close_raw` + 历史换手率，流通市值按统一口径推导；缺权限时失败关闭，不混用旧来源
 - **回测引擎** — 多进程回测，三批次建仓，多条件止盈止损，含市场择时状态机
 - **钉钉通知** — 选股结果 + K 线图自动推送，内置限流保护与指数退避重试
 - **Web 管理** — Flask 单页应用，可视化查看股票数据、选股结果、策略配置
 
 ## 快速开始
 
-```bash
+```powershell
 # 1. 克隆项目
 git clone https://github.com/lhy102731/B1-selector.git
 cd B1-selector
 
-# 2. 安装依赖
-pip3 install -r requirements.txt
+# 2. 创建独立的量化生产环境并安装已锁定依赖
+py -3.13 -m venv .venv-quant
+.\.venv-quant\Scripts\Activate.ps1
+python -m pip install --require-hashes -r requirements/quant-runtime.lock
 
 # 3. 配置钉钉通知（可选）
 cp config/config.yaml.template config/config.yaml
 # 编辑 config/config.yaml，填写 webhook_url 和 secret
 
-# 4. 首次全量抓取数据（6年历史数据，耗时较长）
-python3 main.py init
+# 4. 配置有历史字段权限的 THSDK 账号（游客账号不能全量重建）
+$env:THS_USERNAME="..."
+$env:THS_PASSWORD="..."
+$env:THS_MAC="..."
 
-# 5. 执行选股（更新数据 → 选股 → B1匹配 → 发送钉钉）
-python3 main.py run --b1-match
+# 5. 从 1990 年起在 staging 中重建、校验、备份并切换全库
+python main.py init
 
-# 6. 快速测试（只处理前 500 只股票）
-python3 main.py run --b1-match --max-stocks 500
+# 6. 执行选股（更新数据 → 选股 → B1匹配 → 发送钉钉）
+python main.py run --b1-match
 
-# 7. 启动 Web 管理界面
-python3 main.py web
+# 7. 快速测试（只处理前 500 只股票）
+python main.py run --b1-match --max-stocks 500
+
+# 8. 启动 Web 管理界面
+python apps/web_server.py
 ```
+
+## 运行环境
+
+- `requirements/quant-runtime.in/.lock`：每日更新、选股、回测、Web 和 L2 桌面入口使用的量化生产环境。
+- `requirements/control-plane.in/.lock`：AG2 与研究控制面使用的独立环境。
+
+两套环境不能合并安装：生产入口依赖的 `mootdx 0.11.7` 要求 `httpx < 0.26`，控制面则要求 `httpx >= 0.28.1`。不要用 `--no-deps` 绕过解析器。
+
+如需使用控制面，可单独创建环境：
+
+```powershell
+py -3.13 -m venv .venv-control
+.\.venv-control\Scripts\python.exe -m pip install --require-hashes -r requirements/control-plane.lock
+```
+
+非 pip 前置条件：THSDK 账号与环境变量；全量重建若启用 Yuanhang Bridge，还需要 `YUANHANG_PRIMARY_DIR`、`YUANHANG_DEP_DIR`、`YUANHANG_SNAPPY_DIR`，Microsoft .NET 6 运行时及 Windows C# 编译器。
 
 ## 策略说明
 
@@ -94,9 +117,8 @@ EMA(EMA(CLOSE, 10), 10)
 
 | 技术 | 用途 |
 |------|------|
-| **Python 3.8+** | 核心语言 |
-| **akshare** | A 股实时/历史数据 API |
-| **baostock** | 历史前复权数据（含换手率） |
+| **CPython 3.13** | 量化生产与控制面目标运行时 |
+| **THSDK** | 后复权/未复权日线、换手率、流通市值与代码市场补全 |
 | **pandas / numpy** | 数据处理与技术指标计算 |
 | **pandas_ta** | KDJ 等技术指标 |
 | **matplotlib** | K 线图生成 |
@@ -105,20 +127,26 @@ EMA(EMA(CLOSE, 10), 10)
 | **FastDTW / scipy** | 动态时间规整（价格曲线匹配） |
 | **requests** | HTTP 数据获取与钉钉 Webhook |
 | **PyYAML** | 配置文件解析 |
-| **Pillow** | 图片处理 |
-| **schedule** | 定时任务调度 |
 | **tqdm** | 进度条 |
 
 ## 项目结构
 
 ```
 ├── main.py                       # 主程序入口（CLI）
-├── web_server.py                 # 独立 Flask Web 服务器
+├── apps/web_server.py            # 独立 Flask Web 服务器
 ├── backtest_optimized.py         # 完整回测引擎（多进程）
-├── test_all_cases.py             # 历史案例回测验证
+├── tests/manual/test_all_cases.py # 历史案例回测验证
 ├── build_indicators_cache.py     # 预计算指标缓存（Parquet）
-├── fetch_market_data.py          # 大盘择时数据抓取
-├── requirements.txt              # Python 依赖
+├── tools/data/fetch_active_cap.py # 大盘活跃市值数据维护
+├── research/                     # 按版本归档的研究脚本
+│   ├── README.md                 # 研究目录与产物路径说明
+│   ├── b1/benchmarks/            # B1 基准与阶段实验
+│   └── brick/{legacy,v2,v4_pipeline,v5,v5e}/
+│                                # Brick 各版本研究管线
+├── tools/                        # 数据维护与诊断工具
+├── requirements/
+│   ├── quant-runtime.in/.lock    # 量化生产直接依赖与精确哈希锁
+│   └── control-plane.in/.lock    # AG2/研究控制面独立依赖锁
 ├── B1_PATTERN_MATCH.md           # B1 图形匹配详细文档
 │
 ├── config/
@@ -167,25 +195,25 @@ EMA(EMA(CLOSE, 10), 10)
 
 | 命令 | 说明 |
 |------|------|
-| `python3 main.py init` | 首次全量抓取 6 年历史数据（多进程） |
-| `python3 main.py update` | 每日增量更新（收盘后执行） |
-| `python3 main.py run` | 完整流程：更新数据 → 选股 → 发送钉钉 |
-| `python3 main.py run --max-stocks 500` | 快速测试模式 |
-| `python3 main.py web` | 启动 Web 界面（默认端口 5000） |
-| `python3 main.py --version` | 显示版本信息 |
+| `python main.py init` | 用 THSDK 从 1990 年起隔离重建；全量校验后备份并切换 |
+| `python main.py update` | 在已提交的 THSDK 全库基线上做每日增量更新 |
+| `python main.py run` | 完整流程：更新数据 → 选股 → 发送钉钉 |
+| `python main.py run --max-stocks 500` | 快速测试模式 |
+| `python apps/web_server.py` | 启动 Web 界面（默认端口 5000） |
+| `python main.py --version` | 显示版本信息 |
 
 ### B1 完美图形匹配命令
 
 | 命令 | 说明 |
 |------|------|
-| `python3 main.py run --b1-match` | 启用 B1 图形匹配排序 |
-| `python3 main.py run --b1-match --lookback-days 30` | 指定回看 30 天 |
-| `python3 main.py run --b1-match --min-similarity 70` | 相似度阈值提高到 70% |
-| `python3 main.py run --b1-match --max-stocks 100` | 快速测试前 100 只 |
+| `python main.py run --b1-match` | 启用 B1 图形匹配排序 |
+| `python main.py run --b1-match --lookback-days 30` | 指定回看 30 天 |
+| `python main.py run --b1-match --min-similarity 70` | 相似度阈值提高到 70% |
+| `python main.py run --b1-match --max-stocks 100` | 快速测试前 100 只 |
 
 ### 智能更新逻辑
 
-`python3 main.py run` 自动判断更新策略：
+`python main.py run` 自动判断更新策略：
 1. **15:00 前** — 不更新，使用本地已有数据（盘中）
 2. **15:00 后** — 检查每只股票是否有当天数据
 3. **100% 已有当日数据** — 跳过更新
@@ -260,13 +288,13 @@ B1PatternMatch:
 
 ```bash
 # 运行回测
-python3 backtest_optimized.py
+python backtest_optimized.py
 
 # 预构建指标缓存（加速回测）
-python3 build_indicators_cache.py
+python build_indicators_cache.py
 
 # 验证 24 个历史案例是否通过策略筛选
-python3 test_all_cases.py
+python tests/manual/test_all_cases.py
 ```
 
 回测引擎支持：三批次建仓、多条件止盈止损、S1 减半仓、滴滴信号、白线破位、市场择时过滤。

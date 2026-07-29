@@ -1,0 +1,37 @@
+# Resolver: pip-tools==7.6.0
+# Target runtime: CPython 3.13 on Windows
+# Install in a dedicated production environment. mootdx 0.11.7 requires
+# httpx<0.26, while the control-plane environment requires httpx>=0.28.1.
+
+# Core numerical, indicators, and cache formats
+numpy>=2,<3
+pandas>=2.2,<3
+pandas-ta==0.4.71b0
+scipy>=1.14,<2
+fastdtw==0.3.4
+pyarrow>=18,<24
+
+# Configuration, network access, and progress reporting
+PyYAML>=6,<7
+requests>=2.32,<3
+tqdm>=4.66,<5
+
+# A-share market-data providers used by production and repair entry points
+thsdk>=1.7.18,<2
+akshare>=1.18,<2
+baostock==0.9.1
+beautifulsoup4>=4.12,<5
+lxml>=5,<7
+py-mini-racer==0.6.0
+
+# Brick production scoring and model artifacts
+joblib>=1.4,<2
+scikit-learn>=1.6,<2
+lightgbm>=4.5,<5
+
+# Published Web and L2 desktop entry points
+Flask>=3.1,<4
+PyQt5==5.15.11
+matplotlib>=3.9,<4
+mootdx>=0.11.7,<0.12
+tdxpy==0.2.7
