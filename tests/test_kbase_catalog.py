@@ -148,6 +148,29 @@ class KBaseCatalogTests(unittest.TestCase):
             self.assertIn("catalog_source_fingerprint_mismatch", validation["errors"])
             self.assertIn("catalog_facets_mismatch", validation["errors"])
 
+    def test_validate_release_rejects_a_forged_catalog_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, packets = self._vault(Path(tmp))
+            sha = "a" * 64
+            (packets / f"{sha}.json").write_text(
+                json.dumps(packet(sha, 2, "version target"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            published = publish_catalog(vault)
+            current = Path(published["current"])
+            manifest_path = current / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["catalog_version"] = "forged-version"
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            validation = validate_release(current)
+
+            self.assertFalse(validation["ok"])
+            self.assertIn("catalog_version_mismatch", validation["errors"])
+
     def test_shared_promotion_failure_keeps_current_catalog_readable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             vault, packets = self._vault(Path(tmp))

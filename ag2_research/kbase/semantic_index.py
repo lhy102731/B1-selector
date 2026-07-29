@@ -295,9 +295,11 @@ def _publish_directory(*, root: Path, candidate: Path, validator: Any) -> None:
     adapter = _ValidatorAdapter()
     current = root / "current"
     expected_current_id = adapter.validate(current) if current.exists() else None
+    expected_candidate_id = adapter.validate(candidate)
     ImmutableReleaseStore(root, adapter=adapter).promote(
         candidate,
         expected_current_id=expected_current_id,
+        expected_candidate_id=expected_candidate_id,
     )
 
 

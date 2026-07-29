@@ -239,8 +239,11 @@ def _validate_catalog_release(directory: Path) -> dict[str, Any]:
             manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
             facets = json.loads((directory / "facets.json").read_text(encoding="utf-8"))
             report = json.loads((directory / "build-report.json").read_text(encoding="utf-8"))
-            if manifest.get("source_fingerprint") != _json_fingerprint(entries):
+            source_fingerprint = _json_fingerprint(entries)
+            if manifest.get("source_fingerprint") != source_fingerprint:
                 errors.append("catalog_source_fingerprint_mismatch")
+            if manifest.get("catalog_version") != source_fingerprint[:16]:
+                errors.append("catalog_version_mismatch")
             if facets != _facets(entries):
                 errors.append("catalog_facets_mismatch")
             if len(entries) != int(manifest["counts"]["entries"]):
@@ -270,10 +273,10 @@ class _CatalogReleaseAdapter:
         manifest = json.loads(
             (release / "manifest.json").read_text(encoding="utf-8")
         )
-        catalog_version = manifest.get("catalog_version")
-        if not isinstance(catalog_version, str) or not catalog_version:
-            raise ValueError("catalog release has no immutable catalog_version")
-        return catalog_version
+        source_fingerprint = manifest.get("source_fingerprint")
+        if not isinstance(source_fingerprint, str) or not source_fingerprint:
+            raise ValueError("catalog release has no immutable source_fingerprint")
+        return source_fingerprint
 
 
 def publish_catalog(vault: Path, *, output_relative: Path = DEFAULT_OUTPUT) -> dict[str, Any]:
@@ -300,7 +303,12 @@ def publish_catalog(vault: Path, *, output_relative: Path = DEFAULT_OUTPUT) -> d
             "manifest": manifest,
         }
 
-    store.promote(candidate, expected_current_id=expected_current_id)
+    candidate_id = adapter.validate(candidate)
+    store.promote(
+        candidate,
+        expected_current_id=expected_current_id,
+        expected_candidate_id=candidate_id,
+    )
     return {
         "published": True,
         "current": str(current),
