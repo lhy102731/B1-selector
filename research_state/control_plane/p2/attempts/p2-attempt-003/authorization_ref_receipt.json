@@ -1,0 +1,49 @@
+{
+  "schema_version": "control_plane.authorization_ref_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "authorization_ref": "auth_0aa40d6f151c65a4ede3a1331bb48f94",
+  "expires_at": "2026-08-02T22:07:05.155142Z",
+  "actor": {
+    "actor_id": "operator",
+    "actor_type": "human",
+    "invocation_id": "codex-thread-019f8fbf-6816-7663-af83-35b4279848ae"
+  },
+  "identity_binding": {
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "2542ee98bc697e209683878f1033360a6a0b69181c046d0a7feede13de2f9f42",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "state_at_receipt": "PENDING",
+  "bearer_secret_recorded": false,
+  "recoverable_with_dpapi_root": true,
+  "provision_recovered_idempotently": false,
+  "input_artifacts": [
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-003/scope_manifest.json",
+      "sha256": "78dd2c4f75bd17fba0bf6078b4b2a503847a88c096e23955154850c5893cd7d1"
+    },
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-003/identity_bundle.json",
+      "sha256": "fa1c0b2bd58ee7f6b5b8442c58ff9097144d537c0eb28c06d6557752db45d787"
+    },
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_baseline.json",
+      "sha256": "7ce45f732c446d53fb1457464d14bfcfba5425decea03158da7d53d6d791a756"
+    },
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
+      "sha256": "fade85ce8dc1ce1c99a115f8b11faeb9f41e0f32912f2f7617cf14e33bdd65d6"
+    }
+  ],
+  "pending_outbox_count_after_mirror": 0,
+  "p2_authorized": true,
+  "p3_authorized": false,
+  "campaign_authorized": false,
+  "final_eval_authorized": false,
+  "auto_advance": false
+}
