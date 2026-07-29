@@ -680,9 +680,7 @@ class ImmutableReleaseStore:
     def _acquire_lock_descriptor(self, *, shared: bool) -> int:
         self._root.mkdir(parents=True, exist_ok=True)
         lock = self._root / ".publish.lock"
-        descriptor = os.open(lock, os.O_CREAT | os.O_RDWR)
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"0")
+        descriptor = self._open_initialized_lock(lock)
         deadline = time.monotonic() + self._lock_timeout_seconds
         acquired = False
         while not acquired:
@@ -707,6 +705,34 @@ class ImmutableReleaseStore:
                     ) from error
                 time.sleep(0.05)
         return descriptor
+
+    def _open_initialized_lock(self, lock: Path) -> int:
+        try:
+            return os.open(lock, os.O_RDWR)
+        except FileNotFoundError:
+            pass
+
+        temporary = self._root / f".publish.lock.init.{uuid.uuid4().hex}.tmp"
+        initializer: int | None = None
+        try:
+            initializer = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_RDWR,
+            )
+            os.write(initializer, b"0")
+            os.ftruncate(initializer, 1)
+            os.fsync(initializer)
+        finally:
+            if initializer is not None:
+                os.close(initializer)
+
+        try:
+            os.link(temporary, lock)
+        except FileExistsError:
+            pass
+        finally:
+            temporary.unlink(missing_ok=True)
+        return os.open(lock, os.O_RDWR)
 
     @staticmethod
     def _unlock_and_close(descriptor: int) -> None:

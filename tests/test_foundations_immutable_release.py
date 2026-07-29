@@ -102,6 +102,102 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual(promotion.fencing_token, next_lease.fencing_token)
             next_lease.release()
 
+    def test_concurrent_cold_start_cannot_reset_the_publication_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+
+            both_observed_empty = threading.Barrier(2)
+            promotion_finished = threading.Event()
+            tracked_descriptors: set[int] = set()
+            tracking_lock = threading.Lock()
+            real_open = os.open
+            real_fstat = os.fstat
+            real_write = os.write
+
+            def tracked_open(path: object, flags: int, *args: object) -> int:
+                descriptor = real_open(path, flags, *args)
+                if Path(path) == root / ".publish.lock":
+                    with tracking_lock:
+                        tracked_descriptors.add(descriptor)
+                    if (
+                        threading.current_thread().name == "cold-reader"
+                        and real_fstat(descriptor).st_size > 0
+                    ):
+                        self.assertTrue(promotion_finished.wait(2))
+                return descriptor
+
+            def synchronize_empty_observation(descriptor: int) -> os.stat_result:
+                result = real_fstat(descriptor)
+                with tracking_lock:
+                    tracked = descriptor in tracked_descriptors
+                if tracked and result.st_size == 0:
+                    both_observed_empty.wait(2)
+                return result
+
+            def delay_reader_initialization(descriptor: int, data: bytes) -> int:
+                with tracking_lock:
+                    tracked = descriptor in tracked_descriptors
+                if (
+                    tracked
+                    and data == b"0"
+                    and threading.current_thread().name == "cold-reader"
+                ):
+                    self.assertTrue(promotion_finished.wait(2))
+                return real_write(descriptor, data)
+
+            receipts: dict[str, object] = {}
+            errors: list[BaseException] = []
+
+            def promote() -> None:
+                try:
+                    receipts["promotion"] = store.promote(
+                        candidate,
+                        expected_current_id="v1",
+                    )
+                except BaseException as error:
+                    errors.append(error)
+                finally:
+                    promotion_finished.set()
+
+            def read() -> None:
+                try:
+                    receipts["lease"] = store.acquire_read_lease(
+                        expected_release_id="v2",
+                    )
+                except BaseException as error:
+                    errors.append(error)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.open",
+                side_effect=tracked_open,
+            ), patch(
+                "research_automation.foundations.immutable_release.os.fstat",
+                side_effect=synchronize_empty_observation,
+            ), patch(
+                "research_automation.foundations.immutable_release.os.write",
+                side_effect=delay_reader_initialization,
+            ):
+                promoter = threading.Thread(target=promote, name="cold-promoter")
+                reader = threading.Thread(target=read, name="cold-reader")
+                promoter.start()
+                reader.start()
+                promoter.join(5)
+                reader.join(5)
+
+            self.assertFalse(promoter.is_alive())
+            self.assertFalse(reader.is_alive())
+            self.assertEqual([], errors)
+            promotion = receipts["promotion"]
+            lease = receipts["lease"]
+            promotion_token = promotion.fencing_token
+            lease_token = lease.fencing_token
+            lease.release()
+            self.assertEqual(promotion_token, lease_token)
+
     def test_concurrent_release_closes_the_read_lease_descriptor_once(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
