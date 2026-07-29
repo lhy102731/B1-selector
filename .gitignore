@@ -8,6 +8,7 @@ __pycache__/
 # Local agent/runtime environments (not project source)
 /.agents/
 /.claude/memory/
+/.claude/settings.local.json
 /.claude/skills/
 /.claude/worktrees/
 /.codex_pydeps/
