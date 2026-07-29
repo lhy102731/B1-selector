@@ -4,6 +4,8 @@ import json
 import multiprocessing
 import os
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -120,7 +122,9 @@ class GenerationManifestContractTests(unittest.TestCase):
             publisher = GenerationPublisher(root)
             publisher.publish(publisher.stage(first))
             staged = publisher.stage(second)
-            pending_path = root / ".publish_pending.json"
+            pending_path = (
+                root / f".publish_pending.{second.generation_id}.json"
+            )
             real_unlink = Path.unlink
 
             def fail_pending_cleanup(path: Path, *args: object, **kwargs: object) -> None:
@@ -310,6 +314,73 @@ class GenerationManifestContractTests(unittest.TestCase):
                 self.assertGreater(next_lease.fencing_token, old_token)
             finally:
                 next_lease.release()
+
+    def test_concurrent_same_candidate_publish_is_idempotent(self) -> None:
+        manifest = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-29",
+            trading_calendar_identity="calendar-cn-a-share-20260729",
+            point_in_time_universe_identity="pit-universe-20260729",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260729",),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "generations"
+            first_publisher = GenerationPublisher(root)
+            second_publisher = GenerationPublisher(root)
+            staged = first_publisher.stage(manifest)
+            first_move_started = threading.Event()
+            allow_first_move = threading.Event()
+            move_guard = threading.Lock()
+            blocked_once = False
+            results: list[str] = []
+            errors: list[BaseException] = []
+            real_replace = os.replace
+
+            def block_first_candidate_move(source: object, target: object) -> None:
+                nonlocal blocked_once
+                should_block = False
+                with move_guard:
+                    if (
+                        not blocked_once
+                        and Path(source) == staged.path
+                        and Path(target) == root / "current"
+                    ):
+                        blocked_once = True
+                        should_block = True
+                if should_block:
+                    first_move_started.set()
+                    allow_first_move.wait(5)
+                real_replace(source, target)
+
+            def publish(publisher: GenerationPublisher) -> None:
+                try:
+                    results.append(publisher.publish(staged).generation_id)
+                except BaseException as error:
+                    errors.append(error)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=block_first_candidate_move,
+            ):
+                first = threading.Thread(target=publish, args=(first_publisher,))
+                second = threading.Thread(target=publish, args=(second_publisher,))
+                first.start()
+                self.assertTrue(first_move_started.wait(5))
+                second.start()
+                time.sleep(0.1)
+                allow_first_move.set()
+                first.join(5)
+                second.join(5)
+
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual([], errors)
+            self.assertEqual([manifest.generation_id] * 2, sorted(results))
+            self.assertEqual(manifest.generation_id, first_publisher.read_current().generation_id)
+            self.assertIsNone(first_publisher.pending_publication())
 
     def test_generation_manifest_strictly_binds_source_and_cache_identities(self) -> None:
         payload = {

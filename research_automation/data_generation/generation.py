@@ -11,6 +11,7 @@ from research_automation.control_plane.contracts import canonical_json
 from research_automation.foundations.immutable_release import (
     ImmutableReleaseStore,
     ReleaseBusyError,
+    ReleaseConflictError,
     ReleaseReadLease,
 )
 
@@ -132,15 +133,21 @@ class GenerationPublisher:
     def publish(self, staged: StagedGeneration) -> GenerationManifest:
         if not isinstance(staged, StagedGeneration):
             raise TypeError("staged must be a StagedGeneration")
-        manifest = self._read_manifest(staged.path)
-        if manifest.generation_id != staged.generation_id:
-            raise ValueError("staged generation identity changed before publish")
         pending = GenerationPublishPending(
             schema_version=GENERATION_PUBLISH_PENDING_V1,
             status="PUBLISH_PENDING",
             candidate_generation_id=staged.generation_id,
             expected_current_generation_id=staged.expected_current_id,
         )
+        try:
+            manifest = self._read_manifest(staged.path)
+        except FileNotFoundError:
+            completed = self._complete_existing_publication(pending)
+            if completed is not None:
+                return completed
+            raise
+        if manifest.generation_id != staged.generation_id:
+            raise ValueError("staged generation identity changed before publish")
         self._record_publish_pending(pending)
         try:
             self._store.promote(
@@ -152,6 +159,11 @@ class GenerationPublisher:
             raise GenerationPublicationPendingError(
                 "generation publication is pending active read leases"
             ) from error
+        except (FileNotFoundError, ReleaseConflictError):
+            completed = self._complete_existing_publication(pending)
+            if completed is not None:
+                return completed
+            raise
         self._clear_publish_pending(pending)
         return manifest
 
@@ -184,15 +196,24 @@ class GenerationPublisher:
         return manifest
 
     def pending_publication(self) -> GenerationPublishPending | None:
-        pending_path = self._root / ".publish_pending.json"
-        if not pending_path.exists():
+        paths = sorted(self._root.glob(".publish_pending.*.json"))
+        if not paths:
             return None
+        if len(paths) != 1:
+            raise GenerationPublicationConflictError(
+                "multiple generation publications are pending"
+            )
+        pending_path = paths[0]
         parsed = generation_contract_registry().parse_json(
             GENERATION_PUBLISH_PENDING_V1,
             pending_path.read_bytes(),
         )
         if not isinstance(parsed, GenerationPublishPending):
             raise TypeError("generation registry returned the wrong contract")
+        if pending_path != self._pending_path(parsed):
+            raise GenerationPublicationConflictError(
+                "pending publication filename does not match its identity"
+            )
         return parsed
 
     def recover_pending_publication(self) -> GenerationManifest | None:
@@ -251,7 +272,7 @@ class GenerationPublisher:
                 )
             return
         self._root.mkdir(parents=True, exist_ok=True)
-        pending_path = self._root / ".publish_pending.json"
+        pending_path = self._pending_path(pending)
         temporary = self._root / f".publish_pending.{uuid.uuid4().hex}.tmp"
         try:
             with temporary.open("xb") as handle:
@@ -273,11 +294,31 @@ class GenerationPublisher:
         self,
         expected: GenerationPublishPending,
     ) -> None:
-        if self.pending_publication() != expected:
+        existing = self.pending_publication()
+        if existing is not None and existing != expected:
             raise GenerationPublicationConflictError(
                 "pending generation publication changed before completion"
             )
-        (self._root / ".publish_pending.json").unlink()
+        self._pending_path(expected).unlink(missing_ok=True)
+
+    def _complete_existing_publication(
+        self,
+        pending: GenerationPublishPending,
+    ) -> GenerationManifest | None:
+        self._store.recover()
+        current_path = self._root / "current"
+        if not current_path.is_dir():
+            return None
+        current = self._read_manifest(current_path)
+        if current.generation_id != pending.candidate_generation_id:
+            return None
+        self._clear_publish_pending(pending)
+        return current
+
+    def _pending_path(self, pending: GenerationPublishPending) -> Path:
+        return self._root / (
+            f".publish_pending.{pending.candidate_generation_id}.json"
+        )
 
     @staticmethod
     def _read_manifest(path: Path) -> GenerationManifest:
