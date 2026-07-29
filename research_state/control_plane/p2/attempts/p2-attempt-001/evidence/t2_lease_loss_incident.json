@@ -1,0 +1,59 @@
+{
+  "schema_version": "control_plane.phase_attempt_incident_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.phase_attempt_incident.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-001",
+    "recorded_at": "2026-07-30T00:06:10.506709+08:00",
+    "classification": "LOST_EPHEMERAL_TASK_LEASE_CAPABILITY",
+    "cause": "The trusted T2 closure process began the task lease, then constructed the independent review Actor with an unsupported actor_type. Contract validation raised before any receipt was recorded, and process exit discarded the random lease bearer.",
+    "affected_task": {
+      "task_id": "P2R1-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+      "ticket_id": "e5a1fc4d192e27bb0a19e19a2d0026b43c46eb9e69c3d0bb266c605a0302c94d",
+      "started_at": "2026-07-29T16:03:49.864903+00:00",
+      "reconciled_at": "2026-07-29T16:06:10.506709+00:00",
+      "trusted_receipt_count": 0,
+      "terminal_state": "IN_DOUBT"
+    },
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_3d7e453d7e963aec210e3c62f04a4b61"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [
+        "aff3fc96a598507db4c2a070bbb10b07465cbf2d44efee6adb709e3c0054eff4"
+      ],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [
+        "e5a1fc4d192e27bb0a19e19a2d0026b43c46eb9e69c3d0bb266c605a0302c94d"
+      ],
+      "pending_outbox_count": 0,
+      "active_entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849"
+    },
+    "impact": {
+      "t2_implementation_or_test_bytes_changed": false,
+      "t2_validation_or_review_evidence_changed": false,
+      "authority_secret_exposed": false,
+      "real_data_or_kbase_content_accessed_or_mutated": false,
+      "research_backtest_campaign_or_holdout_started": false,
+      "scheduler_or_acl_mutated": false,
+      "p2_attempt_can_pass": false
+    },
+    "root_cause_control_gap": {
+      "preflight_built_the_task_report": true,
+      "preflight_instantiated_all_receipt_actors": false,
+      "required_prevention": "Construct and validate every Actor, receipt payload, attestation input, and output path before begin; begin, record, finish, mirror, build, and verify remain in one trusted process."
+    },
+    "recovery": {
+      "required_new_attempt": "p2-attempt-002",
+      "reuse_rule": "The committed T1/T2 implementation and evidence are non-authoritative inputs only until independently revalidated and closed under the new attempt.",
+      "future_ticket_rule": "Issue a recoverable ticket before each task, but validate all deterministic closure inputs before beginning the ephemeral lease.",
+      "p3_campaign_holdout_and_final_eval_remain_unauthorized": true
+    },
+    "verdict": "FAIL_CLOSED"
+  },
+  "computed": {
+    "payload_sha256": "3b8b600ed0eef0816db15d5f37ba75a76b905a451cff569dcd4653149e3e3d6e"
+  }
+}
