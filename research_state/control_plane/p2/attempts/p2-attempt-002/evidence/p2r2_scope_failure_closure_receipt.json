@@ -1,0 +1,47 @@
+{
+  "schema_version": "control_plane.p2r2_scope_failure_closure_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "closure": {
+    "closure_id": "222ed4e2c58c3433633308c51b2a83064649876a1c69ee77fa6c5301a92541eb",
+    "grant_id": "grant_e0299c759090659689983dc6c7caf6f8",
+    "closed_at": "2026-07-29T21:54:47.459051+00:00",
+    "verdict": "FAIL",
+    "failure_artifact_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/gates/administrative_scope_failure.json",
+    "failure_artifact_sha256": "ed656b642f2499bf596a3b6001f52b816df1c3871f99c4df2112bb6c1a5f0eaf",
+    "generic_pass_gate_claimed": false
+  },
+  "authority_final_state": {
+    "active_grant_count": 0,
+    "open_ticket_count": 0,
+    "failed_ticket_count": 0,
+    "in_doubt_ticket_count": 0,
+    "succeeded_ticket_count": 5,
+    "pending_outbox_count": 0,
+    "outbox_events_mirrored": 1
+  },
+  "reason_codes": [
+    "PHASE_SCOPE_OMITTED_T5_FILES"
+  ],
+  "recovery_authority": {
+    "change_request_id": "P2-CR-003",
+    "approval_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2_cr_003_approval_receipt.json",
+    "approval_sha256": "6882dae3a23c13a84765313c1be144e9de53afcb1d5b336642e17cadf55b885c",
+    "next_attempt": "p2-attempt-003"
+  },
+  "secret_handling": {
+    "root_capability_used_via_dpapi_current_user": true,
+    "root_capability_logged": false,
+    "root_capability_staged": false,
+    "authority_database_staged": false,
+    "operational_database_staged": false
+  },
+  "side_effects": {
+    "control_plane_state_written": true,
+    "tracked_implementation_code_changed": false,
+    "real_data_or_kbase_accessed_or_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false
+  }
+}
