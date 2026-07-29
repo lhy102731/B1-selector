@@ -1,0 +1,88 @@
+{
+  "schema_version": "control_plane.p2r4_t7_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T7-FINAL-INVENTORY-POLICY",
+  "ticket_id": "ae22a816579f70978ad507cc810f431760cc7f91ead33aa74e5eb1e63fb728af",
+  "validated_at": "2026-07-30T07:24:24.8036194+08:00",
+  "validation_git_head": "74c083ef84f3d432db02a7ffe7f9cf873005c62a",
+  "validation_git_tree": "22b995830b5c76b5783aad57c3d6c0531b912cff",
+  "test_receipts": [
+    {
+      "receipt_id": "p2r4-t7-artifact-semantics-and-live-inventory",
+      "command": "python -B -c \"validate final Git freeze, inventory v3, scheduler, reviewed policy, and live bounded entry inventory\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "entry_count": 489,
+      "inventory_payload_sha256": "276cd39550ba474cc2f5ff029257df3a700eeea1751d0fa3cb81a3efa99f37c2",
+      "policy_payload_sha256": "91052574ddbe25315999dc94a11948f49a272800d5da47fd48399d30fc18d0ac",
+      "scheduler_status": "VERIFIED",
+      "source_identity_sha256": "e645732c3c94880182b2be100babaa5ac6530f0a2038b70512687d6f39a3a9ae",
+      "elapsed_ms": 1487
+    },
+    {
+      "receipt_id": "p2r4-t7-entry-policy-regression-tests",
+      "command": "python -B -m unittest tests.test_control_plane_artifact_semantics tests.test_control_plane_git_source_identity tests.test_control_plane_stores -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 79,
+      "tests_failed": 0,
+      "unittest_elapsed_seconds": "17.150",
+      "process_elapsed_ms": 17307
+    },
+    {
+      "receipt_id": "p2r4-t7-authority-preactivation-check",
+      "command": "python -B -c \"Authority-bind both succeeded P2R4 TaskReports, prove T7 is the sole open ticket, and verify the old policy remains active before lease\"",
+      "exit_code": 0,
+      "result": "PASS",
+      "authority_bound_task_reports": 2,
+      "succeeded_ticket_count": 2,
+      "open_ticket_count": 1,
+      "failed_ticket_count": 0,
+      "in_doubt_ticket_count": 0,
+      "pending_outbox_count": 0,
+      "active_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+      "elapsed_ms": 104
+    }
+  ],
+  "artifacts": {
+    "final_code_freeze": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_final_code_freeze_manifest_v2.json",
+      "sha256": "bb64b3ceab1f4dfc201246effc55514719bc85eef34b7a93a3afb6bddf219e90",
+      "git_commit": "e4775e5038b9251fcb42b36c51f4a68f22d0c76f",
+      "capture_elapsed_seconds": "1.4"
+    },
+    "final_inventory": {
+      "ref": "research_state/control_plane/inventories/final_inventory_v342_p2r4_git_v3.json",
+      "sha256": "11458767c3a901a4789eb5bf9456e23185b673dfd396b3ca4068b2037a4f88cc",
+      "entry_count": 489
+    },
+    "scheduler_inventory": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_external_scheduler_inventory.json",
+      "sha256": "857f4ea55bcaad600da706cb265365eca7c0ed2a8c663e72ca9a33b24a6993d7",
+      "status": "VERIFIED",
+      "last_task_result_observed_separately": 0
+    },
+    "reviewed_policy": {
+      "ref": "research_state/control_plane/policies/d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14.json",
+      "sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+      "review_state": "APPROVED",
+      "currently_active": false
+    }
+  },
+  "phase_boundary": {
+    "p3_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "large_data_scanned": false,
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "source_code_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
