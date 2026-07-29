@@ -6,6 +6,37 @@
   "task_id": "P2R1-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
   "validated_at": "2026-07-29T12:13:51.5307141+00:00",
   "git_head": "9c9a3b62152bef0273b877de7adf964faf6d2d54",
+  "closure_preflight_validated_at": "2026-07-29T14:04:44.2444355+00:00",
+  "closure_compatibility_change": {
+    "change_request_id": "P2-CR-002",
+    "approval_receipt_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/p2_cr_002_approval_receipt.json",
+    "approval_receipt_sha256": "1796c25a41e7ff40c24387c5362d8a699d51fe126beb2cbbe382a9eebe109a27",
+    "git_commit": "12012fe1dcae9c2874dac887d588dbcaf9941476",
+    "implementation_git_head_unchanged": "9c9a3b62152bef0273b877de7adf964faf6d2d54",
+    "scope": "TaskReport V2 accepts canonical Windows absolute directory prefixes only in forbidden_files; T1 implementation files and the issued task specification are unchanged.",
+    "targeted_regression": {
+      "command": "python -B -m unittest tests.test_control_plane_task_reports -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 98
+    },
+    "full_control_plane_regression": {
+      "command": "python -B -m unittest discover -s tests -p 'test_control_plane*.py' -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 381,
+      "duration_seconds": 114.727
+    },
+    "task_report_preflight": {
+      "result": "PASS",
+      "task_spec_sha256": "be288980b07b4d2e7393ef4383ce0dff7fcca93c47847880ef40d4d9bd0f1613",
+      "changed_file_count": 9,
+      "test_receipt_count": 4,
+      "review_receipt_count": 1,
+      "input_evidence_count": 4,
+      "unexpected_changes": []
+    }
+  },
   "test_receipts": [
     {
       "receipt_id": "immutable-release-public-behavior-tests",
