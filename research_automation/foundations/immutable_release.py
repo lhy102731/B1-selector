@@ -101,6 +101,7 @@ class ImmutableReleaseStore:
         previous = self._root / "previous"
 
         with self._exclusive_lock():
+            self._require_no_pending_transactions()
             locked_release_id = self._validate_release(candidate)
             if locked_release_id != release_id or (
                 expected_candidate_id is not None
@@ -189,6 +190,7 @@ class ImmutableReleaseStore:
         current = self._root / "current"
         previous = self._root / "previous"
         with self._exclusive_lock():
+            self._require_no_pending_transactions()
             current_id = self._validate_release(current)
             previous_id = self._validate_release(previous)
             if current_id != expected_id:
@@ -345,6 +347,14 @@ class ImmutableReleaseStore:
 
     def _current_id(self, current: Path) -> str | None:
         return self._validate_release(current) if current.exists() else None
+
+    def _require_no_pending_transactions(self) -> None:
+        pending = sorted(self._root.glob(".promotion.*.tmp"))
+        pending.extend(sorted(self._root.glob(".rollback.*.tmp")))
+        if pending:
+            raise ReleaseConflictError(
+                "immutable release recovery required before another write"
+            )
 
     @staticmethod
     def _write_transaction(path: Path, payload: dict[str, object]) -> None:

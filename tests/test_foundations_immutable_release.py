@@ -199,6 +199,47 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v3", _ManifestAdapter().validate(candidate))
 
+    def test_pending_transaction_blocks_a_new_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            pending = root / ".promotion.crash.tmp"
+            pending.mkdir()
+
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "recovery required",
+            ):
+                store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertTrue(pending.is_dir())
+
+    def test_pending_transaction_blocks_a_new_rollback(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            pending = root / ".rollback.crash.tmp"
+            pending.mkdir()
+
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "recovery required",
+            ):
+                store.rollback(expected_current_id="v2")
+
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertTrue(pending.is_dir())
+
 
 if __name__ == "__main__":
     unittest.main()
