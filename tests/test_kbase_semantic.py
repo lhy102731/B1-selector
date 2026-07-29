@@ -22,6 +22,7 @@ from ag2_research.kbase.semantic_index import (
     _evaluate_suite,
     _publish_directory,
     _semantic_payload_identity,
+    publish_semantic,
     rollback_semantic,
     validate_semantic_release,
 )
@@ -238,6 +239,74 @@ class SemanticReleaseValidationTests(unittest.TestCase):
 
             self.assertEqual("current", (current / "marker").read_text(encoding="utf-8"))
             self.assertEqual("candidate", (candidate / "marker").read_text(encoding="utf-8"))
+
+    def test_metadata_only_publish_uses_immutable_directory_swap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            root = vault / SEMANTIC_ROOT
+            current = root / "current"
+            previous = root / "previous"
+            candidate = root / "candidate" / "regated"
+            for release in (current, previous, candidate):
+                release.mkdir(parents=True)
+
+            payload = {
+                "source_fingerprint": "s" * 64,
+                "catalog_version": "v1",
+                "catalog_source_fingerprint": "c" * 64,
+                "catalog_sha256": "a" * 64,
+                "catalog_files": {"catalog.jsonl": "a" * 64},
+                "model_binding_sha256": "m" * 64,
+                "models": {"embedding": {"model_id": "bge-m3"}},
+                "dimension": 1024,
+                "dtype": "float32",
+                "counts": {"documents": 1},
+                "lexical_only_sources": [],
+                "files": {"vectors_sha256": "v" * 64},
+            }
+            metadata_files = (
+                "regression-fixed.json",
+                "regression-holdout.json",
+                "gate-report.json",
+                "validation.json",
+            )
+            for release, gate in (
+                (previous, "OLDER"),
+                (current, "OLD"),
+                (candidate, "APPROVED"),
+            ):
+                manifest = dict(payload)
+                manifest["release_gates"] = {"status": gate}
+                (release / "manifest.json").write_text(
+                    json.dumps(manifest),
+                    encoding="utf-8",
+                )
+                for name in metadata_files:
+                    (release / name).write_text(gate, encoding="utf-8")
+
+            (current / "current-only.txt").write_text("old", encoding="utf-8")
+            (previous / "older-only.txt").write_text("older", encoding="utf-8")
+            (candidate / "candidate-only.txt").write_text("new", encoding="utf-8")
+
+            with patch(
+                "ag2_research.kbase.semantic_index.validate_semantic_release",
+                return_value={"status": "PASS"},
+            ):
+                result = publish_semantic(
+                    vault=vault,
+                    candidate=candidate,
+                    apply=True,
+                )
+
+            self.assertEqual("directory_swap", result["promotion_mode"])
+            self.assertEqual(
+                "new",
+                (current / "candidate-only.txt").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                "old",
+                (previous / "current-only.txt").read_text(encoding="utf-8"),
+            )
 
     def test_semantic_rollback_crash_is_recovered_by_the_shared_store(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

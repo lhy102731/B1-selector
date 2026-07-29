@@ -10,11 +10,9 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import time
 import uuid
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -95,16 +93,6 @@ def _atomic_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
-def _atomic_copy_file(source: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    with source.open("rb") as input_handle, temporary.open("xb") as output_handle:
-        shutil.copyfileobj(input_handle, output_handle, length=1024 * 1024)
-        output_handle.flush()
-        os.fsync(output_handle.fileno())
-    os.replace(temporary, target)
-
-
 def _write_jsonl(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -123,27 +111,6 @@ def _assert_inside(path: Path, root: Path) -> Path:
     except ValueError as error:
         raise ValueError(f"path must stay inside {root}: {path}") from error
     return resolved
-
-
-@contextmanager
-def _exclusive_lock(path: Path, timeout: float = 30.0):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    descriptor: int | None = None
-    while descriptor is None:
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(descriptor, f"pid={os.getpid()} time={time.time()}\n".encode("ascii"))
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"lock timed out: {path}")
-            time.sleep(0.05)
-    try:
-        yield
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        path.unlink(missing_ok=True)
 
 
 def _inventory_rows(source_candidate: Path) -> list[dict[str, Any]]:
@@ -316,89 +283,6 @@ def _semantic_payload_identity(manifest: dict[str, Any]) -> bytes:
             "dimension", "dtype", "counts", "lexical_only_sources", "files",
         )
     })
-
-
-def _clone_release_with_hardlinks(source: Path, target: Path) -> None:
-    if target.exists():
-        raise FileExistsError(f"release clone target exists: {target}")
-    target.mkdir(parents=True)
-    for path in sorted(source.rglob("*"), key=lambda value: (len(value.parts), str(value))):
-        relative = path.relative_to(source)
-        destination = target / relative
-        if path.is_dir():
-            destination.mkdir(exist_ok=True)
-        elif path.is_file():
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(path, destination)
-            except OSError:
-                shutil.copy2(path, destination)
-
-
-def _publish_semantic_metadata_update(
-    *, root: Path, candidate: Path, validator: Any,
-) -> Path | None:
-    """Promote new gates for an identical index without renaming a live bind.
-
-    Docker Desktop keeps the mounted ``current`` directory open on Windows,
-    which prevents a directory swap.  Immutable payload equality makes a
-    file-level metadata promotion safe while a full validated previous release
-    is retained for rollback.
-    """
-    candidate = _assert_inside(candidate, root / "candidate")
-    current = root / "current"
-    previous = root / "previous"
-    archive = root / "archive"
-    validator(candidate)
-    validator(current)
-    if _semantic_payload_identity(_read_json(candidate / "manifest.json")) != _semantic_payload_identity(_read_json(current / "manifest.json")):
-        raise ValueError("metadata-only promotion requires an identical semantic payload")
-
-    metadata_files = (
-        "regression-fixed.json",
-        "regression-holdout.json",
-        "gate-report.json",
-        "validation.json",
-        "manifest.json",
-    )
-    promoted_archive: Path | None = None
-    with _exclusive_lock(root / ".publish.lock"):
-        # Re-check inside the lock so a concurrent catalog or semantic release
-        # cannot turn the metadata update into a cross-index mix.
-        validator(candidate)
-        validator(current)
-        if _semantic_payload_identity(_read_json(candidate / "manifest.json")) != _semantic_payload_identity(_read_json(current / "manifest.json")):
-            raise ValueError("semantic payload changed while acquiring publish lock")
-
-        temporary_previous = root / f".previous.{uuid.uuid4().hex}.tmp"
-        _clone_release_with_hardlinks(current, temporary_previous)
-        validator(temporary_previous)
-        archived_previous: Path | None = None
-        if previous.exists():
-            archive.mkdir(parents=True, exist_ok=True)
-            archived_previous = archive / f"previous-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
-            os.replace(previous, archived_previous)
-        os.replace(temporary_previous, previous)
-        try:
-            for name in metadata_files[:-1]:
-                _atomic_copy_file(candidate / name, current / name)
-            # Manifest is the commit point and is written last.
-            _atomic_copy_file(candidate / "manifest.json", current / "manifest.json")
-            validator(current)
-        except Exception:
-            for name in metadata_files[:-1]:
-                _atomic_copy_file(previous / name, current / name)
-            _atomic_copy_file(previous / "manifest.json", current / "manifest.json")
-            validator(current)
-            raise
-
-        archive.mkdir(parents=True, exist_ok=True)
-        promoted_archive = archive / f"metadata-candidate-{datetime.now().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
-        try:
-            os.replace(candidate, promoted_archive)
-        except OSError:
-            promoted_archive = None
-    return promoted_archive
 
 
 def _catalog_binding(vault: Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]], dict[str, str]]:
@@ -1067,21 +951,9 @@ def publish_semantic(*, vault: Path, candidate: Path, apply: bool) -> dict[str, 
     validator = lambda release: validate_semantic_release(
         release, active_catalog_dir=catalog_dir, require_gates=True,
     )
-    current_before = root / "current"
-    metadata_only = (
-        current_before.is_dir()
-        and _semantic_payload_identity(_read_json(candidate / "manifest.json"))
-        == _semantic_payload_identity(_read_json(current_before / "manifest.json"))
-    )
     promoted_archive: Path | None = None
-    if metadata_only:
-        promoted_archive = _publish_semantic_metadata_update(
-            root=root, candidate=candidate, validator=validator,
-        )
-        promotion_mode = "metadata_hot_swap"
-    else:
-        _publish_directory(root=root, candidate=candidate, validator=validator)
-        promotion_mode = "directory_swap"
+    _publish_directory(root=root, candidate=candidate, validator=validator)
+    promotion_mode = "directory_swap"
     current = root / "current"
     manifest = _read_json(current / "manifest.json")
     validation = validate_semantic_release(current, active_catalog_dir=catalog_dir, require_gates=True)
