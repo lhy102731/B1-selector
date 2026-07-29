@@ -117,6 +117,10 @@ class GenerationPin:
         return self.generation_id
 
     @property
+    def manifest(self) -> GenerationManifest:
+        return self._manifest
+
+    @property
     def active(self) -> bool:
         return self._lease.active
 
@@ -127,6 +131,7 @@ class GenerationPin:
         content_schema: str,
         kind: str,
         logical_role: str,
+        producer: str = "research.data_generation.GenerationPin",
     ) -> ArtifactIdentity:
         try:
             current = self._publisher.read(self._lease)
@@ -147,7 +152,7 @@ class GenerationPin:
                     identity = identify_file(
                         locator,
                         content_schema=content_schema,
-                        producer="research.data_generation.GenerationPin",
+                        producer=producer,
                         generation=self.generation_id,
                         kind=kind,
                         logical_role=logical_role,
@@ -156,11 +161,13 @@ class GenerationPin:
                     return identity
                 expected_semantics = (
                     content_schema,
+                    producer,
                     kind,
                     logical_role,
                 )
                 observed_semantics = (
                     identity.content_schema,
+                    identity.producer,
                     identity.kind,
                     identity.logical_role,
                 )
@@ -177,6 +184,44 @@ class GenerationPin:
             ValueError,
         ) as error:
             raise GenerationMutatedError("GENERATION_MUTATED") from error
+
+    def verify_touched_artifact_ids(
+        self,
+        artifact_ids: tuple[str, ...],
+        *,
+        exclude_artifact_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Reverify content identities previously established by this pin."""
+        if not isinstance(artifact_ids, tuple) or any(
+            type(artifact_id) is not str for artifact_id in artifact_ids
+        ):
+            raise TypeError("artifact_ids must be a tuple of strings")
+        with self._identity_lock:
+            identities_by_id = {
+                identity.artifact_id: (path, identity)
+                for path, identity in self._identities.items()
+            }
+            touched: list[tuple[str, ArtifactIdentity]] = []
+            for artifact_id in artifact_ids:
+                if artifact_id == exclude_artifact_id:
+                    raise ValueError("cache artifact cannot be its own source")
+                try:
+                    touched.append(identities_by_id[artifact_id])
+                except KeyError as error:
+                    raise ValueError(
+                        "source artifact was not verified by this generation pin"
+                    ) from error
+        for path, identity in touched:
+            current = self.verify_artifact(
+                path,
+                content_schema=identity.content_schema,
+                producer=identity.producer,
+                kind=identity.kind,
+                logical_role=identity.logical_role,
+            )
+            if current.artifact_id != identity.artifact_id:
+                raise GenerationMutatedError("GENERATION_MUTATED")
+        return tuple(sorted(artifact_ids))
 
     def release(self) -> None:
         self._lease.release()
