@@ -27,6 +27,29 @@ def _write_release(path: Path, release_id: str) -> None:
     )
 
 
+def _write_promotion_transaction(
+    root: Path,
+    *,
+    candidate_id: str,
+    expected_current_id: str | None,
+) -> Path:
+    transaction = root / ".promotion.crash.tmp"
+    transaction.mkdir()
+    (transaction / "transaction.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "immutable_release.transaction.v1",
+                "operation": "PROMOTE",
+                "candidate_name": candidate_id,
+                "candidate_release_id": candidate_id,
+                "expected_current_id": expected_current_id,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return transaction
+
+
 class ImmutableReleaseStoreTests(unittest.TestCase):
     def test_promote_failure_restores_current_previous_and_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -312,6 +335,89 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertFalse(transaction.exists())
 
+    def test_recover_rejects_a_non_object_transaction_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text("[]", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "transaction record is invalid",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertTrue(transaction.is_dir())
+
+    def test_recover_rejects_an_operation_that_mismatches_the_transaction_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "immutable_release.transaction.v1",
+                        "operation": "ROLLBACK",
+                        "current_release_id": "v2",
+                        "previous_release_id": "v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "transaction record is invalid",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertTrue(transaction.is_dir())
+
+    def test_recover_rejects_unexpected_transaction_content_without_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v2",
+                expected_current_id="v1",
+            )
+            (transaction / "unexpected.txt").write_text("junk", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "transaction content is invalid",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertTrue((transaction / "transaction.json").is_file())
+            self.assertTrue((transaction / "unexpected.txt").is_file())
+
     def test_recover_restores_a_previous_slot_parked_by_promotion(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
@@ -379,6 +485,88 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(transaction.exists())
+
+    def test_recover_fails_closed_when_the_prior_current_was_lost(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "immutable_release.transaction.v1",
+                        "operation": "PROMOTE",
+                        "candidate_name": "v2",
+                        "candidate_release_id": "v2",
+                        "expected_current_id": "v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.replace(root / "previous", transaction / "previous")
+
+            with self.assertRaisesRegex(
+                ReleaseConflictError,
+                "lost CURRENT",
+            ):
+                ImmutableReleaseStore(
+                    root,
+                    adapter=_ManifestAdapter(),
+                ).recover()
+
+            self.assertFalse((root / "current").exists())
+            self.assertFalse((root / "previous").exists())
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertEqual(
+                "v0",
+                _ManifestAdapter().validate(transaction / "previous"),
+            )
+
+    def test_recover_cancels_first_publication_before_candidate_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            candidate = root / "candidate" / "v1"
+            _write_release(candidate, "v1")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v1",
+                expected_current_id=None,
+            )
+
+            receipt = ImmutableReleaseStore(
+                root,
+                adapter=_ManifestAdapter(),
+            ).recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_PROMOTION", receipt.action)
+            self.assertFalse((root / "current").exists())
+            self.assertEqual("v1", _ManifestAdapter().validate(candidate))
+            self.assertFalse(transaction.exists())
+
+    def test_recover_completes_first_publication_after_candidate_move(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            candidate = root / "candidate" / "v1"
+            _write_release(candidate, "v1")
+            transaction = _write_promotion_transaction(
+                root,
+                candidate_id="v1",
+                expected_current_id=None,
+            )
+            os.replace(candidate, root / "current")
+
+            receipt = ImmutableReleaseStore(
+                root,
+                adapter=_ManifestAdapter(),
+            ).recover()
+
+            self.assertEqual("COMPLETED_INTERRUPTED_PROMOTION", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertFalse(candidate.exists())
             self.assertFalse(transaction.exists())
 
     def test_late_promotion_failure_restores_archived_previous_slot(self) -> None:

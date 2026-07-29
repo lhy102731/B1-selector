@@ -270,7 +270,31 @@ class ImmutableReleaseStore:
                 raise ReleaseConflictError(
                     "immutable release transaction record is invalid"
                 ) from error
-            if record.get("operation") == "ROLLBACK":
+            if not isinstance(record, dict):
+                raise ReleaseConflictError(
+                    "immutable release transaction record is invalid"
+                )
+            operation = record.get("operation")
+            expected_operation = (
+                "ROLLBACK"
+                if transaction.name.startswith(".rollback.")
+                else "PROMOTE"
+            )
+            if operation != expected_operation:
+                raise ReleaseConflictError(
+                    "immutable release transaction record is invalid"
+                )
+            allowed_content = {"transaction.json", "current"}
+            if operation == "PROMOTE":
+                allowed_content.add("previous")
+            if any(
+                path.name not in allowed_content
+                for path in transaction.iterdir()
+            ):
+                raise ReleaseConflictError(
+                    "immutable release transaction content is invalid"
+                )
+            if operation == "ROLLBACK":
                 return self._recover_rollback_transaction(transaction, record)
             required = {
                 "schema_version",
@@ -340,9 +364,9 @@ class ImmutableReleaseStore:
                     os.replace(parked_previous, previous)
                 action = "ROLLED_BACK_INTERRUPTED_PROMOTION"
             elif not current.exists():
-                if parked_previous.exists():
-                    os.replace(parked_previous, previous)
-                action = "ROLLED_BACK_INTERRUPTED_PROMOTION"
+                raise ReleaseConflictError(
+                    "interrupted promotion lost CURRENT"
+                )
             else:
                 if self._validate_release(current) != candidate_release_id:
                     raise ReleaseConflictError(
