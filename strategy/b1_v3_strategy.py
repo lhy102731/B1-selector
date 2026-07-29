@@ -9,7 +9,8 @@ Layer 3: backtest simulation
 All thresholds parameterized via B1V3Params. No hardcoded magic numbers.
 """
 
-import sys, os, pickle, hashlib, time
+import sys, os, pickle, hashlib, time, json, tempfile
+from dataclasses import asdict
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
@@ -30,6 +31,170 @@ INDICATORS_DIR = Path("data/indicators_cache")
 RAW_CACHE_DIR = Path("data/signal_cache")
 FUND_CACHE_PATH = Path("data/fund_cache.pkl")
 PE_CACHE_PATH = Path("data/baostock_pepb_daily.pkl")
+RAW_CACHE_AUXILIARY_PATHS = (
+    ("fund-cache", FUND_CACHE_PATH),
+    ("pe-cache", PE_CACHE_PATH),
+    ("history-bonus", Path("data/stock_scoring/bonus_lookup.json")),
+    ("concept-map", Path("data/block/concept.json")),
+)
+
+# Raw-cache identity version (Phase 1.1 fix). The identity binds parameters,
+# universe, input data, and extraction code so a hit cannot silently reuse stale
+# candidates. Bump CACHE_VERSION if the serialized cache contract changes.
+CACHE_VERSION = "v3-identity-1"
+
+
+def _canonical_json_value(value):
+    if isinstance(value, dict):
+        return {str(key): _canonical_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical_json_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonical_json_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, sort_keys=True, default=str),
+        )
+    return value
+
+
+def _param_fingerprint(p):
+    """Return (fingerprint_hex, params_dict) over ALL B1V3Params fields.
+
+    Option (1): full-field fingerprint -- always correct (any param change ->
+    distinct cache key -> re-extraction). Slightly conservative: changing a
+    post-cache-only param (e.g. top_n) also re-extracts, which is acceptable.
+    """
+    try:
+        params_dict = asdict(p)
+    except TypeError:
+        params_dict = {k: getattr(p, k) for k in vars(p)}
+    params_dict = _canonical_json_value(params_dict)
+    blob = json.dumps(params_dict, sort_keys=True, default=str, separators=(",", ":"))
+    fp = hashlib.sha256((CACHE_VERSION + "|" + blob).encode()).hexdigest()
+    return fp, params_dict
+
+
+def _universe_fingerprint(stock_codes):
+    """Return a stable identity for the exact stock universe passed by the caller."""
+    blob = json.dumps([str(code) for code in stock_codes], separators=(",", ":"))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def _sha256_path(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while True:
+            block = handle.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _data_snapshot_fingerprint(stock_codes):
+    """Bind a raw cache to every selected indicator and auxiliary data file."""
+    digest = hashlib.sha256()
+    inputs = [
+        (f"indicator:{code}", INDICATORS_DIR / f"{code}.parquet")
+        for code in stock_codes
+    ]
+    inputs.extend(RAW_CACHE_AUXILIARY_PATHS)
+    for label, path in inputs:
+        digest.update(str(label).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(
+            _sha256_path(path).encode("ascii") if path.exists() else b"MISSING"
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _feature_contract_fingerprint():
+    """Bind a raw cache to the source files that define signal extraction."""
+    root = Path(__file__).resolve().parent.parent
+    paths = [
+        Path(__file__).resolve(),
+        root / "strategy" / "b1_v3_config.py",
+        root / "strategy" / "b1_v3_dtw_fusion.py",
+        root / "utils" / "s1_filter.py",
+    ]
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(
+            _sha256_path(path).encode("ascii") if path.exists() else b"MISSING"
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def _atomic_write_pickle(path, payload):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _atomic_write_json(path, payload):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n"
+    ).encode("utf-8")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary = Path(handle.name)
+        os.replace(temporary, destination)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _load_raw_cache(cache_file, meta_file, expected_identity):
+    try:
+        metadata = json.loads(Path(meta_file).read_text(encoding="utf-8"))
+        if metadata.get("identity") != expected_identity:
+            return None
+        with Path(cache_file).open("rb") as handle:
+            payload = pickle.load(handle)
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return None
+    if payload.get("identity") != expected_identity:
+        return None
+    by_date = payload.get("by_date")
+    stock_codes = payload.get("stock_codes")
+    if not isinstance(by_date, dict) or not isinstance(stock_codes, list):
+        return None
+    return by_date, stock_codes
 
 PE_CACHE = None
 FUND_CACHE = None
@@ -1967,17 +2132,41 @@ def _extract_star(args):
 
 
 def build_raw_cache(stock_codes, start_date, end_date, p: B1V3Params, n_workers=None):
-    """Extract all raw candidates and cache to disk."""
+    """Extract all raw candidates and cache to disk.
+
+    The cache key binds parameters, universe, input data, and extraction code.
+    A validated sidecar records the full identity and parameters for audit.
+    """
+    stock_codes = list(stock_codes)
     if n_workers is None:
         n_workers = max(1, mp.cpu_count() - 2)
 
-    cache_key = hashlib.md5(f"v3_{start_date}_{end_date}".encode()).hexdigest()[:10]
+    fp, params_dict = _param_fingerprint(p)
+    universe_fp = _universe_fingerprint(stock_codes)
+    data_fp = _data_snapshot_fingerprint(stock_codes)
+    contract_fp = _feature_contract_fingerprint()
+    identity = {
+        "cache_version": CACHE_VERSION,
+        "strategy": "B1_V3",
+        "start": str(start_date),
+        "end": str(end_date),
+        "param_fingerprint": fp,
+        "universe_fingerprint": universe_fp,
+        "data_snapshot_fingerprint": data_fp,
+        "feature_contract_fingerprint": contract_fp,
+    }
+    cache_key = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
     cache_file = RAW_CACHE_DIR / f"b1v3_raw_{start_date}_{end_date}_{cache_key}.pkl"
+    meta_file = cache_file.with_suffix(".meta.json")
 
     if cache_file.exists():
-        print(f"  Loading raw cache: {cache_file.name}")
-        with open(cache_file, 'rb') as f:
-            return pickle.load(f)
+        cached = _load_raw_cache(cache_file, meta_file, identity)
+        if cached is not None:
+            print(f"  Loading raw cache: {cache_file.name}")
+            return cached
+        print(f"  Ignoring invalid raw cache: {cache_file.name}")
 
     print(f"\n  Extracting raw signals from {len(stock_codes)} stocks...")
     tasks = [(code, start_date, end_date, p) for code in stock_codes]
@@ -1996,9 +2185,43 @@ def build_raw_cache(stock_codes, start_date, end_date, p: B1V3Params, n_workers=
     by_date = {d: v for d, v in sorted(by_date.items())}
     print(f"  {len(by_date)} trading days with signals")
 
-    with open(cache_file, 'wb') as f:
-        pickle.dump((by_date, stock_codes), f)
-    print(f"  Cached to {cache_file.name}")
+    if (
+        _data_snapshot_fingerprint(stock_codes) != data_fp
+        or _feature_contract_fingerprint() != contract_fp
+    ):
+        raise RuntimeError(
+            "B1 V3 raw-cache inputs changed during extraction; result was not published"
+        )
+
+    # Cache metadata for audit / parameter-invalidation triage.
+    meta = {
+        "schema_version": 1,
+        "identity": identity,
+        "cache_version": CACHE_VERSION,
+        "strategy": "B1_V3",
+        "start": str(start_date),
+        "end": str(end_date),
+        "param_fingerprint": fp,
+        "universe_fingerprint": universe_fp,
+        "data_snapshot_fingerprint": data_fp,
+        "feature_contract_fingerprint": contract_fp,
+        "params": params_dict,
+        "n_stocks": len(stock_codes),
+        "n_days": len(by_date),
+        "n_raw_signals": len(all_signals),
+        "cache_file": cache_file.name,
+    }
+    _atomic_write_json(meta_file, meta)
+    _atomic_write_pickle(
+        cache_file,
+        {
+            "schema_version": 1,
+            "identity": identity,
+            "by_date": by_date,
+            "stock_codes": list(stock_codes),
+        },
+    )
+    print(f"  Cached to {cache_file.name} (meta: {meta_file.name})")
 
     return by_date, stock_codes
 
