@@ -1,0 +1,96 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-001",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "a350ec8c18a364247fe66b7736e1e144a04ea5ac30e36195dbbf9e790c49d33e",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R1-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+      "objective": "Add cross-process shared generation read leases to the existing immutable release lock, bind every lease to an explicit generation and monotonic fencing token, record PUBLISH_PENDING before publication waits, allow the current lease holder to finish, block later lease acquisition while publication is pending, and recover a completed-but-uncleared pending publication without touching real data or KBase content.",
+      "dependencies": [
+        "P2R1-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS"
+      ],
+      "idempotency_key": "p2-attempt-001-t2-read-lease-fencing-publish-pending",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/task_specs/t2_read_lease_fencing_publish_pending.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "immutable-release-read-lease-tests",
+          "generation-publish-pending-tests",
+          "p2-t2-regression-tests"
+        ],
+        "required_review_receipt_ids": [
+          "independent-read-lease-fencing-review"
+        ],
+        "required_evidence_ids": [
+          "p2-scope",
+          "implementation-baseline",
+          "t1-task-report",
+          "t1-completion"
+        ]
+      },
+      "allowed_files": [
+        "research_automation/foundations/immutable_release.py",
+        "research_automation/data_generation/contracts.py",
+        "research_automation/data_generation/generation.py",
+        "tests/test_foundations_immutable_release.py",
+        "tests/test_data_generation.py",
+        "research_state/control_plane/p2/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "models/",
+        "outputs/",
+        "research_automation/control_plane/",
+        "strategy/",
+        "tools/",
+        "utils/",
+        "D:/KBase/",
+        "ag2_research/knowledge_base/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/implementation_baseline.json",
+      "baseline_sha256": "93100c30c04bf916b39cc4005cb4d5e6e8539662df7c185df6448336039cb3c7",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2-scope",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/scope_manifest.json",
+          "evidence_sha256": "2c46f182c2e6ca1949a264a44cd019fb6efad2c220f633d16043c37e6ef02583",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/implementation_baseline.json",
+          "evidence_sha256": "93100c30c04bf916b39cc4005cb4d5e6e8539662df7c185df6448336039cb3c7",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t1-task-report",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t1_task_report.json",
+          "evidence_sha256": "4dcee3e201a7437453fdb7f4db45b4525b3efdc67bf3ced8aba648d82354a349",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t1-completion",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-001/evidence/t1_completion_receipt.json",
+          "evidence_sha256": "252fc0d02776b87b57aa6c5ad65921995cc87292bf4890a59a45f8453eff0b5d",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "36abfb12853628a6b6d71e7087ef9b1eff39e1affe318cd5f0d28c9b39e408c6"
+  }
+}
