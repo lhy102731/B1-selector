@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 components that share information dimensions",
+  "as_of_phase": "Phase 15 (closure)",
+  "redundant_pairs_or_groups": [
+    {
+      "id": "J_upper_bound_redundancy",
+      "members": ["prefilter_j_max", "j_max (B1 stage)"],
+      "default_values": {"prefilter_j_max": 30.0, "j_max": 30.0},
+      "evidence": "Phase 12A Class III for Prefilter_J alone. Setting either to BIG individually produces zero new candidates because the other still fires.",
+      "information_dimension": "KDJ-J upper bound",
+      "phase_references": ["12A", "14B"],
+      "verdict": "redundant_under_defaults"
+    },
+    {
+      "id": "vol_shrink_modes",
+      "members": ["vol_vs_wave_peak_max (v1 metric)", "vol_ratio_ma5_max (v2 metric)"],
+      "active_dispatcher": "vol_shrink_mode",
+      "dispatch_options": ["v1 (only first)", "v2 (only second)", "both (require both)", "either (require either)"],
+      "evidence": "Both parameters defined; under default vol_shrink_mode='v1' only vol_vs_wave_peak_max is consumed.",
+      "information_dimension": "Volume contraction",
+      "phase_references": ["14A", "14B"],
+      "verdict": "same_dimension_different_definitions_mode_dependent_activation"
+    },
+    {
+      "id": "j_max_vs_pe_max_proxy",
+      "members": ["j_max", "pe_max"],
+      "default_values": {"j_max": 30.0, "pe_max": 80.0},
+      "evidence": "Phase 11 pairwise redundancy matrix: avg int_PF deviation -11.79 pp across windows. Removing either alone gives different surface effects, but both function as 'candidate-set contraction' proxies.",
+      "information_dimension": "candidate set contraction",
+      "phase11_class_both": "III_proxy_redundant",
+      "phase_references": ["11"],
+      "verdict": "redundant_alpha_proxies_under_phase11_interaction_test"
+    },
+    {
+      "id": "MA_alignment_features",
+      "members": ["ma_5_lt_10", "ma_10_gt_20", "ma_20_gt_30", "ma_30_gt_40", "ma_structure_bull"],
+      "evidence": "Phase 14A taxonomy: all five express MA-shape; ma_structure_bull is the composite. None active in default ranking (all G2 q_* off).",
+      "information_dimension": "MA shape (uptrend confirmation)",
+      "phase_references": ["14A"],
+      "verdict": "redundant_internal_features_consumers_off"
+    },
+    {
+      "id": "wave_health_vs_wave_qualified_volume_check",
+      "members": ["require_wave_healthy (E)", "vol_rank_high_price_must_bullish (inside wave_qualified)"],
+      "evidence": "Both gate the volume profile of the wave, with different sub-conditions. Phase 14B: E alone has ΔPF -0.37; wave_qualified is the dominant generator. The two overlap but are not identical (Phase 14B kept E as a separate concentrator).",
+      "information_dimension": "Wave volume health",
+      "phase_references": ["14A", "14B"],
+      "verdict": "partially_redundant_distinct_thresholds"
+    },
+    {
+      "id": "white_line_vs_yellow_line_anchors",
+      "members": ["A1 white > yellow", "A5 bowl/near_white", "B6 white_slope_min", "exit_break_yellow"],
+      "evidence": "All four use white_line / yellow_line. They are not redundant in role (filter vs ranking vs exit), but they all derive from the same two indicator lines.",
+      "information_dimension": "white/yellow line geometry",
+      "phase_references": ["14A"],
+      "verdict": "shared_data_dependency_not_alpha_redundancy"
+    }
+  ],
+  "interaction_redundancy_examples": [
+    {
+      "id": "G_double_cap_intra_pair",
+      "members_within_group": ["A3_no_double_60d", "A4_cap_min"],
+      "evidence": "Phase 12C grouped as G_double_cap; Phase 14B group avg ΔJac +0.002, both predicates fire on disjoint candidate sets but neither fires under defaults.",
+      "verdict": "structural_grouping_both_dead_in_universe"
+    }
+  ],
+  "non_redundant_pairs_explicitly_confirmed": [
+    {
+      "id": "C_wave_qualified_vs_t_plus_3_min_return",
+      "evidence": "Phase 11 verified Jaccard 1.000 between t_plus_3 alone and t_plus_3+anything-entry-side because t_plus_3 does not change candidate selection.",
+      "verdict": "mechanism_orthogonal_not_redundant"
+    },
+    {
+      "id": "C_wave_qualified_vs_F_white_gt_yellow",
+      "phase14b_single_d_pf": -0.038,
+      "verdict": "different_dimensions_F_concentrates_wave_qualified_output_not_a_replacement"
+    },
+    {
+      "id": "A_J_range_vs_F_white_gt_yellow",
+      "phase14b_pair_int_pf": -1.018,
+      "verdict": "strongly_interactive_not_redundant"
+    }
+  ],
+  "summary": {
+    "confirmed_redundant_pairs_count": 4,
+    "interaction_redundancy_count": 1,
+    "verified_non_redundant_count": 3,
+    "key_finding": "Several pairs share information dimensions but mostly through default-config mode-dispatch (vol modes), upstream-shadowing (prefilter vs B1), or proxy filtering (j_max vs pe_max). True alpha redundancy (e.g. j_max/pe_max) was identified only via Phase 11 interaction test, not by feature-name overlap."
+  }
+}

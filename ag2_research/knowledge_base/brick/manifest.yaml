@@ -1,0 +1,74 @@
+# Brick V2 research knowledge base manifest.
+# Project-side AG2 memory only. Do not write this package to D:\KBase.
+
+kb_version: "0.1.0"
+subject: "brick"
+as_of_phase: "2026-07-10 post-failure discovery"
+closed_at: "2026-07-10"
+closure_status: "research_active_with_archived_paths"
+
+evidence_universe:
+  asset_class: "A-share daily bars"
+  split_key: "entry_date"
+  primary_boundary: "pre-09:25 entry; entry_date open is allowed only against signal-day known references"
+  validation: "strict rolling forward validation"
+
+frozen_baseline:
+  top3_no_timing_signal_quality_nav:
+    rolling_avg_cagr_pct: 75.997
+    rolling_worst_cagr_pct: 49.361
+    rolling_sharpe: 1.861
+  top5_no_timing_signal_quality_nav:
+    rolling_avg_cagr_pct: 51.436
+    rolling_worst_cagr_pct: 23.088
+    rolling_sharpe: 1.632
+  top3_no_timing_executable_nav:
+    rolling_avg_cagr_pct: -1.612
+    rolling_worst_cagr_pct: -15.093
+    rolling_sharpe: -0.106
+  top5_no_timing_executable_nav:
+    rolling_avg_cagr_pct: -2.004
+    rolling_worst_cagr_pct: -15.168
+    rolling_sharpe: -0.099
+
+acceptance_bar:
+  rule: "Any factor, ranker, threshold, gate, or portfolio construction change must be selected only on train/validation folds and tested once on unseen test years."
+  required_metrics:
+    - average_test_performance
+    - worst_fold_performance
+    - pass_rate
+    - dispersion
+    - signal_quality_nav
+    - executable_nav
+  reject_if:
+    - "test-window threshold selection"
+    - "same-period optimization"
+    - "market timing rescue as primary result"
+    - "production script modification"
+
+artifacts:
+  brief: "verdict_brief.md"
+  hard_constraints: "hard_constraints.yaml"
+  archived_factors: "archived_factors.json"
+  forbidden_directions: "forbidden_directions.json"
+  lessons: "research_lessons.json"
+  architecture: "architecture_full.md"
+  geometry: "constraint_geometry.md"
+  graph: "dependency_graph.md"
+  alpha_generators: "alpha_generators.json"
+  exit_generators: "exit_generators.json"
+  concentrators: "concentrators.json"
+  dead_components: "dead_components.json"
+  redundant: "redundant_components.json"
+  interactions: "interaction_summary.json"
+
+headline:
+  system_type: "Brick V2 signal-quality ranking research"
+  current_archive_scope: "static-SQ-objective Top3 direct-promotion path only"
+  production_script: "backtest_brick_v2.py remains untouched"
+  primary_open_directions:
+    - "execution-aware ranking objectives"
+    - "strict-forward abstention diagnostics"
+    - "signal-sequence state weights or grouped models"
+    - "pre-09:25 entry-open interaction features"
+    - "full candidate pool bottom-bucket validation"

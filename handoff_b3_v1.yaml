@@ -1,0 +1,212 @@
+handoff:
+  version: "1.0"
+  generated_at: "2026-06-19"
+
+  project_identity:
+    strategy_id: "B3"
+    identity: "A-share limit-up relay / strong-stock next-day controlled-continuation research project"
+    plain_language: >
+      B3 is a short-term relay strategy after a prior-day strong rise or limit-up.
+      It looks for next-day mild positive continuation, shrink-volume acceptance,
+      clean candle structure, controlled gap, and B3-specific trend-line gates.
+      It is not B1 accumulation-wave pullback, not Brick chart reversal ranking,
+      and not shared infrastructure research.
+    current_baseline_to_start_from: "Rule-based B3XG scanner"
+    baseline_confidence: "baseline only; independent B3 research evidence is still sparse"
+    baseline_rules:
+      - "Yesterday return >= 9%."
+      - "Today return between 2% and 4%."
+      - "Today close > today open."
+      - "Today open gap versus yesterday close < 1%."
+      - "Upper shadow <= 2%."
+      - "Lower shadow <= 2%."
+      - "Today volume / yesterday volume between 0.6 and 0.9."
+      - "B3-specific shared white/yellow trend-line gate passes."
+      - "Close is above the shared yellow-line reference in B3 continuation context."
+      - "If market_cap exists, require market_cap > 5 billion RMB."
+    memory_status: >
+      b3_memory.yaml currently has no verified, failed, partial, open_question, or do_not_repeat entries.
+      This means B3 should be treated as an under-governed independent alpha family, not as a mature champion system.
+
+  must_accept:
+    - conclusion: "B3 is an independent alpha family, not a variant of B1 or Brick."
+      why: "Project Memory defines B3 by prior-day strong rise or limit-up followed by next-day controlled continuation."
+      how_to_use: "Start from B3XG rule conditions; do not import B1 pullback or Brick ranking conclusions as B3 evidence."
+    - conclusion: "The current B3 baseline is a rule-based scanner, not a confirmed production champion."
+      why: "Project Memory says the current best model is a rule model and no confirmed independent ML ranking model is recorded. Snapshot says confidence is baseline only."
+      how_to_use: "Use B3XG only as the first reproducible baseline to validate, not as a proven final model."
+    - conclusion: "B3 research memory is sparse and has no recorded verified or failed directions."
+      why: "b3_memory.yaml is empty across verified, failed, partial, open_questions, and do_not_repeat."
+      how_to_use: "Do not invent dead ends or successes. Every new conclusion must be written back with exact scope and limitations after evidence exists."
+    - conclusion: "Shared indicators are gates only in B3 context."
+      why: "Project Memory states white/yellow formulas, runners, storage, notifications, and caches belong to Shared Infrastructure."
+      how_to_use: "Record only the B3 gate role; never treat shared formulas or execution files as B3-owned alpha."
+    - conclusion: "B3 needs its own holding, exit, and possibly ranking rules."
+      why: "Project Memory explicitly says mature independent B3 holding/exit memory has not yet been established."
+      how_to_use: "Do not assume B1 or Brick exits apply; define and test B3-specific trading logic."
+
+  still_debated:
+    - issue: "Whether B3XG rule baseline has positive expectancy."
+      current_status: "Unverified in B3 research memory."
+      what_is_debated: "The scanner logic is defined, but independent sample, trade, return, drawdown, and failure evidence are not yet recorded."
+      required_evidence: "Independent B3 sample generation and account-level backtest with explicit holding/exit assumptions."
+    - issue: "Whether B3 should remain pure rule-based or receive a candidate ranking layer."
+      current_status: "Open focus in Project Memory and Snapshot."
+      what_is_debated: "If B3 candidates are sparse, rules may be enough; if candidates are numerous or uneven, B3-specific TopN ranking may be required."
+      required_evidence: "Candidate count distribution, return distribution, and performance by candidate quality buckets."
+    - issue: "What B3-specific holding and exit rules should be."
+      current_status: "Not yet established."
+      what_is_debated: "B3 is a short-term relay setup, so outcome may depend heavily on post-signal exit, stop, take-profit, and failed-continuation handling."
+      required_evidence: "Controlled comparisons of B3-specific exit rules under the same entry baseline."
+    - issue: "Whether the current numeric thresholds are robust."
+      current_status: "Unknown in Snapshot."
+      what_is_debated: "Yesterday >=9%, today 2%-4%, volume ratio 0.6-0.9, gap <1%, and shadow <=2% may be robust zones or empirical rules."
+      required_evidence: "Explicit grid tests with fixed sample design and no silent threshold changes."
+    - issue: "Whether market emotion or index regime should control B3 participation."
+      current_status: "Unknown in Snapshot."
+      what_is_debated: "B3 relay may be sensitive to sentiment, liquidity, limit-up ecology, and next-day execution price."
+      required_evidence: "Regime-conditioned B3 performance, but only after the base B3 sample and exit logic exist."
+
+  active_focus:
+    - priority: 1
+      focus: "Build independent B3 sample and backtest record."
+      reason: "B3's largest current gap is lack of independent, reproducible evidence."
+      expected_output: "Candidate counts, trade counts, returns, drawdown, win rate, phase performance, and failure case taxonomy."
+    - priority: 2
+      focus: "Define and validate B3-specific holding and exit rules."
+      reason: "A relay scanner without exit logic cannot prove tradability."
+      expected_output: "Comparison of B3-specific stop, take-profit, failed-continuation, trend-break, and holding-period rules."
+    - priority: 3
+      focus: "Decide whether B3 needs a ranking layer."
+      reason: "Ranking should be introduced only if candidate volume and return dispersion justify it."
+      expected_output: "Decision report: pure scanner vs. B3-specific TopN ranking, with candidate distribution evidence."
+    - priority: 4
+      focus: "Initialize B3 research memory governance."
+      reason: "b3_memory.yaml is currently empty, so first validated and failed findings must be recorded carefully."
+      expected_output: "Updated B3 memory entries with verified/failed/partial/open-question classification and exact limitations."
+
+  do_not_repeat:
+    - item: "Do not inherit B1 V3 pullback, wave-quality, bowl-position, or shrink-volume retest conclusions as B3 evidence."
+      reason: "B1 alpha source is accumulation-wave pullback, while B3 alpha source is prior-day strong rise plus next-day controlled continuation."
+    - item: "Do not inherit Brick V2/V5 chart reversal, LambdaRank, or brick_signal candidate-ranking conclusions as B3 evidence."
+      reason: "Brick is a separate mean-reversion candidate-ranking project."
+    - item: "Do not invent B3 failed directions."
+      reason: "b3_memory.yaml currently records no failed directions. Failed status requires B3-specific evidence."
+    - item: "Do not add complex fusion or ML ranking before a baseline B3 backtest exists."
+      reason: "Snapshot explicitly says not to stack complex models before baseline evidence."
+    - item: "Do not treat shared white/yellow trend-line formulas, caches, runners, or notifications as B3-owned alpha."
+      reason: "Shared indicator and infrastructure ownership belongs to Shared Infrastructure; B3 records only gate usage."
+    - item: "Do not silently change thresholds, sample range, or test design for speed."
+      reason: "B3 needs clean first evidence; altered scope would pollute the initial research memory."
+
+  common_mistakes:
+    - mistake: "Assuming B3 is already a proven champion because a scanner exists."
+      correction: "Treat B3XG as a baseline to validate; independent research evidence is still sparse."
+    - mistake: "Starting from B1 or Brick reports because they are more mature."
+      correction: "Use B1 and Brick only as negative boundary references; B3 evidence must be independent."
+    - mistake: "Adding ML ranking before measuring candidate count and return dispersion."
+      correction: "First establish whether candidate selection pressure exists."
+    - mistake: "Backtesting entry rules without specifying holding and exit assumptions."
+      correction: "Every B3 baseline result must state its holding, stop, take-profit, and exit logic explicitly."
+    - mistake: "Calling shared trend-line gates B3 alpha."
+      correction: "They are B3-specific gates using shared formulas; ownership remains shared."
+    - mistake: "Recording empty-memory gaps as negative conclusions."
+      correction: "No recorded B3 failure means unknown, not failed."
+    - mistake: "Optimizing thresholds before confirming the base sample and implementation are correct."
+      correction: "First reproduce the scanner and basic backtest; only then run explicit grid tests."
+
+  escalation_conditions:
+    - condition: "B3 baseline backtest produces extremely high or extremely poor results."
+      action: "Stop; audit signal generation, date alignment, next-day execution assumptions,涨跌停 handling, market-cap availability, and exit logic before accepting results."
+    - condition: "A proposed feature or rule comes from B1 pullback or Brick reversal logic."
+      action: "Reject as B3 evidence unless it is redefined and independently validated as prior-day strong-rise plus next-day controlled-continuation alpha."
+    - condition: "A proposed B3 model uses data unavailable before the trade decision."
+      action: "Reject for production research unless decision-time availability is proven."
+    - condition: "Candidate counts are too small or too large for the intended analysis."
+      action: "Do not silently alter thresholds; report the issue and ask before changing scope."
+    - condition: "Ranking metrics improve but account-level results do not."
+      action: "Do not promote the ranking layer; B3 needs tradable account-level improvement."
+    - condition: "A result would become the first verified or failed B3 memory entry."
+      action: "Record exact sample range, rules, exit assumptions, metrics, limitations, and whether it is verified/failed/partial/open question."
+    - condition: "Shared runner, cache, or indicator behavior appears to determine results."
+      action: "Separate infrastructure mechanics from B3 alpha; check Shared Infrastructure memory if needed."
+
+  first_day_tasks:
+    - task: "Read the three primary B3 sources in order: project memory, research memory, then snapshot."
+      purpose: "Understand that B3 is independent but under-evidenced."
+      deliverable: "A short note listing B3 boundary, baseline rules, empty memory status, open questions, and forbidden cross-strategy imports."
+    - task: "Locate the exact implementation or report that defines the current B3XG rule scanner."
+      purpose: "Avoid testing a different rule set while thinking it is B3 baseline."
+      deliverable: "Implementation checklist: fields, thresholds, data availability, date alignment, and market-cap handling."
+    - task: "Design the first independent B3 baseline backtest before running it."
+      purpose: "The first B3 evidence must be clean enough to initialize memory."
+      deliverable: "Test design with sample range, entry timing, holding/exit assumptions, costs, metrics, and failure-stop checks."
+    - task: "Define how results will be written back to b3_memory.yaml."
+      purpose: "B3 memory is empty; the first evidence must be classified correctly."
+      deliverable: "Template for verified/failed/partial/open_question entries with scope and limitations."
+
+  first_week_tasks:
+    - task: "Complete independent B3XG baseline sample generation and account-level backtest."
+      deliverable: "Candidate count, trade count, return, drawdown, win rate, phase performance, and failure taxonomy."
+    - task: "Run controlled B3-specific holding/exit comparisons."
+      deliverable: "Exit-rule comparison table and recommended baseline exit assumption."
+    - task: "Analyze whether B3 needs candidate ranking."
+      deliverable: "Candidate distribution and return dispersion report; decision on pure rule scan vs. ranking layer."
+    - task: "If and only if baseline is valid, run explicit threshold robustness grid."
+      deliverable: "Sensitivity table for return threshold, gap, shadow, and volume-ratio zones."
+    - task: "Update b3_memory.yaml with first evidence."
+      deliverable: "B3-specific verified/failed/partial/open-question entries with exact constraints and no cross-strategy contamination."
+
+  when_to_reopen_failed_directions:
+    - direction: "Any supposed B3 failed direction"
+      current_status: "No B3 failed directions are recorded."
+      reopen_only_if:
+        - "A prior B3-specific failed entry exists in b3_memory.yaml."
+        - "The new proposal materially changes construct, implementation, data availability, or evaluation口径."
+        - "The new test remains inside B3 alpha source and is independent from B1/Brick evidence."
+      default_action: "Treat as unknown, not failed, until B3-specific evidence exists."
+    - direction: "Complex fusion or ML ranking"
+      current_status: "Not recorded as failed, but not priority before baseline evidence."
+      reopen_only_if:
+        - "Independent B3 baseline backtest exists."
+        - "Candidate counts and return dispersion show that ranking pressure exists."
+        - "The candidate features are B3-specific and available before decision time."
+        - "The model is evaluated by account-level results, not only ranking metrics."
+      default_action: "Do not start here."
+    - direction: "Market emotion or regime switch"
+      current_status: "Open question, not validated direction."
+      reopen_only_if:
+        - "Baseline B3 entry and exit logic are already established."
+        - "Regime is used as a controlled overlay or diagnostic, not as an unexplained replacement for B3 rules."
+      default_action: "Defer until baseline and exit logic are known."
+
+  success_definition:
+    next_phase_success:
+      - "An independent B3 baseline backtest exists and can determine whether B3XG has positive expectancy under explicit holding/exit assumptions."
+      - "B3-specific holding and exit logic are defined and their effect on return and drawdown is measured."
+      - "The project knows whether a B3 ranking layer is needed, based on candidate count and return dispersion evidence."
+      - "b3_memory.yaml is no longer empty and contains accurately scoped B3-specific research entries."
+      - "All conclusions keep B3 boundary clean and do not import B1, Brick, or Shared Infrastructure alpha."
+    not_success:
+      - "A B3 result that secretly uses B1 or Brick conclusions."
+      - "A scanner-only result with no explicit holding/exit assumptions."
+      - "A complex model introduced before baseline evidence."
+      - "A memory entry that records an untested assumption as verified or failed."
+      - "A higher headline return produced by silently changing thresholds, sample range, or test scope."
+
+  recommended_reading_order:
+    - order: 1
+      file: "project_b3_v2.yaml"
+      reason: "Defines B3 identity, boundary, baseline scanner rules, and current under-evidenced status."
+    - order: 2
+      file: "b3_memory.yaml"
+      reason: "Confirms that B3 currently has no verified, failed, partial, open-question, or do-not-repeat research entries."
+    - order: 3
+      file: "snapshot_b3.yaml"
+      reason: "Current state panel: baseline, risks, open questions, next priority, and first task for new researcher."
+    - order: 4
+      file: "project_shared_v2.yaml"
+      reason: "Read only after B3 boundary is clear; use it to understand shared indicator formulas, trend-line ownership, caches, and runners."
+    - order: 5
+      file: "B3XG implementation and any B3-specific result files"
+      reason: "Use only to reproduce the B3 baseline and create first independent evidence; do not let unrelated B1/Brick reports override B3 memory."

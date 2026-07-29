@@ -1,0 +1,128 @@
+schema_version: "1.0"
+subject: "brick"
+applies_to_files:
+  - "research/"
+  - "research_state/brick/"
+
+forbidden_modifications:
+  - id: "NO_PRODUCTION_SCRIPT_EDITS"
+    params:
+      - "backtest_brick_v2.py"
+    constraint: "NO_CHANGE"
+    rationale: "Brick experiments must stay in research-only runners unless the user explicitly asks to modify production."
+    override_required: "explicit human authorization"
+
+conditional_modifications: []
+
+forbidden_hypotheses:
+  - id: "NO_STATIC_SQ_TOPN_DIRECT_PROMOTION"
+    keywords:
+      - "static-sq"
+      - "static sq"
+      - "sqnav alone"
+      - "signal quality nav alone"
+      - "top3 direct"
+      - "direct-promotion"
+      - "direct promotion"
+    description: "Current static SQ objective Top3 direct-promotion path is archived after direct rank-return monotonicity failed in recent unseen windows."
+    rejection_message: "Do not promote Top2/Top3 from SQNAV alone; propose an execution-aware or otherwise new mechanism."
+
+  - id: "NO_REPEAT_VOLUME_AUTHENTICITY"
+    keywords:
+      - "vol_authenticity"
+      - "volume authenticity"
+      - "volume contraction authenticity"
+      - "shrinkage smoothness"
+      - "smooth shrink"
+      - "path smoothness"
+    description: "Volume authenticity and smooth shrinkage factors are archived as diagnostic-only in current V2 integration."
+    rejection_message: "Volume authenticity was already tested and archived; only a genuinely different mechanism with a new validation design may reopen it."
+
+  - id: "NO_REPEAT_STREAK_EXHAUSTION"
+    keywords:
+      - "streak_exhaustion"
+      - "streak exhaustion"
+      - "streak peer"
+      - "consecutive exhaustion"
+    description: "Streak exhaustion factors are archived as diagnostic-only in current V2 integration."
+    rejection_message: "Streak exhaustion was already tested and archived for direct V2 use."
+
+  - id: "NO_REPEAT_PULLBACK_DEPTH_GATE"
+    keywords:
+      - "pullback_depth"
+      - "pullback depth"
+      - "deep pullback"
+      - "shallow pullback"
+    description: "Pullback-depth hard gates hurt V2 and remain diagnostic-only."
+    rejection_message: "Pullback-depth hard gating is archived and must not be repeated as direct TopN replacement."
+
+  - id: "NO_REPEAT_DOWNSIDE_SKEW_GATE"
+    keywords:
+      - "downside_vol_skew"
+      - "downside skew"
+      - "negative skew"
+      - "downside volatility skew"
+    description: "Downside skew hard gates hurt V2 and remain diagnostic-only."
+    rejection_message: "Downside skew is diagnostic-only; do not reuse it as a hard gate."
+
+  - id: "NO_REPEAT_SENTIMENT_PULLBACK"
+    keywords:
+      - "sentiment_pullback"
+      - "sentiment pullback"
+      - "sentiment_x_pullback"
+      - "sentiment interaction"
+    description: "Sentiment-pullback factors are archived as diagnostic-only for current V2 integration."
+    rejection_message: "Sentiment-pullback factors failed direct V2 promotion and must not be repeated as a direct gate."
+
+  - id: "NO_MARKET_TIMING_RESCUE"
+    keywords:
+      - "market timing"
+      - "timing filter"
+      - "index timing"
+    description: "User explicitly disabled market timing for primary Brick optimization because prior timing tests were negative."
+    rejection_message: "Do not use market timing as the primary rescue path."
+
+  - id: "NO_PARAMETER_ONLY_SWEEP"
+    keywords:
+      - "parameter sweep"
+      - "grid search only"
+      - "threshold sweep"
+      - "topn sweep"
+      - "top-n sweep"
+      - "score threshold"
+    severity: "warn_not_reject"
+    description: "Parameter-only sweeps are not enough; user wants factor design and mechanism discovery."
+    rejection_message: "Parameter-only optimization is insufficient unless attached to a new mechanism and strict forward validation."
+
+required_measurement_plan:
+  must_report_per_window:
+    - "signal_quality_nav"
+    - "executable_nav"
+    - "average_return"
+    - "worst_fold"
+    - "pass_rate"
+    - "dispersion"
+  must_report_aggregate:
+    - "average_test_performance"
+    - "worst_fold_performance"
+    - "fold_pass_rate"
+    - "dispersion"
+
+acceptance_bar:
+  windows_required:
+    - "2020-2022_train_2023_val_2024_test"
+    - "2021-2023_train_2024_val_2025_test"
+    - "2022-2024_train_2025_val_2026_test"
+  rule: "Select thresholds and variants only on train/validation folds; evaluate test once as unseen."
+
+permitted_directions:
+  - id: "EXECUTION_AWARE_OBJECTIVE"
+    description: "Use executable NAV, execution-aligned labels, capacity penalties, liquidity proxies, or capital lock as the objective."
+  - id: "STRICT_FORWARD_ABSTENTION"
+    description: "Design no-trade diagnostics such as crowding, signal density, or score dispersion; choose rules only on train/validation folds."
+  - id: "SIGNAL_SEQUENCE_STATE"
+    description: "Use repeated-trigger count, interarrival trend, recency, or first-vs-later state as sample weights or grouped dimensions."
+  - id: "PRE_0925_ENTRY_OPEN_INTERACTION"
+    description: "Use entry_date open only against signal-day known references, matching the daily_select.py boundary."
+  - id: "FULL_POOL_VALIDATION"
+    description: "Save full candidate pools and bottom buckets before claiming rank monotonicity or ML failure/success broadly."

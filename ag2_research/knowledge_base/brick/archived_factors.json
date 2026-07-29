@@ -1,0 +1,60 @@
+[
+  {
+    "id": "vol_authenticity_path_smoothness_10d",
+    "family": "volume authenticity",
+    "status": ["research_only", "diagnostic_only_archive", "not_promoted"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement", "current_v2_promotion"],
+    "evidence": "Standalone direction existed, but V2-boundary and pre-09:25 matched-pair controls did not pass the roundtable protocol.",
+    "allowed_future_use": "shadow diagnostic or reopened only under a genuinely different mechanism and strict-forward validation"
+  },
+  {
+    "id": "streak_exhaustion_max_20d_peer_rank",
+    "family": "streak exhaustion",
+    "status": ["research_only", "diagnostic_only_archive", "not_promoted"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement", "current_v2_promotion"],
+    "evidence": "Standalone direction existed, but direct V2 integration and matched-pair controls failed."
+  },
+  {
+    "id": "pullback_depth_percentile",
+    "family": "pullback depth",
+    "status": ["anti_factor_confirmed", "do_not_hard_gate", "diagnostic_only_archive"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement"],
+    "evidence": "Hard gate hurt V2 Top3/Top5; hold-days dependence risk appeared in paired diagnostics."
+  },
+  {
+    "id": "downside_vol_skew_20d",
+    "family": "downside skew",
+    "status": ["anti_factor_confirmed", "do_not_hard_gate", "diagnostic_only_archive"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement"],
+    "evidence": "Hard gate hurt V2 Top3/Top5 and did not pass matched-pair controls."
+  },
+  {
+    "id": "sentiment_x_pullback_interaction",
+    "family": "sentiment pullback",
+    "status": ["anti_factor_confirmed", "do_not_hard_gate", "diagnostic_only_archive"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement"],
+    "evidence": "Family gates hurt V2 and matched-pair controls failed."
+  },
+  {
+    "id": "sentiment_pullback",
+    "family": "sentiment pullback",
+    "status": ["anti_factor_confirmed", "do_not_hard_gate", "diagnostic_only_archive"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement"],
+    "evidence": "Hard gate hurt V2; placebo suggested replacement cost."
+  },
+  {
+    "id": "streak_exhaustion_peer_rank",
+    "family": "streak exhaustion",
+    "status": ["anti_factor_confirmed", "do_not_hard_gate", "diagnostic_only_archive"],
+    "do_not_use_as": ["hard_gate", "direct_topn_replacement"],
+    "evidence": "Direct hard-gate use hurt or failed to improve V2 and remains diagnostic-only."
+  },
+  {
+    "id": "free_float_ratio",
+    "family": "liquidity structure",
+    "status": ["data_coverage_stop", "research_only", "not_promoted"],
+    "do_not_use_as": ["current_raw_parquet_factor", "direct_topn_replacement", "current_v2_promotion"],
+    "evidence": "AG2-KBase round 2 execution reached DATA_COVERAGE_STOP: 6780 non-null rows out of 437471, 1.549817% coverage, below the 50% preflight threshold.",
+    "allowed_future_use": "reopen only with a higher-coverage free-float/share-cap data source or a new liquidity hypothesis that does not depend on sparse market_cap/amount availability"
+  }
+]

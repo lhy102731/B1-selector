@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 concentrator filters",
+  "as_of_phase": "Phase 15 (closure)",
+  "concentrators": [
+    {
+      "id": "E_wave_healthy",
+      "code_param": "require_wave_healthy",
+      "default": true,
+      "role": "concentrator",
+      "type": "independent_contributor",
+      "phase14b_single_d_pf_avg": -0.370,
+      "phase14b_single_d_sharpe_avg": -0.585,
+      "phase14b_single_jaccard_avg": 0.635,
+      "phase14b_strongest_pair_interaction": {"with": "A_J_range", "int_pf": -0.78},
+      "phase12c_avg_d_jaccard": 0.017,
+      "feature_categories": ["Volume"],
+      "evidence_phases": ["12A", "12C", "14B"],
+      "notes": "Only HIGH_IMPACT constraint with strongly negative single-removal PF in all relevant windows. Also a strong interactive bridge with A_J_range."
+    },
+    {
+      "id": "A_J_range",
+      "code_params": ["prefilter_j_max", "j_max", "j_min"],
+      "default": {"prefilter_j_max": 30.0, "j_max": 30.0, "j_min": -15.0},
+      "role": "concentrator_hub",
+      "type": "interactive_contributor",
+      "phase14b_single_d_pf_avg": 0.929,
+      "phase14b_single_d_sharpe_avg": 0.920,
+      "phase14b_single_jaccard_avg": 0.509,
+      "phase14b_strongest_pair_interactions": [
+        {"with": "F_white_gt_yellow", "int_pf": -1.018},
+        {"with": "B_KltD",            "int_pf": -0.944},
+        {"with": "E_wave_healthy",    "int_pf": -0.777}
+      ],
+      "phase14b_triple_membership": "7_of_8_triples_including_top_3_negative",
+      "phase12c_avg_d_jaccard": 0.031,
+      "feature_categories": ["Momentum"],
+      "evidence_phases": ["9", "10", "11", "12A", "12C", "14A", "14B"],
+      "notes": "STRUCTURAL HUB. Single-removal looks anti-alpha (regime artefact in B_2024H1) but it is the spine of the constraint geometry. Removing it cascades through F/B_KltD/E. Do not delete on single-ablation evidence alone."
+    },
+    {
+      "id": "F_white_gt_yellow",
+      "code_param": "require_white_gt_yellow",
+      "default": true,
+      "role": "concentrator",
+      "type": "interactive_contributor",
+      "phase14b_single_d_pf_avg": -0.038,
+      "phase14b_single_jaccard_avg": 0.912,
+      "phase14b_strongest_pair_interaction": {"with": "A_J_range", "int_pf": -1.018},
+      "phase14b_triple_membership": "5_of_8",
+      "phase12c_avg_d_jaccard": 0.036,
+      "feature_categories": ["Price Structure"],
+      "evidence_phases": ["12A", "12C", "14B"],
+      "notes": "Largest single-group concentrator by Jaccard reduction (Phase 12C rank 1). Cooperates with A_J_range in strongest pair interaction (-1.02)."
+    },
+    {
+      "id": "D_white_slope",
+      "code_param": "white_slope_min",
+      "default": -0.3,
+      "role": "concentrator",
+      "type": "independent_contributor",
+      "phase14b_single_d_pf_avg": -0.053,
+      "phase14b_single_d_sharpe_avg": 0.054,
+      "phase14b_single_jaccard_avg": 0.940,
+      "phase14b_strongest_pair_interaction": {"with": "E_wave_healthy", "int_pf": 0.094, "kind": "substitutive"},
+      "phase12c_avg_d_jaccard": 0.022,
+      "feature_categories": ["Price Structure"],
+      "evidence_phases": ["12A", "12C", "14B"],
+      "notes": "Single effect mostly in A_2023 (ΔPF -0.27). Substitutive overlap with other Price-Structure concentrators, not interactive."
+    },
+    {
+      "id": "B_KltD",
+      "code_param": "prefilter_k_lt_d",
+      "default": true,
+      "role": "concentrator",
+      "type": "interactive_contributor_conditional",
+      "phase14b_single_d_pf_avg": 0.000,
+      "phase14b_single_jaccard_avg": 1.000,
+      "phase14b_strongest_pair_interaction": {"with": "A_J_range", "int_pf": -0.944},
+      "phase14b_triple_membership": "3_of_8_including_top_triple_F_plus_A_plus_BKltD_int_pf_minus_1.58",
+      "phase12c_avg_d_jaccard": 0.011,
+      "feature_categories": ["Momentum"],
+      "evidence_phases": ["12A", "12C", "14B"],
+      "notes": "Single-removal completely dead (Jac 1.000). Becomes the second-strongest concentrator only when A_J_range is also removed. The canonical example of conditional activation in the constraint geometry."
+    },
+    {
+      "id": "B4_turnover_max",
+      "code_param": "turnover_max",
+      "default": 6.0,
+      "role": "concentrator",
+      "type": "independent_contributor",
+      "phase14b_single_d_pf_avg": -0.165,
+      "phase14b_single_jaccard_avg": 0.965,
+      "feature_categories": ["Volume"],
+      "evidence_phases": ["12A", "14B"],
+      "notes": "Active in A and C windows (B has no effect). Not tested for pair interaction in Phase 14B HIGH_IMPACT 5x5."
+    },
+    {
+      "id": "B9_cs_shadow_max",
+      "code_param": "cs_shadow_max",
+      "default": 70.0,
+      "role": "concentrator_weak",
+      "type": "conditional",
+      "phase14b_single_d_pf_avg": 0.024,
+      "phase14b_single_jaccard_avg": 0.948,
+      "feature_categories": ["Price Structure"],
+      "evidence_phases": ["12A", "14B"],
+      "notes": "Marginal effect. Conditional in B/C windows."
+    },
+    {
+      "id": "B7_pe_max",
+      "code_param": "pe_max",
+      "default": 80.0,
+      "role": "concentrator_conditional",
+      "type": "conditional",
+      "phase11_class": "III_redundant_proxy_with_j_max",
+      "phase14b_single_d_pf_avg": -0.024,
+      "phase11_pairwise_redundancy_int_pf_with_j_max": -11.79,
+      "feature_categories": ["Valuation"],
+      "evidence_phases": ["9", "10", "11", "12A", "14B"],
+      "notes": "Phase 11 confirmed proxy with j_max (int_pf -11.79 across windows). Not an independent alpha. Removed status: kept as hard cap, not as ranking signal."
+    },
+    {
+      "id": "B8_pb_max",
+      "code_param": "pb_max",
+      "default": 8.0,
+      "role": "concentrator_conditional",
+      "type": "conditional",
+      "phase14b_single_d_pf_avg": -0.054,
+      "phase14b_single_d_pf_C_only": -0.16,
+      "feature_categories": ["Valuation"],
+      "notes": "Active only in C_2024H2_latest window. Hard cap, no ranking weight."
+    },
+    {
+      "id": "B2_vol_vs_peak",
+      "code_param": "vol_vs_wave_peak_max",
+      "default": 0.9,
+      "role": "concentrator_weak",
+      "phase14b_single_d_pf_avg": -0.015,
+      "phase14b_single_jaccard_avg": 0.983,
+      "feature_categories": ["Volume"],
+      "notes": "Subsumed by C_wave_qualified under default settings."
+    },
+    {
+      "id": "A2_dif_min",
+      "code_param": "dif_min",
+      "default": 0.05,
+      "role": "concentrator_weak",
+      "phase14b_single_d_pf_avg": 0.029,
+      "feature_categories": ["Momentum"],
+      "notes": "Marginal in A; near-zero in B/C."
+    },
+    {
+      "id": "B5_ret_5d_min",
+      "code_param": "ret_5d_min",
+      "default": -12.0,
+      "role": "regime_artefact",
+      "phase14b_single_d_pf_avg": 1.371,
+      "phase14b_single_d_pf_B_only": 3.95,
+      "phase10_class": "R3_unstable",
+      "feature_categories": ["Momentum"],
+      "notes": "Phase 10 R3. Massive B_2024H1 single-removal effect is sample-specific."
+    }
+  ],
+  "summary": {
+    "total_concentrators": 12,
+    "independent_contributors": ["E_wave_healthy", "B4_turnover_max", "D_white_slope"],
+    "interactive_contributors": ["A_J_range", "F_white_gt_yellow", "B_KltD"],
+    "weak_or_conditional": ["B7_pe_max", "B8_pb_max", "B9_cs_shadow_max", "B2_vol_vs_peak", "A2_dif_min", "B5_ret_5d_min"],
+    "structural_hub": "A_J_range",
+    "key_finding": "Concentrators jointly define a constraint polytope whose surface is the alpha. Single-removal under-estimates effect by ~10x for interactive contributors."
+  }
+}

@@ -1,0 +1,257 @@
+registry:
+  experiments:
+  - id: b1-exp-001
+    title: 'B1 V3 champion: V1 wave-quality filter plus six-factor scoring'
+    short_result: B1 V3 with V1 wave-quality enabled and six factors is the current trusted B1 baseline; final report shows
+      429.5% return, -14.4% max drawdown, ~1.9 Sharpe, 3,742 trades on 2021-2026 close-to-close setup.
+    evidence_source:
+    - 'b1_memory.yaml: verified[0]'
+    - 'project_b1_v2.yaml: current_status/current_best_feature_set'
+    - 'snapshot_b1.yaml: current_champion'
+    - docs/b1_v3_results.md
+    reopen_condition: Reopen only to reproduce, productionize, or compare a challenger under identical candidate pool, costs,
+      TopN, exit rules, date range, and no-leakage account-level validation.
+    status: VERIFIED
+    stage_tag: current_best_baseline
+  - id: b1-exp-002
+    title: B1 V3 six-factor selection from broad factor pool
+    short_result: 'Broad factor screening reduced the candidate set to six effective factors: q_nodist, q_vol_dec_accel, q_vs_yellow,
+      q_vs_60h, q_red_vol_dec, q_ind_rank; remaining factors were closed in final baseline.'
+    evidence_source:
+    - 'b1_memory.yaml: verified[0]'
+    - 'docs/b1_v3_results.md: 6因子评分组合 / 已完成的实验步骤'
+    - docs/b1_v3_factor_list.md
+    reopen_condition: Do not rediscover all factors from scratch; reopen only for controlled contribution drift, phase stability,
+      or incremental testing against the six-factor champion.
+    status: VERIFIED
+    stage_tag: completed
+  - id: b1-exp-003
+    title: B1 V3 wave-quality removal / V1 wave-quality ablation
+    short_result: Removing wave-quality caused a large performance drop; final report records wave-quality as core and says
+      closing it reduced return by about 224 percentage points.
+    evidence_source:
+    - 'b1_memory.yaml: verified[0]'
+    - 'project_b1_v2.yaml: known_constraints'
+    - 'snapshot_b1.yaml: frozen_directions'
+    - 'docs/b1_v3_results.md: 关键发现'
+    reopen_condition: Reopen only as explicit subcondition sensitivity mapping; do not casually remove wave-quality or change
+      parameter restoration logic.
+    status: VERIFIED
+    stage_tag: core_component_confirmed
+  - id: b1-exp-004
+    title: B1 V3 front-end hard-filter redundancy for TopN
+    short_result: Several hard filters removed many tail candidates but had little effect on Top5/TopN quality; effect is
+      specific to the tested B1 V3 ranking architecture.
+    evidence_source:
+    - 'b1_memory.yaml: verified[1]'
+    - 'snapshot_b1.yaml: rejected_directions / biggest_risks'
+    - 'docs/b1_v3_results.md: C类硬过滤门'
+    reopen_condition: Reopen only if the B1 architecture, TopN rule, candidate pool, or production constraints change; do
+      not generalize to every B1 implementation.
+    status: PARTIAL
+    stage_tag: validated_for_tested_architecture_only
+  - id: b1-exp-005
+    title: 'B1 V3 parameter scan: j_max=20'
+    short_result: Threshold sweep found j_max=20 as the best tested setting; benchmark report identifies stricter J threshold
+      as a core V3 advantage over V1/V2.
+    evidence_source:
+    - 'snapshot_b1.yaml: current_champion.configuration'
+    - 'docs/b1_v3_results.md: 最终配置 / 关键发现'
+    - docs/b1_benchmark_2026-06-02.md
+    reopen_condition: Reopen only for explicit grid retest under unchanged B1 V3 baseline and with sanity checks proving parameter
+      values produce different results.
+    status: VERIFIED
+    stage_tag: completed
+  - id: b1-exp-006
+    title: B1 V3 pe_max=30 tighter valuation cap
+    short_result: Tightening PE ceiling to pe_max=30 reduced candidate flexibility and hurt returns in the tested B1 V3口径.
+    evidence_source:
+    - 'b1_memory.yaml: failed[1]'
+    - 'project_b1_v2.yaml: known_constraints / known_dead_ends'
+    - 'snapshot_b1.yaml: rejected_directions'
+    - 'docs/b1_v3_results.md: 关键发现'
+    reopen_condition: Reopen only if valuation is tested as a clearly scoped risk-control feature with validated data availability
+      and compared against pe_max=80 baseline.
+    status: FAILED
+    stage_tag: do_not_repeat_as_default_path
+  - id: b1-exp-007
+    title: 'B1 V3 complex fusion: DTW / hist_bonus / S1 / concept resonance / CS groups'
+    short_result: The tested complex fusion path was harmful or ineffective in B1 V3; final report says DTW, hist_bonus, S1,
+      resonance, and related fusion modules did not improve the architecture.
+    evidence_source:
+    - 'b1_memory.yaml: failed[0]'
+    - 'project_b1_v2.yaml: known_dead_ends'
+    - 'snapshot_b1.yaml: rejected_directions'
+    - 'docs/b1_v3_results.md: 已完成的实验步骤 / 关键发现'
+    reopen_condition: Reopen only if construct, implementation, alpha source, and evaluation口径 are materially different; do
+      not rebuild the same B1 V3 fusion stack.
+    status: FAILED
+    stage_tag: do_not_repeat_same_stack
+  - id: b1-exp-008
+    title: B1 V3 CS factor group
+    short_result: CS factor group as a whole was negative or skipped; however q_ind_rank survived as one of the six final
+      factors.
+    evidence_source:
+    - 'docs/b1_v3_results.md: 已完成的实验步骤 / Phase 2概念'
+    - 'docs/b1_v3_factor_list.md: G3/G8'
+    - 'snapshot_b1.yaml: current_champion.effective_factors'
+    reopen_condition: Do not reopen broad CS groups; only retest q_ind_rank or a new B1-specific cross-sectional hypothesis
+      incrementally against the champion.
+    status: FAILED
+    stage_tag: group_failed_with_one_survivor
+  - id: b1-exp-009
+    title: B1 V3 concept / industry Phase 2 factors
+    short_result: Three concept factors were tested; q_ind_rank added value and entered the six-factor final set, while other
+      concept/fusion variants were harmful.
+    evidence_source:
+    - 'docs/b1_v3_results.md: Phase 2概念'
+    - 'docs/b1_v3_factor_list.md: G8 Tier 2 行业/概念'
+    - 'project_b1_v2.yaml: current_best_feature_set'
+    reopen_condition: Reopen only inside B1-valid candidate ranking and only if production-available concept data and incremental
+      account-level value are proven.
+    status: PARTIAL
+    stage_tag: one_factor_survived
+  - id: b1-exp-010
+    title: B1 V1 vs V2 vs V3 full benchmark
+    short_result: 'Unified 2021-2026 benchmark showed V3 dominated V1 and V2: V1 59.7%, V2 73.5%, V3 329.1%; V3 also had lower
+      drawdown and higher Sharpe.'
+    evidence_source:
+    - docs/b1_benchmark_2026-06-02.md
+    - research/b1/benchmarks/benchmark_b1_compare.py
+    - research/b1/benchmarks/benchmark_b1_real.py
+    - research/b1/benchmarks/benchmark_b1_final.py
+    reopen_condition: Reopen only to reproduce under current data/cache or to compare a new challenger; keep unified buy/sell
+      rules and signal generation口径 documented.
+    status: VERIFIED
+    stage_tag: completed_comparison
+  - id: b1-exp-011
+    title: Legacy V1 DTW / pattern-match ranking
+    short_result: V1 DTW pattern matching under unified benchmark materially underperformed V3; V3 report also says DTW-style
+      fusion did not improve current architecture.
+    evidence_source:
+    - docs/b1_benchmark_2026-06-02.md
+    - 'docs/b1_v3_results.md: V1融合接入'
+    - B1_PATTERN_MATCH.md
+    - strategy/pattern_matcher.py
+    reopen_condition: Reopen only for documentation cleanup or a genuinely different similarity architecture; do not use as
+      primary B1 ranking path.
+    status: FAILED
+    stage_tag: superseded_by_v3
+  - id: b1-exp-012
+    title: S1 as B1 entry/fusion filter
+    short_result: S1-style information did not improve B1 V3 fusion/entry stack; S1 may remain as exit/reduction control or
+      shared diagnostic, not B1-owned entry alpha.
+    evidence_source:
+    - 'b1_memory.yaml: failed[0]'
+    - 'project_b1_v2.yaml: strategy_summary.s1_usage_boundary'
+    - 'docs/b1_v3_results.md: V1融合接入'
+    reopen_condition: Reopen only as B1 exit/risk-management or shared detector usage with separate validation; not as default
+      entry fusion.
+    status: FAILED
+    stage_tag: not_entry_alpha
+  - id: b1-exp-013
+    title: B1 PE/PB valuation scoring factors q_pe/q_pb
+    short_result: PE/PB factor implementation had data dependency and missing-value bugs; no positive B1 production conclusion
+      recorded beyond pe_max=80 baseline and pe_max=30 failure.
+    evidence_source:
+    - 'docs/b1_v3_factor_list.md: B7/B8 and Bug修复清单'
+    - 'docs/b1_v3_results.md: 最终配置 / 关键发现'
+    - 'b1_memory.yaml: failed[1]'
+    reopen_condition: Reopen only after validating PE/PB cache availability and missing-value handling; evaluate incrementally
+      rather than assuming stricter valuation improves B1.
+    status: PARTIAL
+    stage_tag: bug_prone_data_dependency
+  - id: b1-exp-014
+    title: B1 V3 optional hard gates require_no_dist_10d and require_vol_price_improving
+    short_result: These two gates filtered about 40% of signals but had no substantial TopN impact because mostly low-score
+      tail candidates were removed.
+    evidence_source:
+    - 'docs/b1_v3_results.md: C类硬过滤门'
+    - 'b1_memory.yaml: verified[1]'
+    reopen_condition: Reopen only if production requires broader candidate control, risk tags, or non-Top5 selection; do not
+      treat as universal B1 law.
+    status: PARTIAL
+    stage_tag: tail_filter_only
+  - id: b1-exp-015
+    title: B1 V3 take-profit 25% exit toggle
+    short_result: Final B1 V3 configuration disables 25% take-profit; report states removing it improved return by 62.5 percentage
+      points.
+    evidence_source:
+    - 'docs/b1_v3_results.md: 最终配置'
+    - 'snapshot_b1.yaml: current_champion.configuration'
+    - 'project_b1_v2.yaml: current_best_configuration'
+    reopen_condition: Reopen only in exit-rule-specific validation with unchanged entry/ranking baseline and account-level
+      metrics.
+    status: VERIFIED
+    stage_tag: disabled_in_best_setup
+  - id: b1-exp-016
+    title: B1 V3 q_rsi internal-parameter rescue
+    short_result: Internal parameter scan rescued q_rsi as positive in isolation, but final report notes single-factor positive
+      did not imply additive value; q_rsi was neutral after stacking and not in final six.
+    evidence_source:
+    - 'docs/b1_v3_results.md: 已完成的实验步骤 / 关键发现'
+    - 'docs/b1_v3_factor_list.md: G4 Qlib'
+    - 'shared_memory.yaml: Single-factor usefulness rule'
+    reopen_condition: Reopen only as incremental test against the six-factor champion; do not promote from standalone positive
+      result.
+    status: PARTIAL
+    stage_tag: single_factor_positive_but_not_final
+  - id: b1-exp-017
+    title: B1 V3 phase-split stability validation
+    short_result: Snapshot identifies market-phase stability and six-factor contribution drift as unresolved; current champion
+      may be aggregate-period dependent.
+    evidence_source:
+    - 'snapshot_b1.yaml: highest_roi_hypotheses / biggest_unknowns / next_priority'
+    - 'handoff_b1_v1.yaml: active_focus'
+    status: OPEN
+    stage_tag: next_priority
+    success_condition_next_phase: This should be performed next with explicit phase splits, unchanged champion config, account-level
+      metrics, and factor drift analysis.
+  - id: b1-exp-018
+    title: B1 V3 wave-quality subcondition sensitivity map
+    short_result: Wave-quality as a whole is verified important, but which subconditions are essential, redundant, or harmful
+      remains unresolved.
+    evidence_source:
+    - 'snapshot_b1.yaml: highest_roi_hypotheses / biggest_unknowns'
+    - 'handoff_b1_v1.yaml: still_debated / active_focus'
+    - 'docs/b1_v3_plan.md: V1波分析模块参数化'
+    status: OPEN
+    stage_tag: high_roi_unfinished
+    success_condition_next_phase: Run explicit grid ablation of subconditions without modifying set_param/reset/rollback or
+      silently changing test design.
+  - id: b1-exp-019
+    title: B1 V3 production/live candidate equivalence
+    short_result: It remains unknown whether backtest champion performance matches real daily production candidates under停牌/涨跌停/liquidity
+      constraints and notification execution chain.
+    evidence_source:
+    - 'snapshot_b1.yaml: biggest_unknowns / biggest_risks'
+    - 'handoff_b1_v1.yaml: still_debated'
+    - 'project_b1_v2.yaml: current_status'
+    status: OPEN
+    stage_tag: unverified_production_alignment
+    success_condition_next_phase: Audit production-available fields, live candidate generation, cache schema, and execution
+      chain before treating backtest results as production-equivalent.
+  - id: b1-exp-020
+    title: Legacy unclear B1 backtest CSV artifact
+    short_result: The old CSV pair showed short/unclear-period negative performance and lacked preserved command/config.
+      Content audit confirmed it was ABANDONED and the derived files were deleted; it must not be used as B1 evidence.
+    evidence_source:
+    - archive/manifests/repository_cleanup_20260724.md
+    - backtest_optimized.py
+    reopen_condition: Do not redo as-is; only use as a cautionary artifact or rebuild the experiment with explicit command,
+      config, data range, and validation口径.
+    status: ABANDONED
+    stage_tag: not_reliable_research_evidence
+  - id: b1-exp-021
+    title: B1 V3 bug-fix stability and zero-factor data-dependency repairs
+    status: VERIFIED
+    stage_tag: data_quality_stability_confirmed
+    short_result: B1 V3 final report records 12 bug fixes with the post-fix optimal factor set unchanged; the factor-list
+      postmortem explicitly records four zero/data-dependency repairs (q_cs_trend, q_pe, q_pb, q_vwap). This is a data-quality
+      stability confirmation, not a new alpha module.
+    evidence_source:
+    - 'docs/b1_v3_results.md: ???????? / Bug ??'
+    - 'docs/b1_v3_factor_list.md: ??Bug????'
+    - 'registry_b1_v1.yaml: b1-exp-013 covers PE/PB valuation data-dependency caveat'
+    reopen_condition: Reopen when B1 V3 factor computation, cache schema, PE/PB/VWAP/CS-trend inputs, or bug-fix assumptions
+      change; verify that repaired fields are production-available and that the champion factor set remains stable.

@@ -1,0 +1,74 @@
+# B1 V3 - Knowledge Base manifest
+# Loaded by ag2_research.knowledge_base.loader
+# DO NOT edit by hand without bumping kb_version.
+
+kb_version: "1.0.1"
+subject: "b1_v3"
+as_of_phase: "Phase 15"
+closed_at: "2026-06-24"
+closure_status: "research_closed"
+
+# What the closure is based on
+evidence_universe:
+  asset_class: "A-share daily bars"
+  stock_count: 60
+  date_range: ["2023-01-01", "2026-06-22"]
+  windows:
+    A_2023:          {start: "2023-01-01", end: "2023-12-31"}
+    B_2024H1:        {start: "2024-01-01", end: "2024-06-30"}
+    C_2024H2_latest: {start: "2024-07-01", end: "2026-06-22"}
+
+# Frozen baseline — agents must beat this on the acceptance bar to claim improvement
+frozen_baseline:
+  A_2023:          {trades: 94,  return_pct:  12.93, max_drawdown_pct:  -3.14, sharpe:  1.57, profit_factor: 2.66}
+  B_2024H1:        {trades: 36,  return_pct:  -1.88, max_drawdown_pct:  -4.66, sharpe: -0.58, profit_factor: 0.64}
+  C_2024H2_latest: {trades: 144, return_pct:   7.13, max_drawdown_pct: -10.86, sharpe:  0.48, profit_factor: 1.35}
+
+# Acceptance criteria for any agent-proposed change to B1 V3
+acceptance_bar:
+  pf_retention_min: 0.80
+  sharpe_retention_min: 0.80
+  jaccard_min: 0.50
+  windows_required: ["A_2023", "B_2024H1", "C_2024H2_latest"]
+  rule: "ALL windows must pass ALL three criteria. Single-window improvement is not accepted."
+
+# Files in this package (relative to this manifest)
+artifacts:
+  brief:            "verdict_brief.md"             # short summary for agent context injection
+  hard_constraints: "hard_constraints.yaml"        # machine-checkable do/dont
+  full_verdict:     "verdict_full.md"
+  architecture:     "architecture_full.md"
+  geometry:         "constraint_geometry.md"
+  missing_universe: "missing_universe_ranked.md"
+  graph:            "dependency_graph.md"
+  alpha_generators: "alpha_generators.json"
+  exit_generators:  "exit_generators.json"
+  concentrators:    "concentrators.json"
+  dead_components:  "dead_components.json"
+  redundant:        "redundant_components.json"
+  interactions:     "interaction_summary.json"
+  lessons:          "research_lessons.json"
+
+# Headline facts (used by context_builder; updates require kb_version bump)
+headline:
+  entry_generator_count: 1
+  entry_generator_names: ["C_wave_qualified"]
+  exit_alpha_count: 1
+  exit_alpha_names: ["t_plus_3_min_return"]
+  concentrator_count_active: 12
+  structural_hub: "A_J_range"
+  system_type: "constraint_geometry"
+  trade_identity_factorable: false
+
+# Phase index — for audit lookups
+phase_index:
+  Phase_9:  {role: "sensitivity_ranking"}
+  Phase_10: {role: "robustness_validation"}
+  Phase_11: {role: "alpha_isolation"}
+  Phase_12A: {role: "entry_component_ablation"}
+  Phase_12B: {role: "alpha_only_minimal_test"}
+  Phase_12C: {role: "interaction_alpha_recovery"}
+  Phase_13: {role: "independent_generator_discovery"}
+  Phase_14A: {role: "feature_universe_audit"}
+  Phase_14B: {role: "constraint_geometry_audit"}
+  Phase_15: {role: "research_closure"}

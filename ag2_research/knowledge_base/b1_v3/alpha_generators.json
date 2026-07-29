@@ -1,0 +1,94 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 entry generators",
+  "as_of_phase": "Phase 15 (closure)",
+  "entry_generators": [
+    {
+      "id": "C_wave_qualified",
+      "type": "entry_generator",
+      "status": "confirmed",
+      "mechanism": "Inside analyze_wave: detect surge days (gain >= surge_min_gain_pct, bullish, vol > surge_vol_vs_ma5 * avg_vol_5), group them into a wave, accept iff total_gain <= wave_max_gain_pct AND surge_turnover_sum <= wave_max_turnover_sum AND positive_vol > negative_vol * wave_red_green_vol_ratio AND volume-rank confirmations.",
+      "code_location": "strategy/b1_v3_strategy.py::analyze_wave + extract_signals_single",
+      "default_params": {
+        "require_wave_qualified": true,
+        "wave_max_gain_pct": 60,
+        "wave_max_turnover_sum": 90,
+        "wave_red_green_vol_ratio": 1.2
+      },
+      "feature_categories_used": ["Price Structure", "Volume"],
+      "phase_evidence": {
+        "phase12a": {
+          "rank": 1,
+          "avg_d_return_pp": -5.10,
+          "avg_d_sharpe": -0.51,
+          "avg_d_pf": -0.65,
+          "classification": "Class I real alpha"
+        },
+        "phase12b": {
+          "alpha_only_jaccard_vs_baseline": {
+            "A_2023": 0.051,
+            "B_2024H1": 0.034,
+            "C_2024H2_latest": 0.040
+          },
+          "alpha_only_pf": {
+            "A_2023": 1.16,
+            "B_2024H1": 0.65,
+            "C_2024H2_latest": 1.10
+          },
+          "interpretation": "necessary but not sufficient"
+        },
+        "phase13": {
+          "alternative_families_tested": 8,
+          "second_generator_found": false,
+          "best_partial_complement": "G4_RelativeStrength"
+        }
+      },
+      "notes": "Necessary but not sufficient. Removing collapses baseline; keeping alone produces ~30x raw candidate inflation and PF 1.10-1.16. Edge actually lives in constraint geometry, not in this generator alone."
+    }
+  ],
+  "candidate_generators_evaluated": [
+    {
+      "id": "G2_BreakoutContinuation",
+      "status": "standalone_passer_combined_failed",
+      "phase13_pass_windows": ["A_2023", "C_2024H2_latest"],
+      "max_jaccard_vs_wave_qualified": 0.003,
+      "combined_baseline_outcome": "mixed_in_A_worse_in_C"
+    },
+    {
+      "id": "G4_RelativeStrength",
+      "status": "partial_passer",
+      "phase13_pass_windows": ["B_2024H1", "C_2024H2_latest"],
+      "max_jaccard_vs_wave_qualified": 0.065,
+      "combined_baseline_outcome": "clean_win_in_B_dilution_in_C"
+    },
+    {
+      "id": "G8_KDJ_GoldCross",
+      "status": "standalone_passer_combined_failed",
+      "phase13_pass_windows": ["A_2023_marginal", "C_2024H2_latest"],
+      "max_jaccard_vs_wave_qualified": 0.008,
+      "combined_baseline_outcome": "always_dilutes"
+    },
+    {
+      "id": "G1_TrendPersistence",
+      "status": "failed_2_of_3_window_requirement"
+    },
+    {
+      "id": "G3_VolContraction",
+      "status": "failed_2_of_3_window_requirement",
+      "note": "PF 2.77 in C window but failed in A and B"
+    },
+    {
+      "id": "G5_VolAcceleration",
+      "status": "failed_2_of_3_window_requirement"
+    },
+    {
+      "id": "G6_MomentumReversal",
+      "status": "failed_2_of_3_window_requirement"
+    },
+    {
+      "id": "G7_MAStructPullback",
+      "status": "failed_all_windows"
+    }
+  ],
+  "summary": "One confirmed entry generator (C_wave_qualified). No second generator satisfies the 4-requirement bar within the current feature universe (Price Structure + Momentum + Volume on single daily timeframe)."
+}

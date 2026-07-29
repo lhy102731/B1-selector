@@ -1,0 +1,240 @@
+handoff:
+  version: "1.0"
+  generated_at: "2026-06-19"
+
+  infrastructure_identity:
+    strategy_id: "Shared Infrastructure"
+    identity: "Reusable data, cache, configuration, notification, indicator-library, orchestration, UI, and backtest infrastructure for B1, B3, and Brick."
+    plain_language: >
+      Shared Infrastructure owns common mechanisms, not alpha. It fetches and stores data,
+      computes shared formulas, builds caches, runs backtests, manages configs, sends notifications,
+      and orchestrates workflows. It must never be used to merge B1, B3, and Brick research memories
+      or to infer strategy ownership from file location.
+    current_maturity: "medium overall; medium data/backtest/cache, medium-low feature/workflow, low AG2 governance"
+    classification_rule: "First classify by Alpha Source. If a component defines signal, feature, ranking model, trading rule, or research conclusion, assign it to B1/B3/Brick even if it lives in a shared runner."
+    core_layers:
+      data_layer: "A-share stock list, daily OHLCV/base fields, trading calendar, incremental/full update, retries, optional fund/concept/big-deal/market-timing data."
+      backtest_layer: "Generic simulation, signal calling, precompute, account-level positions/trades/equity/exits, parameter grids, and cached outputs."
+      feature_layer: "Shared formulas and physical indicator ownership; strategy files may record only strategy-specific usage."
+      cache_layer: "Indicator, signal, feature, model, and output caches; cache mechanism is shared even when content is strategy-specific."
+      ag2_layer: "Potential research/execution agent orchestration helper; currently low governance and not an alpha source."
+      workflow_layer: "CLI, batch, cron, web, GUI, daily/research/validation workflow orchestration and notifications."
+
+  must_accept:
+    - conclusion: "Shared Infrastructure must not record B1, B3, or Brick strategy effectiveness conclusions."
+      why: "Project Memory explicitly excludes strategy alpha and research conclusions from Shared Infrastructure."
+      how_to_use: "Route effectiveness, champion, failed-alpha, and strategy-specific trading-rule conclusions back to the relevant strategy memory."
+    - conclusion: "First classify every file, output, feature, and result by Alpha Source."
+      why: "Shared files and runners may call multiple strategies, but ownership is determined by what creates alpha, not by where code lives."
+      how_to_use: "If it defines strategy-specific signal/ranking/trading logic, assign to B1/B3/Brick; if it fetches, stores, runs, caches, notifies, or simulates generically, assign to Shared."
+    - conclusion: "Production research requires Purged Walk-Forward and out-of-sample-first validation."
+      why: "Shared Research Memory verifies random split and unpurged validation can leak time-dependent information."
+      how_to_use: "Do not accept ordinary KFold/random split or unpurged validation as production evidence."
+    - conclusion: "Account-level production results outrank ranking metrics when they conflict."
+      why: "TopN, NDCG, IC, and grouped metrics can diverge from Sharpe, CAGR, drawdown, turnover, and tradability."
+      how_to_use: "Use ranking metrics for diagnostics; production superiority requires account-level confirmation."
+    - conclusion: "Future-function leakage invalidates a result regardless of headline performance."
+      why: "Any field unavailable at the trade decision time is invalid as a pre-trade feature."
+      how_to_use: "Build decision-time availability and timestamp-alignment checks before using event data, backtest-only fields, or post-entry values."
+    - conclusion: "Single-factor usefulness does not imply additive usefulness in a combined model."
+      why: "Shared Research Memory records saturation and collinearity after combination."
+      how_to_use: "Evaluate new factors incrementally against the current champion model, not only as standalone IC or single-factor backtests."
+    - conclusion: "FAILED conclusions are bounded by tested construct, implementation, strategy, and evaluation口径."
+      why: "A failed module in one strategy can still be valid in another only after independent validation."
+      how_to_use: "Preserve exact failure scope and do not transfer failure or success across strategies without re-validation."
+    - conclusion: "Shared white_line, yellow_line, and S1 detector ownership is physical/formula ownership, not strategy alpha ownership."
+      why: "Project Memory records white_line/yellow_line formulas and S1 detector implementation as shared, while strategy-specific uses belong to B1/B3/Brick."
+      how_to_use: "Record formulas and detector implementation here; record trading usage and research outcomes in strategy memories."
+
+  active_focus:
+    - priority: 1
+      focus: "Decision-time availability registry"
+      applies_to:
+        - "data_layer"
+        - "feature_layer"
+        - "event_data"
+      reason: "The largest infrastructure risk is future-function leakage from unavailable fields or misaligned event timestamps."
+      expected_output: "Registry with field/source/refresh frequency/available_at/decision_time_status/used_by/no_leakage_status."
+    - priority: 2
+      focus: "Unified cache and output manifest"
+      applies_to:
+        - "cache_layer"
+        - "workflow_layer"
+        - "backtest_layer"
+      reason: "Stale or polluted caches can create false conclusions across strategies, especially in large sweeps."
+      expected_output: "Manifest for every cache/output with strategy_id, alpha_source, data_range, data_version, feature_schema, generation_params, cache_ids, output_files, and code_version."
+    - priority: 3
+      focus: "Fair account-level validation harness"
+      applies_to:
+        - "backtest_layer"
+        - "workflow_layer"
+      reason: "Champion comparisons need standardized PWF/OOS, purge/embargo, costs, TopK, exit rules, and account metrics."
+      expected_output: "Reusable comparison template for B1/B3/Brick that records candidate pool, costs, TopK, exits, validation method, and production metrics."
+    - priority: 4
+      focus: "Feature registry and alpha-boundary enforcement"
+      applies_to:
+        - "feature_layer"
+        - "cross_layer_governance"
+      reason: "Shared formulas and strategy-specific feature roles are easy to confuse."
+      expected_output: "Feature registry with formula/owner/available_at/used_by/alpha_source_boundary/no_leakage_status/incremental_test_status."
+    - priority: 5
+      focus: "AG2/workflow governance"
+      applies_to:
+        - "ag2_layer"
+        - "workflow_layer"
+      reason: "Agent/workflow automation can silently change test design or produce non-reproducible, boundary-contaminated conclusions."
+      expected_output: "AG2/workflow run manifest with task_spec, strategy_id, alpha_source, inputs, commands, params, outputs, validation_status, and permissions/logging."
+
+  technical_debt:
+    data_layer:
+      - "No unified decision-time availability audit for base fields, optional event data, concept/fund-flow data, and market-timing data."
+      - "Event data needs disclosure-time and local-ingestion-time alignment before production use."
+      - "GBK encoding, reverse chronological raw CSVs, date-order conversion, field missingness, retries, and data-source differences remain cross-strategy risks."
+    backtest_layer:
+      - "No single enforced PWF/OOS, purge/embargo, cost model, TopK, exit-rule, and account-level comparison template across strategies."
+      - "Old high-Sharpe or inconsistent-validation reports need labeling or migration to calibrated validation口径 before being used as production evidence."
+      - "Generic backtest mechanics are often confused with strategy-specific alpha or trading rules."
+    feature_layer:
+      - "No complete feature schema covering field meaning, generation time, decision-time availability, owner, alpha_source boundary, and used_by strategy."
+      - "Shared formulas and detectors can be misclassified as strategy-owned alpha."
+      - "External event/factor/concept data requires availability and incremental-value audit before research use."
+    cache_layer:
+      - "Cache field completeness, generation params, date range, strategy version, feature schema, and code/data version are not fully manifest-driven."
+      - "Large parameter tests depend on caches, but cache mismatch can produce large-scale false results."
+      - "Cache mechanism ownership and strategy-specific cached content ownership need to remain separated."
+    ag2_layer:
+      - "No mature AG2 infrastructure conclusion is recorded in shared memory."
+      - "AG2 lacks governed task boundaries, input/output schema, permissions, logs, failure recovery, and reproducibility records."
+      - "AG2-generated conclusions may mix strategy boundaries unless forced to classify by Alpha Source."
+    workflow_layer:
+      - "Daily production scans, research backtests, parameter sweeps, production validation, and notification delivery need clearer workflow type separation."
+      - "Workflow outputs need stronger mapping to strategy_id, alpha_source, params, cache versions, data ranges, validation rules, and output files."
+      - "Shared runners can make B1/B3/Brick look like one project even though their alpha ownership remains separate."
+
+  do_not_repeat:
+    - item: "Do not merge B1, B3, and Brick because they share files, indicators, data, runners, or caches."
+      reason: "Strategy boundaries are determined only by Alpha Source."
+    - item: "Do not assign a result file to a strategy without checking which Alpha Source generated it."
+      reason: "Generic runners can produce strategy-specific outputs."
+    - item: "Do not use random split, ordinary KFold, or validation without purge/embargo for time-series strategy research."
+      reason: "It can leak future information into training and inflate apparent alpha."
+    - item: "Do not use backtest-only outcome fields, future returns, realized trade outcomes, or post-entry values as pre-trade features."
+      reason: "Any field unavailable at production decision time is future-function leakage."
+    - item: "Do not treat statistical significance, IC, NDCG, TopN, or ranking metrics as production tradability."
+      reason: "Production decisions require account-level results."
+    - item: "Do not quote one-off decomposition percentages as universal constants."
+      reason: "Attribution depends on model architecture, feature set, and decomposition method."
+    - item: "Do not use old high-Sharpe reports from inconsistent evaluation as production proof."
+      reason: "Production decisions require calibrated forward validation and account-level evidence."
+    - item: "Do not silently change sample size, date range, thresholds, parameter ranges, or test design for speed."
+      reason: "Shared workflow governance requires exact task scope and explicit grid methodology."
+    - item: "Do not allow AG2 or workflows to auto-change experiment design."
+      reason: "Agent orchestration must execute explicit GRID TEST or approved workflow only."
+    - item: "Do not record strategy champion, failure, or alpha conclusions in Shared Infrastructure memory."
+      reason: "Shared memory is infrastructure-only."
+
+  common_mistakes:
+    - mistake: "Classifying by file path instead of alpha source."
+      correction: "A strategy-specific signal in a shared runner still belongs to the strategy; a generic cache builder remains shared."
+    - mistake: "Calling white_line, yellow_line, or S1 a B1/B3/Brick-owned implementation."
+      correction: "Formulas and physical detector ownership are shared; strategy-specific roles belong to strategy memories."
+    - mistake: "Using production-unavailable event data because it exists historically in a CSV."
+      correction: "Require decision-time availability and timestamp alignment before production use."
+    - mistake: "Reusing a cache without knowing generation params, data range, feature schema, and code version."
+      correction: "Require a manifest or rebuild under known conditions."
+    - mistake: "Comparing champion models with different candidate pools, costs, TopK, exit rules, or validation口径."
+      correction: "Use fair account-level comparison harness and record all controlled variables."
+    - mistake: "Treating shared workflow output as a strategy conclusion without checking strategy_id and alpha_source."
+      correction: "Every output should map to strategy_id, task_type, alpha_source, params, validation rules, and source files."
+    - mistake: "Letting AG2-generated reports become research memory without reproducible commands and manifests."
+      correction: "AG2 output is only useful if task_spec, commands, params, inputs, outputs, and validation_status are recorded."
+    - mistake: "Assuming a FAILED direction transfers across strategies."
+      correction: "Failures are bounded by tested construct, implementation, strategy, and evaluation口径."
+
+  escalation_conditions:
+    - condition: "A feature uses fields whose available_at time is unknown or after entry."
+      action: "Pause and run decision-time availability audit before any strategy test."
+    - condition: "Event data is used without disclosure-time and local-ingestion-time alignment."
+      action: "Reject as production feature until timestamp alignment is proven."
+    - condition: "A result depends on a cache without manifest or with mismatched data range/schema/params/code version."
+      action: "Do not trust the result; rebuild or create a manifest before using it."
+    - condition: "A workflow or AG2 run changed sample size, date range, thresholds, or parameters without explicit approval."
+      action: "Invalidate the run for production comparison and rerun under the approved spec."
+    - condition: "A report claims production superiority using only ranking metrics or statistical significance."
+      action: "Downgrade to diagnostic evidence; require account-level PWF/OOS validation."
+    - condition: "A shared output mixes B1, B3, and Brick conclusions."
+      action: "Split by alpha source and route conclusions to the correct strategy memory."
+    - condition: "A new infrastructure change affects set_param/reset/rollback, cache generation, feature schema, or date ordering."
+      action: "Run a small sanity check first and verify different parameter values produce different results where expected."
+    - condition: "A result is broadly abnormal or implausibly high."
+      action: "Stop; audit leakage, cache pollution, date ordering, GBK parsing, validation split, cost assumptions, and alpha boundary."
+    - condition: "A shared memory update contains strategy effectiveness."
+      action: "Move it to B1/B3/Brick memory and keep Shared entry limited to mechanism or validation rule."
+
+  first_day_tasks:
+    - task: "Read the three shared sources: project_shared_v2.yaml, shared_memory.yaml, then snapshot_shared.yaml."
+      purpose: "Understand ownership boundaries, validation rules, current maturity, and infrastructure priorities."
+      deliverable: "One-page infrastructure map: data/backtest/feature/cache/AG2/workflow responsibilities and risks."
+    - task: "Create the first shared manifest standard draft."
+      purpose: "Snapshot identifies this as the first task for infrastructure researcher."
+      deliverable: "YAML/CSV schema covering strategy_id, alpha_source, task_type, data_range, data_version, feature_schema, available_at, cache_ids, params, cost_model, TopK/position rules, exit_rules, validation_method, output_files, and code_version."
+    - task: "Audit one representative existing output or cache with the draft manifest."
+      purpose: "Test whether future AI can trace a result back to data, parameters, strategy boundary, and validation口径."
+      deliverable: "A filled manifest example and a list of missing fields."
+    - task: "Define decision-time availability fields."
+      purpose: "Prevent future-function leakage before feature/event research expands."
+      deliverable: "Minimum registry fields: field_name, source, owner, refresh_frequency, disclosure_time, ingestion_time, available_before_entry, used_by, alpha_source_boundary."
+    - task: "Document workflow type separation."
+      purpose: "Prevent daily scans, research sweeps, validation runs, and notifications from being mixed."
+      deliverable: "Initial list of workflow types and required metadata for each."
+
+  first_week_tasks:
+    - task: "Implement or formalize the shared manifest standard for caches, outputs, features, backtest runs, and workflow results."
+      deliverable: "A reproducible manifest template and at least several filled examples across B1/B3/Brick or shared runs."
+    - task: "Build decision-time availability registry for common fields and first event-data candidates."
+      deliverable: "Registry identifying which fields are production-safe before entry and which require timestamp alignment."
+    - task: "Design fair account-level validation harness specification."
+      deliverable: "Standard comparison spec for PWF/OOS, purge/embargo, cost model, candidate pool, TopK, exit rules, metrics, and output mapping."
+    - task: "Define feature registry and ownership schema."
+      deliverable: "Schema separating formula/physical owner from strategy usage and alpha_source boundary."
+    - task: "Create AG2 run manifest and workflow result manifest templates."
+      deliverable: "Templates that prevent agent/workflow runs from silently changing test design or producing non-reproducible conclusions."
+    - task: "Review existing high-risk outputs for cache or validation ambiguity."
+      deliverable: "List of outputs that should not be used as production proof until manifest/validation status is clarified."
+    - task: "Update shared memory only with infrastructure or governance conclusions."
+      deliverable: "No strategy champion or alpha result is written to Shared memory."
+
+  success_definition:
+    next_phase_success:
+      - "Every important cache/output/backtest/workflow artifact can be traced to strategy_id, alpha_source, data range, data version, feature schema, params, validation口径, and code version."
+      - "Decision-time availability registry can reject leaked or non-production-comparable features within 30 seconds."
+      - "B1/B3/Brick champion comparisons use a fair account-level validation harness with explicit PWF/OOS, purge/embargo, costs, TopK, exit rules, and metrics."
+      - "Shared formulas and detectors are recorded as shared physical ownership, while strategy-specific usage remains in strategy memories."
+      - "AG2 and workflow runs are reproducible, bounded by explicit specs, and cannot silently change sample size, date range, thresholds, or test design."
+      - "Shared Infrastructure memory remains infrastructure-only and never records strategy effectiveness conclusions."
+    not_success:
+      - "A manifest exists but omits decision-time availability, strategy_id, alpha_source, validation method, or code/data version."
+      - "A cache or output is reused for production conclusions without knowing how it was generated."
+      - "A workflow can mix production scan, research backtest, parameter sweep, and notification outputs without type separation."
+      - "AG2 reports are treated as evidence without reproducible inputs, commands, params, outputs, and validation status."
+      - "Shared memory starts containing B1/B3/Brick champion or alpha conclusions."
+
+  recommended_reading_order:
+    - order: 1
+      file: "project_shared_v2.yaml"
+      reason: "Defines infrastructure identity, boundary, layer responsibilities, shared indicator ownership, and classification rules."
+    - order: 2
+      file: "shared_memory.yaml"
+      reason: "Highest-priority shared governance truth: validation rules, leakage rules, account-level-first principle, and do-not-repeat rules."
+    - order: 3
+      file: "snapshot_shared.yaml"
+      reason: "Current state panel: layer maturity, technical debt, biggest risks, next infrastructure priorities, and first task."
+    - order: 4
+      file: "project_b1_v2.yaml / project_b3_v2.yaml / project_brick_v2.yaml"
+      reason: "Read only to understand strategy-specific boundaries and route outputs/conclusions correctly."
+    - order: 5
+      file: "strategy-specific memories and snapshots"
+      reason: "Use only when assigning a conclusion to a strategy; do not copy strategy effectiveness into Shared memory."
+    - order: 6
+      file: "representative cache/output/backtest/workflow artifacts"
+      reason: "Use to test manifest completeness and traceability, not to infer alpha ownership by file path."

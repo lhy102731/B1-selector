@@ -1,0 +1,87 @@
+project:
+  name: "B3 Strategy Memory"
+  strategy_id: "B3"
+  version: "2.0"
+  strategy_type: "A-share limit-up relay / strong-stock next-day continuation strategy"
+
+  boundary:
+    belongs_to: "B3"
+    alpha_source_rule: >
+      Belongs to B3 only if the alpha comes from yesterday's strong rise or limit-up followed
+      by controlled next-day continuation, shrink-volume acceptance, and clean candle structure.
+    excludes:
+      - "B1 accumulation-wave shrink-volume pullback alpha"
+      - "Brick chart green-to-red reversal and Brick ranking research"
+      - "Shared data, cache, notification, orchestration, indicator-library, and generic backtest infrastructure"
+    shared_references_policy: >
+      B3 may reference shared indicators only by their B3 gating role. Indicator formulas,
+      runners, storage, notifications, and caches are recorded in project_shared_v2.yaml.
+
+  objective: >
+    Find A-share strong-stock relay opportunities after a prior-day surge or limit-up. The
+    desired setup is a next-day mild continuation candle with healthy shrink-volume acceptance,
+    small shadows, limited gap, and trend-line confirmation. B3 is not B1 pullback/retest and
+    not Brick chart ranking.
+
+  market: "China A-share equities"
+  holding_period: "Short-term relay. A mature independent B3 holding/exit memory has not yet been established."
+
+  alpha_source:
+    primary: "Prior-day strong rise or limit-up creates short-term momentum/attention."
+    secondary: "Next-day mild positive continuation indicates the move is being accepted rather than immediately rejected."
+    tertiary: "Shrink-volume and small-shadow candle structure filters out excessive divergence, blow-off, or failed continuation."
+    not_alpha:
+      - "B1 pullback to yellow/white line after accumulation wave."
+      - "Brick chart signal or Brick ranking model."
+      - "Shared indicator formulas, data fetching, caching, notification, and orchestration."
+
+  strategy_summary:
+    signal_name: "B3XG / B3 limit-up relay"
+    core_conditions:
+      - "Yesterday return >= 9%."
+      - "Today return is between 2% and 4%."
+      - "Today close > today open."
+      - "Today open gap versus yesterday close < 1%."
+      - "Upper shadow <= 2%."
+      - "Lower shadow <= 2%."
+      - "Today volume / yesterday volume is between 0.6 and 0.9."
+      - "Shared white/yellow trend-line gate passes in the B3-specific continuation context; formulas live in project_shared_v2.yaml."
+      - "close is above the shared yellow-line reference in the B3-specific continuation context."
+      - "If market_cap exists, require market_cap > 5 billion RMB."
+    distinguishing_features:
+      - "B3 is a strong-stock relay setup, not a low-position pullback setup."
+      - "The key structure is yesterday's strong move plus today's controlled continuation."
+      - "The volume condition favors shrink-volume acceptance after the surge."
+
+  current_status:
+    summary: "B3 exists as an independent scanner and independent alpha family, but its research memory is sparse."
+    current_production_version: "Rule-based B3 scanner logic."
+    current_best_model: "Rule model; no confirmed independent ML ranking model is recorded."
+    current_best_feature_set: "B3XG seven rules plus B3-specific trend-line and market-cap gates."
+
+  core_signal_family:
+    name: "Limit-up relay / next-day controlled continuation"
+    description: >
+      B3 searches for a follow-through day after a major prior-day rise. It aims to identify
+      continuation with controlled price action, not a deep retest and not a brick-chart reversal.
+
+  known_constraints:
+    - "B3 must not inherit B1 V3 pullback conclusions."
+    - "B3 must not inherit Brick V2/V5 ranking conclusions."
+    - "The current B3 memory has no verified failed directions; do not invent dead ends."
+    - "B3 currently has less mature independent research infrastructure than B1 or Brick."
+    - "Shared trend-line formulas and execution files must not be treated as B3-owned modules."
+
+  current_research_focus:
+    - "Build an independent B3 sample and backtest record."
+    - "Define B3-specific holding, exit, and ranking rules."
+    - "Validate whether B3 should remain a pure rule scan or receive its own candidate ranking layer."
+    - "Keep B3 validation independent from B1 and Brick."
+
+  known_dead_ends: []
+
+  recommended_starting_context:
+    - "Understand B3 as a limit-up relay alpha."
+    - "Start from B3's rule conditions, not from B1 or Brick reports."
+    - "Classify new material as B3 only if the alpha source is prior-day strong move plus next-day controlled continuation."
+    - "When a shared indicator appears in B3, record only its B3 gate role here and keep implementation/formula ownership in project_shared_v2.yaml."

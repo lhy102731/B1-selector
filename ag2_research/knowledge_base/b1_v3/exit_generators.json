@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 exit-side alpha components",
+  "as_of_phase": "Phase 15 (closure)",
+  "exit_generators": [
+    {
+      "id": "t_plus_3_min_return",
+      "type": "exit_rule",
+      "status": "confirmed_independent",
+      "mechanism": "If hold_days >= 3 and unrealised return / cost < t_plus_3_min_return, exit at close.",
+      "code_location": "strategy/b1_v3_strategy.py::simulate (line ~1807)",
+      "default_value": 0.02,
+      "tested_range": [0.0, 0.02, 0.04, 0.06],
+      "phase_evidence": {
+        "phase9_sensitivity": {
+          "class": "A",
+          "marginal_contribution_pp_per_window": {"A_2023": 1.47, "B_2024H1": 1.92, "C_2024H2_latest": 5.60}
+        },
+        "phase10_robustness": {
+          "class": "R1_robust",
+          "consistency": "positive_in_all_3_windows",
+          "best_setting_per_window": {
+            "A_2023": "HIGH (0.06)",
+            "B_2024H1": "HIGH (0.06)",
+            "C_2024H2_latest": "HIGH by Sharpe and DD, LOW by raw return"
+          }
+        },
+        "phase11_independence": {
+          "class": "Class I independent alpha",
+          "jaccard_vs_jmax_pemax": 1.000,
+          "interaction_with_jmax": "additive (avg deviation -1.4pp small)",
+          "interaction_with_pemax": "additive",
+          "verdict": "sole independent alpha; mechanism orthogonal to entry filters"
+        }
+      },
+      "notes": "Only A-class parameter that survived all three audits (sensitivity, robustness, independence). Mechanism is orthogonal to entry alpha: it changes exit timing, not candidate selection (Jaccard 1.000 against entry filter variants)."
+    }
+  ],
+  "exit_rules_other": [
+    {
+      "id": "stop_loss",
+      "type": "exit_rule",
+      "status": "risk_control",
+      "mechanism": "If current low <= entry_low - stop_loss_width, exit at stop_loss_width below low.",
+      "default_width": 0.05,
+      "phase_evidence_phase9": "B class (reachable but weak influence)",
+      "notes": "Risk control, not alpha. Stop_loss_width was Phase 8D demonstrated as runtime-reachable."
+    },
+    {
+      "id": "exit_break_yellow",
+      "type": "exit_rule",
+      "status": "default_on",
+      "mechanism": "If close < yellow_line exit.",
+      "notes": "Structural exit aligned with yellow-line anchor; not alpha-tested in isolation."
+    },
+    {
+      "id": "exit_break_white",
+      "type": "exit_rule",
+      "status": "default_on_launched_only",
+      "mechanism": "After launched=True (5% profit AND close > white), if close < white exit.",
+      "notes": "Trail-stop equivalent; conditional on launched."
+    },
+    {
+      "id": "exit_profit_25pct",
+      "type": "exit_rule",
+      "status": "default_on_launched_only",
+      "mechanism": "After launched, if unreal/cost > 0.25 take profit.",
+      "notes": "Take-profit cap, not alpha-tested in isolation."
+    },
+    {
+      "id": "max_hold_days",
+      "type": "exit_rule",
+      "status": "default_on",
+      "mechanism": "If hold_days >= 35 force exit.",
+      "notes": "Hold-window cap, not alpha-tested in isolation."
+    },
+    {
+      "id": "exit_s1_clear",
+      "type": "exit_rule",
+      "status": "default_off",
+      "mechanism": "放量巨阴 distribution detector.",
+      "notes": "Off by default."
+    },
+    {
+      "id": "exit_distribution",
+      "type": "exit_rule",
+      "status": "default_off"
+    },
+    {
+      "id": "exit_ddt",
+      "type": "exit_rule",
+      "status": "default_off",
+      "notes": "DDT take-profit; off by default."
+    }
+  ],
+  "summary": "One confirmed independent exit alpha (t_plus_3_min_return). Other exit rules are structural (yellow/white breaks, max_hold) or off by default. No interaction with entry-side filters detected (orthogonal mechanism)."
+}

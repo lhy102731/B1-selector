@@ -1,0 +1,852 @@
+registry:
+  experiments:
+  - id: brick-exp-001
+    title: Brick V1 raw brick signal baseline and feature anatomy
+    category: feature_engineering
+    status: VERIFIED
+    short_result: 'V1 raw brick signal generated a large but weak baseline. V1 feature analysis reports
+      2024-01 to 2026-06 sample of 74,667 signals with baseline WR 42.5%, AVG +0.93%, MED -0.57%. Momentum/price-location
+      features dominated: red_height |d|=0.85, rsi_6 |d|=0.75, brick_slope_3d |d|=0.68, close_to_ma5_pct
+      |d|=0.66. Simple three-condition filtering red_height>5.6 + rsi_6>62 + vol_ratio_5>1 improved WR
+      to 68.8% and AVG to +4.09% but retained only 19,727 signals.
+
+      '
+    evidence_source:
+    - docs/brick_v1_feature_analysis.md
+    - research_state/evidence/brick/v1/backtest_brick_v1_summary.csv
+    - research_state/evidence/brick/v1/backtest_brick_v1_features.csv
+    - research_state/evidence/brick/v1/brick_v1_feature_ranking.csv
+    - research_state/evidence/brick/v1/backtest_brick_v1_trades.csv
+    - research/brick/legacy/v1/analyze_brick_v1.py
+    - archive/strategies/brick_chart_v1_strategy.py
+    reopen_condition: 'Reopen only to reproduce the raw baseline under current data or to audit V1→V2
+      feature derivation. Do not treat V1 filters as production champion without fair account-level comparison
+      to V2.
+
+      '
+  - id: brick-exp-002
+    title: Brick V2 manual 26/28 factor library and non-ML weighting schemes
+    category: feature_engineering
+    status: FAILED
+    short_result: 'Handcrafted factor library identified useful signal-day factors, but simple manual
+      weighting failed. On 2024-2026 Top3/day tests, scheme A percentile+dimension WR=34.7%, scheme B
+      z-score+IC WR=36.7%, scheme C profit-weight WR=37.0%, all worse than random Top3 WR=40.9%. Conclusion:
+      signal-day linear/manual weighting is insufficient.
+
+      '
+    evidence_source:
+    - docs/brick_v2_factor_library.md
+    - docs/brick_v1_feature_analysis.md
+    reopen_condition: 'Do not repeat simple percentile/z-score/profit-weight linear formulas. Reopen only
+      if the design changes to a controlled orthogonalized, nonlinear, or account-level tested model against
+      V2.
+
+      '
+  - id: brick-exp-003
+    title: Brick V2 28-feature LightGBM LambdaRank production baseline
+    category: ranking_model
+    status: VERIFIED
+    short_result: 'Brick V2 28-feature LambdaRank is the current trusted Brick production baseline. Feature
+      set: 25 signal-day features plus 3 entry-day features. Full-order LambdaRank with quintile labels
+      is preferred over TopK binary training. Earlier release reported very high metrics under less reliable/reverse-style
+      evaluation: 2020-2023 WR 87.6%, AVG +8.69%, account CAGR +427%, MDD -33%, Sharpe 13.0; later calibration
+      warns these figures are inflated. Clean PWF-style validation reports V2 baseline around Avg Sharpe
+      1.28, WR 41.3%, AVG +0.44% over 2020-2025 Top5 per-trade, and it remains the comparison champion
+      after later variants. The former backtest_brick_v2 CSV pair was removed after content audit showed it was a 25-signal-day-field
+      legacy subset rather than the claimed 28-feature production baseline; it must not be used to support this record.
+
+      '
+    evidence_source:
+    - docs/brick_v2_release.md
+    - docs/ml_ranker_results.md
+    - docs/gpt_plan_final_report.md
+    - docs/layer0_calibration_report.md
+    - docs/conc_final_verdict.md
+    - brick_memory.yaml
+    - project_brick_v2.yaml
+    - snapshot_brick.yaml
+    - backtest_brick_v2.py
+    - models/brick/v2/ml_ranker_model.pkl
+    - models/brick/v2/ml_ranker_scaler.pkl
+    - archive/manifests/repository_cleanup_20260724.md
+    reopen_condition: 'Reopen only to reproduce with a fixed no-leakage PWF/account-level protocol or
+      to compare a challenger under identical candidate pool, cost model, TopK, exit state machine, and
+      date range. Do not demote V2 from internal ranking metrics alone.
+
+      '
+  - id: brick-exp-004
+    title: Signal-day plus entry-day GBM offline ML ranking
+    category: ranking_model
+    status: PARTIAL
+    short_result: 'GradientBoostingRegressor offline ranking using 28 decision-time features showed strong
+      signal in CSV-level tests. Train 2024-2026 -> test 2020-2023: ML Top10% WR 71.1%, AVG +4.43%; reverse
+      train 2020-2023 -> test 2024-2026: Top10% WR 76.8%, AVG +5.63%. Entry-day features contributed 51.7%
+      importance. Report itself notes this was not yet embedded in live/backtest execution.
+
+      '
+    evidence_source:
+    - docs/ml_signal_day_test_report.md
+    - research_state/evidence/brick/ml/ml_predictions_2020_2023.csv
+    - research_state/evidence/brick/ml/ml_predictions_2024_2026.csv
+    - research_state/evidence/brick/ml/ml_feature_importance.csv
+    reopen_condition: 'Use only as supporting evidence for ML ranking and entry-day feature value. Reopen
+      only with production-equivalent execution and PWF/account-level metrics.
+
+      '
+  - id: brick-exp-005
+    title: Full-order LambdaRank vs TopK-only binary classification
+    category: ranking_model
+    status: VERIFIED
+    short_result: 'Full-order/five-quantile LambdaRank is the preferred Brick formulation. Memory records
+      five-quantile LambdaRank outperforming Top5 and Top20 binary formulations; Top5 exact binary classification
+      lost ranking gradient and suffered class imbalance.
+
+      '
+    evidence_source:
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    - docs/v4_discovery_pipeline_report.md
+    reopen_condition: 'Reopen only if a materially different ranking objective preserves full-order gradients
+      or proves account-level superiority against V2 under identical production assumptions.
+
+      '
+  - id: brick-exp-006
+    title: Naive Alpha101 / GTJA191 / Qlib158 external factor injection
+    category: feature_engineering
+    status: FAILED
+    short_result: 'Naive external factor libraries did not improve Brick. V4 report records V3-style attempts:
+      V2 28 features had 2016-2019 WR 80.5% and 2020-2023 WR 86.8%; V2+262 raw factors fell to 76.9% /
+      86.8%; V2+108 residual factors 76.5% / 87.0%; V2+72 factors 76.8% / 86.4%. Memory concludes Alpha101/GTJA191/Qlib158
+      added noise due to mismatch with Brick mean-reversion.
+
+      '
+    evidence_source:
+    - docs/v4_discovery_pipeline_report.md
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    reopen_condition: 'Do not repeat naive concatenation. Reopen only for structured, orthogonalized,
+      ensemble, or interaction-tested external factors with no-leakage incremental account-level validation.
+
+      '
+  - id: brick-exp-007
+    title: 'Brick V4 internal-state discovery pipeline: 543 candidates to 37 features'
+    category: feature_engineering
+    status: PARTIAL
+    short_result: 'V4 mined strategy internal state and K-line/brick relations instead of external libraries.
+      Generated 543 candidate factors; leakage firewall reduced to 427; RankIC to 228; incremental testing
+      admitted 9 new factors. Final V4 had 37 features. PWF: Avg Sharpe 1.26±0.72, 5/6 years positive,
+      2023 -5.7% CAGR. Account-level Top10 CAGR +65.3%, Sharpe 3.33, MaxDD -27.1%; Top20 CAGR +61.6%,
+      Sharpe 3.42, MaxDD -16.2%. V4 improved some metrics but did not replace V2; V2 retained better Calmar/MaxDD/stability.
+
+      '
+    evidence_source:
+    - docs/v4_discovery_pipeline_report.md
+    - docs/layer0_calibration_report.md
+    - archive/research/data/walk_forward/v4_walk_forward_results.csv
+    - archive/research/data/leakage_check/v4_leak_report.csv
+    - research/brick/v4_pipeline/p1_state_export.py
+    - research/brick/v4_pipeline/p2_candidate_factors.py
+    - research/brick/v4_pipeline/p3_leakage_firewall.py
+    - research/brick/v4_pipeline/p5_incremental_test.py
+    - research/brick/v4_pipeline/p8_train_ranker.py
+    - research/brick/v4_pipeline/p9_purged_walk_forward.py
+    - research/brick/v4_pipeline/p10_account_backtest.py
+    reopen_condition: 'Reopen as an incremental mining framework, not as a wholesale replacement. Any
+      V4-derived challenger must beat V2 on clean account-level metrics, especially MaxDD/Calmar, not
+      only TopK or feature-importance metrics.
+
+      '
+  - id: brick-exp-008
+    title: Brick V4 leakage firewall and data-quality fixes in strategy validation
+    category: data_quality
+    status: VERIFIED
+    short_result: 'As Brick strategy validation evidence, the V4 pipeline found and fixed multiple leakage/data
+      issues: np.roll wrap-around future leak, negative-index future read in prior green streak, cross-day
+      StandardScaler lookahead, LightGBM group sorting requirement, identical multiprocessing random seeds,
+      and stale backward-elimination baseline. 543 factors -> 427 passed firewall. Shared registry records
+      the reusable firewall mechanics separately.'
+    evidence_source:
+    - docs/v4_discovery_pipeline_report.md
+    - archive/research/data/leakage_check/v4_leak_report.csv
+    - research/brick/v4_pipeline/p3_leakage_firewall.py
+    reopen_condition: 'Reopen whenever new factor generation, caches, model training, or walk-forward
+      splits are changed. Treat leakage checks as mandatory before accepting any abnormal Brick result.
+
+      '
+  - id: brick-exp-009
+    title: Brick Purged Walk Forward validation result with 20-day embargo
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'As Brick strategy validation evidence, Purged Walk Forward with 20-day embargo became
+      the credible validation standard for Brick. V4 PWF provides the realistic baseline: yearly Sharpe
+      2020 1.89, 2021 2.09, 2022 0.54, 2023 0.10, 2024 1.70, 2025 1.26; average 1.26?0.72. Later reports
+      use this to reject inflated reverse-period metrics. Shared registry records the reusable split framework
+      separately.'
+    evidence_source:
+    - research/brick/v4_pipeline/p9_purged_walk_forward.py
+    - docs/v4_discovery_pipeline_report.md
+    - docs/layer0_calibration_report.md
+    - archive/research/data/walk_forward/v4_walk_forward_results.csv
+    - docs/p1_pwf_shap_report.md
+    reopen_condition: 'Keep as default validation. Reopen only to improve split design, embargo length,
+      or account-level realism; never use non-purged or reverse-time metrics as production proof.
+
+      '
+  - id: brick-exp-010
+    title: Brick V5 signal profile, clustering, and cluster-regime matrix
+    category: market_structure
+    status: PARTIAL
+    short_result: 'V5 shifted from factor mining to signal understanding. Stage A built 261,279 signals
+      x 24 columns. Stage B selected KMeans k=7 with very high cross-period cluster stability r>0.97.
+      Stage F used rule-based Bull/Range/Bear regime. Cluster×Regime matrix found interpretable effects:
+      Range was best for mean reversion, Deep Oversold was poor, Extreme Movers worked better in Bull,
+      Trend Breakout in Bear. However, cluster/regime alone did not replace V2. Issues: cluster outcome
+      differences small, ATR/volatility may dominate clusters, regime definitions unstable.
+
+      '
+    evidence_source:
+    - docs/v5_pipeline_summary.md
+    - archive/research/data/v5/cluster_stability.csv
+    - archive/research/data/v5/cluster_summary.csv
+    - archive/research/data/v5/cluster_evaluation.csv
+    - archive/research/data/v5/cluster_regime_matrix.csv
+    - archive/research/data/v5/regime_statistics.csv
+    - research/brick/v5/v5_stage_b_clustering.py
+    - research/brick/v5/v5_stage_f_regime.py
+    reopen_condition: 'Reopen for explanation, segmentation, volatility-neutral clustering, or soft controls.
+      Do not use V5 cluster/regime as standalone replacement without account-level superiority over V2.
+
+      '
+  - id: brick-exp-011
+    title: V5 RegimeAware ranker as standalone replacement
+    category: regime_model
+    status: FAILED
+    short_result: 'V5 RegimeAware ranker improved internal Top10/Top20 Sharpe versus a unified V5 model
+      on 2024-2026 (Top10 Sharpe 4.02 vs 3.10, +29.8%), but fair V2 vs V5 comparison showed V2 dominated
+      by large margins. On same test 2024-2026, V2 Top10 Sharpe 19.14 vs V5 1.31, AvgRet/笔 8.20% vs 0.35%,
+      WinRate 95.5% vs 49.0%, TotalRet 1624.5% vs 68.8%.
+
+      '
+    evidence_source:
+    - docs/v5_pipeline_summary.md
+    - archive/research/data/v5/ranker_results.csv
+    reopen_condition: 'Do not promote V5 standalone. Reopen only to add V5 structural information to V2
+      or to test soft regime controls with entry ranking fixed.
+
+      '
+  - id: brick-exp-012
+    title: 'V5E 49-feature model: V5 plus selected entry-day features'
+    category: entry_day_feature
+    status: PARTIAL
+    short_result: 'V5E added entry-day information to V5 and recovered much of the performance gap. Final
+      V5E optimal: 49 features = V5 44 + 5 entry-day features. Forward selection chose entry_open_to_ma5_pct,
+      overnight_gap_pct, e_ma10, e_gap_up_size, e_white. WF NDCG positive across windows: 2022 +0.410,
+      2023 +0.407, 2024 +0.302 over baseline. Final comparison: V2 NDCG@10 0.777, V5 full 0.334, V5E optimal
+      0.741 (-4.6% vs V2, +122% vs V5). V5E is a frozen research artifact, not a V2 replacement.
+
+      '
+    evidence_source:
+    - docs/v5e_final_summary.md
+    - docs/v5_pipeline_summary.md
+    - docs/v5_v2_feature_comparison.md
+    - archive/research/data/v5/model_v5e_optimal.pkl
+    reopen_condition: 'Reopen only for fair account-level V5E/V5X comparison to V2 or to study entry-day
+      features. Do not claim production replacement without identical candidate pool, costs, TopK, and
+      exit rules.
+
+      '
+  - id: brick-exp-013
+    title: 'V5X proposed hybrid: V5E plus missing V2 signal-day features'
+    category: ensemble
+    status: OPEN
+    short_result: 'V5X was proposed as V5E plus V2-exclusive signal-day features. V5E report defines V5X
+      = V5E (49) + V2-exclusive signal-day features (17) = 66 features, expected to exceed V2 because
+      V5 cluster/regime and V2 technical features may be complementary. Handoff/snapshot mark fair account-level
+      V5X vs V2 validation as the highest-priority open question. No definitive account-level V5X result
+      found.
+
+      '
+    evidence_source:
+    - docs/v5e_final_summary.md
+    - docs/v5_v2_feature_comparison.md
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    - project_brick_v2.yaml
+    success_condition_next_phase: 'Perform fair V5X vs V2 account-level and PWF validation with identical
+      candidate pool, cost model, TopK, exit state machine, and date ranges. Also audit whether ATR/volatility
+      dominates the V5 portion.
+
+      '
+  - id: brick-exp-014
+    title: V5E-L1 leadership factors on V5E baseline
+    category: leadership_factor
+    status: PARTIAL
+    short_result: 'Leadership contains incremental information for the weaker/noisier V5E baseline. Baseline
+      V5E retrain NDCG@10 0.6873. Sector Return Leadership: 0.7013 (+0.0141) PASS; Capital Concentration:
+      0.6988 (+0.0115) PASS; All Leadership: 0.7018 (+0.0146) PASS. Leadership helped Bull/Range and degraded
+      Bear. Limitation: entry-day feature match rate 82.1%, and Sharpe criterion failed for all experiments.
+
+      '
+    evidence_source:
+    - archive/research/data/v5e_l1/V5E_L1_Final_Results.md
+    - archive/research/data/v5e_l1/research_report.md
+    - archive/research/data/v5e_l1/walkforward_results.csv
+    - archive/research/data/v5e_l1/regime_results.csv
+    - research/brick/v5e/v5e_l1_report.py
+    - research/brick/v5e/v5e_l1_leadership_factors.py
+    reopen_condition: 'Use only as evidence that leadership can fill gaps in V5E-like models. Before adding
+      to production V2/V5X, require V2-level incremental tests and Bear-regime handling.
+
+      '
+  - id: brick-exp-015
+    title: V2-L1 leadership factors beyond Brick V2
+    category: leadership_factor
+    status: FAILED
+    short_result: 'Explicit leadership did not improve V2. Baseline V2 NDCG@10 0.8254, Top10 Sharpe 20.59.
+      +sector_ret_3d_rank NDCG 0.8225 (-0.0029), +sector_concentration_change_5d 0.8163 (-0.0091), +leadership_score
+      0.8253 (-0.0001), A+B 0.8219 (-0.0035). All rejected. V2 already proxies leadership through return
+      and MA-distance features.
+
+      '
+    evidence_source:
+    - archive/research/data/v2_l1/V2_L1_Final_Report.md
+    - archive/research/data/v2_l1/v2_l1_walkforward.csv
+    - archive/research/data/v2_l1/v2_l1_regime.csv
+    - research/brick/v2/l1/v2_l1_experiment.py
+    reopen_condition: 'Do not add universal leadership to V2. Reopen only for conditional market-structure
+      variants such as Recovery-only, or for materially different leadership data with real-time availability.
+
+      '
+  - id: brick-exp-016
+    title: V2A alpha attribution of V2 28 features
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'V2A decomposed why V2 works. Full V2 NDCG@10 0.8257. EntryDay is dominant: removing
+      EntryDay drops NDCG to 0.3986, loss 0.4271 = 51.7% of alpha. PriceLocation loss 5.6%, BrickStructure
+      2.0%, Oversold 1.5%, Volume 1.2%, ReturnPath 0.1%. Forward selection peaked at 19 features with
+      NDCG 0.8244, but later V2C account-level validation showed 19-feature reduction does not replace
+      V2.
+
+      '
+    evidence_source:
+    - research/V2A/V2A_Final_Report.md
+    - research/V2A/reports/Brick_V2_Whitepaper.md
+    - research/V2A/data/forward_selection.csv
+    - research/V2A/data/cluster_shap_importance.csv
+    - research/brick/v2/v2a/v2a_final_report.py
+    reopen_condition: 'Reopen for explainability drift or feature-pruning diagnostics, but account-level
+      tests outrank V2A NDCG attribution when deciding production replacement.
+
+      '
+  - id: brick-exp-017
+    title: V2C 19-feature reduced model
+    category: feature_engineering
+    status: FAILED
+    short_result: 'V2C removed Oversold and ReturnPath clusters, leaving 19 features. It was not recommended
+      to replace V2. Across 2018-2020, 2021-2023, 2024-2026 tests, V2 won CAGR in all three periods and
+      WR or tie in all periods. V2C did beat Sharpe in 2021-2023 and 2024-2026 and MaxDD in 2024-2026
+      (-15.5% vs V2 -17.4%), but average MaxDD was essentially identical and CAGR sacrifice was not justified.
+
+      '
+    evidence_source:
+    - archive/research/data/v2c/V2C_Backtest_Report.md
+    - archive/research/data/v2c/v2c_walkforward.csv
+    - archive/research/data/v2c/v2c_regime.csv
+    - archive/research/data/v2c/nav_V2C_P1_2018-2020.csv
+    - archive/research/data/v2c/nav_V2C_P2_2021-2023.csv
+    - archive/research/data/v2c/nav_V2C_P3_2024-2026.csv
+    reopen_condition: 'Do not promote V2C as a production replacement. Reopen only as a risk-adjusted
+      or low-complexity research branch with explicit CAGR/Calmar trade-off acceptance.
+
+      '
+  - id: brick-exp-018
+    title: WF3 2024 collapse structural-break investigation
+    category: market_structure
+    status: VERIFIED
+    short_result: 'WF3 investigated the universal 2024 NDCG collapse across V2/V5E/V2C. All four hypotheses
+      confirmed: turnover +25.2%, volatility +6.1%, leadership ratio -12.4%, limit-up persistence -13.2%.
+      Root cause: regime distribution shift from Bear-dominant to Bull-dominant (Bull 22.8% -> 44.8%,
+      Bear 43.2% -> 18.3%) plus training distribution mismatch. Decision: Case C, launch V6A/regime-adaptive
+      research.
+
+      '
+    evidence_source:
+    - archive/research/data/wf3/WF3_Final_Report.md
+    - archive/research/data/wf3/market_cap_structure.csv
+    - archive/research/data/wf3/theme_concentration.csv
+    - archive/research/data/wf3/leader_effect.csv
+    - archive/research/data/wf3/limitup_ecology.csv
+    - archive/research/data/wf3/limitup_persistence.csv
+    reopen_condition: 'Reopen only to validate structural-break causality with future transitions or to
+      implement V6A regime-adaptive ranking/position sizing. Keep limitations on market-cap proxy and
+      static concept mapping in mind.
+
+      '
+  - id: brick-exp-019
+    title: V2R distribution-shift and training-window expansion
+    category: training_window
+    status: VERIFIED
+    short_result: 'V2R confirmed distribution shift as the primary cause of WF3. Training window expansion
+      from 3-year to 4-year improved WF3 NDCG from ~0.597 to 0.736-0.744 (+23% recovery). 2025 recovered
+      fully: NDCG 0.8412, Sharpe 30.37. Regime reweighting did not help (Bull 2x hurt NDCG by -0.0195).
+      Recommendation: extend V2 training window to 4 years immediately; pursue regime-adaptive architecture
+      for remaining ~0.08 gap.
+
+      '
+    evidence_source:
+    - archive/research/data/v2r/V2R_Final_Report.md
+    - archive/research/data/v2r/v2r_phase1_results.csv
+    - archive/research/data/v2r/v2r_reweight_results.csv
+    - archive/research/data/v2r/v2r_calibration_results.csv
+    - archive/research/data/v2r/v2r_regime_metrics.csv
+    reopen_condition: 'Reopen to productionize 4-year rolling training, monitor regime distribution drift,
+      or test regime-conditional ranking. Do not solve WF3 by aggressive regime reweighting alone.
+
+      '
+  - id: brick-exp-020
+    title: 'V2S market-structure aware conditional leadership: Recovery-only'
+    category: market_structure
+    status: PARTIAL
+    short_result: 'V2S reframed leadership as conditional alpha using market structure clusters. Leadership
+      improved V2 only in Recovery markets: V2 NDCG 0.874 -> V2+L 0.905, delta +0.0308. Recovery was 34-41%
+      of the critical 2024 signals, estimated overall 2024 impact +0.013 NDCG. Rotation/Unknown were neutral.
+      Account-level backtest and real-time structure classifier remain missing.
+
+      '
+    evidence_source:
+    - archive/research/data/v2s/V2S_Final_Report.md
+    - archive/research/data/v2s/structure_vectors_v2.csv
+    - archive/research/data/v2s/cluster_profiles_v2.csv
+    - archive/research/data/v2s/leadership_conditional_v2.csv
+    - research/brick/v2/v2s/v2s_structure.py
+    - research/brick/v2/v2s/v2s_structure_v2.py
+    reopen_condition: 'Reopen with V2S account-level backtest, real-time/pre-market structure classification,
+      Recovery sub-clustering, and lag reduction. Do not generalize Recovery-only leadership to all regimes.
+
+      '
+  - id: brick-exp-021
+    title: 'Brick Layer 0 calibration result: credible baselines and inflated metric audit'
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'Layer 0 locked credible baselines and corrected inflated interpretations. V4 PWF Sharpe
+      1.26 is the realistic baseline; V2/V3 Sharpe 13-19 and WR 87%+ are explained by reverse training/test
+      style and evaluation artifacts. Boundary signal discard was tested: force-close 10 days changed
+      WR only +0.16pp and AVG +0.01pp; discarded signals were good, so boundary effect slightly understated
+      performance and could not explain high Sharpe.
+
+      '
+    evidence_source:
+    - docs/layer0_calibration_report.md
+    - research/brick/legacy/v3/backtest_brick_v3.py
+    - archive/research/data/walk_forward/v4_walk_forward_results.csv
+    reopen_condition: 'Reopen whenever reported metrics conflict. Require directionally correct time splits,
+      PWF, no softmax-return arithmetic illusion, and explicit handling of boundary signals.
+
+      '
+  - id: brick-exp-022
+    title: Layer 1 K-line morphology independent increment
+    category: entry_day_feature
+    status: FAILED
+    short_result: 'K-line morphology has small independent information but is not adopted. Layer 1+2 found
+      21/38 morphology features with |residual IC| > 0.010 after controlling V2 signal-day features; max
+      |IC| only 0.036. Many signs flipped, and 50-85% of apparent K-line IC came from entry-day pricing
+      pollution. Final four-hypotheses report concludes not to use K-line shape as production feature.
+
+      '
+    evidence_source:
+    - docs/layer12_pattern_pricing_report.md
+    - docs/four_hypotheses_final_report.md
+    - docs/layer4_extreme_factors_report.md
+    reopen_condition: 'Reopen only for nonlinear tail-risk/risk-tag usage, not simple linear ranker inclusion.
+      Any morphology feature must be residualized against signal and entry-day pricing.
+
+      '
+  - id: brick-exp-023
+    title: Layer 2 entry-day pricing orthogonalization
+    category: entry_day_feature
+    status: VERIFIED
+    short_result: 'Entry-day pricing remains a core Brick alpha source. Orthogonalization showed entry_open_to_ma5_pct
+      as the anchor; entry_open_to_yellow_pct retained strong independent negative IC (-0.079 after orthogonalization);
+      overnight_gap_pct flipped from near-zero raw IC (+0.005) to strong negative orthogonal IC (-0.040).
+      Entry-day family has collinearity but remains dominant.
+
+      '
+    evidence_source:
+    - docs/layer12_pattern_pricing_report.md
+    - research/V2A/V2A_Final_Report.md
+    - docs/v5e_final_summary.md
+    reopen_condition: 'Reopen when changing entry timing, open-price source, or execution assumptions.
+      Do not compare models unless entry-day availability and timing are identical.
+
+      '
+  - id: brick-exp-024
+    title: Layer 3 concept momentum / same-concept network initial positive result
+    category: concept_factor
+    status: ABANDONED
+    short_result: 'Initial Layer 3 appeared strongly positive: conc_lo_ret residual IC +0.147 and conc_ret_prior
+      +0.102 after controlling pricing; same-concept limit-up/strong-stock effects had d=0.17-0.22. Later
+      validation showed the main conc_lo_ret framing was selection/leakage-prone and the production-available
+      clean versions did not improve. Treat the initial Layer 3 narrative as superseded.
+
+      '
+    evidence_source:
+    - docs/layer3_network_report.md
+    - docs/p0_concept_validation_report.md
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    reopen_condition: 'Do not cite initial conc_lo_ret as production alpha. Reopen only with production-available
+      inputs and no use of future trade return_pct or completed trade outcomes.
+
+      '
+  - id: brick-exp-025
+    title: Leaked concept resonance using realized return_pct
+    category: concept_factor
+    status: FAILED
+    short_result: 'Old concept resonance using completed trade return_pct looked excellent but was a future-function
+      illusion. Conc final verdict: old conc with return_pct had Avg Sharpe 2.97, WR 46.8%, AVG +1.00%,
+      vs V2 baseline Sharpe 1.28; but return_pct includes future exit information. Memory explicitly rejects
+      future return_pct / realized outcomes as pre-trade features.
+
+      '
+    evidence_source:
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    reopen_condition: 'Never use future return_pct or realized trade outcomes for pre-trade Brick features.
+      Only reopen to audit or remove artifacts containing leaked concepts.
+
+      '
+  - id: brick-exp-026
+    title: Clean conc_daily concept resonance
+    category: concept_factor
+    status: FAILED
+    short_result: 'Production-available conc_daily failed. Using T-day same-concept signal-stock daily
+      return with leave-one-out and no future information reduced Avg Sharpe from V2 baseline 1.28 to
+      1.10; 2022 Sharpe 0.52 -> -0.03 and 2023 0.33 -> -0.35. Verdict: worse than baseline.
+
+      '
+    evidence_source:
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    - brick_memory.yaml
+    reopen_condition: 'Do not iterate on simple daily linear conc_daily as main alpha. Reopen only for
+      a materially different, production-available, nonlinear or conditional concept design with account-level
+      proof.
+
+      '
+  - id: brick-exp-027
+    title: Clean conc_overnight concept resonance / one-word-limit-up proxy
+    category: concept_factor
+    status: FAILED
+    short_result: 'Production-available conc_overnight / same-concept overnight-gap version failed. Avg
+      Sharpe 1.16 vs V2 baseline 1.28. It did not convert the one-word-limit-up/auction spillover effect
+      into a useful ranker feature.
+
+      '
+    evidence_source:
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    - brick_memory.yaml
+    reopen_condition: 'Do not use conc_overnight as a standalone factor. Reopen only with a different
+      event/timing alignment and proof it adds over V2 entry-day pricing.
+
+      '
+  - id: brick-exp-028
+    title: Concept trend / concept MA trend exhaustive test
+    category: concept_factor
+    status: PARTIAL
+    short_result: 'As bullish continuation / positive buy alpha, concept trend failed: MA5/MA10/MA20 slope,
+      separation, and bull alignment all had negative direction. As reverse information, it is verified
+      but weak: MA10 yearly d was negative in 10/10 years, average d=-0.095. It is not adopted because
+      effect size is too small and PWF marginal value is negative/covered.'
+    evidence_source:
+    - docs/concept_trend_exhaustive_report.md
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    reopen_condition: Do not treat concept trend as bullish continuation alpha. Reopen only with a materially
+      different trend definition, explicit positive-vs-reverse comparison, and account-level proof that
+      reverse-information usage adds over V2.
+    stage_tag: positive_alpha_failed_reverse_signal_verified_not_adopted
+  - id: brick-exp-029
+    title: P1 V4 plus concept features before leakage correction
+    category: concept_factor
+    status: ABANDONED
+    short_result: 'P1 claimed V4+Concept Sharpe 3.51 vs V4 1.26 and SHAP #1 conc_resonance=0.255, but
+      this was later superseded by no-future validation showing the strong effect came from leaked return_pct
+      / future exit information. Do not use this as registry-grade positive evidence.
+
+      '
+    evidence_source:
+    - docs/p1_pwf_shap_report.md
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    reopen_condition: 'Only reopen for audit/postmortem. Do not promote concept features based on SHAP
+      or PWF unless all feature values are available before entry.
+
+      '
+  - id: brick-exp-030
+    title: V2.1 / V5X-Hybrid production upgrade with conc_resonance
+    category: ensemble
+    status: ABANDONED
+    short_result: 'A production upgrade report proposed V2+conc_resonance, regime gate, tail card, and
+      high-management-reduction filter, reporting V2+all 3 concept features Sharpe 3.71 and production
+      SOP. Later conc_final_verdict and four_hypotheses report superseded it: clean conc_daily and conc_overnight
+      were worse than baseline, so the concept-based V2.1 upgrade path is abandoned except for the separate
+      executive-reduction risk filter.
+
+      '
+    evidence_source:
+    - docs/production_upgrade_report.md
+    - docs/v2.1_final_report.md
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    reopen_condition: 'Do not deploy V2.1 concept resonance from these reports. Reopen only if the feature
+      construction is demonstrably no-leakage and beats V2 in clean PWF/account-level tests.
+
+      '
+  - id: brick-exp-031
+    title: One-word-limit-up / strong-stock same-concept spillover
+    category: leadership_factor
+    status: FAILED
+    short_result: 'Same-concept one-word-limit-up and strong-stock spillover is statistically visible
+      but not production-useful as an independent ranker. Layer 3: limit-up same-concept vs cross-concept
+      d=0.172, strong-stock d=0.217, but absolute returns remained negative and effect reduces losses
+      rather than creates positive alpha. Four-hypotheses report: LU interaction RankIC +0.009, d=0.04,
+      no increment; conc_overnight PWF failed.
+
+      '
+    evidence_source:
+    - docs/layer3_network_report.md
+    - docs/four_hypotheses_final_report.md
+    - brick_memory.yaml
+    reopen_condition: 'Do not frame one-word-limit-up or strong-stock leadership as standalone Brick ranker
+      alpha. Reopen only as defensive/event interaction with V2 pricing controlled.
+
+      '
+  - id: brick-exp-032
+    title: Layer 4 extreme tail factors as direct filters
+    category: risk_control
+    status: FAILED
+    short_result: 'Tail amplification is statistically real but failed as an entry filter. Layer 4 found
+      17 tail-amplifier factors with full-sample |d|<0.15 but tail |d|>0.25; vol_ratio_20 had 9.3x amplification,
+      and low-pricing+high-volatility concentrated 26.5% of bigwins. However, filtering variants failed
+      in 6/6 periods, reducing Sharpe by -1.2 to -1.9 and worsening MaxDD to -17.3%. Tail factors are
+      volatility amplifiers, not directional filters.
+
+      '
+    evidence_source:
+    - docs/layer4_extreme_factors_report.md
+    - docs/four_hypotheses_final_report.md
+    - brick_memory.yaml
+    reopen_condition: 'Do not use tail factors as direct entry filters. Reopen only for stop width, position
+      sizing, risk tags, or tail-specific controls while holding entry ranking fixed.
+
+      '
+  - id: brick-exp-033
+    title: High-management selloff / executive reduction event filter
+    category: risk_control
+    status: PARTIAL
+    short_result: 'Executive/management reduction appears to be a negative risk event but timing availability
+      remains unresolved. V2.1 report says signal-day executive reduction filter has d=-0.087, coverage
+      ~1%, same-day reduction AVG=-0.32% vs no-reduction AVG +0.26%. Brick memory marks high-management
+      selloff as negative but unverified for real execution-time availability.
+
+      '
+    evidence_source:
+    - docs/v2.1_final_report.md
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    reopen_condition: 'Reopen only after timestamp/disclosure-time and ingestion-time audit proves the
+      event is available before entry. Then test as a risk filter/overlay, not broad cross-strategy rule.
+
+      '
+  - id: brick-exp-034
+    title: Hard market-timing / regime candidate deletion
+    category: regime_model
+    status: FAILED
+    short_result: 'Brick memory records hard market-timing filtering as failed: removing large candidate
+      blocks hurt production outcome while only modestly helping drawdown. Current guidance is to use
+      regime as soft control (dynamic TopK, sizing, exit speed), not hard candidate deletion.
+
+      '
+    evidence_source:
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    reopen_condition: 'Do not delete large blocks of Brick candidates by market timing. Reopen only for
+      soft controls with entry ranking fixed.
+
+      '
+  - id: brick-exp-035
+    title: ATR / volatility dominance in V5 clustering
+    category: market_structure
+    status: OPEN
+    short_result: 'V5 reports note ATR/volatility may dominate clustering. Feature importance in V5 ranker
+      included distance_to_ma60, volume_ratio, ATR among top drivers; V5 problem list states clusters
+      may reflect volatility state more than signal quality. Memory says ATR dominance is partial and
+      volatility-neutral clustering is unfinished.
+
+      '
+    evidence_source:
+    - docs/v5_pipeline_summary.md
+    - brick_memory.yaml
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    success_condition_next_phase: 'Run volatility-neutral or volatility-stratified clustering and compare
+      account-level results to V2. Treat cluster findings cautiously until ATR dominance is resolved.
+
+      '
+  - id: brick-exp-036
+    title: Brick fixed execution state machine
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'Brick comparison口径 freezes the execution state machine: Signal -> Next Open Entry ->
+      First Red -> Green Exit. Handoff and snapshot explicitly warn not to modify this state machine when
+      comparing models; changes would create a separate experiment, not fair model replacement evidence.
+
+      '
+    evidence_source:
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    - project_brick_v2.yaml
+    - backtest_brick_v2.py
+    - research/brick/legacy/v3/backtest_brick_v3.py
+    reopen_condition: 'Reopen only with explicit user approval as an exit/execution experiment. Do not
+      mix with ranking-model replacement tests.
+
+      '
+  - id: brick-exp-037
+    title: 'Backtest boundary handling: missing green-exit forced close'
+    category: data_quality
+    status: VERIFIED
+    short_result: 'Boundary effect audit showed missing exits were not a major inflation source. For 2020-2023
+      naked strategy, silent discard vs 10-day force close changed total signals by +684 (+0.33%), WR
+      +0.16pp, AVG +0.01pp. Forced-closed signals had WR 84.4%, AVG +2.71%, so discard slightly understated
+      performance rather than overstated it.
+
+      '
+    evidence_source:
+    - docs/layer0_calibration_report.md
+    - research/brick/legacy/v3/backtest_brick_v3.py
+    reopen_condition: 'Reopen if exit-window length or state machine changes. Otherwise treat boundary
+      handling as minor and not explanatory for large performance differences.
+
+      '
+  - id: brick-exp-038
+    title: Lower-complexity Brick model direction
+    category: other
+    status: OPEN
+    short_result: 'Multiple memory/snapshot files identify lower-complexity models as an open high-ROI
+      path: can <=15 features match or beat V2/V4 on Sharpe, MaxDD, turnover, CAGR, and stability? V2C
+      19-feature did not replace V2, but a simpler model may still reduce overfitting if designed and
+      tested differently.
+
+      '
+    evidence_source:
+    - handoff_brick_v1.yaml
+    - snapshot_brick.yaml
+    - project_brick_v2.yaml
+    - docs/layer0_calibration_report.md
+    - archive/research/data/v2c/V2C_Backtest_Report.md
+    success_condition_next_phase: 'Design a simple model before running: fixed V2 baseline, same candidate
+      pool and exit rules, clean PWF/account-level metrics, and explicit feature-count target.
+
+      '
+  - id: brick-exp-039
+    title: Readable Brick artifact inventory and orphan b3_brick bytecode exclusion
+    category: data_quality
+    status: ABANDONED
+    short_result: 'Search found an orphan bytecode artifact `__pycache__/b3_brick_backtest.cpython-313.pyc`
+      but no readable source/report/CSV tying it to valid Brick research. It should not be used as Brick
+      evidence. It is also potentially B3/Brick mixed and outside the Brick-only boundary.
+
+      '
+    evidence_source:
+    - __pycache__/b3_brick_backtest.cpython-313.pyc
+    reopen_condition: 'Do not use bytecode as evidence. Rebuild any B3/Brick comparison from readable
+      source with explicit strategy boundary and metrics.
+
+      '
+  - id: brick-exp-040
+    title: Brick memory / snapshot governance baseline
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'Project memory, research memory, snapshot, and handoff agree on core governance: V2
+      28-feature model is current champion; account-level fair validation outranks internal metrics; full-order
+      LambdaRank preferred; no future return_pct/realized outcomes; V5/V5E/V5X are research/open until
+      beating V2; B1/B3/shared infrastructure must not be imported as Brick alpha.
+
+      '
+    evidence_source:
+    - brick_memory.yaml
+    - project_brick_v2.yaml
+    - snapshot_brick.yaml
+    - handoff_brick_v1.yaml
+    reopen_condition: Update only after new evidence is produced. Any contradiction against memory requires
+      proof that data availability, construct, implementation, and evaluation口径 are materially different.
+  - id: brick-exp-041
+    title: Brick AG2-KBase turnover overlay and active-cap TopN test
+    category: feature_engineering
+    status: FAILED
+    short_result: 2026-07-08 AG2-KBase trial tested turnover_extreme / turnover_calm / turnover_mid score
+      overlays and active_cap TopN overlay variants against Brick V2 account-level backtest. After correcting
+      account NAV entry-day accounting, the overlays did not beat the baseline and worsened drawdown or
+      stability. This was not a successful new factor; treat it as a failed KBase-inspired turnover overlay
+      attempt.
+    evidence_source:
+    - research_automation/_output/reports/brick_ag2_kbase_turnover_overlay_20260708.md
+    - backtest_brick_v2.py
+    - tests/test_brick_kbase_overlay.py
+    reopen_condition: Do not repeat turnover-only KBase overlays or active-cap TopN hard overlays. Reopen
+      only with a materially different mechanism, a source-density bias check, and the fixed Phase 6 rolling
+      forward validation protocol.
+  - id: brick-exp-042
+    title: Brick account NAV entry-day accounting and prior-close boundary fix
+    category: data_quality
+    status: VERIFIED
+    short_result: 'The AG2-KBase Brick overlay trial exposed and fixed an account NAV accounting issue:
+      entry-day account valuation must use the actual entry price, and prior-close lookup must use the
+      previous trading day instead of assuming calendar adjacency. Regression tests cover the corrected
+      overlay and account-boundary behavior.'
+    evidence_source:
+    - backtest_brick_v2.py
+    - tests/test_brick_kbase_overlay.py
+    - research_automation/_output/reports/brick_ag2_kbase_turnover_overlay_20260708.md
+    reopen_condition: Reopen if account NAV, entry pricing, previous-close lookup, or calendar/suspension
+      handling changes. Otherwise treat this as the current Brick account-level validation baseline behavior.
+  - id: brick-exp-043
+    title: Brick min_score threshold exploration after KBase overlay failure
+    category: parameter_research
+    status: OPEN
+    short_result: The same 2026-07-08 trial found min_score threshold results that looked interesting
+      in-sample, but they were exploratory only. They were not produced by fixed rolling train -> validation
+      -> unseen test folds, and the tested model artifact/training overlap was not proven clean. This
+      is a candidate for strict Phase 6 validation, not a verified factor or production threshold.
+    evidence_source:
+    - research_automation/_output/reports/brick_ag2_kbase_turnover_overlay_20260708.md
+    success_condition_next_phase: 'Validate only with fixed rolling folds: 2020-2022 train -> 2023 validation
+      -> 2024 test; 2021-2023 train -> 2024 validation -> 2025 test; 2022-2024 train -> 2025 validation
+      -> 2026 test. Select threshold on train/validation only, use each test year once, and report average
+      test metrics, worst fold, fold pass rate, and dispersion.'
+  - id: brick-exp-044
+    title: Brick V2 09:25 entry-open boundary and production/research script separation
+    category: data_quality
+    status: VERIFIED
+    short_result: Brick V2 entry-open fields are production-available only under daily_select.py
+      semantics. overnight_gap_pct, entry_open_to_yellow_pct, and entry_open_to_ma5_pct may use
+      entry_date open because it is available at 09:25, but close/yellow/MA5 references must be
+      signal-day known values. entry_date high/low/close, intraday future data, T+1 close-derived
+      MA/yellow, return_pct, exit_date, exit_price, and hold_days are forbidden model inputs.
+      AG2 exploratory research must also keep backtest_brick_v2.py isolated as the production
+      signal generator and use backtest_brick_v2_research.py or research-only runners unless the
+      user explicitly requests production reproduction.
+    evidence_source:
+    - daily_select.py
+    - backtest_brick_v2.py
+    - backtest_brick_v2_research.py
+    - research/brick_v2_rebuilt_dual_metrics.py
+    reopen_condition: Reopen only if daily_select.py entry-open formulas, the production/research
+      script names, or the 09:25 next-open feature availability semantics change.

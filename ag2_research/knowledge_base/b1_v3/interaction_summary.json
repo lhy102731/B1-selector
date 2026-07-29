@@ -1,0 +1,109 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 constraint interaction summary",
+  "as_of_phase": "Phase 15 (closure)",
+  "source": "Phase 14B remove-two and remove-three results (avg across 3 windows)",
+  "interaction_metric_definition": "interact_PF = observed_pair_d_PF - (single_A_d_PF + single_B_d_PF). Negative => sub-additive => constraint geometry. Positive => super-additive (substitutive). Same for sharpe and jaccard.",
+  "high_impact_pair_matrix": {
+    "nodes": ["F_white_gt_yellow", "A_J_range", "D_white_slope", "E_wave_healthy", "B_KltD"],
+    "matrix_int_pf_avg": [
+      [null,   -1.018,  0.050, -0.066,  0.000],
+      [-1.018, null,    0.061, -0.777, -0.944],
+      [0.050,  0.061,   null,   0.094, -0.010],
+      [-0.066, -0.777,  0.094,  null,   0.000],
+      [0.000,  -0.944, -0.010,  0.000,  null]
+    ]
+  },
+  "top_negative_pair_interactions": [
+    {
+      "pair": "F_white_gt_yellow + A_J_range",
+      "int_pf": -1.018,
+      "int_sharpe": -0.573,
+      "avg_jaccard": 0.432,
+      "evidence_phases": ["14B"],
+      "interpretation": "F is harmless alone; A_J_range is anti-alpha alone; pair is strongly damaging. Geometry hub interaction."
+    },
+    {
+      "pair": "A_J_range + B_KltD",
+      "int_pf": -0.944,
+      "int_sharpe": -0.588,
+      "avg_jaccard": 0.410,
+      "evidence_phases": ["14B"],
+      "interpretation": "Canonical conditional-activation: B_KltD dead alone (Jac 1.000) but its joint removal with A_J_range collapses PF below additive."
+    },
+    {
+      "pair": "A_J_range + E_wave_healthy",
+      "int_pf": -0.777,
+      "int_sharpe": 0.195,
+      "avg_jaccard": 0.322,
+      "evidence_phases": ["14B"],
+      "interpretation": "Two independent concentrators whose joint removal damages PF more than their sum but Sharpe stays neutral due to E's standalone Sharpe lift in B window."
+    }
+  ],
+  "top_positive_pair_interactions": [
+    {"pair": "D_white_slope + E_wave_healthy", "int_pf": 0.094, "kind": "substitutive"},
+    {"pair": "A_J_range + D_white_slope",     "int_pf": 0.061, "kind": "substitutive"},
+    {"pair": "F_white_gt_yellow + D_white_slope", "int_pf": 0.050, "kind": "substitutive"}
+  ],
+  "top_negative_triple_interactions": [
+    {
+      "triple": "F_white_gt_yellow + A_J_range + B_KltD",
+      "int_pf": -1.582,
+      "avg_jaccard": 0.340,
+      "evidence_phases": ["14B"],
+      "interpretation": "Largest 3-way negative interaction; exceeds top pair (-1.02). Proves effective dimension of constraint geometry >= 3."
+    },
+    {
+      "triple": "A_J_range + D_white_slope + F_white_gt_yellow",
+      "int_pf": -1.051,
+      "avg_jaccard": 0.414
+    },
+    {
+      "triple": "A_J_range + B_KltD + E_wave_healthy",
+      "int_pf": -1.006,
+      "avg_jaccard": 0.259
+    },
+    {
+      "triple": "A_J_range + E_wave_healthy + F_white_gt_yellow",
+      "int_pf": -0.892,
+      "avg_jaccard": 0.245
+    },
+    {
+      "triple": "A_J_range + B_KltD + D_white_slope",
+      "int_pf": -0.859,
+      "avg_jaccard": 0.379
+    },
+    {
+      "triple": "A_J_range + D_white_slope + E_wave_healthy",
+      "int_pf": -0.662,
+      "avg_jaccard": 0.303
+    }
+  ],
+  "interactions_outside_high_impact_5_known_at_phase11": [
+    {
+      "pair": "j_max + pe_max",
+      "int_pf_avg_windows": -11.79,
+      "source_phase": "11",
+      "interpretation": "Strong redundancy: removing both individually appears beneficial but joint behaviour collapses. Different scale because Phase 11 used different definition of 'removal' (parameter relaxation rather than disable)."
+    }
+  ],
+  "hub_identification": {
+    "hub": "A_J_range",
+    "evidence": [
+      "Top 3 negative pairs all include A_J_range",
+      "5 of 5 strongest negative triples include A_J_range",
+      "Appears in 7 of 8 tested triples"
+    ],
+    "single_removal_fingerprint": "ANTI_ALPHA_alone_ΔPF_+0.929_BUT_interactive_DOMINANT"
+  },
+  "graph_summary": {
+    "structurally_important_nodes_rank": [
+      {"node": "A_J_range",        "role": "HUB", "rank": 1},
+      {"node": "F_white_gt_yellow","role": "bridge_to_A", "rank": 2},
+      {"node": "E_wave_healthy",   "role": "bridge_to_A_plus_independent_single_effect", "rank": 3},
+      {"node": "B_KltD",           "role": "conditional_leaf", "rank": 4},
+      {"node": "D_white_slope",    "role": "independent_substitute", "rank": 5}
+    ]
+  },
+  "key_finding": "B1 V3 alpha lives in a constraint polytope with effective dimension >= 3. A_J_range is the structural spine. Single-component analyses systematically under-estimate the system's complexity by approximately one order of magnitude."
+}

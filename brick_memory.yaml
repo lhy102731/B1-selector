@@ -1,0 +1,325 @@
+version: "1.1"
+last_updated: "2026-06-16"
+strategy_type: "brick"
+
+verified:
+  - conclusion: "The current trusted Brick production baseline is the V2 28-feature model under calibrated production evaluation."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Mean Reversion / Ranking Features"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "V2 28 handcrafted features remain the most reliable Brick production baseline under unified production口径."
+      - "External factor libraries, V4 internal extensions, and V5 cluster features did not stably replace V2 at account level."
+      - "Later variants may improve some internal ranking metrics, but account-level fair comparison still favors V2."
+    limitations: "This is a Brick-specific baseline. It should be revalidated periodically if A-share microstructure changes."
+
+  - conclusion: "Brick ranking should use full-order LambdaRank rather than TopK-only binary training."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Ranking Features / LambdaRank / TopK Selection"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "Five-quantile LambdaRank outperformed Top5 and Top20 binary formulations in the tested Brick setup."
+      - "Full ranking preserves ordering gradient across the candidate pool and better matches daily TopN decision making."
+    limitations: "Applies to Brick mean-reversion candidate ranking. Other alpha families require independent validation."
+
+  - conclusion: "Concept trend is a stable weak negative signal for Brick."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Concept Trend as Reverse Information"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "Stronger concept trend generally corresponded to worse forward returns for Brick signals."
+      - "MA-based trend definitions showed stable negative direction in the tested period."
+      - "The effect is weak and should not be treated as a primary standalone alpha."
+    limitations: "Validated only in the tested market regime. Direction may change in untested extreme bull markets or after major microstructure changes."
+
+  - conclusion: "Brick regime and cluster information can help internal sorting, but has not replaced V2 at production level."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Regime on Mean Reversion / Clustering"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "Cluster x Regime interaction improved internal Top10/Top20 ranking口径 in the V5 family."
+      - "Seven clusters were relatively stable across tested periods."
+      - "Account-level production superiority over V2 was not proven."
+    limitations: "Use for Brick segmentation and ranking support, not as standalone proof of model replacement."
+
+failed:
+  - failure: "Naive injection of Alpha101 / GTJA191 / Qlib158 factor libraries into Brick V2."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Ranking Features"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The tested factor libraries were mismatched to Brick mean-reversion state and added noise rather than robust incremental alpha."
+    do_not_repeat_reason: "Do not reuse the same naive concatenation approach as a Brick production feature path."
+    limitations: "This does not rule out all alternative data or more structured ensemble/orthogonalized approaches."
+
+  - failure: "Concept resonance built from future return_pct."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Concept Resonance"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "return_pct uses future exit information and is unavailable before or at entry."
+    do_not_repeat_reason: "Do not construct any pre-trade Brick feature from realized future trade returns."
+    limitations: "This invalidates the leaked return_pct construction, not every possible concept-resonance design."
+
+  - failure: "Concept resonance built from conc_daily and conc_overnight daily linear aggregations."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Concept Resonance"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The tested daily aggregation forms did not improve clean forward production evaluation versus the Brick baseline."
+    do_not_repeat_reason: "Do not keep iterating on these exact daily linear aggregations as the main Brick alpha path."
+    limitations: "Other non-daily, nonlinear, volume-weighted, or signal-density resonance constructions remain unclosed."
+
+  - failure: "Positive concept-trend alpha under the tested MA/trend definitions."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Concept Trend"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The tested positive-trend definitions conflicted with Brick mean-reversion dynamics and did not produce a robust positive alpha."
+    do_not_repeat_reason: "Do not treat concept strength as a bullish continuation signal for Brick under the tested definitions."
+    limitations: "Concept trend remains valid as weak reverse information. Untested definitions require separate validation."
+
+  - failure: "Extreme tail factor as a direct Brick entry filter."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Tail Risk / Mean Reversion Risk Control"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The tested tail factors behaved more like volatility amplifiers than directional entry signals."
+    do_not_repeat_reason: "Do not use these tail factors as direct buy filters for Brick."
+    limitations: "They may still be useful for risk labels, stop width, or position sizing."
+
+  - failure: "One-word-limit-up / strong-stock leadership as a standalone Brick ranker alpha."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Leadership"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The leadership effect was statistically visible but did not convert into robust standalone production alpha."
+    do_not_repeat_reason: "Do not keep framing this signal as an independent Brick ranker."
+    limitations: "Leadership-like information may still matter as a defensive, event-overlay, or interaction feature."
+
+  - failure: "Hard market-timing filtering for Brick candidate elimination."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Regime on Mean Reversion"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "Removing a large share of candidates hurt production outcome while only modestly helping drawdown."
+    do_not_repeat_reason: "Do not use regime timing as a blunt hard filter for Brick entry selection."
+    limitations: "Soft regime controls such as dynamic TopK, position sizing, or exit speed remain open."
+
+  - failure: "Top5 exact binary classification for Brick ranking."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "TopK Selection / Ranking"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The class imbalance and loss of full-order ranking gradient weakened the model."
+    do_not_repeat_reason: "Do not replace full ranking with Top5-only binary training in the tested Brick setup."
+    limitations: "This applies to the tested Brick ranking formulation."
+
+partial:
+  - conclusion: "Entry-day pricing contributes a large share of Brick selection power."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Entry-Day Pricing"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Entry-day price position relative to moving averages and gaps is a major driver of tested Brick ranking power."
+    unverified: "The exact contribution percentage is not stable across attribution methods or model architectures."
+    key_evidence:
+      - "Entry-day features carried most of the observed ranking power in tested decompositions."
+      - "The quoted contribution ratio depended on the chosen decomposition method."
+    limitations: "Use as a directional Brick conclusion, not as a fixed universal percentage."
+
+  - conclusion: "Brick V2 09:25 entry-open fields are valid only under daily_select.py semantics."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Entry-Day Pricing"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "overnight_gap_pct, entry_open_to_yellow_pct, and entry_open_to_ma5_pct may use entry_date open because the open price is available at 09:25 before selection."
+    unverified: "Any implementation that recomputes references from entry_date high/low/close, intraday future data, or T+1 close-derived MA/yellow is not covered by this conclusion."
+    key_evidence:
+      - "daily_select.py computes the audited next-open fields from entry_date open and signal-day known references."
+      - "The production/research split was restored: backtest_brick_v2.py is production and backtest_brick_v2_research.py is exploratory research."
+    limitations: "This is a decision-time availability boundary, not proof that the fields improve account-level performance in every validation."
+
+  - conclusion: "High-management selloff on signal day is a negative Brick event candidate, but timing alignment is unresolved."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Event Risk Overlay"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "The event has a negative statistical effect in the tested Brick alignment."
+    unverified: "Whether it is available at real execution time has not been proven."
+    key_evidence:
+      - "Same-day selloff showed negative average effect in the tested sample."
+      - "Coverage was low and the effect decayed quickly outside the tested window."
+    limitations: "Keep this conclusion in Brick memory only. Do not treat it as a cross-strategy event rule without separate validation."
+
+  - conclusion: "Candlestick shape features are heavily saturated by Brick signal and entry-day pricing."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Brick Shape"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Linear residual analysis showed limited independent gain from candlestick morphology after controlling for signal and pricing layers."
+    unverified: "Nonlinear interaction value is not fully ruled out."
+    key_evidence:
+      - "A large portion of apparent candle signal was explained by Brick signal and entry-day pricing."
+      - "Some morphology signs flipped after controlling for signal-day and pricing effects."
+    limitations: "Do not assume all candle features are useless. The tested linear/residual setting was weak."
+
+  - conclusion: "V4 internal factor mining showed some Brick edge but did not replace V2."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Ranking Features"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Internal-state mining can add small incremental value."
+    unverified: "It has not proven a durable replacement for the V2 champion baseline."
+    key_evidence:
+      - "Hundreds of candidates were reduced to a small final subset through staged testing."
+      - "Some account metrics improved, but complexity and drawdown increased."
+    limitations: "Supports incremental mining, not wholesale replacement."
+
+  - conclusion: "V5 clustering and Regime segmentation are useful for Brick explanation and ranking support."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Regime on Mean Reversion / Clustering"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Clusters and Regime matrices have explanatory and internal-ranking value."
+    unverified: "Account-level production superiority over V2 is still unproven."
+    key_evidence:
+      - "Clusters were relatively stable across tested periods."
+      - "Regime definitions were not fully consistent."
+    limitations: "Use as segmentation support, not as a final production upgrade claim."
+
+  - conclusion: "V5E / V5X suggests entry-day and structural information may be complementary."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Brick Alpha Architecture"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Adding entry-day information materially improved the V5-family structure."
+    unverified: "Whether V5X can beat V2 at account level remains unproven."
+    key_evidence:
+      - "V5E recovered much of the lost performance after adding entry-day features."
+      - "Fair production comparison still favored V2."
+    limitations: "Promising direction only, not a confirmed replacement."
+
+  - conclusion: "Tail factors may be more useful for Brick risk control than for entry filtering."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Tail Risk / Risk Management"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Tail behavior can help design stop width, position sizing, or risk tags."
+    unverified: "The best risk-control formulation has not yet been validated."
+    key_evidence:
+      - "Tail factors showed strong extreme-case discrimination."
+      - "Direct entry filtering failed."
+    limitations: "Use only as a risk overlay unless a new fair test proves entry value."
+
+  - conclusion: "Leadership-like concept effects may have defensive or interaction value, but not standalone ranker value."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Leadership"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "Strong-stock or limit-up peer behavior may reduce losses or serve as event interaction information."
+    unverified: "A production-safe defensive overlay has not yet been established."
+    key_evidence:
+      - "The observed improvement was mainly loss reduction, not stable positive alpha creation."
+      - "Standalone ranker implementation failed."
+    limitations: "Should only be retested as overlay or interaction, not as a standalone ranker."
+
+  - conclusion: "ATR may dominate V5 Brick clustering."
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Clustering / Volatility Structure"
+      market: "A-share"
+      time_interval: "2016-2026"
+    current_valid: "V5 clusters may partly reflect volatility state rather than pure signal quality."
+    unverified: "Volatility-neutral clustering has not yet been completed."
+    key_evidence:
+      - "ATR was an important feature in the V5 cluster structure."
+      - "Cluster stability may reflect volatility regimes rather than independent shape quality."
+    limitations: "Future cluster work should consider volatility neutralization or stratification."
+
+open_questions:
+  - question: "Can V5X beat V2 under fair account-level production validation?"
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Brick Alpha Architecture"
+      market: "A-share"
+      time_interval: "2016-2026 and future extension"
+    recommended_validation: "Run rolling PWF and account-level backtests with the same candidate pool, cost model, TopK, and exit rules."
+    limitations: "Ranking metrics alone are insufficient proof."
+
+  - question: "Can a lower-complexity Brick model outperform the current 28/49-feature baselines on risk-adjusted return?"
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Ranking Features"
+      market: "A-share"
+      time_interval: "2016-2026 and future extension"
+    recommended_validation: "Test simplified models with 15 or fewer features against current champions on Sharpe, MaxDD, turnover, CAGR, and stability."
+    limitations: "Simplification must preserve production fairness and no-leakage rules."
+
+  - question: "Can event data such as capital flow, block trades, margin data, top-list events, and management selloff interact with Brick signals?"
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Event Data Interaction"
+      market: "A-share"
+      time_interval: "2016-2026 and future extension"
+    recommended_validation: "First audit real-time availability, then test event-day or decay-window overlays without using post-trade outcomes."
+    limitations: "Only data available before trade entry may be used."
+
+  - question: "Can Regime improve Brick through dynamic TopK, position sizing, or exit speed rather than hard filtering?"
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Regime on Mean Reversion"
+      market: "A-share"
+      time_interval: "2016-2026 and future extension"
+    recommended_validation: "Keep the candidate pool intact and vary only TopK, position caps, or exit speed across Bull / Range / Bear regimes."
+    limitations: "Hard timing filters already failed; soft controls remain open."
+
+  - question: "Can tail factors improve Brick stop width or position sizing?"
+    scope:
+      strategies: ["Brick"]
+      alpha_source: "Tail Risk / Risk Management"
+      market: "A-share"
+      time_interval: "2016-2026 and future extension"
+    recommended_validation: "Hold entry ranking fixed and change only stop width, position scale, or risk tags."
+    limitations: "Do not reuse the factor as an entry filter."
+
+do_not_repeat:
+  - item: "Do not use future return_pct or realized trade outcomes as pre-trade Brick features."
+    reason: "They leak future information."
+
+  - item: "Do not use Brick concept resonance in the leaked return_pct form."
+    reason: "That construction is invalid for production research."
+
+  - item: "Do not use concept trend as positive prediction under the tested definitions."
+    reason: "The tested direction conflicts with Brick mean-reversion dynamics."
+
+  - item: "Do not use extreme tail factors as direct Brick entry filters."
+    reason: "They behaved as volatility amplifiers, not directional filters."
+
+  - item: "Do not use hard market-timing filters to remove large blocks of Brick candidates."
+    reason: "The tested form reduced production performance."

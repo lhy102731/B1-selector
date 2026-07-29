@@ -1,0 +1,102 @@
+snapshot:
+  version: "2.0"
+  generated_at: "2026-06-19"
+
+  current_production:
+    name: "Rule-based B3 scanner logic"
+    status: "current production/research baseline"
+    description: >
+      B3 当前生产口径是独立的强势股接力扫描器，核心是昨日强涨或涨停之后，
+      次日出现温和正向延续、缩量承接、影线干净、缺口受控，并通过 B3 语境下的趋势线和市值门槛。
+    boundary: >
+      只把 alpha 来自昨日强涨/涨停、次日受控延续、缩量承接、干净 K 线结构的内容归入 B3。
+      B1 建仓波缩量回踩、Brick 图形反转排序、以及通用数据/缓存/通知/指标实现不属于 B3 alpha。
+
+  current_champion:
+    name: "B3XG rule model"
+    confidence: "baseline only; independent evidence is still sparse"
+    model_type: "rule-based scanner; no confirmed independent ML/ranking model recorded"
+    effective_rules:
+      - "Yesterday return >= 9%."
+      - "Today return between 2% and 4%."
+      - "Today close > today open."
+      - "Today open gap versus yesterday close < 1%."
+      - "Upper shadow <= 2%."
+      - "Lower shadow <= 2%."
+      - "Today volume / yesterday volume between 0.6 and 0.9."
+      - "B3-specific shared white/yellow trend-line gate passes."
+      - "Close is above the shared yellow-line reference in B3 continuation context."
+      - "If market_cap exists, require market_cap > 5 billion RMB."
+    alpha_source: >
+      当前最可信的 B3 Alpha 来源是强势股在前一日大幅上涨或涨停后，次日没有爆量分歧或高开失败，
+      而是以温和涨幅、缩量、低影线、低缺口完成承接确认。
+
+  active_research:
+    - "建立独立 B3 样本与回测记录。"
+    - "定义 B3 专属持仓、退出和加减仓规则。"
+    - "验证 B3 是否应保持纯规则扫描，或增加独立候选排序层。"
+    - "保持 B3 验证独立，不继承 B1 V3 或 Brick V2/V5 的结论。"
+
+  frozen_directions:
+    - direction: "B3 alpha boundary"
+      status: "frozen"
+      reason: "B3 只研究昨日强涨/涨停后的次日受控延续，不吸收 B1 回踩或 Brick 反转 alpha。"
+    - direction: "B3XG rule scanner as baseline"
+      status: "frozen baseline until stronger evidence appears"
+      reason: "当前没有已记录的独立 ML/ranking champion，后续研究必须以规则模型为可解释基线。"
+    - direction: "shared indicators are gates only"
+      status: "frozen ownership boundary"
+      reason: "白线/黄线等共享指标只记录其 B3 gate 角色，公式、缓存、执行与通知归 shared 项目。"
+
+  rejected_directions: []
+
+  highest_roi_hypotheses:
+    - hypothesis: "Build B3 independent backtest and sample base"
+      why_high_roi: "B3 当前最大短板不是复杂模型，而是缺少独立、可信、可复现的样本与回测证据。"
+      required_work: "按 B3XG 规则生成样本，建立交易结果、阶段表现、失败样本和基础统计。"
+    - hypothesis: "Define B3-specific exit and holding logic"
+      why_high_roi: "B3 是短线接力策略，收益/风险很可能主要由次日后持仓和退出规则决定。"
+      required_work: "围绕接力失败、缩量承接失效、趋势线破坏、冲高回落、止盈止损建立独立规则。"
+    - hypothesis: "Test whether ranking layer is needed after rule scan"
+      why_high_roi: "如果规则候选过多，B3 需要自己的 TopN 选择逻辑；如果候选稀少，则纯规则可能更稳。"
+      required_work: "先统计候选数量和收益分布，再决定是否研究排序因子。"
+
+  biggest_risks:
+    - "B3 当前研究记忆很稀疏，生产规则可能只是 scanner baseline，还不是已充分验证的 champion。"
+    - "误把 B1 pullback 或 Brick ranking 的成功结论迁移到 B3，造成 alpha 来源污染。"
+    - "缺少 B3 专属持仓/退出规则，导致扫描信号有效但交易结果不可控。"
+    - "强势股接力对市场情绪、流动性、涨跌停制度和次日执行价格敏感，回测与实盘可能偏差较大。"
+    - "共享趋势线 gate 可能被误解为 B3 自有 alpha，而不是辅助过滤条件。"
+
+  biggest_unknowns:
+    - "B3XG 规则在不同市场阶段、不同情绪周期和不同市值/行业上的稳定性如何。"
+    - "B3 的主要收益来自入场规则本身，还是来自尚未定义的持仓/退出管理。"
+    - "B3 候选是否需要独立排序层；如果需要，哪些特征属于 B3 alpha 而不是 B1/Brick 借用。"
+    - "缩量区间 0.6-0.9、次日涨幅 2%-4%、缺口和影线阈值是否是稳健区间还是经验规则。"
+    - "市场情绪或指数环境是否应作为 B3 交易开关。"
+
+  next_priority:
+    primary: "建立 B3 独立样本、回测和交易结果面板，先验证 B3XG rule baseline 是否真实有效。"
+    secondary: "设计并验证 B3 专属 holding/exit 规则，再决定是否加入候选 ranking layer。"
+    not_priority:
+      - "直接套用 B1 V3 的 pullback/wave-quality/ranking 结论。"
+      - "直接套用 Brick V2/V5 的图形反转或排序结论。"
+      - "在没有基线回测前堆叠复杂模型或跨策略融合。"
+
+  first_task_for_new_researcher:
+    task: >
+      以 B3XG 当前规则为唯一基线，构建独立 B3 样本和回测记录，输出候选数量、交易数、收益、回撤、胜率、
+      阶段表现、失败样本类型，并单独标注持仓/退出规则假设。
+    constraints:
+      - "不要继承 B1 或 Brick 的研究结论作为 B3 证据。"
+      - "不要把共享指标公式、缓存或执行链路写成 B3 自有模块。"
+      - "不要在缺少 baseline 证据前引入复杂 fusion 或 ML ranking。"
+      - "若结果异常或大面积反常，先停下来验证假设，不要继续堆实验。"
+      - "使用 GRID TEST methodology；参数范围、样本区间和测试设计需显式记录。"
+
+  success_condition_next_phase:
+    - "形成一份独立 B3 baseline 回测结果，能判断 B3XG 规则是否具备正向期望。"
+    - "明确 B3 的持仓/退出规则对收益和回撤的影响。"
+    - "判断 B3 是否需要 ranking layer，并给出只属于 B3 alpha source 的候选特征方向。"
+    - "将 B3 独立回测结果、参数范围、规则定义和已验证/失败/待验证结论回写到 b3_memory.yaml，正式建立 B3 research memory governance。"
+    - "所有结论保持 B3 边界清晰，不把 B1、Brick 或 shared infrastructure 写成 B3 成果。"

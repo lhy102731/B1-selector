@@ -1,0 +1,116 @@
+snapshot:
+  version: "1.0"
+  generated_at: "2026-06-19"
+
+  current_production:
+    name: "B1 V3 research stack"
+    status: "current production/research baseline"
+    description: >
+      B1 当前生产口径是 B1 V3 scoring architecture；旧 UnifiedB1 规则逻辑保留为
+      B1-family signal infrastructure，而不是当前最优生产结论本身。
+    boundary: >
+      只把 alpha 来自建仓/启动波质量、缩量回踩、碗口/回踩位置、洗盘/回测行为、
+      或 B1 候选股排序的内容归入 B1。B3 连板/次日接力、Brick 图形反转、以及通用数据/缓存/通知/指标实现不属于 B1 alpha。
+
+  current_champion:
+    name: "B1 V3 + V1 wave-quality filter + six-factor scoring"
+    confidence: "highest among current B1 evidence"
+    configuration:
+      j_max: 20
+      pe_max: 80
+      pb_max: 8
+      turnover_max: 6
+      vol_shrink_mode: "v1"
+      position_mode: "bowl"
+      wave_quality: "V1 wave-quality filters enabled"
+      take_profit_25pct: "disabled"
+    effective_factors:
+      - "q_nodist"
+      - "q_vol_dec_accel"
+      - "q_vs_yellow"
+      - "q_vs_60h"
+      - "q_red_vol_dec"
+      - "q_ind_rank"
+    alpha_source: >
+      最可信 Alpha 来源不是复杂融合，而是有质量的建仓/启动波之后，出现缩量回踩、
+      黄白线结构有效、碗口或洗盘回测位置合理，再用少数 B1 排序因子在有效候选中选优。
+
+  active_research:
+    - "验证 B1 V3 简化六因子排序在不同市场阶段的稳定性。"
+    - "在不改变 B1 alpha 来源的前提下，提高候选股 TopN 排名质量。"
+    - "保持 V1 wave-quality 过滤作为核心结构，避免重新堆叠已失败的复杂 fusion。"
+    - "区分 B1 专属 alpha 与共享指标/基础设施，防止研究边界污染。"
+
+  frozen_directions:
+    - direction: "V1 wave-quality filter"
+      status: "frozen as core component"
+      reason: "当前证据显示移除 wave-quality 会显著伤害 B1 V3 表现，不能随意删除或弱化。"
+    - direction: "B1 alpha boundary"
+      status: "frozen"
+      reason: "B1 只研究回踩/缩量/建仓波/排序质量，不吸收 B3、Brick 或通用基础设施 alpha。"
+    - direction: "six-factor simplified scoring as baseline"
+      status: "frozen baseline"
+      reason: "当前最优结构来自少数有效因子，而不是全量候选因子融合。"
+
+  rejected_directions:
+    - direction: "Repeat the same complex B1 V3 fusion stack"
+      includes:
+        - "DTW"
+        - "hist_bonus"
+        - "S1-as-B1-fusion"
+        - "concept resonance / concept-group ranking fusion"
+        - "CS factor groups"
+      reason: "在已测 B1 V3 实现中有害或无效；不要按同一路径继续投入。"
+    - direction: "Default stricter valuation filter"
+      example: "pe_max=30"
+      reason: "在已测 B1 V3 口径中收紧 PE 降低候选灵活性并伤害收益。"
+    - direction: "Generalize hard-filter redundancy"
+      reason: "当前 hard-filter 冗余只适用于已测 TopN ranking architecture，不能推广成所有 B1 规则。"
+
+  highest_roi_hypotheses:
+    - hypothesis: "Market-phase stability validation"
+      why_high_roi: "如果六因子在不同阶段稳定，当前 champion 可直接提升为更可信生产基线。"
+      required_work: "按市场阶段拆分验证 TopN、回撤、胜率、收益贡献和因子漂移。"
+    - hypothesis: "Ranking quality improvement inside B1-valid candidates"
+      why_high_roi: "B1 当前有效性更依赖候选中排序选优，而不是新增大面积硬过滤。"
+      required_work: "只在已通过 B1 结构候选内研究排序，不改变 alpha family。"
+    - hypothesis: "Wave-quality sensitivity map"
+      why_high_roi: "wave-quality 是当前核心组件，找出哪些子约束真正贡献最大可减少过拟合和误杀。"
+      required_work: "在不破坏 set_param/reset/rollback 的前提下做显式网格消融。"
+
+  biggest_risks:
+    - "当前 champion 可能对 2016-2026 整体区间有效，但在特定市场阶段、风格切换或流动性环境下失效。"
+    - "把共享指标、S1、B3、Brick 或基础设施结果误归因给 B1，导致 alpha 来源污染。"
+    - "为了追求复杂度重新加入已失败 fusion，稀释当前清晰有效的 B1 alpha。"
+    - "过度相信 TopN hard-filter redundancy，误删其他 B1 实现中仍可能有效的前置过滤。"
+    - "参数/缓存/回测口径污染会制造虚假提升，尤其是 set_param/reset/rollback 或生产数据口径不一致。"
+
+  biggest_unknowns:
+    - "六个有效因子中哪些是跨市场阶段稳定 alpha，哪些只是特定区间或排序架构下的偶然有效。"
+    - "V1 wave-quality 的具体子条件中，哪些不可替代，哪些只是冗余保护。"
+    - "当前 B1 V3 champion 在真实每日生产候选、停牌/涨跌停/流动性约束、通知执行链路中的表现是否等同于回测表现。"
+    - "B1 候选排序还有没有不改变 alpha 来源、但显著提升 TopN 质量的新特征。"
+
+  next_priority:
+    primary: "做 B1 V3 champion 的市场阶段稳定性验证与六因子贡献拆解。"
+    secondary: "围绕 B1-valid candidate ranking 研究新特征，但禁止重复已失败复杂 fusion。"
+    not_priority:
+      - "重跑同一套 DTW/hist_bonus/S1/concept/CS fusion。"
+      - "把 PE 上限继续机械收紧。"
+      - "把 B3 或 Brick 的 alpha 移植成 B1 结论。"
+
+  first_task_for_new_researcher:
+    task: >
+      以当前 champion 配置为唯一基线，按市场阶段拆分 2016-2026 结果，验证六因子 TopN 排序的稳定性，
+      并输出每个阶段的收益、回撤、交易数、胜率、TopN 变化和因子贡献漂移。
+    constraints:
+      - "不要修改 set_param/reset/rollback/参数恢复逻辑。"
+      - "不要改变样本区间、参数范围或测试设计，除非用户明确批准。"
+      - "若结果异常或大面积反常，先停下来验证假设，不要继续堆实验。"
+      - "使用 GRID TEST methodology，不使用自迭代自动搜索。"
+
+  success_condition_next_phase:
+    - "确认 B1 V3 champion 在主要市场阶段没有单一阶段依赖，或清楚标注其适用/不适用阶段。"
+    - "明确六个有效因子的稳定贡献排序，并识别需要冻结、可弱化、或需进一步验证的因子。"
+    - "产出一个不改变 B1 alpha source 的下一版 ranking 研究计划。"
+    - "所有结论保持 B1 边界清晰，不把共享基础设施或其他策略 alpha 写成 B1 成果。"

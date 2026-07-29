@@ -1,0 +1,173 @@
+{
+  "schema_version": "1.0",
+  "subject": "Reusable research principles distilled from B1 V3 Phase 9-14B",
+  "as_of_phase": "Phase 15 (closure)",
+  "lessons": [
+    {
+      "id": "L01_single_ablation_misleads",
+      "title": "Single-variable ablation can be severely misleading",
+      "principle": "Removing one filter at a time will under-state the importance of conditionally-active filters by an order of magnitude.",
+      "evidence": {
+        "phase12a_finding": "B_KltD single-removal Jaccard 1.000 in all 3 windows; ΔPF 0.000",
+        "phase14b_finding": "B_KltD paired with A_J_range gives int_PF -0.944 below additive"
+      },
+      "rule": "Treat single-ablation 'redundancy' as a hypothesis. Confirm with at least one remove-pair test."
+    },
+    {
+      "id": "L02_interaction_must_be_tested",
+      "title": "Interaction effects must be tested before declaring redundancy",
+      "principle": "Default-config redundancy can mask conditional bridges.",
+      "evidence": {
+        "phase12a_class_III_set": ["A3", "A4", "Prefilter_J", "Prefilter_KltD", "B1_J_range", "B2_vol_shrink"],
+        "phase14b_revealed": "Prefilter_KltD (B_KltD) is a conditional bridge, not redundant"
+      }
+    },
+    {
+      "id": "L03_return_retention_insufficient",
+      "title": "Return retention is insufficient for declaring alpha preservation",
+      "principle": "A reduced system that matches total return can still be a different strategy with worse risk-adjusted performance.",
+      "evidence": {
+        "phase12b_alpha_only_A_2023": {
+          "return_retention": 0.826,
+          "pf_retention": 0.436,
+          "max_dd_ratio": 3.27,
+          "jaccard": 0.051
+        }
+      },
+      "rule": "Always report PF, Sharpe, max drawdown, AND trade-level Jaccard. Return alone is a 1-D shadow."
+    },
+    {
+      "id": "L04_track_jaccard",
+      "title": "Jaccard (trade-level overlap) should always be tracked",
+      "principle": "Two backtests with similar headline metrics can be entirely different strategies.",
+      "thresholds": {
+        "different_strategy": "Jaccard < 0.30",
+        "partly_different": "0.30 <= Jaccard < 0.70",
+        "approximately_same": "Jaccard >= 0.80"
+      },
+      "evidence": {
+        "phase12b": "alpha-only Jaccard 0.034-0.051 despite similar return magnitudes"
+      }
+    },
+    {
+      "id": "L05_pf_retention_above_return_retention",
+      "title": "PF retention is more important than return retention",
+      "principle": "Profit factor proxies the quality of the win/loss distribution. Return proxies magnitude. A system can match return by simultaneously trading more winners and more losers, but PF will drop.",
+      "evidence": {
+        "phase12b_alpha_only_C": {
+          "return_retention": 1.99,
+          "pf_retention": 0.81
+        }
+      },
+      "rule": "For any 'alpha preservation' claim require PF retention >= 80% AND Sharpe retention >= 80% AND Jaccard >= 0.50 in all windows."
+    },
+    {
+      "id": "L06_independent_neq_sufficient",
+      "title": "Independent alpha != sufficient alpha",
+      "principle": "A system can have N independent alpha sources and still fail to function without additional concentrators.",
+      "evidence": {
+        "phase11_independent_alphas_identified": 1,
+        "phase12b_minimum_reconstruction_failed": true
+      },
+      "rule": "Independence is necessary but not sufficient. Always test the minimum reconstruction (keep only independent alpha, remove rest)."
+    },
+    {
+      "id": "L07_generator_vs_constraint_geometry",
+      "title": "Generator-driven and constraint-geometry systems require different audits",
+      "principle": "A generator-driven system can be decomposed into independent factors; a constraint-geometry system cannot.",
+      "diagnostic": "Run 'remove everything except verified alpha'. If trade identity or PF collapses, switch to interaction-based audit.",
+      "evidence": {
+        "phase12b_collapsed": true,
+        "phase14b_triple_int_pf_max": -1.58,
+        "phase14b_pair_int_pf_max": -1.02,
+        "phase12c_jaccard_unrecoverable_with_subset": true
+      }
+    },
+    {
+      "id": "L08_sensitivity_robustness_independence_distinct",
+      "title": "Sensitivity != robustness != independence",
+      "principle": "Each audit class produces a different kind of claim. Do not conflate them.",
+      "pipeline": ["Phase9_sensitivity", "Phase10_robustness", "Phase11_independence", "Phase12B_sufficiency", "Phase12C_recovery", "Phase14B_constraint_geometry"],
+      "evidence": {
+        "phase9_A_class_count": 9,
+        "phase10_R1_count": 1,
+        "phase11_class_I_count": 1,
+        "phase12B_minimum_reconstruction_pass": false
+      },
+      "rule": "Only parameters surviving all three of (sensitivity, robustness, independence) are confirmed independent alpha."
+    },
+    {
+      "id": "L09_dead_is_config_dependent",
+      "title": "Dead in default config != dead in all configs",
+      "principle": "A filter with Jaccard 1.000 under defaults may activate under different configurations.",
+      "evidence": {
+        "B_KltD_default_jaccard": 1.000,
+        "B_KltD_with_A_J_range_removed_jaccard": 0.41,
+        "B2_vol_ma5_under_v1_mode": "fully_dead",
+        "B2_vol_ma5_under_v2_mode": "active"
+      },
+      "rule": "Mark 'dead under <config>'. Do not delete parameters that look dead under one configuration."
+    },
+    {
+      "id": "L10_universe_shapes_visible_alpha",
+      "title": "Universe choice shapes the visible alpha",
+      "principle": "Conclusions about 'no other alpha exists' hold only for the feature universe currently exposed at runtime.",
+      "evidence": {
+        "phase14a_categories_with_zero_features": ["Market Regime", "Breadth", "Multi-Timeframe"],
+        "phase14a_categories_features_off": ["Volatility", "Relative Strength CS", "Sector Rotation"],
+        "phase13_generators_tested_all_in_3_families": true
+      },
+      "rule": "Before declaring 'no other alpha exists', audit coverage. The honest conclusion is 'no other alpha is visible in the current universe'."
+    },
+    {
+      "id": "L11_higher_order_interactions_exist",
+      "title": "Higher-order interactions exist and can dominate pairs",
+      "principle": "Some constraint systems have effective dimension >= 3; three-way removal effects can exceed any two-way effect.",
+      "evidence": {
+        "phase14b_top_triple_int_pf": -1.582,
+        "phase14b_top_pair_int_pf": -1.018,
+        "ratio": 1.55
+      },
+      "rule": "When pair interactions are strong, test triples for the strongest pairs."
+    },
+    {
+      "id": "L12_anti_alpha_components_exist",
+      "title": "Anti-alpha components exist; do not confuse with regime artefacts",
+      "principle": "A filter whose removal improves performance is anti-alpha at current settings. But anti-alpha-by-single-removal can also be a hub constraint whose true role is interactive.",
+      "evidence": {
+        "true_anti_alpha_example": {"id": "C_no_wave_break", "phase12a_avg_d_ret_pp": 2.13},
+        "hub_with_anti_alpha_fingerprint": {"id": "A_J_range", "phase14b_single_d_pf": 0.929, "phase14b_pair_int_pf_max": -1.018}
+      },
+      "rule": "Single-removal positive ΔPF is a red flag but not a verdict. Check pair interactions before reclassifying as anti-alpha."
+    },
+    {
+      "id": "L13_hub_constraint_fingerprint",
+      "title": "Constraint hubs have a recognisable fingerprint",
+      "principle": "High positive single ΔPF (looks anti-alpha) + dominant negative pair interactions with several other constraints = structural hub.",
+      "evidence_node": "A_J_range",
+      "fingerprint": {
+        "single_d_pf_avg": 0.929,
+        "negative_pair_count_in_high_impact_5x5": 3,
+        "triple_membership_negative": 5
+      },
+      "rule": "Never delete a constraint with the hub fingerprint based on single-removal evidence alone."
+    },
+    {
+      "id": "L14_document_with_evidence",
+      "title": "Document with evidence, not confidence",
+      "principle": "Every claim in closure reports should cite the phase / file / metric.",
+      "rule": "Refuse to accept claims without citations. Make closure documents auditable."
+    },
+    {
+      "id": "L15_treat_b1v3_as_completed",
+      "title": "Treat B1 V3 as a completed research subject",
+      "principle": "Further optimization on B1 V3 should not begin from feature search or threshold tuning. Real progress requires extending the feature universe (Phase 14A ranked missing categories).",
+      "rule": "Future agents touching B1 V3 must read ag2_research/knowledge_base/b1_v3/verdict_full.md and architecture_full.md first. They must not propose changes to existing concentrators or generators without re-running Phase 12B / Phase 14B-equivalent interaction tests."
+    }
+  ],
+  "summary": {
+    "total_lessons": 15,
+    "audit_pipeline": ["sensitivity", "robustness", "independence", "sufficiency", "recovery", "constraint_geometry"],
+    "key_meta_lesson": "A system can look generator-driven on the surface and be constraint-geometric in reality. Always check by minimum-reconstruction before committing to a decomposition."
+  }
+}

@@ -1,0 +1,162 @@
+snapshot:
+  version: "2.0"
+  generated_at: "2026-06-19"
+
+  current_production:
+    name: "Brick V2"
+    status: "current trusted production baseline"
+    description: >
+      Brick 当前生产口径是基于 brick_signal 候选池的 V2 28-feature ranking model。
+      Brick 的决策单元是每日从 brick_signal candidates 中做 TopN 排序选择，
+      不是 B1 回踩/建仓波，也不是 B3 涨停接力。
+    evaluation_principle: >
+      是否替代 V2 必须通过 account-level fair production evaluation 证明；
+      内部 ranking metrics 或局部 TopK 指标不能单独证明生产替代。
+    boundary: >
+      只把 alpha 来自 brick_signal、砖图反转/均值回归结构、以及围绕该候选池设计的排序/风控特征归入 Brick。
+      B1 建仓波缩量回踩、B3 强势股接力、以及通用数据/缓存/通知/指标实现不属于 Brick alpha。
+
+  current_champion:
+    name: "Brick V2 28-feature model"
+    confidence: "highest among current Brick production evidence"
+    model_style: "full-order LambdaRank preferred over TopK-only binary classification"
+    feature_set:
+      name: "Brick V2 28 handcrafted features"
+      high_level_groups:
+        - "brick shape and brick momentum"
+        - "entry-day price position"
+        - "distance to shared trend/moving-average references as Brick ranking features"
+        - "short-term return path"
+        - "volume and turnover state"
+        - "technical oscillator state"
+    alpha_source: >
+      当前最可信的 Brick Alpha 来源是 brick_signal 触发后的均值回归候选排序，
+      尤其是入场日价格结构、相对趋势/均线位置、短期路径、成交/换手和技术状态形成的全序 ranking。
+      生产判断以账户级收益/回撤/稳定性为准。
+
+  active_research:
+    - "验证 V5X 是否能在 fair account-level production validation 下击败 V2。"
+    - "测试更低复杂度 Brick 模型是否能在风险调整收益上超过当前 28/49-feature baseline。"
+    - "研究 event data 与 Brick signal 的交互，但必须先确认数据在入场前真实可得。"
+    - "把 regime 用于 dynamic TopK、position sizing 或 exit speed，而不是硬删除候选。"
+    - "把 tail factors 用作 risk tags、stop-width 或 sizing controls，而不是直接 entry filters。"
+
+  frozen_directions:
+    - direction: "Brick V2 28-feature model"
+      status: "frozen production baseline"
+      reason: "统一生产口径下，V2 仍是当前最可靠 Brick baseline；后续版本必须用公平账户级验证击败它。"
+    - direction: "full-order ranking objective"
+      status: "frozen modeling principle"
+      reason: "Brick 的每日 TopN 决策更匹配 full-order LambdaRank；TopK-only binary classification 已在测试中弱化排序梯度。"
+    - direction: "no-leakage production feature rule"
+      status: "frozen research constraint"
+      reason: "任何入场前特征不得使用 future return_pct 或 realized trade outcomes。"
+    - direction: "Brick V2 09:25 entry-open feature boundary"
+      status: "frozen research constraint"
+      reason: "overnight_gap_pct, entry_open_to_yellow_pct, and entry_open_to_ma5_pct are allowed only under daily_select.py semantics: entry_date open versus signal-day known close/yellow/MA5; entry_date high/low/close, intraday future data, T+1 close-derived MA/yellow, and exit/return fields are forbidden."
+    - direction: "Brick production/research script separation"
+      status: "frozen execution constraint"
+      reason: "backtest_brick_v2.py is the production signal generator. AG2 exploratory research must use research-only runners or backtest_brick_v2_research.py unless explicitly reproducing production."
+    - direction: "Brick alpha boundary"
+      status: "frozen"
+      reason: "Brick 只研究 brick_signal 候选排序/风控，不吸收 B1、B3 或 shared infrastructure 作为自身 alpha。"
+    - direction: "Brick state machine"
+      status: "frozen execution constraint"
+      reason: "固定状态机 Signal -> Next Open Entry -> First Red -> Green Exit 不可修改；后续研究只在该执行口径下做 fair account-level validation。"
+    - direction: "V5E"
+      status: "frozen research artifact, not production replacement"
+      reason: "V5E 有研究价值，但尚未证明可替代 V2。"
+
+  rejected_directions:
+    - direction: "Naive external factor-library injection"
+      includes:
+        - "Alpha101"
+        - "GTJA191"
+        - "Qlib158"
+      reason: "测试中与 Brick 均值回归状态不匹配，增加噪声而非稳定增量 alpha。"
+    - direction: "Leaked concept resonance"
+      includes:
+        - "future return_pct"
+        - "realized trade outcomes as pre-trade features"
+      reason: "使用未来退出结果，生产不可用。"
+    - direction: "Simple daily linear concept resonance"
+      includes:
+        - "conc_daily"
+        - "conc_overnight"
+      reason: "测试中未能相对 Brick baseline 改善干净 forward production evaluation。"
+    - direction: "Positive concept-trend continuation alpha"
+      reason: "测试定义下，概念趋势强反而更像 Brick 的弱反向信息，不应当作正向追涨信号。"
+    - direction: "Extreme tail factors as direct entry filters"
+      reason: "更像波动放大器，不是方向性买入过滤器。"
+    - direction: "One-word-limit-up / strong-stock leadership as standalone Brick ranker"
+      reason: "统计上可见但未转化为稳健生产 alpha；只能考虑防御、事件 overlay 或交互信息。"
+    - direction: "Hard market-timing candidate deletion"
+      reason: "大面积删除候选伤害生产结果，回撤改善有限。"
+    - direction: "Top5 exact binary classification replacing full-order ranking"
+      reason: "类别不平衡且损失全序排序梯度，不适合当前 Brick TopN 决策。"
+    - direction: "V2C 19-feature reduction as production replacement"
+      reason: "未证明可替代 V2。"
+
+  highest_roi_hypotheses:
+    - hypothesis: "Fair account-level V5X vs V2 validation"
+      why_high_roi: "V5X/V5E 显示结构信息和入场日信息可能互补，但只有击败 V2 才有生产意义。"
+      required_work: "使用相同候选池、成本模型、TopK、exit rules，做 rolling PWF 和账户级回测；同时在 V5 聚类相关研究中检查 ATR/波动状态是否过度主导，并考虑 volatility-neutral 或波动分层验证。"
+    - hypothesis: "Lower-complexity Brick model"
+      why_high_roi: "若 15 个以内特征能保持或提升 Sharpe/MaxDD/turnover/CAGR，可降低过拟合和维护成本。"
+      required_work: "以 V2 为基线，测试简化模型的账户级表现和跨阶段稳定性。"
+    - hypothesis: "Regime as soft control"
+      why_high_roi: "硬过滤已失败，但 dynamic TopK、仓位上限或 exit speed 可能改善风险而不破坏候选池。"
+      required_work: "保持 entry ranking 不变，只按 Bull/Range/Bear 调整 TopK、position caps 或 exit speed。"
+    - hypothesis: "Tail factors as risk control"
+      why_high_roi: "tail 直接入场过滤失败，但极端案例区分能力可能转化为 stop width、position sizing 或 risk tag。"
+      required_work: "固定 entry ranking，只测试止损宽度、仓位缩放和风险标签。"
+    - hypothesis: "Production-available event overlays"
+      why_high_roi: "管理层减持、资金流、大宗交易、融资融券、龙虎榜等可能与 Brick signal 交互，但必须先解决时间可得性。"
+      required_work: "先审计事件数据是否入场前可得，再测试事件日或衰减窗口 overlay。"
+
+  biggest_risks:
+    - "用内部 ranking metrics 替代账户级生产验证，导致错误替换 V2。"
+    - "使用 future return_pct、realized trade outcomes 或入场后才可得事件数据，造成未来函数污染。"
+    - "把 B1 wave-quality 或 B3 limit-up relay 逻辑混入 Brick，污染 Brick alpha source。"
+    - "为了复杂度加入外部因子库、cluster/regime 或 concept resonance，但账户级收益没有改善。"
+    - "用 hard market-timing 大面积删除 Brick candidates，重复已失败路径。"
+    - "把 shared indicators 的公式/实现当成 Brick 自有模块，而不是 Brick feature/gate 角色。"
+
+  biggest_unknowns:
+    - "V5X 能否在公平账户级生产验证下真正击败 V2。"
+    - "低复杂度模型能否在保留 V2 核心 alpha 的同时降低过拟合并改善风险调整收益。"
+    - "entry-day pricing 的贡献在不同模型、市场阶段和归因方法下到底有多稳定。"
+    - "regime/cluster 信息应如何转化为 dynamic TopK、position sizing 或 exit speed，而不是硬过滤。"
+    - "tail factors 最适合做 stop-width、position sizing 还是 risk tags。"
+    - "event data 与 Brick signals 的交互是否生产可用，尤其是入场前时间对齐问题。"
+    - "V5 clusters 可能部分反映 ATR/波动状态而非纯 signal quality；仍需验证 volatility-neutral clustering 或波动分层是否能改善聚类与生产表现。"
+
+  next_priority:
+    primary: "以 V2 28-feature model 为唯一生产基线，做 V5X/低复杂度模型的公平账户级对照验证。"
+    secondary: "在不改变 entry ranking 的前提下，测试 regime soft control 与 tail risk-control overlay。"
+    not_priority:
+      - "重做 naive Alpha101/GTJA191/Qlib158 拼接。"
+      - "继续使用 leaked return_pct 或 realized outcomes 构造概念共振。"
+      - "把 concept trend 当正向追涨 alpha。"
+      - "用 hard market-timing 删除大块候选。"
+      - "用 Top5 binary classification 替代 full-order ranking。"
+
+  first_task_for_new_researcher:
+    task: >
+      以 Brick V2 28-feature model 为当前唯一生产 champion，设计并执行 V5X 或低复杂度模型
+      对 V2 的 fair account-level comparison，确保候选池、成本模型、TopK、exit rules 和时间区间一致，
+      输出收益、回撤、Sharpe、turnover、交易数、阶段稳定性和相对 V2 的增量来源。
+    constraints:
+      - "不要使用 future return_pct 或 realized trade outcomes 作为入场前特征。"
+      - "不要用 ranking metrics 单独宣布生产替代。"
+      - "不要继承 B1 或 B3 的研究结论作为 Brick 证据。"
+      - "不要把 shared indicator 公式、缓存或执行链路写成 Brick 自有模块。"
+      - "不要修改固定状态机 Signal -> Next Open Entry -> First Red -> Green Exit。"
+      - "若结果异常或大面积反常，先停下来验证假设，不要继续堆实验。"
+      - "使用 GRID TEST methodology；参数范围、样本区间和测试设计需显式记录。"
+
+  success_condition_next_phase:
+    - "明确 V5X 或低复杂度模型是否在公平账户级验证中击败 V2；若不能，V2 继续作为生产 champion。"
+    - "给出 Brick 下一阶段是否应投入模型替换、soft regime control、tail risk control 或 event overlay 的优先级。"
+    - "确认所有新增特征满足入场前可得、无未来函数、且只作用于 Brick signal candidates。"
+    - "形成一份可复现的账户级对照结果，而不是仅依赖内部 ranking 指标。"

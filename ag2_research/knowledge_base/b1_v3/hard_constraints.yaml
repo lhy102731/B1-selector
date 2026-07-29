@@ -1,0 +1,200 @@
+# B1 V3 - Machine-checkable hard constraints
+# Consumed by ag2_research.knowledge_base.proposal_validator
+# Any proposal that violates a hard constraint is REJECTED at submission time.
+
+schema_version: "1.0"
+subject: "b1_v3"
+applies_to_files:
+  - "strategy/b1_v3_strategy.py"
+  - "strategy/b1_v3_config.py"
+  - "run_b1_v3.py"
+
+# Parameters that must NOT be modified
+# Each rule has: id, params (list), constraint, rationale, evidence_phase
+forbidden_modifications:
+
+  - id: "FROZEN_HUB_A_J_RANGE"
+    params:
+      - "j_max"
+      - "j_min"
+      - "prefilter_j_max"
+    constraint: "NO_CHANGE"
+    rationale: |
+      Structural HUB of the constraint geometry. Single-removal looks
+      anti-alpha (ΔPF +0.93) but the pair interactions with F, B_KltD, E
+      reach -1.02 / -0.94 / -0.78. Triple membership: 7 of 8.
+    evidence_phase: "14B"
+    override_required: "human_authorization + Phase 14B-equivalent rerun"
+
+  - id: "FROZEN_EXIT_ALPHA_T_PLUS_3"
+    params:
+      - "t_plus_3_min_return"
+    constraint: "NO_CHANGE"
+    rationale: |
+      The only A-class parameter that survived sensitivity (Phase 9),
+      robustness (Phase 10 R1), and independence (Phase 11 Class I) audits.
+    evidence_phase: "10, 11"
+    override_required: "Phase 10 + Phase 11 rerun on new window set"
+
+  - id: "FROZEN_GENERATOR_WAVE_QUALIFIED"
+    params:
+      - "require_wave_qualified"
+      - "wave_max_gain_pct"
+      - "wave_max_turnover_sum"
+      - "wave_red_green_vol_ratio"
+      - "wave_health_surge_vol_ratio"
+      - "wave_health_accum_days"
+      - "vol_rank_max_must_bullish"
+      - "vol_rank_2nd_must_bullish"
+      - "vol_rank_high_price_must_bullish"
+    constraint: "NO_CHANGE"
+    rationale: |
+      The only confirmed entry generator (Phase 12A rank 1, ΔRet -5.10pp avg).
+      Modifying wave thresholds destroys candidate volume.
+    evidence_phase: "12A, 12B, 13"
+    override_required: "Phase 12A + Phase 13 rerun showing alternative passes"
+
+  - id: "FROZEN_EXITS_STRUCTURAL"
+    params:
+      - "exit_break_yellow"
+      - "exit_break_white"
+      - "exit_profit_25pct"
+      - "stop_loss_width"
+      - "max_hold_days"
+    constraint: "NO_CHANGE"
+    rationale: |
+      Structural exits intertwined with the entry geometry (yellow/white
+      anchors are the same lines used by A1 and A5). Untested in isolation.
+    evidence_phase: "8D (reachability) + structural argument"
+    override_required: "human_authorization"
+
+# Parameters that may be modified ONLY with conditions
+conditional_modifications:
+
+  - id: "MAY_TOUCH_CONCENTRATOR_E_WAVE_HEALTHY"
+    params: ["require_wave_healthy"]
+    constraint: "REQUIRES_PAIR_REMOVAL_TEST"
+    rationale: "Independent concentrator (avg ΔPF -0.37). Strong pair int with A_J_range."
+    evidence_phase: "12A, 14B"
+    required_evidence:
+      - "remove-one in all 3 windows"
+      - "remove-pair with A_J_range in all 3 windows"
+      - "acceptance bar satisfied in all 3 windows"
+
+  - id: "MAY_TOUCH_CONCENTRATOR_D_WHITE_SLOPE"
+    params: ["white_slope_min"]
+    constraint: "REQUIRES_3_WINDOW_TEST"
+    rationale: "Single effect mostly in A_2023; substitutive interactions."
+    evidence_phase: "12A, 14B"
+    required_evidence:
+      - "remove-one in all 3 windows"
+      - "acceptance bar satisfied in all 3 windows"
+
+  - id: "MAY_TOUCH_CONCENTRATOR_B4_TURNOVER"
+    params: ["turnover_max"]
+    constraint: "REQUIRES_3_WINDOW_TEST"
+    rationale: "Independent contributor active in A and C only."
+    evidence_phase: "12A"
+    required_evidence:
+      - "remove-one in all 3 windows"
+      - "acceptance bar satisfied in all 3 windows"
+
+# Already-falsified hypotheses (auto-reject on re-proposal)
+forbidden_hypotheses:
+
+  - id: "NO_ALPHA_ONLY_RECONSTRUCTION"
+    description: |
+      Do not propose 'keep only verified alphas (C_wave_qualified +
+      t_plus_3_min_return), remove rest'. Phase 12B already showed this
+      collapses the system (Sharpe 0.68, PF 1.16, Jaccard 0.05).
+    falsified_by_phase: "12B"
+    rejection_message: |
+      Phase 12B already tested alpha-only minimal reconstruction. The
+      result was: Jaccard 0.03-0.05 vs baseline, PF 1.10-1.16, drawdown
+      3x worse. This hypothesis is permanently disproved unless your
+      proposal includes a phase-specific argument why the result no
+      longer applies.
+
+  - id: "NO_SECOND_GENERATOR_IN_PSM_DAILY"
+    description: |
+      Do not propose a second entry generator inside Price Structure,
+      Momentum, or Volume on a single daily timeframe. Phase 13 tested
+      8 such families; none satisfy the 4-requirement bar.
+    falsified_by_phase: "13"
+    rejection_message: |
+      Phase 13 evaluated G1 TrendPersistence, G2 BreakoutContinuation,
+      G3 VolContraction, G4 RelativeStrength, G5 VolAcceleration,
+      G6 MomentumReversal, G7 MAStructPullback, G8 KDJ_GoldCross.
+      None passed all 4 requirements (PF/Sharpe in 2 windows + Jac < 0.30
+      vs wave_qualified + improves combined system).
+
+  - id: "NO_C_NO_WAVE_BREAK_REINFORCEMENT"
+    description: |
+      Do not propose tightening or strengthening 'require_no_wave_break'.
+      Phase 12A flagged it Class I anti-alpha (avg ΔRet +2.13pp when REMOVED).
+    falsified_by_phase: "12A"
+
+  - id: "NO_SINGLE_ABLATION_REDUNDANCY_CLAIM"
+    description: |
+      Do not claim a component is redundant on single-removal evidence
+      alone. Phase 14B showed B_KltD looked dead (Jac 1.000) under single
+      removal but had pair int_PF -0.94 with A_J_range.
+    falsified_by_phase: "14B"
+
+  - id: "NO_OPTIMIZATION_WITHOUT_FEATURE_EXTENSION"
+    description: |
+      Do not propose further parameter optimization on existing B1 V3
+      filters. Phase 14A documented 3 alpha categories with zero features
+      and 3 with consumers off. Real progress requires feature universe
+      extension, not parameter search.
+    falsified_by_phase: "14A, 15"
+    severity: "warn_not_reject"
+
+# Measurement requirements for any modification proposal
+required_measurement_plan:
+  must_report_per_window:
+    - "trades"
+    - "total_return_pct"
+    - "max_drawdown_pct"
+    - "sharpe"
+    - "profit_factor"
+    - "jaccard_vs_baseline"
+  must_report_aggregate:
+    - "pf_retention"
+    - "sharpe_retention"
+    - "all_windows_pass_bar"
+
+# Acceptance bar (from manifest.yaml; duplicated here for validator)
+acceptance_bar:
+  pf_retention_min: 0.80
+  sharpe_retention_min: 0.80
+  jaccard_min: 0.50
+  windows_required: ["A_2023", "B_2024H1", "C_2024H2_latest"]
+  rule: "ALL windows must pass ALL three metrics"
+
+# Permitted research directions (after Phase 15)
+permitted_directions:
+  - id: "EXTEND_FEATURE_UNIVERSE"
+    description: |
+      Add features in missing categories (Market Regime, Breadth,
+      Multi-Timeframe, Volatility, Relative Strength CS, Sector Rotation)
+      per Phase 14A missing_universe_ranked.md.
+    requires:
+      - "explicit data source + acquisition plan"
+      - "Phase 13-equivalent generator discovery test"
+
+  - id: "RE_AGGREGATE_TIMEFRAME"
+    description: |
+      Test weekly/monthly aggregation of the existing daily bars to look
+      for multi-timeframe generators. No new data source required.
+    requires:
+      - "Phase 13-equivalent generator discovery test"
+      - "Jaccard < 0.30 vs daily wave_qualified"
+
+  - id: "ENABLE_OFFLINE_CONSUMERS"
+    description: |
+      Turn on one off-by-default consumer (e.g. a G3 CS rank, G4 q_atr,
+      G6 q_wr) and measure delta vs baseline.
+    requires:
+      - "all 3 windows in measurement plan"
+      - "acceptance bar"

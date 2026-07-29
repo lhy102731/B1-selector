@@ -1,0 +1,28 @@
+{
+  "lessons": [
+    {
+      "id": "sqnav_not_enough",
+      "lesson": "Signal Quality NAV can amplify unstable or non-executable ranking effects; pair it with executable NAV before promotion."
+    },
+    {
+      "id": "v2_topn_replacement_cost",
+      "lesson": "A bad-label factor can identify weak broad candidates, while V2-selected candidates with that label may still beat lower-ranked replacements."
+    },
+    {
+      "id": "train_window_sensitivity",
+      "lesson": "Top3 selection changed materially across train windows, so robustness must include rank stability and direct rank-return separation."
+    },
+    {
+      "id": "industry_cap_diagnostic_only",
+      "lesson": "max_per_ind=2 helped Top3 average but hurt tail risk and Top5; treat as risk shaping, not alpha."
+    },
+    {
+      "id": "free_float_ratio_data_coverage_stop",
+      "lesson": "Liquidity-structure ideas that require free_float_ratio cannot be validated from the current raw parquet proxy; coverage is 1.549817%, so a new data source or redesigned proxy is required before retesting."
+    },
+    {
+      "id": "close_position_gap_interaction_promising_sqnav_only",
+      "lesson": "close_position_in_range and close_position_gap_interaction improved strict rolling Signal Quality NAV in the 2026-07-10 round 4 repaired retry, but drawdown worsened and executable NAV was not validated; preserve as research_only and require executable NAV, ablation, and full-pool diagnostics before promotion."
+    }
+  ]
+}

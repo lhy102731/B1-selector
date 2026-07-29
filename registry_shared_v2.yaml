@@ -1,0 +1,549 @@
+registry:
+  experiments:
+  - id: shared-infra-001
+    title: Shared Infrastructure ownership boundary and alpha-source classification rule
+    category: other
+    status: VERIFIED
+    short_result: Shared Infrastructure owns reusable data, cache, config, notification, indicator, orchestration, UI, and
+      backtest mechanisms; it must not own B1/B3/Brick alpha conclusions.
+    evidence_source:
+    - project_shared_v2.yaml
+    - shared_memory.yaml
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    reopen_condition: Reopen when classifying mixed outputs or files that contain both generic execution mechanics and strategy-specific
+      signal/ranking conclusions.
+  - id: shared-infra-002
+    title: 'Cross-strategy validation governance: PWF, OOS-first, account-level-first'
+    category: validation_framework
+    status: VERIFIED
+    short_result: Shared memory establishes Purged Walk-Forward/OOS-first validation, account-level metrics over ranking metrics,
+      no future-function leakage, and bounded FAILED conclusions as repository-wide rules.
+    evidence_source:
+    - shared_memory.yaml
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    reopen_condition: Reopen only to refine the standard or add stronger evidence; do not relax these rules for production
+      research.
+  - id: shared-infra-003
+    title: 'Shared indicator library: white line, yellow line, S1 detector boundary'
+    category: feature_layer
+    status: VERIFIED
+    short_result: White-line/yellow-line formulas and S1 detector physical implementation are shared infrastructure; strategy-specific
+      usage and results belong to individual strategy memories.
+    evidence_source:
+    - project_shared_v2.yaml
+    - snapshot_shared.yaml
+    - CLAUDE.md
+    - utils/s1_filter.py
+    - utils/technical.py
+    reopen_condition: Reopen if formulas or detector implementation change, or if a strategy tries to claim physical ownership
+      of shared indicators.
+  - id: shared-infra-004
+    title: Shared data fetch layer with baostock, Tencent, mootdx, akshare fallback paths
+    category: data_layer
+    status: VERIFIED
+    short_result: Data layer supports A-share stock lists, historical/update K-line fetching, market cap enrichment, retries,
+      local stock-name caches, and fallback data sources.
+    evidence_source:
+    - utils/akshare_fetcher.py
+    - README.md
+    - project_shared_v2.yaml
+    reopen_condition: Reopen when changing data providers, field mapping, retry behavior, adjustment method, or production
+      data availability assumptions.
+  - id: shared-infra-005
+    title: CSV storage convention and GBK/date-order handling
+    category: data_layer
+    status: VERIFIED
+    short_result: CSVManager stores stock data under data/{prefix}/{code}.csv, reads GBK/UTF-8, writes GBK, sorts reverse
+      chronological, deduplicates by date, and blocks overwriting unreadable nonempty files.
+    evidence_source:
+    - utils/csv_manager.py
+    - CLAUDE.md
+    - project_shared_v2.yaml
+    reopen_condition: Reopen if storage encoding, file order, prefixes, or read/write semantics change; date order is a high-risk
+      backtest/cache dependency.
+  - id: shared-infra-006
+    title: Stock list and delisted-stock cache with time-based refresh
+    category: data_layer
+    status: PARTIAL
+    short_result: akshare_fetcher includes baostock stock-list cache, delisted-stock cache, fallback stock list, and filtering
+      of non-A-share instruments; no unified manifest records provider freshness or coverage.
+    evidence_source:
+    - utils/akshare_fetcher.py
+    - snapshot_shared.yaml
+    reopen_condition: Reopen to add provider/version/freshness manifests and survivorship-bias audit for historical backtests.
+  - id: shared-infra-007
+    title: Fund-flow and big-deal collector
+    category: data_layer
+    status: PARTIAL
+    short_result: FundFlowCollector collects concept flow, stock flow, big-deal data, and concept index fallback/synthesis
+      data; timestamp/decision-time availability governance is not yet formalized.
+    evidence_source:
+    - utils/fund_flow_collector.py
+    - project_shared_v2.yaml
+    - snapshot_shared.yaml
+    reopen_condition: Reopen before using fund-flow/event fields in production features; require disclosure/ingestion time
+      and pre-trade availability audit.
+  - id: shared-infra-008
+    title: Active-cap market data extractor from Compass VDAT
+    category: data_layer
+    status: PARTIAL
+    short_result: fetch_active_cap.py extracts active-cap time series from local Compass day.vdat and incrementally updates
+      data/market/active_cap.csv; source is local-environment-dependent.
+    evidence_source:
+    - tools/data/fetch_active_cap.py
+    - utils/market_timing.py
+    reopen_condition: Reopen if Compass path/data format changes or if active-cap timing is used as production gating input.
+  - id: shared-infra-009
+    title: Active-cap market timing state machine
+    category: feature_layer
+    status: PARTIAL
+    short_result: MarketTiming implements a reusable bullish/bearish state machine from active-cap changes, used as shared
+      timing infrastructure; hard timing as alpha/risk overlay must remain strategy-specific.
+    evidence_source:
+    - utils/market_timing.py
+    - CLAUDE.md
+    - backtest_optimized.py
+    reopen_condition: Reopen when thresholds, state priority, or integration with backtests/production scans changes.
+  - id: shared-infra-010
+    title: Indicator cache builder for all-stock Parquet fast path
+    category: cache_layer
+    status: VERIFIED
+    short_result: build_indicators_cache.py precomputes indicator Parquet files under data/indicators_cache, skips up-to-date
+      caches by mtime, filters suspended rows, and stores ascending dates for backtests.
+    evidence_source:
+    - build_indicators_cache.py
+    - CLAUDE.md
+    - README.md
+    reopen_condition: Reopen when indicator schema, date sorting, stock universe, or strategy parameter dependencies change.
+  - id: shared-infra-011
+    title: Indicator cache manifest gap
+    category: cache_layer
+    status: OPEN
+    short_result: 'Cache mechanism exists, but shared memory/snapshot identify missing manifest fields: strategy_id, alpha_source,
+      data range, feature schema, generation params, code/data version.'
+    evidence_source:
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    - build_indicators_cache.py
+    success_condition_next_phase: Build a unified cache/output manifest and backfill at least representative cache artifacts.
+  - id: shared-infra-012
+    title: Daily return peer cache from indicator cache
+    category: cache_layer
+    status: PARTIAL
+    short_result: build_daily_ret_cache.py incrementally rebuilds data/_allpeers_daily_ret.parquet from indicators_cache and
+      preserves older rows, but uses a sample cache file for latest-date freshness and has no manifest.
+    evidence_source:
+    - build_daily_ret_cache.py
+    - daily_run.py
+    reopen_condition: Reopen to verify freshness logic across all symbols and add cache provenance/version metadata.
+  - id: shared-infra-013
+    title: Signal cache and decoupled parameter sweep fast path
+    category: cache_layer
+    status: VERIFIED
+    short_result: Backtest engine precomputes signals into data/signal_cache and supports decoupling raw J/volume/near values
+      so sweeps can reuse cache without full recomputation.
+    evidence_source:
+    - backtest_optimized.py
+    - CLAUDE.md
+    - research/b1/benchmarks/gen_signals.py
+    - research/b1/benchmarks/backtest_signals.py
+    reopen_condition: Reopen when parameter filtering, raw cached fields, or set_param/reset/rollback behavior changes; require
+      2-value sanity checks.
+  - id: shared-infra-014
+    title: 'Large-sweep workflow rule: grid tests plus precomputed disk caches'
+    category: workflow_layer
+    status: VERIFIED
+    short_result: Project instructions require explicit GRID TEST methodology, no silent scope changes, and precompute-to-disk
+      cache for large sweeps.
+    evidence_source:
+    - CLAUDE.md
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    reopen_condition: Reopen if automated workflows or AG2 agents are allowed to run sweeps; they must not change test design
+      silently.
+  - id: shared-infra-015
+    title: Optimized shared B1-style account backtest engine mechanics
+    category: backtest_layer
+    status: VERIFIED
+    short_result: backtest_optimized.py provides multiprocessing cache loading, signal precompute, account/position simulation,
+      TopN filtering, exits, and output CSVs as shared mechanics; B1-specific rules remain strategy-owned.
+    evidence_source:
+    - backtest_optimized.py
+    - README.md
+    - CLAUDE.md
+    reopen_condition: Reopen when generic mechanics, costs, position sizing, outputs, or cache precompute behavior change.
+  - id: shared-infra-016
+    title: Legacy backtest CSV artifacts without preserved command/config
+    category: backtest_layer
+    status: ABANDONED
+    short_result: The former backtest_equity/backtest_trades CSV pair lacked reliable command/config/data-range provenance.
+      It was deleted after content audit and must not be used as authoritative evidence.
+    evidence_source:
+    - archive/manifests/repository_cleanup_20260724.md
+    reopen_condition: Do not reuse as-is; rebuild with explicit command, config, data range, cache IDs, and validation method.
+  - id: shared-infra-017
+    title: V4 10-phase discovery and validation pipeline
+    category: validation_framework
+    status: VERIFIED
+    short_result: 'pipeline_v4.py codifies a reusable 10-phase research pipeline: state export, factor generation, leakage
+      firewall, screening, incremental tests, modeling, PWF, and account backtest.'
+    evidence_source:
+    - research/brick/v4_pipeline/pipeline_v4.py
+    - docs/v4_discovery_pipeline_report.md
+    - research/brick/v4_pipeline/p1_state_export.py
+    - research/brick/v4_pipeline/p3_leakage_firewall.py
+    - research/brick/v4_pipeline/p9_purged_walk_forward.py
+    - research/brick/v4_pipeline/p10_account_backtest.py
+    reopen_condition: Reopen to generalize across B1/B3/Brick or to add manifests and decision-time availability gates.
+  - id: shared-infra-018
+    title: Shared V4 leakage firewall implementation and data-quality bug-check infrastructure
+    category: data_quality
+    status: VERIFIED
+    short_result: 'As shared infrastructure, leakage firewall checks shift/future-return/label contamination/constant factors,
+      and V4 report records reusable bug classes: np.roll wraparound, negative-index future reads, cross-day scaler leakage,
+      LightGBM grouping, random seeds, and stale baselines. Brick registry records the strategy-level empirical consequence
+      separately.'
+    evidence_source:
+    - research/brick/v4_pipeline/p3_leakage_firewall.py
+    - docs/v4_discovery_pipeline_report.md
+    - archive/research/data/leakage_check/v4_leak_report.csv
+    - archive/research/data/leakage_check/v4_leak_flagged.json
+    reopen_condition: Reopen whenever factor generation, scaling, multiprocessing, cache schemas, or walk-forward splits change.
+  - id: shared-infra-019
+    title: Shared Purged Walk-Forward implementation with 20-day embargo
+    category: validation_framework
+    status: VERIFIED
+    short_result: As shared validation infrastructure, p9_purged_walk_forward.py implements yearly rolling train/test splits
+      with embargo; reports establish it as credible validation infrastructure and downgrade reverse/unpurged metrics. Brick
+      registry records the strategy-level PWF performance result separately.
+    evidence_source:
+    - research/brick/v4_pipeline/p9_purged_walk_forward.py
+    - docs/v4_discovery_pipeline_report.md
+    - docs/layer0_calibration_report.md
+    - archive/research/data/walk_forward/v4_walk_forward_results.csv
+    reopen_condition: Reopen only to improve split design, embargo length, or account-level realism; never replace with random
+      split/KFold for production proof.
+  - id: shared-infra-020
+    title: Account-level backtest harness with costs and stress tests
+    category: backtest_layer
+    status: PARTIAL
+    short_result: p10_account_backtest.py simulates NAV, positions, costs, slippage, taxes, and stress tests; useful shared
+      harness but still approximates entry/exit using available result fields and needs standardization.
+    evidence_source:
+    - research/brick/v4_pipeline/p10_account_backtest.py
+    - docs/v4_discovery_pipeline_report.md
+    - snapshot_shared.yaml
+    reopen_condition: Reopen to create a fair cross-strategy account-level comparison harness with fixed candidate pools,
+      TopK, costs, exits, and output manifests.
+  - id: shared-infra-021
+    title: Shared Layer 0 calibration framework and inflated-metric audit rules
+    category: validation_framework
+    status: VERIFIED
+    short_result: As shared validation governance, Layer 0 locks credible baseline rules, identifies reverse train/test and
+      softmax-return arithmetic as inflated metric sources, and tests boundary missing-exit handling. Brick registry records
+      the resulting Brick baseline interpretation separately.
+    evidence_source:
+    - docs/layer0_calibration_report.md
+    - research/brick/legacy/v3/backtest_brick_v3.py
+    - archive/research/data/walk_forward/v4_walk_forward_results.csv
+    reopen_condition: Reopen whenever reported metrics conflict or a new result appears abnormally high.
+  - id: shared-infra-022
+    title: Shared future-function concept resonance postmortem and leakage rule
+    category: data_quality
+    status: FAILED
+    short_result: As shared data-quality governance, reports show old concept-resonance performance came from future return_pct/realized
+      outcome leakage; clean decision-time versions failed, making this a reusable leakage postmortem. Brick registry records
+      the Brick-specific concept factor verdict separately.
+    evidence_source:
+    - docs/p1_pwf_shap_report.md
+    - docs/conc_final_verdict.md
+    - docs/four_hypotheses_final_report.md
+    - shared_memory.yaml
+    reopen_condition: Only reopen for audit/removal of leaked artifacts or for a materially different production-available
+      event design with timestamp proof.
+  - id: shared-infra-023
+    title: Entry-day feature decision-time availability rule
+    category: validation_framework
+    status: VERIFIED
+    short_result: Entry-day open-derived features are treated as valid only when the decision point is T+1 open/after call
+      auction; reports explicitly distinguish this from future leakage.
+    evidence_source:
+    - docs/v5_v2_feature_comparison.md
+    - docs/v5e_final_summary.md
+    - daily_select.py
+    - research/brick/v4_pipeline/event_builder.py
+    reopen_condition: Reopen if execution timing changes, open-price source changes, or features are used before 09:25 availability.
+  - id: shared-infra-024
+    title: T+1 daily selection workflow with live open-price retrieval
+    category: workflow_layer
+    status: PARTIAL
+    short_result: daily_select.py loads prior signal CSV, fetches T+1 open prices via Tencent with mootdx fallback, computes
+      entry features, ranks candidates, and enforces market-time constraints; output manifest is missing.
+    evidence_source:
+    - daily_select.py
+    - daily_run.py
+    reopen_condition: Reopen to add run manifest, open-price coverage log, model/scaler versions, signal-file provenance,
+      and notification/archive outputs.
+  - id: shared-infra-025
+    title: Daily one-click workflow for update, cache rebuild, B1/B3/Brick scans
+    category: workflow_layer
+    status: PARTIAL
+    short_result: daily_run.py orchestrates data update, indicator cache rebuild, daily return cache update, strategy scans,
+      and post-scan filter steps; failures are warnings and no workflow result manifest is emitted.
+    evidence_source:
+    - daily_run.py
+    - CLAUDE.md
+    - snapshot_shared.yaml
+    reopen_condition: Reopen to separate production scan/research/validation workflows and write strategy_id, task_type, params,
+      cache IDs, output files, and validation rules.
+  - id: shared-infra-026
+    title: Main CLI orchestration for init, update, run, web, L2
+    category: workflow_layer
+    status: VERIFIED
+    short_result: main.py is the CLI entrypoint for data initialization/update, stock selection, web UI, B3 checks, notification
+      setup, and L2 launch routing.
+    evidence_source:
+    - main.py
+    - README.md
+    - CLAUDE.md
+    reopen_condition: Reopen when CLI command semantics, config loading, or strategy registry integration changes.
+  - id: shared-infra-027
+    title: Strategy registry and configuration loading
+    category: configuration
+    status: VERIFIED
+    short_result: Strategy parameters flow through config/strategy_params.yaml into StrategyRegistry and runtime CLI overrides;
+      config template covers data_dir, notification, schedule, and update settings.
+    evidence_source:
+    - config/strategy_params.yaml
+    - config/config.yaml.template
+    - strategy/strategy_registry.py
+    - CLAUDE.md
+    reopen_condition: Reopen when parameters are renamed, strategy sections split, or runtime overrides affect cached outputs.
+  - id: shared-infra-028
+    title: Crontab production scheduling template
+    category: workflow_layer
+    status: PARTIAL
+    short_result: config/crontab.txt documents weekday post-close update/run jobs and log rotation suggestions; template is
+      operational guidance but not a governed workflow manifest.
+    evidence_source:
+    - config/crontab.txt
+    - README.md
+    reopen_condition: Reopen when production schedule changes or when adding workflow output archiving and run-status notification.
+  - id: shared-infra-029
+    title: DingTalk notification infrastructure with signing, rate limit, retry, splitting
+    category: notification
+    status: VERIFIED
+    short_result: DingTalkNotifier supports HMAC signing, markdown messages, rate limiting, exponential backoff, content splitting,
+      and combined B1/B3 result formatting.
+    evidence_source:
+    - utils/dingtalk_notifier.py
+    - config/config.yaml.template
+    - README.md
+    reopen_condition: Reopen if notification format, rate limits, secrets handling, or destination routing changes.
+  - id: shared-infra-030
+    title: Feishu notification infrastructure
+    category: notification
+    status: PARTIAL
+    short_result: FeishuNotifier implements tenant token caching and card/text sending with message splitting, but integration
+      into main daily workflow is less complete than DingTalk.
+    evidence_source:
+    - utils/feishu_notifier.py
+    - project_shared_v2.yaml
+    reopen_condition: Reopen when Feishu is wired into production scans or needs retry/rate-limit parity with DingTalk.
+  - id: shared-infra-031
+    title: Web management UI as shared orchestration/display layer
+    category: workflow_layer
+    status: PARTIAL
+    short_result: Flask web UI is documented as a shared management/display surface for stock data, selection results, and
+      config views; alpha conclusions remain strategy-owned.
+    evidence_source:
+    - apps/web_server.py
+    - README.md
+    - web/static/js/app.js
+    reopen_condition: Reopen if web UI begins editing production config, launching workflows, or persisting result artifacts.
+  - id: shared-infra-032
+    title: L2 data config and source-availability caveat
+    category: data_layer
+    status: PARTIAL
+    short_result: L2Config defines TDX/mootdx source settings, storage paths, polling intervals, retention, thresholds, and
+      GUI defaults; comments note current mootdx/pytdx L2 protocol limitations.
+    evidence_source:
+    - l2/data/config.py
+    - l2/data/collector.py
+    reopen_condition: Reopen if a reliable L2 SDK/protocol adapter is added or L2 data becomes production feature input.
+  - id: shared-infra-033
+    title: L2 collector with tdxpy primary and mootdx fallback
+    category: data_layer
+    status: PARTIAL
+    short_result: L2DataCollector discovers active TDX L2 servers, parses connect.cfg, uses tdxpy for L2 transactions/quotes,
+      and falls back to mootdx std quotes; availability depends on local TDX environment.
+    evidence_source:
+    - l2/data/collector.py
+    - l2/scripts/verify_connectivity.py
+    - l2/scripts/l2_sniffer.py
+    - l2/scripts/l2_sniffer_v2.py
+    reopen_condition: Reopen when validating L2 connectivity, data completeness, or timestamp alignment for research/production
+      use.
+  - id: shared-infra-034
+    title: L2 partitioned Parquet storage and retention
+    category: cache_layer
+    status: VERIFIED
+    short_result: TickStorage stores transactions, orderbook snapshots, features, and daily summaries in Hive-style partitioned
+      Parquet under data/l2 with compression and query helpers.
+    evidence_source:
+    - l2/data/storage.py
+    - l2/data/config.py
+    reopen_condition: Reopen if schema, partitioning, compression, retention, or feature storage changes.
+  - id: shared-infra-035
+    title: L2 desktop GUI workflow
+    category: workflow_layer
+    status: PARTIAL
+    short_result: PyQt L2 GUI provides monitor/chart/alert/config/B1 panels, worker threads, and start/stop/add-stock workflows;
+      it is shared UI infrastructure, not alpha evidence.
+    evidence_source:
+    - l2/gui/main_window.py
+    - l2/gui/app.py
+    - l2/__main__.py
+    - main.py
+    reopen_condition: Reopen when GUI actions persist results, trigger production workflows, or alter strategy/config state.
+  - id: shared-infra-036
+    title: AG2 multi-agent research framework implementation
+    category: ag2_layer
+    status: PARTIAL
+    short_result: ag2_research implements configurable agents, workflows, group chat, roundtable, env-var LLM profiles, and
+      code/docs/data tools; it is an orchestration helper, not validated research evidence.
+    evidence_source:
+    - ag2_research/config.yaml
+    - ag2_research/orchestrator.py
+    - ag2_research/agents.py
+    - ag2_research/config.py
+    reopen_condition: Reopen to add governed AG2 run manifests, permissions, input/output schemas, logs, failure recovery,
+      and validation status.
+  - id: shared-infra-037
+    title: AG2 tool layer for config/docs/code/data/backtest access
+    category: ag2_layer
+    status: PARTIAL
+    short_result: AG2 tools expose strategy config, research docs, market calendar, market timing, available data, code/doc
+      reads, and backtest execution; tool outputs still lack reproducible run manifests.
+    evidence_source:
+    - ag2_research/tools.py
+    - ag2_research/orchestrator.py
+    - snapshot_shared.yaml
+    reopen_condition: Reopen before relying on AG2 output; require task_spec, command, params, inputs, outputs, cache IDs,
+      and validation_status.
+  - id: shared-infra-038
+    title: AG2 governance gap
+    category: ag2_layer
+    status: OPEN
+    short_result: 'Shared snapshot/handoff explicitly mark AG2 governance as low maturity: no mature run manifest, permissions,
+      schema, reproducibility, or anti-silent-design-change controls.'
+    evidence_source:
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    - ag2_research/config.yaml
+    success_condition_next_phase: Create AG2 run manifest standard and enforce explicit GRID TEST/approved workflow boundaries.
+  - id: shared-infra-039
+    title: Shared V5 signal profile, clustering, regime, and cluster-regime matrix infrastructure
+    category: validation_framework
+    status: PARTIAL
+    short_result: As shared analysis infrastructure, V5 built reusable signal-profile, clustering, market-regime, and cluster-regime
+      artifacts useful for segmentation/governance. They are not standalone production ranking proof; Brick registry records
+      the Brick-specific cluster/regime empirical verdict separately.
+    evidence_source:
+    - docs/v5_pipeline_summary.md
+    - archive/research/data/v5/v5e_frozen_manifest.json
+    - archive/research/data/v5/cluster_stability.csv
+    - archive/research/data/v5/cluster_regime_matrix.csv
+    reopen_condition: Reopen for volatility-neutral clustering, regime definition validation, or account-level comparison
+      under identical candidate/execution assumptions.
+  - id: shared-infra-040
+    title: V5E frozen manifest and entry-day feature research artifacts
+    category: feature_layer
+    status: PARTIAL
+    short_result: V5E records a frozen model/manifest path and documents entry-day feature selection; decision-time handling
+      is good, but production replacement/account-level proof remains outside shared infra.
+    evidence_source:
+    - docs/v5e_final_summary.md
+    - archive/research/data/v5/v5e_frozen_manifest.json
+    - research/brick/v5e/v5e_vs_v2_backtest.py
+    - research/brick/v5e/v5e_account_backtest.py
+    reopen_condition: Reopen only to audit manifest completeness, feature availability, or fair account-level validation mechanics.
+  - id: shared-infra-041
+    title: State export manifest for internal-state factor discovery
+    category: workflow_layer
+    status: PARTIAL
+    short_result: V4 Phase 1 exports strategy internal state to data/state_export and produces a manifest, providing an example
+      of output traceability; not yet generalized across all caches/results.
+    evidence_source:
+    - research/brick/v4_pipeline/pipeline_v4.py
+    - docs/v4_discovery_pipeline_report.md
+    - archive/research/data/v4_pipeline/state_export_manifest.json
+    - research/brick/v4_pipeline/p1_state_export.py
+    reopen_condition: Reopen to convert this into the broader shared manifest standard for data fields, features, caches,
+      backtests, and workflow outputs.
+  - id: shared-infra-042
+    title: External factor registry loader and A-share compatibility filter
+    category: data_quality
+    status: PARTIAL
+    short_result: factor_loader.py scans external factor zoo metadata, filters by required columns/frequency/sector dependency,
+      and writes accepted/rejected registries; source path is local and results need availability governance.
+    evidence_source:
+    - research/brick/legacy/v3/factor_loader.py
+    - docs/v4_discovery_pipeline_report.md
+    reopen_condition: Reopen if external factor sources are reintroduced; require no-leakage, A-share coverage, warmup, and
+      decision-time availability checks.
+  - id: shared-infra-043
+    title: Event dataset builder with known-at-signal-time feature claim
+    category: feature_layer
+    status: PARTIAL
+    short_result: event_builder.py constructs labelled event datasets and explicitly states features are known at signal time,
+      but forward labels and event timing require registry-level availability documentation.
+    evidence_source:
+    - research/brick/v4_pipeline/event_builder.py
+    - research/brick/v4_pipeline/p3_leakage_firewall.py
+    - shared_memory.yaml
+    reopen_condition: Reopen before production use of new event features; add field-level available_at, label horizon, and
+      leakage-check status.
+  - id: shared-infra-044
+    title: Workflow/result manifest standard as next infrastructure priority
+    category: workflow_layer
+    status: OPEN
+    short_result: 'Shared snapshot/handoff identify the first infrastructure task: a unified manifest covering data fields,
+      feature availability, cache generation, backtest runs, workflow outputs, and AG2 runs.'
+    evidence_source:
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    - project_shared_v2.yaml
+    success_condition_next_phase: Implement manifest schema and fill examples for representative cache, output, backtest,
+      workflow, and AG2 artifacts.
+  - id: shared-infra-045
+    title: Decision-time availability registry as highest-risk open governance item
+    category: data_quality
+    status: OPEN
+    short_result: Shared memory/snapshot repeatedly identify missing decision-time availability registry for base fields,
+      event data, concept/fund-flow data, and entry-day/open-price timing.
+    evidence_source:
+    - shared_memory.yaml
+    - snapshot_shared.yaml
+    - handoff_shared_v1.yaml
+    - docs/conc_final_verdict.md
+    success_condition_next_phase: Build registry with field_name, source, refresh frequency, disclosure_time, ingestion_time,
+      available_before_entry, used_by, and no_leakage_status.
+  - id: shared-infra-046
+    title: L2 tick-by-tick source availability postmortem
+    category: data_layer
+    status: PARTIAL
+    short_result: 'Current L2 tick-by-tick availability is unresolved rather than production-ready: config documents that
+      current mootdx/pytdx cannot parse the updated TDX L2 protocol and defaults to reliable std quotes; collector has tdxpy
+      L2, mootdx std fallback, and local TDX file paths, so this is not a strategy-alpha experiment and not a universal FAILED
+      result without a preserved per-environment connectivity artifact.'
+    evidence_source:
+    - 'l2/data/config.py: L2 protocol caveat and std default'
+    - 'l2/data/collector.py: tdxpy primary plus mootdx std fallback'
+    - 'l2/scripts/verify_connectivity.py: per-environment L2 connectivity verification tests'
+    - 'project memory: L2????????'
+    reopen_condition: Reopen when a reliable L2 SDK/protocol adapter/commercial feed is added, or when verify_connectivity
+      produces preserved PASS artifacts for transaction/orderbook coverage and timestamp alignment before using L2 fields
+      in research or production features.

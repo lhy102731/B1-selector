@@ -1,0 +1,269 @@
+snapshot:
+  version: "1.0"
+  generated_at: "2026-06-19"
+
+  current_infrastructure_maturity:
+    overall: "medium"
+    summary: >
+      Shared Infrastructure 已经覆盖数据获取、本地存储、指标公式、缓存、回测、配置、通知、CLI/批处理/GUI 编排等核心能力，
+      可以支撑 B1、B3、Brick 的日常研究与生产扫描。但它仍不是一个完全治理化的平台：验证口径、时间可得性、缓存字段完整性、
+      策略边界、AG2/Workflow 自动化层仍需要更严格的标准化。
+    key_principle: >
+      Shared Infrastructure 只拥有通用执行、数据、指标、缓存、配置、通知、UI、仿真和编排机制；
+      不拥有 B1、B3、Brick 的 alpha、策略结论或生产 champion 判断。
+
+  data_layer:
+    maturity: "medium"
+    current_state:
+      responsibilities:
+        - "A-share stock list fetch/update."
+        - "Daily OHLCV, amount, turnover, market-cap and base fields."
+        - "Trading calendar fetch or inference."
+        - "Incremental update, full initialization, retry, and failure lists."
+        - "Optional fund flow, concept flow, big-deal, and market-timing data collection."
+      typical_components:
+        - "utils/akshare_fetcher.py"
+        - "utils/csv_manager.py"
+        - "utils/fund_flow_collector.py"
+        - "utils/market_timing.py"
+        - "tools/data/fetch_active_cap.py"
+      storage_convention:
+        - "Local daily data under data/{prefix}/{code}.csv."
+        - "A-share codes are six-digit strings."
+        - "CSV encoding commonly GBK."
+        - "Raw stock CSVs commonly reverse chronological."
+    main_technical_debt:
+      - "生产可得字段与回测特征字段需要持续对齐，避免把 backtest-only 或 post-entry fields 当作 pre-trade features。"
+      - "事件类数据需要 disclosure time 与 local ingestion time 对齐后才能进入生产研究。"
+      - "GBK 编码、日期顺序转换、字段缺失、失败重试和数据源差异仍是跨策略共享风险。"
+    biggest_risk: "future-function leakage from unavailable fields or misaligned event timestamps."
+    next_focus:
+      - "建立 decision-time availability audit：每个字段记录可得时间、来源、刷新频率和是否可入场前使用。"
+      - "为事件数据建立 timestamp alignment 标准，先验收数据时间口径，再做 alpha/overlay 研究。"
+
+  backtest_layer:
+    maturity: "medium"
+    current_state:
+      responsibilities:
+        - "Iterate over stock universes and trading days."
+        - "Call strategy-specific signal logic without owning strategy alpha."
+        - "Precompute and cache indicators or signals."
+        - "Simulate account-level positions, trades, equity, and exits."
+        - "Support date ranges, TopN settings, costs, parameter grids, and strategy-specific switches."
+      outputs:
+        - "equity or NAV CSV files"
+        - "trade CSV files"
+        - "summary/report files"
+        - "cached signal files"
+    current_validation_rules:
+      - "Purged Walk-Forward and out-of-sample-first validation are required for production research."
+      - "Account-level production metrics outrank ranking metrics when they conflict."
+      - "Future-function leakage invalidates a result regardless of headline performance."
+      - "FAILED conclusions are bounded by tested construct, implementation, strategy, and evaluation口径."
+    main_technical_debt:
+      - "需要把 PWF、purge/embargo、成本模型、TopK、exit rules 和账户级评估统一成标准对照模板。"
+      - "旧高 Sharpe 或不一致验证口径报告不能继续作为生产证据，需要标注或迁移到校准口径。"
+      - "回测层容易与策略 alpha 混淆：generic mechanics 是 shared，signal/ranking/trading rules 属于具体策略。"
+    biggest_risk: "using ranking metrics, random split, ordinary KFold, or unpurged validation as production proof."
+    next_focus:
+      - "建设统一 fair account-level comparison harness。"
+      - "为 B1/B3/Brick 的 champion 对照强制记录候选池、成本、TopK、exit rules、样本区间和 OOS/PWF 口径。"
+
+  cache_layer:
+    maturity: "medium"
+    current_state:
+      responsibilities:
+        - "Store precomputed indicators to reduce repeated calculation."
+        - "Store precomputed signals for faster parameter sweeps."
+        - "Store model outputs, feature matrices, manifests, or intermediate results when needed."
+      typical_locations:
+        - "data/indicators_cache/"
+        - "data/signal_cache/"
+        - "data/*/manifest files"
+        - "data/*/model artifacts"
+      boundary: "Cache content may be strategy-specific, but the cache mechanism itself is shared."
+    main_technical_debt:
+      - "缓存字段完整性、生成参数、日期范围、策略版本和数据版本需要 manifest 化，否则容易复用脏缓存。"
+      - "大参数测试依赖缓存，但缓存失配会造成大面积错误结果。"
+      - "指标缓存、信号缓存、模型 artifact 的 ownership 与 alpha 归属需要明确分离。"
+    biggest_risk: "stale or polluted cache creating false research conclusions across strategies."
+    next_focus:
+      - "为 cache manifest 增加 strategy_id、alpha_source、data_range、data_version、feature_schema、generation_params、code_version。"
+      - "在大规模 sweep 前强制做 2-value sanity check，确认参数变化会产生不同结果。"
+
+  feature_layer:
+    maturity: "medium-low"
+    current_state:
+      shared_indicator_library:
+        white_line:
+          formula: "EMA(EMA(close, 10), 10)"
+          ownership: "shared formula / reusable indicator"
+          roles:
+            B1: "short-term trend/reference boundary for pullback and washout logic"
+            B3: "trend gate for limit-up relay continuation"
+            Brick: "trend or price-position reference inside brick_signal/ranking features"
+        yellow_line:
+          formula: "(MA14 + MA28 + MA57 + MA114) / 4"
+          ownership: "shared formula / reusable indicator"
+          roles:
+            B1: "bowl/retest/fair-value boundary"
+            B3: "continuation trend gate and close-above reference"
+            Brick: "trend or price-position reference inside brick_signal/ranking features"
+        s1_distribution_detector:
+          physical_ownership: "shared indicator / diagnostic detector"
+          role_boundary:
+            B1: "exit/reduction control or tested B1 fusion component"
+            Brick: "model feature or tested dead-end"
+            B3: "no established B3-specific S1 role recorded"
+    research_principles:
+      - "New factors must be evaluated incrementally against the current champion, not only standalone IC/backtest."
+      - "Single-factor usefulness does not imply additive usefulness inside a combined model."
+      - "Decision-time availability is required before production use."
+    main_technical_debt:
+      - "共享指标公式与策略使用角色必须分开记录，否则容易把 shared formulas 误写成某个策略 alpha。"
+      - "外部事件/因子/概念数据的时间可得性和增量有效性需要先验审计。"
+      - "特征层缺少统一 schema：字段含义、生成时点、是否可入场前使用、所属 alpha_source、适用策略尚需标准化。"
+    biggest_risk: "feature leakage or alpha ownership contamination between B1, B3, Brick, and shared infrastructure."
+    next_focus:
+      - "建立 feature registry：formula/owner/available_at/used_by/alpha_source_boundary/no_leakage_status/incremental_test_status。"
+      - "对共享指标只记录公式和物理实现；策略结论必须回写到各自 strategy memory。"
+
+  ag2_layer:
+    maturity: "low / not yet governed in memory"
+    current_state:
+      summary: >
+        当前 shared memory 没有记录成熟的 AG2 基础设施结论。仓库中可能存在 AG2 research artifacts，
+        但从已读取记忆看，AG2 尚未成为经过治理的共享生产层。
+      expected_role: >
+        AG2 若继续建设，应定位为研究/执行代理编排辅助层，而不是 alpha source；
+        它可以帮助搜索、实验分发、报告生成或流程检查，但不能替代 PWF、账户级评估和 no-leakage 审计。
+    main_technical_debt:
+      - "缺少 AG2 任务边界、输入输出 schema、权限、日志、失败恢复和复现实验记录。"
+      - "AG2 生成的结论可能混淆策略边界，需要强制按 Alpha Source 分类。"
+      - "如果 AG2 自动运行实验，必须防止其静默改变样本区间、参数范围或测试设计。"
+    biggest_risk: "agent orchestration producing plausible but non-reproducible or boundary-contaminated research conclusions."
+    next_focus:
+      - "先建立 AG2 run manifest：task_spec、strategy_id、alpha_source、inputs、commands、params、outputs、validation_status。"
+      - "规定 AG2 只能执行显式 GRID TEST 或已批准 workflow，不得自动改变测试设计。"
+
+  workflow_layer:
+    maturity: "medium-low"
+    current_state:
+      orchestration_and_ui:
+        responsibilities:
+          - "Run one or more independent strategies in a daily workflow."
+          - "Provide CLI, batch, cron, web, or GUI entrypoints."
+          - "Display or export results."
+        typical_components:
+          - "main.py"
+          - "daily_run.py"
+          - "run_select.bat"
+          - "apps/web_server.py"
+          - "l2/gui/*"
+      notification_system:
+        components:
+          - "utils/dingtalk_notifier.py"
+          - "utils/feishu_notifier.py"
+        boundary: "Notification format may mention strategies, but notification is not alpha."
+      workflow_rules:
+        - "Preserve exact failure scope."
+        - "Prefer low-complexity rule research before complex state machines."
+        - "Re-check production baselines periodically after market microstructure changes."
+        - "Failed conclusions are not transferable across strategies without re-validation."
+    main_technical_debt:
+      - "Daily workflow、research workflow、production validation workflow 的职责需要拆清楚。"
+      - "策略可一起运行，但不能因此合并 memory 或 alpha ownership。"
+      - "缺少统一的 workflow result manifest，导致输出文件与策略/参数/数据/验证口径的映射不够稳。"
+    biggest_risk: "shared runners causing strategy-boundary confusion or silently mixing incompatible evaluation口径."
+    next_focus:
+      - "为每次 workflow 输出写入 manifest：strategy_id、task_type、alpha_source、data_range、params、cache_ids、validation_rules、output_files。"
+      - "将 production scan、research backtest、parameter sweep、notification delivery 分成不同 workflow types。"
+
+  cross_layer_governance:
+    frozen_rules:
+      - "First classify by Alpha Source."
+      - "Shared infrastructure must not record strategy effectiveness conclusions."
+      - "Do not merge B1, B3, and Brick because they share files, indicators, data, runners, or caches."
+      - "Production data availability must match backtest feature construction."
+      - "Large parameter tests should use explicit grid methodology and caches."
+      - "Do not silently change sample size, date range, thresholds, or test design for speed."
+    do_not_repeat:
+      - "Do not use random split, ordinary KFold, or validation without purge/embargo for time-series strategy research."
+      - "Do not use backtest-only outcome fields as pre-trade features."
+      - "Do not treat statistical significance or ranking metrics as production tradability."
+      - "Do not quote one-off decomposition percentages as universal constants."
+      - "Do not use old high-Sharpe reports from inconsistent evaluation as production proof."
+
+  biggest_risks:
+    - "Future-function leakage from unavailable fields, post-entry values, realized outcomes, or misaligned event timestamps."
+    - "Cache pollution or stale manifests causing false improvements in large sweeps."
+    - "Ranking metrics or old high-Sharpe reports being treated as production proof without account-level PWF validation."
+    - "Alpha ownership contamination: B1/B3/Brick conclusions merged because they share indicators, runners, data, or caches."
+    - "Silent workflow/agent changes to sample size, date range, thresholds, or test design for speed."
+    - "Shared feature formulas or detectors being misclassified as strategy-owned alpha."
+
+  main_technical_debt:
+    - "No unified decision-time availability registry for features and event data."
+    - "No fully standardized cache manifest across indicators, signals, features, model artifacts, and outputs."
+    - "No single fair account-level comparison harness enforced across strategies."
+    - "AG2 layer lacks governed run manifests, schemas, permissions, and reproducibility rules in current memory."
+    - "Workflow outputs need stronger mapping to strategy_id, alpha_source, params, cache versions, data ranges, and validation口径."
+    - "Shared memory must remain infrastructure-only; strategy effectiveness needs stricter routing back to B1/B3/Brick memories."
+
+  next_infrastructure_priorities:
+    - priority: 1
+      name: "Decision-time availability registry"
+      goal: "Prevent future-function leakage by recording whether every field is available before trade decision."
+      applies_to:
+        - "data_layer"
+        - "feature_layer"
+        - "event_data"
+    - priority: 2
+      name: "Unified cache and output manifest"
+      goal: "Make every cache/output reproducible and traceable to data version, strategy, alpha source, feature schema, params, and code version."
+      applies_to:
+        - "cache_layer"
+        - "workflow_layer"
+        - "backtest_layer"
+    - priority: 3
+      name: "Fair account-level validation harness"
+      goal: "Standardize PWF/OOS, purge/embargo, costs, TopK, exit rules, and production metrics for champion comparison."
+      applies_to:
+        - "backtest_layer"
+        - "workflow_layer"
+    - priority: 4
+      name: "Feature registry and alpha-boundary enforcement"
+      goal: "Separate shared formulas/physical ownership from strategy-specific usage and research conclusions."
+      applies_to:
+        - "feature_layer"
+        - "cross_layer_governance"
+    - priority: 5
+      name: "AG2/workflow governance"
+      goal: "Make agent/workflow runs reproducible, bounded by explicit specs, and unable to silently change test design."
+      applies_to:
+        - "ag2_layer"
+        - "workflow_layer"
+
+  first_task_for_infrastructure_researcher:
+    task: >
+      Build a shared manifest standard covering data fields, feature availability, cache generation, backtest runs, and workflow outputs.
+      The first version should support B1, B3, and Brick without recording their alpha conclusions in shared memory.
+    required_fields:
+      - "strategy_id"
+      - "alpha_source"
+      - "task_type"
+      - "data_range"
+      - "data_version_or_snapshot"
+      - "feature_schema"
+      - "available_at_or_decision_time_status"
+      - "cache_ids"
+      - "params"
+      - "cost_model"
+      - "topk_or_position_rules"
+      - "exit_rules"
+      - "validation_method"
+      - "output_files"
+      - "code_version"
+    success_condition: >
+      Future AI can trace any result file or cache back to its data, features, parameters, strategy boundary, and validation口径,
+      and can reject leaked or non-production-comparable results within 30 seconds.

@@ -1,0 +1,112 @@
+version: "1.1"
+last_updated: "2026-06-16"
+strategy_type: "shared"
+
+verified:
+  - conclusion: "Production research must use Purged Walk-Forward and out-of-sample-first validation."
+    scope:
+      strategies: ["Brick", "B1", "B3"]
+      market: "A-share"
+      time_interval: "2016-2026 and future production validation"
+    key_evidence:
+      - "Random split and unpurged cross-validation can leak time-dependent information."
+      - "Forward-only evaluation is required before any production decision."
+    limitations: "This is a validation rule, not an alpha conclusion."
+
+  - conclusion: "Account-level production results outrank ranking metrics when the two conflict."
+    scope:
+      strategies: ["Brick", "B1", "B3"]
+      market: "A-share"
+      time_interval: "2016-2026 and future production validation"
+    key_evidence:
+      - "TopN, NDCG, IC, and grouped metrics can diverge from account-level Sharpe, CAGR, drawdown, and turnover."
+      - "A model should only be treated as production-superior when account-level evaluation confirms it."
+    limitations: "Ranking metrics remain useful for diagnostics and model development, but not as final production proof."
+
+  - conclusion: "Single-factor usefulness does not imply additive usefulness inside a combined model."
+    scope:
+      strategies: ["Brick", "B1", "B3"]
+      market: "A-share"
+      time_interval: "2016-2026 and future production validation"
+    key_evidence:
+      - "Multiple tested factors showed saturation or collinearity after combination."
+      - "Incremental testing against the current champion model is required."
+    limitations: "Nonlinear models may have different saturation boundaries, but incremental validation remains mandatory."
+
+  - conclusion: "Future-function leakage invalidates a result regardless of headline performance."
+    scope:
+      strategies: ["Brick", "B1", "B3"]
+      market: "A-share"
+      time_interval: "All research and production stages"
+    key_evidence:
+      - "Any feature unavailable at the production decision time cannot be used."
+      - "Backtest-only fields, final trade outcomes, and post-entry values are invalid as pre-trade features."
+    limitations: "This rule applies even if the leaked feature materially improves backtest Sharpe."
+
+  - conclusion: "FAILED conclusions are bounded by their tested construct, implementation, strategy, and evaluation口径."
+    scope:
+      strategies: ["Brick", "B1", "B3"]
+      market: "A-share"
+      time_interval: "2016-2026 and future production validation"
+    key_evidence:
+      - "Several failed results are implementation-specific rather than direction-wide."
+      - "A failed module in one strategy can still be valid in another strategy only after independent validation."
+    limitations: "This is a research governance rule, not an alpha claim."
+
+failed: []
+
+partial: []
+
+open_questions: []
+
+do_not_repeat:
+  - item: "Do not use random split, ordinary KFold, or validation without purge/embargo for time-series strategy research."
+    reason: "It can leak future information into training and inflate apparent alpha."
+
+  - item: "Do not use backtest-only outcome fields as pre-trade features."
+    reason: "Any field unavailable at the production decision time is a future function."
+
+  - item: "Do not treat statistical significance as production tradability."
+    reason: "A signal can be statistically real and still fail account-level production evaluation."
+
+  - item: "Do not quote one-off decomposition percentages as universal constants."
+    reason: "Attribution values depend on model architecture, feature set, and decomposition method."
+
+  - item: "Do not use old high-Sharpe reports from inconsistent evaluation as production proof."
+    reason: "Production decisions require calibrated forward validation and account-level evidence."
+
+research_principles:
+  - name: "Factor independence must be tested incrementally."
+    rule: "New factors must be evaluated against the current champion model, not only as standalone IC or single-factor backtests."
+
+  - name: "Existence and tradability must be recorded separately."
+    rule: "A signal can exist statistically but still fail after costs, turnover, position rules, and account-level constraints."
+
+  - name: "Market-regime scope must be explicit."
+    rule: "Conclusions from 2016-2026 A-share data must not be treated as universal across untested regimes."
+
+validation_rules:
+  - name: "Out-of-sample first."
+    rule: "When early reports conflict with later no-leakage PWF results, the final no-leakage PWF result has priority."
+
+  - name: "Account-level口径 first."
+    rule: "When ranking metrics conflict with account-level production metrics, production decisions follow account-level metrics."
+
+  - name: "Decision-time availability required."
+    rule: "A field can only enter a production feature if it is available before the trade decision."
+
+  - name: "Event data requires timestamp alignment."
+    rule: "Event data must be aligned by disclosure time and local ingestion time before production use."
+
+workflow_rules:
+  - name: "Preserve exact failure scope."
+    rule: "When a FAILED item and an open question appear to conflict, use the specific limitations in the FAILED item's description."
+
+  - name: "Prefer low-complexity rule research."
+    rule: "Rules and model changes should prioritize low-degree-of-freedom, explainable, reproducible designs before complex state machines."
+
+  - name: "Re-check production baselines periodically."
+    rule: "If market microstructure changes, revalidate the current champion baseline with recent data."
+
+  - name: "Failed conclusions are not transferable across strategies without re-validation."
+    rule: "Failed conclusions are not transferable across strategies without re-validation."

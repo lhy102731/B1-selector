@@ -1,0 +1,35 @@
+[
+  {
+    "id": "static_sq_topn_direct_promotion",
+    "status": "archived",
+    "reason": "Direct rank-return monotonicity failed in recent unseen windows and executable NAV was weak.",
+    "reopen_condition": "Use a new execution-aware objective or data design; SQNAV alone is insufficient."
+  },
+  {
+    "id": "seven_factor_direct_gate_or_replacement",
+    "status": "archived",
+    "reason": "The seven preserved factors failed V2-boundary and/or pre-09:25 matched-pair controls.",
+    "reopen_condition": "Different mechanism, AG2 approval, strict-forward validation, and no direct hard-gate reuse."
+  },
+  {
+    "id": "market_timing_rescue",
+    "status": "forbidden_primary_path",
+    "reason": "User requested no timing because prior timing results were negative."
+  },
+  {
+    "id": "parameter_only_sweep",
+    "status": "insufficient",
+    "reason": "User wants factor design and new mechanisms, not only threshold or TopN scans."
+  },
+  {
+    "id": "production_script_edit",
+    "status": "forbidden_without_user_authorization",
+    "reason": "Research must not modify backtest_brick_v2.py."
+  },
+  {
+    "id": "free_float_ratio_current_proxy_repeat",
+    "status": "data_coverage_stop",
+    "reason": "The current raw-parquet proxy for free_float_ratio has only 1.549817% coverage in the Brick candidate panel.",
+    "reopen_condition": "Use a new high-coverage free-float/share-cap source or redesign the liquidity hypothesis without sparse market_cap/amount dependency."
+  }
+]

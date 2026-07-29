@@ -1,0 +1,121 @@
+{
+  "schema_version": "1.0",
+  "subject": "B1 V3 dead components in 60-code universe under default config",
+  "as_of_phase": "Phase 15 (closure)",
+  "caveat": "DEAD here means 'never materially affects candidate space under default B1V3Params on the 60-code universe used for the Phase 9-14B audits'. These components may activate under different parameter configs or different universes. Future agents should re-verify before deleting.",
+  "components": [
+    {
+      "id": "G_double_cap",
+      "code_params": ["require_no_double_60d", "cap_min"],
+      "defaults": {"require_no_double_60d": true, "cap_min": 2000000000},
+      "phase14b_single_jaccard": 1.000,
+      "phase14b_single_d_pf": 0.000,
+      "phase14b_single_d_trades": 0,
+      "evidence": "Phase 12A Class III, Phase 12C avg ΔJac +0.002, Phase 14B remove-one zero impact in all 3 windows.",
+      "reason": "60-code universe: no stock has 'doubled in 60d' triggered AND every code already has market_cap >= 4B. Both predicates never fire.",
+      "phase_references": ["12A", "12C", "14B"]
+    },
+    {
+      "id": "C_bowl_tight",
+      "code_param": "bowl_near_pct",
+      "default": 3.5,
+      "phase14b_single_jaccard": 0.984,
+      "phase14b_single_d_pf": 0.019,
+      "evidence": "Phase 12C avg ΔJac -0.001 (restoring tight bowl actually INCREASES candidates in A/B). Phase 14B avg single ΔPF +0.019.",
+      "reason": "Wave_qualified + white > yellow + position checks already enforce a tighter envelope than bowl_near_pct=3.5. Bowl tolerance is dominated.",
+      "phase_references": ["12C", "14B"]
+    },
+    {
+      "id": "Prefilter_J_alone",
+      "code_param": "prefilter_j_max",
+      "default": 30.0,
+      "phase14b_single_jaccard": 1.000,
+      "phase14b_single_d_pf": 0.000,
+      "evidence": "Setting prefilter_j_max=BIG individually has zero effect because j_max=30 still fires at B1 stage.",
+      "reason": "Redundant with B1 J upper bound under defaults.",
+      "redundancy_pair": "B1_J_range upper bound",
+      "phase_references": ["12A", "14B"]
+    },
+    {
+      "id": "Prefilter_KltD_alone",
+      "code_param": "prefilter_k_lt_d",
+      "default": true,
+      "phase14b_single_jaccard": 1.000,
+      "phase14b_single_d_pf": 0.000,
+      "evidence": "Phase 12A Class III, Phase 14B single-removal Jaccard 1.000.",
+      "reason": "Wave_qualified + bowl + J<30 stack already excludes K>=D candidates. K<D coarse gate is shadowed.",
+      "qualifying_note": "NOT dead in joint removal: A_J_range + B_KltD removal causes int_PF -0.94 below additive. This component activates conditionally when A_J_range is also disabled.",
+      "phase_references": ["12A", "14B"]
+    },
+    {
+      "id": "B2_vol_ma5_under_default_mode",
+      "code_param": "vol_ratio_ma5_max",
+      "default": 1.5,
+      "phase14b_single_jaccard": 1.000,
+      "phase14b_single_d_pf": 0.000,
+      "evidence": "Phase 14B remove-one zero impact in all 3 windows.",
+      "reason": "vol_shrink_mode='v1' ignores vol_ratio_ma5_max entirely. The parameter exists in B1V3Params but has no consumer at default mode.",
+      "qualifying_note": "Active under vol_shrink_mode in {v2, both, either}. Dead is conditional on mode = v1.",
+      "phase_references": ["14B"]
+    },
+    {
+      "id": "B2_vol_vs_peak_under_default",
+      "code_param": "vol_vs_wave_peak_max",
+      "default": 0.9,
+      "phase14b_single_jaccard": 0.983,
+      "phase14b_single_d_pf": -0.015,
+      "evidence": "Phase 14B remove-one effect very small (avg Δtr +1.3, ΔPF -0.015).",
+      "reason": "At default 0.9 the volume-shrink-vs-wave-peak gate is dominated by C_wave_qualified and other vol gates. Effectively redundant at this threshold.",
+      "qualifying_note": "Tightening below 0.5 would change this status (Phase 9 G3 in Phase 13 used tighter contraction successfully). Dead is conditional on threshold.",
+      "phase_references": ["12A", "14B"]
+    },
+    {
+      "id": "unused_parquet_columns",
+      "columns": ["ps", "pcf", "main_net_flow_x", "main_net_flow_y", "main_flow_pct_x", "main_flow_pct_y"],
+      "phase14a_status": "present_in_parquet_no_code_path_consumes_them",
+      "evidence": "Phase 14A feature inventory: 5 columns marked UNUSED.",
+      "reason": "Data is loaded into the indicator parquet but no consumer reads them in extract_signals_single / _compute_features / scoring / ranking / exits.",
+      "phase_references": ["14A"]
+    }
+  ],
+  "missing_runtime_dimensions": [
+    {
+      "category": "Market Regime",
+      "phase14a_status": "0_features_defined",
+      "notes": "No index reference, no rolling market state."
+    },
+    {
+      "category": "Breadth",
+      "phase14a_status": "0_features_defined",
+      "notes": "No universe-aggregate quantities."
+    },
+    {
+      "category": "Multi-Timeframe",
+      "phase14a_status": "0_features_defined",
+      "notes": "Single daily timeframe only."
+    },
+    {
+      "category": "Volatility",
+      "phase14a_status": "6_features_defined_all_consumers_off",
+      "consumers_off": ["q_atr", "q_vol10", "q_adx", "q_wr", "q_max_dd_day", "q_dist_low"]
+    },
+    {
+      "category": "Relative_Strength_CS",
+      "phase14a_status": "19_CS_rank_features_only_1_consumed",
+      "only_active_consumer": "cs_lower_shadow used by cs_shadow_max filter"
+    },
+    {
+      "category": "Sector_Rotation",
+      "phase14a_status": "3_features_computed_all_G8_weights_off",
+      "consumers_off": ["q_ind_rank", "q_ind_dev", "q_concept_cnt"]
+    }
+  ],
+  "summary": {
+    "fully_dead_components_count": 4,
+    "conditionally_dead_components_count": 3,
+    "unused_parquet_columns_count": 6,
+    "categories_completely_absent": 3,
+    "categories_features_defined_but_consumers_off": 3,
+    "key_finding": "B1 V3 carries non-trivial unused capacity in its parquet schema and ranking config. The 'dead under defaults' is not necessarily dead under other configurations."
+  }
+}

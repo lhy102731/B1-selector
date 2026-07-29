@@ -1,0 +1,165 @@
+project:
+  name: "Shared Infrastructure Memory"
+  strategy_id: "Shared Infrastructure"
+  version: "2.0"
+  strategy_type: "Shared data, cache, configuration, notification, indicator-library, orchestration, and backtest infrastructure"
+
+  boundary:
+    belongs_to: "Shared Infrastructure"
+    alpha_source_rule: >
+      Belongs to Shared Infrastructure if it provides common execution, data, indicator,
+      caching, configuration, notification, UI, or simulation capability but does not itself
+      define B1, B3, or Brick alpha.
+    excludes:
+      - "B1 alpha and B1 research conclusions"
+      - "B3 alpha and B3 research conclusions"
+      - "Brick alpha and Brick research conclusions"
+
+  objective: >
+    Provide reusable infrastructure for multiple independent strategies in the repository.
+    Shared Infrastructure supports data acquisition, local storage, shared indicator formulas,
+    cache building, configuration, backtesting, notification, UI, and orchestration. It must
+    not be used to merge strategy memories or infer strategy ownership.
+
+  classification_rule:
+    primary: "First classify by Alpha Source."
+    shared_if:
+      - "The component fetches or stores data for multiple strategies."
+      - "The component computes common indicators or reusable diagnostics without defining a strategy-specific alpha."
+      - "The component runs or schedules strategies without defining alpha."
+      - "The component sends notifications or formats outputs."
+      - "The component caches indicators, signals, models, or intermediate results."
+      - "The component manages configuration or credentials."
+      - "The component provides generic account simulation or experiment execution."
+    not_shared_if: >
+      The component defines a strategy-specific signal, feature, ranking model, trading rule,
+      or research conclusion. In that case, assign the content by Alpha Source even if it lives
+      inside a shared runner or uses shared data.
+
+  shared_indicator_library:
+    purpose: >
+      Record formulas and physical calculation ownership for indicators reused by multiple
+      strategies. Strategy files may describe how they use these indicators, but not claim the
+      formulas or detector implementation as strategy-owned.
+    common_trend_lines:
+      white_line:
+        formula: "EMA(EMA(close, 10), 10)"
+        ownership: "shared formula / reusable indicator"
+        strategy_roles:
+          B1: "short-term trend/reference boundary for pullback and washout logic"
+          B3: "trend gate for limit-up relay continuation"
+          Brick: "trend or price-position reference inside brick_signal/ranking features"
+      yellow_line:
+        formula: "(MA14 + MA28 + MA57 + MA114) / 4"
+        ownership: "shared formula / reusable indicator"
+        strategy_roles:
+          B1: "bowl/retest/fair-value boundary"
+          B3: "continuation trend gate and close-above reference"
+          Brick: "trend or price-position reference inside brick_signal/ranking features"
+    s1_distribution_detector:
+      physical_ownership: "shared indicator / diagnostic detector"
+      role_boundary:
+        B1: "may use S1-like information as exit/reduction control or as a tested B1 fusion component"
+        Brick: "may use no-distribution/S1-like information as model feature or tested dead-end"
+        B3: "no established B3-specific S1 role recorded"
+      rule: "The detector implementation is shared; trading use and research conclusions belong to each strategy's own memory."
+
+  data_fetching:
+    responsibilities:
+      - "Fetch or update A-share stock lists."
+      - "Fetch daily OHLCV, amount, turnover, market-cap and other base fields."
+      - "Fetch or infer trading calendar."
+      - "Support incremental update, full initialization, retry, and failure lists."
+      - "Optionally collect fund flow, concept flow, big-deal, and market-timing data."
+    typical_components:
+      - "utils/akshare_fetcher.py"
+      - "utils/csv_manager.py"
+      - "utils/fund_flow_collector.py"
+      - "utils/market_timing.py"
+      - "tools/data/fetch_active_cap.py"
+    storage_convention:
+      - "Local daily data is stored under data/{prefix}/{code}.csv."
+      - "A-share codes are six-digit strings."
+      - "CSV encoding is commonly GBK."
+      - "Raw stock CSVs are commonly stored in reverse chronological order."
+
+  backtest_framework:
+    responsibilities:
+      - "Iterate over stock universes and trading days."
+      - "Call strategy-specific signal logic without owning that strategy's alpha."
+      - "Precompute and cache indicators or signals."
+      - "Simulate account-level positions, trades, equity, and exits."
+      - "Support date ranges, TopN settings, costs, parameter grids, and strategy-specific switches."
+    boundary_note: >
+      Generic mechanics such as multiprocessing, equity curves, trade logs, and parameter sweep
+      execution are shared. Strategy-specific signal rules, ranking features, trading rules,
+      and research results are not shared and must be assigned to B1, B3, or Brick by Alpha Source.
+    outputs:
+      - "equity or NAV CSV files"
+      - "trade CSV files"
+      - "summary/report files"
+      - "cached signal files"
+
+  notification_system:
+    responsibilities:
+      - "Send daily scan or backtest summaries to external channels."
+      - "Format Markdown messages."
+      - "Handle signing, rate limiting, retry, and message splitting."
+    typical_components:
+      - "utils/dingtalk_notifier.py"
+      - "utils/feishu_notifier.py"
+    boundary_note: "A notification function may mention B1, B3, or Brick in its message format, but the notification system is not a strategy alpha source."
+
+  cache_system:
+    responsibilities:
+      - "Store precomputed indicators to reduce repeated calculation."
+      - "Store precomputed signals for faster parameter sweeps."
+      - "Store model outputs, feature matrices, or manifests when needed."
+    typical_locations:
+      - "data/indicators_cache/"
+      - "data/signal_cache/"
+      - "data/*/manifest files"
+      - "data/*/model artifacts"
+    boundary_note: "Cache content may be strategy-specific, but the cache mechanism itself is shared."
+
+  configuration_system:
+    responsibilities:
+      - "Manage data directories, update settings, notification credentials, and strategy parameter sections."
+      - "Allow CLI arguments to override config values during experiments."
+      - "Provide templates for production configuration."
+    typical_files:
+      - "config/config.yaml"
+      - "config/config.yaml.template"
+      - "config/strategy_params.yaml"
+      - "config/crontab.txt"
+    boundary_note: "A config file can contain strategy-specific sections. The file and loading mechanism are shared; the parameter meaning belongs to the relevant strategy."
+
+  orchestration_and_ui:
+    responsibilities:
+      - "Run one or more independent strategies in a daily workflow."
+      - "Provide CLI, batch, cron, web, or GUI entrypoints."
+      - "Display or export results."
+    typical_components:
+      - "main.py"
+      - "daily_run.py"
+      - "run_select.bat"
+      - "apps/web_server.py"
+      - "l2/gui/*"
+    boundary_note: >
+      Orchestration may run B1, B3, and Brick together. This does not make them one project.
+      Strategy boundaries remain determined only by Alpha Source.
+
+  known_constraints:
+    - "Do not merge B1, B3, and Brick because they share files, indicators, data, runners, or caches."
+    - "Do not assign a result file to a strategy without checking which Alpha Source generated it."
+    - "Production data availability must match backtest feature construction; do not use future or post-trade fields as pre-trade features."
+    - "Large parameter tests should use explicit grid methodology and caches."
+    - "Do not silently change sample size, date range, thresholds, or test design for speed."
+    - "GBK encoding, date-order conversion, shared trend-line formulas, S1 detector ownership, and cache field completeness are cross-strategy infrastructure concerns."
+
+  recommended_starting_context:
+    - "When reading the repository, first identify whether a file defines alpha or only supports execution."
+    - "If it defines alpha, assign it to B1, B3, or Brick by Alpha Source."
+    - "If it computes common indicators, fetches data, stores files, builds caches, sends notifications, runs schedules, or simulates trades generically, assign the mechanism to Shared Infrastructure."
+    - "If a shared indicator has strategy-specific use, record the formula/implementation here and the strategy-specific role in the relevant strategy memory."
+    - "Shared Infrastructure memory must not record strategy effectiveness conclusions."

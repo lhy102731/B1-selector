@@ -1,0 +1,204 @@
+handoff:
+  version: "1.0"
+  generated_at: "2026-06-19"
+
+  project_identity:
+    strategy_id: "B1"
+    identity: "A-share long-only pullback / retest / Wyckoff-VCP style trend-continuation research project"
+    plain_language: >
+      B1 is a buy-the-pullback strategy after a credible accumulation or impulse wave.
+      It looks for shrink-volume pullback, structurally valid bowl/retest/washout position,
+      and B1-specific candidate ranking. It is not a breakout chase, not B3 limit-up relay,
+      not Brick chart reversal ranking, and not shared infrastructure research.
+    current_baseline_to_start_from: "B1 V3 + V1 wave-quality filter + simplified six-factor scoring"
+    baseline_configuration:
+      j_max: 20
+      pe_max: 80
+      pb_max: 8
+      turnover_max: 6
+      vol_shrink_mode: "v1"
+      position_mode: "bowl"
+      wave_quality: "V1 wave-quality filters enabled"
+      take_profit_25pct: "disabled in the reported best B1 V3 setup"
+    effective_factors:
+      - "q_nodist"
+      - "q_vol_dec_accel"
+      - "q_vs_yellow"
+      - "q_vs_60h"
+      - "q_red_vol_dec"
+      - "q_ind_rank"
+
+  must_accept:
+    - conclusion: "The current trusted B1 starting point is B1 V3 with V1 wave-quality filtering and the simplified six-factor scoring set."
+      why: "Research memory marks this as verified for the tested 2016-2026 A-share B1 V3 implementation."
+      how_to_use: "Use it as the only baseline unless a fair validation proves a replacement."
+    - conclusion: "Wave-quality filtering is central to the current B1 V3 structure."
+      why: "Removing wave-quality caused a large performance drop in the tested setup."
+      how_to_use: "Do not casually remove or weaken it; any sensitivity study must be an explicit controlled ablation."
+    - conclusion: "The surviving B1 V3 alpha is simpler than the earlier complex fusion attempts."
+      why: "Only a small subset of factors survived final selection; tested complex fusion modules were harmful or ineffective."
+      how_to_use: "Prefer focused validation of pullback quality, accumulation quality, and candidate ranking over broad module stacking."
+    - conclusion: "Hard-filter redundancy is architecture-specific."
+      why: "Several front-end hard filters were redundant for TopN selection only in the tested B1 V3 ranking architecture."
+      how_to_use: "Do not turn this into a universal rule for all B1 implementations."
+    - conclusion: "B1 boundaries are determined by alpha source, not file location."
+      why: "Shared indicators and runners may appear in B1 code, but formulas, caches, notifications, and generic infrastructure belong to Shared Infrastructure."
+      how_to_use: "Record only B1-specific usage in B1 memory; do not claim shared implementations as B1-owned alpha."
+
+  still_debated:
+    - issue: "Market-phase stability of the six-factor champion."
+      current_status: "Not yet resolved in the handoff sources."
+      what_is_debated: "Whether the current champion is stable across different market phases, style regimes, and liquidity environments."
+      required_evidence: "Stage-split account-level results, TopN changes, drawdown, win rate, trade count, and factor contribution drift."
+    - issue: "Which six factors are truly stable versus architecture- or period-dependent."
+      current_status: "Unknown in Snapshot."
+      what_is_debated: "The current six factors survived the tested selection process, but their independent cross-phase contribution ranking is not yet fixed."
+      required_evidence: "Controlled factor ablation and contribution analysis under the same B1 V3 baseline."
+    - issue: "Which V1 wave-quality subconditions are indispensable."
+      current_status: "Unknown in Snapshot."
+      what_is_debated: "Wave-quality as a whole is important, but the exact subcondition contribution is not fully mapped."
+      required_evidence: "Explicit grid ablation or sensitivity map without modifying parameter restoration logic."
+    - issue: "Production equivalence of backtest results."
+      current_status: "Unresolved."
+      what_is_debated: "Whether the B1 V3 champion performs the same in real daily production candidates, with停牌/涨跌停/liquidity constraints and notification execution chain."
+      required_evidence: "Production-available field audit and live-like candidate/result comparison."
+
+  active_focus:
+    - priority: 1
+      focus: "Market-phase stability validation of the B1 V3 champion."
+      reason: "This is the primary next priority in Snapshot and determines whether the current champion can be trusted beyond aggregate 2016-2026 performance."
+      expected_output: "Phase-split return, drawdown, win rate, trade count, TopN changes, and factor drift."
+    - priority: 2
+      focus: "Six-factor contribution and stability decomposition."
+      reason: "The champion depends on a simplified factor set; future work needs to know which factors are robust, weak, redundant, or phase-specific."
+      expected_output: "A factor stability table and a decision on which factors should remain frozen, weakened, or retested."
+    - priority: 3
+      focus: "Ranking improvement inside already valid B1 candidates."
+      reason: "Current evidence suggests B1 effectiveness depends more on ranking within valid candidates than on adding broad hard filters."
+      expected_output: "New ranking research plan that does not change the B1 alpha source."
+    - priority: 4
+      focus: "Wave-quality sensitivity map."
+      reason: "Wave-quality is central, but its subconditions may have different value and redundancy."
+      expected_output: "Controlled ablation map of wave-quality constraints, preserving the existing parameter and reset logic."
+
+  do_not_repeat:
+    - item: "Do not repeat the same complex B1 V3 fusion architecture with DTW, hist_bonus, S1-as-B1-fusion, concept resonance / concept-group ranking fusion, or CS factor groups."
+      reason: "Research memory marks this tested implementation path as harmful or ineffective."
+      boundary: "This does not permanently ban all future uses of these ideas in new architectures or other alpha families; it bans reinvesting in the same B1 V3 fusion stack or identical implementation path."
+    - item: "Do not mechanically tighten valuation filters, especially pe_max=30, as the default improvement direction."
+      reason: "The tested tightening reduced flexibility and hurt returns in the B1 V3 context."
+      boundary: "This does not prove valuation is useless everywhere; it only blocks assuming stricter PE caps are a free improvement for this B1 family."
+    - item: "Do not generalize hard-filter redundancy to every B1 implementation."
+      reason: "The redundancy was observed in the tested TopN ranking architecture."
+    - item: "Do not import B3 or Brick alpha into B1."
+      reason: "B3 limit-up relay and Brick reversal ranking belong to separate alpha families."
+    - item: "Do not treat shared indicator formulas, caches, runners, or notifications as B1-owned research conclusions."
+      reason: "Shared infrastructure ownership is separate from B1 alpha usage."
+    - item: "Do not modify set_param/reset/rollback/parameter restoration logic unless the user explicitly requests it."
+      reason: "Project instructions warn this has caused polluted backtest runs."
+
+  common_mistakes:
+    - mistake: "Seeing old UnifiedB1 rule logic and assuming it is the current champion."
+      correction: "Treat old UnifiedB1 as B1-family signal infrastructure; the current best research baseline is B1 V3 scoring architecture."
+    - mistake: "Adding more modules because they are available in the repository."
+      correction: "Complexity is not evidence. Only add features that stay within B1 alpha and beat the current champion through fair validation."
+    - mistake: "Using S1, white/yellow line formulas, caches, or runners as if B1 owns them physically."
+      correction: "B1 owns the strategy-specific role; Shared Infrastructure owns common formulas and mechanisms."
+    - mistake: "Changing sample size, date range, thresholds, or sweep design to save time."
+      correction: "Run the specified design or ask the user before changing scope."
+    - mistake: "Continuing experiments after large abnormal results."
+      correction: "If results are broadly abnormal, stop and validate assumptions before running more code."
+    - mistake: "Reporting ranking metrics as production proof."
+      correction: "Use account-level validation and production-relevant constraints before promoting a change."
+
+  escalation_conditions:
+    - condition: "A result contradicts the current champion by a large margin."
+      action: "Stop; check data range, cache freshness, parameter restoration, candidate pool, and production-data availability before accepting the result."
+    - condition: "Two parameter values produce identical sweep results when they should differ."
+      action: "Stop; verify decoupling, cache loading, parameter application, and set_param/reset/rollback behavior."
+    - condition: "A proposed feature depends on future returns, realized trade outcomes, post-entry values, or fields unavailable at decision time."
+      action: "Reject for production research unless a decision-time availability audit proves otherwise."
+    - condition: "A change requires altering set_param/reset/rollback or parameter restoration logic."
+      action: "Ask the user explicitly before touching it."
+    - condition: "A proposed direction reuses failed B1 fusion modules."
+      action: "Require proof that the construct, implementation, and evaluation口径 are materially different from the failed path before reopening."
+    - condition: "B1 conclusions are being applied to B3, Brick, or Shared Infrastructure."
+      action: "Reclassify by alpha source and keep strategy memories separate."
+    - condition: "Production/live candidates differ sharply from backtest candidates."
+      action: "Audit production data fields, cache schema, date ordering, GBK CSV handling, and execution-time availability."
+
+  first_day_tasks:
+    - task: "Re-read the three primary B1 handoff sources in order: project memory, research memory, then snapshot."
+      purpose: "Internalize B1 boundary, verified conclusions, failed paths, and next priority before touching code."
+      deliverable: "A one-page note listing the B1 baseline, forbidden paths, open questions, and intended validation design."
+    - task: "Identify the exact scripts/reports that reproduce the current B1 V3 champion configuration."
+      purpose: "Avoid evaluating a different implementation while thinking it is the baseline."
+      deliverable: "A baseline reproduction checklist: configuration, data range, candidate pool, cache dependencies, metrics, and output files."
+    - task: "Design the market-phase stability validation before running it."
+      purpose: "The first real research task is phase-split validation, not new alpha invention."
+      deliverable: "Explicit phase split, unchanged champion config, metrics, expected sanity checks, and failure-stop rules."
+    - task: "Run only a minimal sanity check if execution is required."
+      purpose: "Confirm parameter changes and caches behave correctly before large backtests or sweeps."
+      deliverable: "Evidence that at least two distinct parameter values produce different results when expected, without altering the approved test scope."
+
+  first_week_tasks:
+    - task: "Complete B1 V3 champion market-phase stability validation."
+      deliverable: "Phase-level account metrics and factor drift report."
+    - task: "Perform controlled six-factor contribution analysis."
+      deliverable: "Factor-level stability and contribution ranking, with notes on factors to freeze, weaken, or retest."
+    - task: "Build wave-quality sensitivity map."
+      deliverable: "Explicit grid ablation of wave-quality subconditions, with no changes to parameter restoration logic."
+    - task: "Draft next-generation B1 ranking research plan."
+      deliverable: "A plan limited to B1-valid candidates and B1 alpha source, excluding failed fusion-module repetition."
+    - task: "Update B1 research memory only after evidence is produced."
+      deliverable: "New verified/failed/partial/open-question entries with exact scope and limitations."
+
+  when_to_reopen_failed_directions:
+    - direction: "DTW, hist_bonus, S1-as-B1-fusion, concept resonance / concept-group ranking fusion, or CS factor groups"
+      reopen_only_if:
+        - "The proposal is not the same B1 V3 fusion stack or identical implementation path."
+        - "The alpha source remains B1 pullback/retest quality or B1 candidate ranking."
+        - "The feature is available before the production decision time."
+        - "The test is incremental against the current B1 V3 champion, not standalone."
+        - "The evaluation is account-level and phase-aware, not just an internal ranking metric."
+      default_action: "Do not reopen."
+    - direction: "Stricter valuation caps such as pe_max=30"
+      reopen_only_if:
+        - "The goal is not mechanical tightening for higher headline returns."
+        - "The test isolates valuation as risk control or candidate quality under the current champion."
+        - "The result is compared against pe_max=80 baseline under identical candidate pool and execution口径."
+      default_action: "Do not treat stricter PE as a default optimization path."
+    - direction: "Hard-filter removal or relaxation"
+      reopen_only_if:
+        - "The test is explicitly scoped to the current B1 V3 TopN architecture or clearly states a different architecture."
+        - "It does not generalize the known hard-filter redundancy beyond the tested setup."
+      default_action: "Treat redundancy as architecture-specific."
+
+  success_definition:
+    next_phase_success:
+      - "The current B1 V3 champion is validated across major market phases, or its applicable and inapplicable phases are clearly marked."
+      - "The six effective factors have a documented stability and contribution ranking."
+      - "Wave-quality subconditions are mapped enough to know which are essential, redundant, or still uncertain."
+      - "A next-version ranking research plan exists that improves B1-valid candidate selection without changing B1 alpha source."
+      - "No B3, Brick, or Shared Infrastructure conclusions are misclassified as B1 results."
+    not_success:
+      - "A higher headline return produced by changing test scope, data range, cache state, or parameter restoration logic."
+      - "A new complex fusion stack that improves one metric but lacks fair account-level validation."
+      - "A conclusion that ignores the limitations recorded in b1_memory.yaml."
+
+  recommended_reading_order:
+    - order: 1
+      file: "project_b1_v2.yaml"
+      reason: "Defines B1 identity, boundary, alpha source, current best configuration, and known constraints."
+    - order: 2
+      file: "b1_memory.yaml"
+      reason: "Highest-priority research truth: verified conclusions, failed paths, limitations, and do-not-repeat rules."
+    - order: 3
+      file: "snapshot_b1.yaml"
+      reason: "Current state panel: active focus, risks, unknowns, next priority, and first task for new researcher."
+    - order: 4
+      file: "project_shared_v2.yaml"
+      reason: "Read only after B1 boundary is clear; use it to understand shared indicators, caches, validation rules, and infrastructure ownership."
+    - order: 5
+      file: "relevant B1 V3 result reports and reproduction scripts"
+      reason: "Use only to reproduce or validate the current champion; do not let old reports override Research Memory without fresh evidence."

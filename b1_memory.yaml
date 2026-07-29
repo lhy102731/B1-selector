@@ -1,0 +1,62 @@
+version: "1.0"
+last_updated: "2026-06-16"
+strategy_type: "b1"
+
+verified:
+  - conclusion: "B1 V3 works best with V1 wave-quality filtering plus a simplified factor set."
+    scope:
+      strategies: ["B1"]
+      alpha_source: "Wyckoff / VCP / Pullback Quality / Trend Continuation"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "Wave-quality removal caused a large performance drop in the tested B1 V3 setup."
+      - "Only a small subset of candidate factors survived the final B1 V3 selection process."
+      - "The effective B1 V3 structure centers on pullback quality, accumulation quality, and simplified scoring."
+    limitations: "Applies to the tested B1 V3 implementation and its Wyckoff/VCP-style shrink-volume pullback continuation logic."
+
+  - conclusion: "Front-end hard filters in the current B1 V3 stack are often redundant for TopN selection."
+    scope:
+      strategies: ["B1"]
+      alpha_source: "Trend Continuation Filtering / Pullback Quality"
+      market: "A-share"
+      time_interval: "2016-2026"
+    key_evidence:
+      - "Several hard filters removed many tail candidates but had little effect on Top5 / TopN quality."
+      - "The filters mainly eliminated low-ranked names rather than changing the final top set."
+    limitations: "Applies to the tested B1 V3 ranking architecture. It must not be generalized to every possible B1 implementation."
+
+failed:
+  - failure: "Complex fusion modules such as DTW, hist_bonus, S1, concept resonance, and CS factor groups in the tested B1 V3 implementation."
+    scope:
+      strategies: ["B1"]
+      alpha_source: "B1 Pullback / Retest Architecture"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "The tested B1 V3 realization showed these fusion modules to be harmful or ineffective."
+    do_not_repeat_reason: "Do not keep investing in the same B1 V3 fusion stack or identical implementation path."
+    limitations: "This failure is specific to the tested B1 V3 implementation and does not close all future research on these ideas in new architectures or other alpha families."
+
+  - failure: "Over-tightening the PE ceiling to pe_max=30 in B1."
+    scope:
+      strategies: ["B1"]
+      alpha_source: "Candidate Filtering / Trend Continuation"
+      market: "A-share"
+      time_interval: "2016-2026"
+    failure_reason: "Tighter valuation restrictions reduced candidate flexibility and hurt returns in the tested B1 V3口径."
+    do_not_repeat_reason: "Do not treat lower PE caps as the default optimization direction for this B1 family."
+    limitations: "This does not mean valuation is useless in every strategy or every B1 implementation."
+
+partial: []
+
+open_questions: []
+
+do_not_repeat:
+  - item: "Do not repeat the same B1 V3 fusion architecture with DTW, hist_bonus, S1, concept resonance, or CS groups."
+    reason: "The tested implementation was harmful or zero-effect."
+
+  - item: "Do not assume stricter PE ceilings are a free improvement for B1."
+    reason: "The tested tightening reduced performance."
+
+  - item: "Do not generalize B1 V3 hard-filter redundancy to all B1 implementations."
+    reason: "The redundancy result is architecture-specific."

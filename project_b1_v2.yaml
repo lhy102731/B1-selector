@@ -1,0 +1,115 @@
+project:
+  name: "B1 Strategy Memory"
+  strategy_id: "B1"
+  version: "2.0"
+  strategy_type: "A-share long-only pullback / retest / Wyckoff-VCP style trend-continuation strategy"
+
+  boundary:
+    belongs_to: "B1"
+    alpha_source_rule: >
+      Belongs to B1 only if the alpha comes from accumulation-wave quality,
+      shrink-volume pullback, bowl/retest position, washout/retest behavior,
+      or B1-specific candidate ranking.
+    excludes:
+      - "B3 limit-up relay / next-day continuation alpha"
+      - "Brick chart signal / Brick V2-V5 ranking research"
+      - "Shared data, cache, notification, orchestration, indicator-library, and generic backtest infrastructure"
+    shared_references_policy: >
+      Shared indicators or tools may be referenced only by their B1 role. Their formulas,
+      storage, calculation libraries, notifications, caches, and runner locations belong to
+      project_shared_v2.yaml, not this file.
+
+  objective: >
+    Identify A-share stocks that have already shown a credible accumulation or impulse
+    wave, then pulled back on shrinking volume into a structurally favorable area. B1 seeks
+    a lower-risk second-entry point after trend initiation; it is not a breakout chase,
+    not a B3 limit-up relay, and not a Brick chart ranking strategy.
+
+  market: "China A-share equities"
+  holding_period: >
+    Short-term to swing. Entry is around the pullback/retest signal; exit and scaling are
+    event-driven within the B1 trading logic rather than based on a fixed holding period.
+
+  alpha_source:
+    primary: "Quality of shrink-volume pullback after a prior accumulation/impulse wave."
+    secondary: "Valid B1 position around the shared white/yellow trend-line structure, including bowl-zone or washout/retest exceptions."
+    tertiary: "B1-specific candidate scoring and TopN ranking among already valid B1 candidates."
+    not_alpha:
+      - "B3: yesterday limit-up/strong-rise followed by next-day mild continuation."
+      - "Brick: brick-chart green-to-red reversal and Brick ranking model."
+      - "Shared indicator formulas, data fetching, caching, notification, and orchestration."
+
+  strategy_summary:
+    core_logic:
+      - "Confirm trend structure has not broken by using the shared white/yellow trend-line relationship in a B1-specific way."
+      - "Require low or allowed KDJ J value, representing pullback/oversold state."
+      - "Require a valid prior accumulation or impulse wave with acceptable gain, turnover, volume structure, and wave integrity."
+      - "Require current price location to be structurally favorable for B1: bowl zone, near key trend lines, or a qualified washout exception."
+      - "Require volume contraction during the pullback/retest phase."
+      - "Rank candidates by B1-specific quality factors; the final decision is not only pass/fail."
+    shared_line_usage:
+      white_line_role_in_b1: "B1 uses the shared white line as the short-term trend/reference boundary. Formula lives in project_shared_v2.yaml."
+      yellow_line_role_in_b1: "B1 uses the shared yellow line as the retest/bowl/fair-value boundary. Formula lives in project_shared_v2.yaml."
+    related_signals:
+      super_b1: "B1-family enhancement signal after a prior B1 and renewed J pullback near cost area."
+      b2: "Continuation/add-on signal for an existing B1 position; not an independent project."
+      washout: "B1-family washout/retest exception where price temporarily breaks below the yellow line without invalidating the B1 structure."
+    s1_usage_boundary: >
+      S1 is not owned by B1 as a physical implementation. B1 may use S1-like distribution
+      information as B1 exit/reduction control or as a tested B1 fusion component; the shared
+      S1 detector/indicator-library ownership is recorded in project_shared_v2.yaml.
+
+  current_status:
+    summary: "B1 has evolved from UnifiedB1 rule filtering into a B1 V3 scoring architecture."
+    current_production_version: "B1 V3 research stack, with older UnifiedB1 rule logic retained as B1-family signal infrastructure."
+    current_best_solution: "B1 V3 with V1 wave-quality filtering fully enabled and a simplified six-factor scoring set."
+    current_best_configuration:
+      j_max: 20
+      pe_max: 80
+      pb_max: 8
+      turnover_max: 6
+      vol_shrink_mode: "v1"
+      position_mode: "bowl"
+      wave_quality: "V1 wave-quality filters enabled"
+      take_profit_25pct: "disabled in the reported best B1 V3 setup"
+
+  current_best_feature_set:
+    name: "B1 V3 six-factor scoring set"
+    factors:
+      - "q_nodist: no distribution in the recent window; B1-specific quality usage, not ownership of the shared detector."
+      - "q_vol_dec_accel: acceleration of volume contraction."
+      - "q_vs_yellow: B1 distance-to-yellow usage; yellow-line formula is shared."
+      - "q_vs_60h: pullback distance from 60-day high."
+      - "q_red_vol_dec: decreasing volume on red/down candles."
+      - "q_ind_rank: rank within the same industry/concept context for B1 candidate sorting."
+    note: "Most candidate factors tested in the B1 V3 architecture did not survive into the final effective set."
+
+  core_signal_family:
+    name: "B1 Pullback / Retest / Trend Continuation"
+    description: >
+      B1 is a buy-the-pullback strategy after evidence of accumulation or trend initiation.
+      It prefers controlled contraction and structural retest over aggressive breakout chasing.
+
+  known_constraints:
+    - "B1 conclusions must not be generalized to B3 or Brick."
+    - "Wave-quality filtering is central to the current B1 V3 structure and should not be casually removed."
+    - "Hard-filter redundancy observed in one B1 V3 TopN architecture must not be generalized to every B1 implementation."
+    - "Stricter valuation caps are not a default improvement path; pe_max=30 hurt in the tested B1 V3 context."
+    - "Complex fusion should not be added merely because it exists elsewhere in the repository."
+    - "Shared indicator implementations must not be treated as B1-owned modules."
+
+  current_research_focus:
+    - "Preserve the simplified B1 V3 effective structure instead of rebuilding the same complex fusion stack."
+    - "Validate stability of B1 ranking factors across market phases."
+    - "Improve candidate ranking within the B1 alpha family without changing the alpha source."
+
+  known_dead_ends:
+    - "In the tested B1 V3 implementation, DTW, hist_bonus, S1-as-B1-fusion, B1 concept-group ranking fusion, and CS factor groups were harmful or ineffective as B1 fusion modules."
+    - "Over-tightening PE ceiling to pe_max=30 reduced flexibility and hurt returns in the tested B1 V3 context."
+    - "Do not treat B1 V3 hard-filter redundancy as a universal B1 rule."
+
+  recommended_starting_context:
+    - "Read B1 as an accumulation-wave plus shrink-volume pullback strategy."
+    - "Use B1-specific memory and B1 V3 reports before reading shared infrastructure."
+    - "Classify new material as B1 only if its alpha source is B1 pullback/retest quality or B1 candidate ranking."
+    - "When a shared indicator appears in B1, record only its B1 role here and keep implementation/formula ownership in project_shared_v2.yaml."

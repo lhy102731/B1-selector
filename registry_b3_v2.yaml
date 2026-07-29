@@ -1,0 +1,124 @@
+registry:
+  experiments:
+  - id: b3-exp-001
+    title: B3XG rule-based limit-up relay scanner baseline
+    short_result: B3XG scanner is implemented with prior-day >=9%, today +2% to +4%, bullish candle, gap <1%, shadows <=2%,
+      volume ratio 0.6-0.9, B3 trend-line gates, close above yellow line, and market_cap >5B if available; no independent
+      B3 backtest evidence is recorded yet.
+    evidence_source:
+    - 'project_b3_v2.yaml: strategy_summary.core_conditions / current_status'
+    - 'b3_memory.yaml: empty verified/failed/partial/open_questions'
+    - 'snapshot_b3.yaml: current_champion / biggest_risks'
+    - 'run_b3.py: B3Scanner.check_b3'
+    status: OPEN
+    stage_tag: implemented_but_not_independently_validated
+    success_condition_next_phase: This is the baseline to validate first; build independent B3 sample/backtest with explicit
+      entry timing, holding/exit assumptions, costs, return, drawdown, win rate, trade count, phase performance, and failure
+      taxonomy.
+  - id: b3-exp-002
+    title: Standalone B3 daily scan and DingTalk notification wiring
+    short_result: Standalone run_b3.py scans local A-share CSVs and sends top daily B3 picks to DingTalk when signals exist;
+      this proves scan wiring exists but does not validate alpha or tradability.
+    evidence_source:
+    - 'run_b3.py: main'
+    - 'daily_run.py: B3 standalone scan step'
+    - 'utils/dingtalk_notifier.py: B3选股结果 formatting'
+    reopen_condition: Reopen only to validate production reliability, archive daily candidates, or link scan output to later
+      trade outcomes; do not treat scan existence as strategy evidence.
+    status: PARTIAL
+    stage_tag: operational_scan_not_research_result
+  - id: b3-exp-003
+    title: Independent B3 baseline backtest and sample base
+    short_result: No completed B3 baseline backtest report, CSV summary, or metrics artifact was found; Snapshot identifies
+      independent sample/backtest construction as the first priority.
+    evidence_source:
+    - 'b3_memory.yaml: empty'
+    - 'snapshot_b3.yaml: active_research / highest_roi_hypotheses / next_priority / success_condition_next_phase'
+    - 'handoff_b3_v1.yaml: active_focus / first_week_tasks'
+    status: OPEN
+    stage_tag: highest_priority_missing_experiment
+    success_condition_next_phase: Start from B3XG current rules as the only baseline; record sample range, rule implementation,
+      execution price, exits, costs, metrics, and limitations before changing thresholds.
+  - id: b3-exp-004
+    title: B3-specific holding and exit rule validation
+    short_result: B3 is a short-term relay strategy, but no mature independent holding, stop-loss, take-profit, failed-continuation,
+      trend-break, or max-hold rule memory exists.
+    evidence_source:
+    - 'project_b3_v2.yaml: holding_period / current_research_focus'
+    - 'snapshot_b3.yaml: active_research / highest_roi_hypotheses / biggest_unknowns'
+    - 'handoff_b3_v1.yaml: still_debated / active_focus'
+    status: OPEN
+    stage_tag: not_established
+    success_condition_next_phase: Run only after B3XG entry sample exists; compare B3-specific exit rules under identical
+      entries and account-level metrics.
+  - id: b3-exp-005
+    title: B3 candidate ranking or ML layer decision
+    short_result: No confirmed independent B3 ML/ranking model is recorded; ranking layer need is unknown and should depend
+      on candidate count and return dispersion after rule scan.
+    evidence_source:
+    - 'project_b3_v2.yaml: current_status / current_research_focus'
+    - 'snapshot_b3.yaml: highest_roi_hypotheses / next_priority.not_priority'
+    - 'handoff_b3_v1.yaml: still_debated / when_to_reopen_failed_directions'
+    status: OPEN
+    stage_tag: deferred_until_baseline_evidence
+    success_condition_next_phase: Reopen only after independent B3 baseline backtest exists and candidate counts/return dispersion
+      justify ranking pressure; features must be B3-specific and decision-time available.
+  - id: b3-exp-006
+    title: B3 rule-threshold robustness grid
+    short_result: 'Robustness of B3 thresholds is unknown: yesterday >=9%, today 2%-4%, gap <1%, shadows <=2%, volume ratio
+      0.6-0.9, and market-cap threshold have not been systematically grid-tested in recorded B3 research.'
+    evidence_source:
+    - 'project_b3_v2.yaml: strategy_summary.core_conditions'
+    - 'snapshot_b3.yaml: biggest_unknowns'
+    - 'run_b3.py: B3Scanner.check_b3 thresholds'
+    - 'handoff_b3_v1.yaml: first_week_tasks'
+    status: OPEN
+    stage_tag: unverified_threshold_stability
+    success_condition_next_phase: Reopen only after baseline sample and exit logic are fixed; use explicit GRID TEST and do
+      not silently change sample range or thresholds.
+  - id: b3-exp-007
+    title: B3 market emotion or index-regime overlay
+    short_result: Whether market emotion, index environment, liquidity, or limit-up ecology should control B3 participation
+      is unknown; no B3 regime-conditioned result was found.
+    evidence_source:
+    - 'snapshot_b3.yaml: biggest_unknowns'
+    - 'handoff_b3_v1.yaml: still_debated / when_to_reopen_failed_directions'
+    status: OPEN
+    stage_tag: deferred_open_question
+    success_condition_next_phase: Reopen only after B3 baseline entry and exit logic are established; regime must be a controlled
+      diagnostic or overlay, not a substitute for B3 rule validation.
+  - id: b3-exp-008
+    title: B3 research memory governance initialization
+    short_result: b3_memory.yaml currently contains no verified, failed, partial, open-question, or do-not-repeat entries;
+      the first real B3 experiment must initialize research memory carefully.
+    evidence_source:
+    - b3_memory.yaml
+    - 'snapshot_b3.yaml: success_condition_next_phase'
+    - 'handoff_b3_v1.yaml: memory_status / active_focus'
+    status: OPEN
+    stage_tag: memory_empty
+    success_condition_next_phase: When first B3-specific evidence is produced, write exact sample range, rules, exit assumptions,
+      metrics, scope, and limitations into b3_memory.yaml.
+  - id: b3-exp-009
+    title: 'B3 result artifact search: b3_brick backtest bytecode without readable source/result'
+    short_result: Only orphan bytecode __pycache__/b3_brick_backtest.cpython-313.pyc was found; no readable b3_brick source,
+      report, CSV summary, or metrics artifact was available for registry-grade evidence.
+    evidence_source:
+    - __pycache__/b3_brick_backtest.cpython-313.pyc
+    - 'repository scan: no readable b3_brick*.py or B3 result summary found'
+    reopen_condition: Do not use bytecode as evidence; rebuild any B3/Brick comparison from readable source with explicit
+      strategy boundary and output metrics.
+    status: ABANDONED
+    stage_tag: orphan_artifact_not_usable
+  - id: b3-exp-010
+    title: B3 boundary control against B1 and Brick imports
+    short_result: Project and snapshot define B3 as prior-day strong rise plus next-day controlled continuation; B1 pullback
+      and Brick reversal/ranking conclusions must not be imported as B3 evidence.
+    evidence_source:
+    - 'project_b3_v2.yaml: boundary / known_constraints'
+    - 'snapshot_b3.yaml: frozen_directions / next_priority.not_priority'
+    - 'handoff_b3_v1.yaml: do_not_repeat / common_mistakes'
+    reopen_condition: Reopen only when classifying new mixed files or outputs; classify by alpha source and require independent
+      B3 validation for any borrowed-looking feature.
+    status: PARTIAL
+    stage_tag: governance_rule_not_performance_experiment
