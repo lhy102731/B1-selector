@@ -21,6 +21,7 @@ from research_automation.data_generation.contracts import (
 from research_automation.data_generation.generation import GenerationPublisher
 from utils.market_asset_store import MarketAssetStore
 from utils.raw_parquet_cache import RawParquetCache, normalize_raw_stock_frame
+from utils.csv_manager import CSVManager
 
 
 def _write_stock_csv(data_dir: Path, code: str, rows: int = 70) -> Path:
@@ -69,6 +70,217 @@ class FakeStrategy:
 
 
 class RawParquetCacheTests(unittest.TestCase):
+    def test_pinned_indicator_helper_rejects_changed_feature_contract(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "indicators_cache"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin, patch(
+                "build_indicators_cache.UnifiedB1Strategy",
+                FakeStrategy,
+            ):
+                first = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    strategy_params={"j_threshold": 29},
+                    generation_pin=pin,
+                )
+                cache_file = cache_dir / "000001.parquet"
+                before = cache_file.read_bytes()
+                changed = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    strategy_params={"j_threshold": 30},
+                    generation_pin=pin,
+                )
+
+            self.assertTrue(first.startswith("OK"), first)
+            self.assertTrue(changed.startswith("FAIL"), changed)
+            self.assertIn("CACHE_IDENTITY_MISMATCH", changed)
+            self.assertEqual(before, cache_file.read_bytes())
+
+    def test_pinned_indicator_build_rechecks_raw_lineage_after_calculation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "indicators_cache"
+            csv_path = _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            class MutatingStrategy(FakeStrategy):
+                def calculate_indicators(self, df):
+                    result = super().calculate_indicators(df)
+                    content = csv_path.read_bytes()
+                    csv_path.write_bytes(content.replace(b"10.", b"11.", 1))
+                    return result
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin, patch(
+                "build_indicators_cache.UnifiedB1Strategy",
+                MutatingStrategy,
+            ):
+                status = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    generation_pin=pin,
+                )
+
+            self.assertTrue(status.startswith("FAIL"), status)
+            self.assertIn("GENERATION_MUTATED", status)
+            self.assertFalse((cache_dir / "000001.parquet").exists())
+
+    def test_pinned_direct_csv_indicator_build_rejects_mid_read_mutation(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "indicators_cache"
+            csv_path = _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+            original_read = CSVManager.read_stock
+
+            def read_then_mutate(manager, code):
+                frame = original_read(manager, code)
+                content = csv_path.read_bytes()
+                mutated = content.replace(b"10.", b"11.", 1)
+                csv_path.write_bytes(mutated)
+                return frame
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin, patch.object(
+                CSVManager,
+                "read_stock",
+                read_then_mutate,
+            ), patch(
+                "build_indicators_cache.UnifiedB1Strategy",
+                FakeStrategy,
+            ):
+                status = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    use_raw_cache=False,
+                    generation_pin=pin,
+                )
+
+            self.assertTrue(status.startswith("FAIL"), status)
+            self.assertIn("GENERATION_MUTATED", status)
+            self.assertFalse((cache_dir / "000001.parquet").exists())
+
+    def test_pinned_indicator_helper_rejects_unversioned_existing_cache(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "indicators_cache"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin:
+                raw = RawParquetCache(data_dir, generation_pin=pin).read_stock(
+                    "000001"
+                )
+                cache_dir.mkdir(parents=True)
+                cache_file = cache_dir / "000001.parquet"
+                raw.to_parquet(cache_file, index=False)
+                before = cache_file.read_bytes()
+                with patch(
+                    "build_indicators_cache.UnifiedB1Strategy",
+                    FakeStrategy,
+                ):
+                    status = build_one(
+                        "000001",
+                        data_dir,
+                        cache_dir,
+                        generation_pin=pin,
+                    )
+
+            self.assertTrue(status.startswith("FAIL"), status)
+            self.assertIn("CACHE_IDENTITY_MISSING", status)
+            self.assertEqual(before, cache_file.read_bytes())
+
+    def test_pinned_research_indicator_helper_is_physically_isolated(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "research_indicators_cache"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin, patch(
+                "build_indicators_cache.UnifiedB1Strategy",
+                FakeStrategy,
+            ):
+                status = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    generation_pin=pin,
+                )
+                identity = read_cache_identity_sidecar(
+                    cache_dir / "000001.parquet"
+                )
+
+            self.assertTrue(status.startswith("OK"), status)
+            self.assertEqual("research", identity.cache_namespace)
+            self.assertFalse(
+                (data_dir / "indicators_cache" / "000001.parquet").exists()
+            )
+
+    def test_pinned_indicator_helper_writes_sidecar_and_reuses_cache(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_dir = root / "data"
+            cache_dir = data_dir / "indicators_cache"
+            _write_stock_csv(data_dir, "000001")
+            publisher, manifest = _publish_generation(root)
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_dir,
+            ) as pin, patch(
+                "build_indicators_cache.UnifiedB1Strategy",
+                FakeStrategy,
+            ):
+                first = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    generation_pin=pin,
+                )
+                second = build_one(
+                    "000001",
+                    data_dir,
+                    cache_dir,
+                    generation_pin=pin,
+                )
+                identity = read_cache_identity_sidecar(
+                    cache_dir / "000001.parquet"
+                )
+
+            self.assertTrue(first.startswith("OK"), first)
+            self.assertIn("indicator cache current", second)
+            self.assertEqual("indicator", identity.cache_kind)
+            self.assertEqual("production", identity.cache_namespace)
+            self.assertEqual(manifest.generation_id, identity.generation_id)
+
     def test_pinned_research_raw_cache_is_physically_isolated(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

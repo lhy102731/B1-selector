@@ -7,13 +7,22 @@ data/indicators_cache/{code}.parquet.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import multiprocessing as mp
+import os
 import re
 from functools import partial
 from pathlib import Path
 
 from tqdm import tqdm
 
+from research_automation.control_plane.contracts import canonical_json
+from research_automation.data_generation.cache_identity import (
+    build_cache_identity,
+    load_verified_cache_identity,
+    write_cache_identity_sidecar,
+)
+from research_automation.data_generation.generation import GenerationPin
 from strategy.unified_b1_strategy import UnifiedB1Strategy
 from utils.csv_manager import CSVManager
 from utils.market_asset_store import MarketAssetStore
@@ -29,6 +38,40 @@ def _indicator_cache_is_current(cache_file: Path, csv_file: Path) -> bool:
     return cache_file.exists() and csv_file.exists() and cache_file.stat().st_mtime >= csv_file.stat().st_mtime
 
 
+def _indicator_feature_contract_id(strategy_params: dict | None) -> str:
+    payload = canonical_json(
+        {
+            "contract": "a-share.unified-b1-indicators.v1",
+            "strategy_params": strategy_params or {},
+        }
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _pinned_indicator_location(
+    data_dir: str | Path,
+    cache_dir: str | Path,
+    code: str,
+) -> tuple[str, str]:
+    data_root = Path(os.path.abspath(data_dir))
+    cache_root = Path(os.path.abspath(cache_dir))
+    try:
+        relative_root = cache_root.relative_to(data_root).as_posix()
+    except ValueError as error:
+        raise ValueError("pinned indicator cache escaped data_dir") from error
+    namespaces = {
+        "indicators_cache": "production",
+        "research_indicators_cache": "research",
+    }
+    try:
+        namespace = namespaces[relative_root]
+    except KeyError as error:
+        raise ValueError(
+            "pinned indicator cache directory does not match its namespace"
+        ) from error
+    return namespace, f"{relative_root}/{code}.parquet"
+
+
 def safe_cache_name(cache_name: str) -> str:
     """Restrict cache folder names to avoid accidental path escape."""
     value = str(cache_name or "").strip()
@@ -42,23 +85,32 @@ def read_raw_stock(
     data_dir: str | Path,
     use_raw_cache: bool = True,
     rebuild_raw: bool = False,
+    generation_pin: GenerationPin | None = None,
 ):
     """Read normalized raw bars, preferring data/raw_parquet when enabled."""
     if use_raw_cache:
-        return RawParquetCache(data_dir).read_stock(code, refresh=rebuild_raw)
+        return RawParquetCache(
+            data_dir,
+            generation_pin=generation_pin,
+        ).read_stock(code, refresh=rebuild_raw)
     csv_manager = CSVManager(data_dir)
     return normalize_raw_stock_frame(csv_manager.read_stock(code))
 
 
-def build_raw_one(code: str, data_dir: str | Path, rebuild_raw: bool = False) -> str:
+def build_raw_one(
+    code: str,
+    data_dir: str | Path,
+    rebuild_raw: bool = False,
+    generation_pin: GenerationPin | None = None,
+) -> str:
     """Build only the raw parquet cache for one stock."""
     csv_file = _csv_path(data_dir, code)
     if not csv_file.exists():
         return f"SKIP {code} (CSV missing)"
-    cache = RawParquetCache(data_dir)
-    if not rebuild_raw and cache.is_current(code):
-        return f"SKIP {code} (raw parquet current)"
+    cache = RawParquetCache(data_dir, generation_pin=generation_pin)
     try:
+        if not rebuild_raw and cache.is_current(code):
+            return f"SKIP {code} (raw parquet current)"
         df_raw = cache.read_stock(code, refresh=rebuild_raw)
         if df_raw.empty:
             return f"SKIP {code} (raw data empty)"
@@ -74,6 +126,7 @@ def build_one(
     strategy_params: dict | None = None,
     use_raw_cache: bool = True,
     rebuild_raw: bool = False,
+    generation_pin: GenerationPin | None = None,
 ) -> str:
     """Build indicator cache for a single stock. Returns a status string."""
     cache_dir = Path(cache_dir)
@@ -82,16 +135,81 @@ def build_one(
 
     if not csv_file.exists():
         return f"SKIP {code} (CSV missing)"
-    if not rebuild_raw and _indicator_cache_is_current(cache_file, csv_file):
+    if (
+        generation_pin is None
+        and not rebuild_raw
+        and _indicator_cache_is_current(cache_file, csv_file)
+    ):
         return f"SKIP {code} (indicator cache current)"
 
     try:
-        df_raw = read_raw_stock(
-            code,
-            data_dir,
-            use_raw_cache=use_raw_cache,
-            rebuild_raw=rebuild_raw,
-        )
+        source_artifact_id: str | None = None
+        cache_namespace: str | None = None
+        cache_relative_path: str | None = None
+        pinned_raw_cache: RawParquetCache | None = None
+        if generation_pin is not None:
+            cache_namespace, cache_relative_path = _pinned_indicator_location(
+                data_dir,
+                cache_dir,
+                code,
+            )
+        if generation_pin is not None and use_raw_cache:
+            pinned_raw_cache = RawParquetCache(
+                data_dir,
+                generation_pin=generation_pin,
+            )
+            df_raw = pinned_raw_cache.read_stock(code, refresh=rebuild_raw)
+            source_artifact_id = (
+                pinned_raw_cache.verified_identity(code).artifact.artifact_id
+            )
+        else:
+            pinned_csv_source = None
+            if generation_pin is not None:
+                pinned_csv_source = generation_pin.verify_artifact(
+                    _csv_path(data_dir, code).relative_to(
+                        Path(data_dir)
+                    ).as_posix(),
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+            df_raw = read_raw_stock(
+                code,
+                data_dir,
+                use_raw_cache=use_raw_cache,
+                rebuild_raw=rebuild_raw,
+                generation_pin=generation_pin,
+            )
+            if generation_pin is not None and pinned_csv_source is not None:
+                source_artifact_id = generation_pin.verify_artifact(
+                    _csv_path(data_dir, code).relative_to(
+                        Path(data_dir)
+                    ).as_posix(),
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                ).artifact_id
+        feature_contract_id = _indicator_feature_contract_id(strategy_params)
+        if (
+            generation_pin is not None
+            and not rebuild_raw
+            and cache_file.exists()
+            and source_artifact_id is not None
+            and cache_namespace is not None
+            and cache_relative_path is not None
+        ):
+            load_verified_cache_identity(
+                generation_pin,
+                relative_path=cache_relative_path,
+                cache_namespace=cache_namespace,
+                cache_kind="indicator",
+                source_artifact_ids=(source_artifact_id,),
+                feature_contract_id=feature_contract_id,
+                content_schema="parquet.unified_b1_indicators.v1",
+                producer="build_indicators_cache.build_one",
+                logical_role="b1_indicator_frame",
+            )
+            return f"SKIP {code} (indicator cache current)"
         if df_raw.empty or len(df_raw) < 60:
             return f"SKIP {code} (insufficient data)"
 
@@ -102,9 +220,40 @@ def build_one(
         if df_ind.empty:
             return f"FAIL {code} (indicator calculation empty)"
 
+        if pinned_raw_cache is not None and source_artifact_id is not None:
+            current_raw_identity = pinned_raw_cache.verified_identity(code)
+            if current_raw_identity.artifact.artifact_id != source_artifact_id:
+                raise ValueError("pinned raw cache identity changed")
+
         cache_dir.mkdir(parents=True, exist_ok=True)
         df_ind = df_ind.sort_values("date").reset_index(drop=True)
         df_ind.to_parquet(cache_file, index=False)
+        if pinned_raw_cache is not None and source_artifact_id is not None:
+            current_raw_identity = pinned_raw_cache.verified_identity(code)
+            if current_raw_identity.artifact.artifact_id != source_artifact_id:
+                raise ValueError("pinned raw cache identity changed")
+        if (
+            generation_pin is not None
+            and source_artifact_id is not None
+            and cache_namespace is not None
+            and cache_relative_path is not None
+        ):
+            identity = build_cache_identity(
+                generation_pin,
+                relative_path=cache_relative_path,
+                cache_namespace=cache_namespace,
+                cache_kind="indicator",
+                source_artifact_ids=(source_artifact_id,),
+                feature_contract_id=feature_contract_id,
+                content_schema="parquet.unified_b1_indicators.v1",
+                producer="build_indicators_cache.build_one",
+                logical_role="b1_indicator_frame",
+            )
+            write_cache_identity_sidecar(
+                generation_pin,
+                relative_path=cache_relative_path,
+                identity=identity,
+            )
         return f"OK   {code}"
     except Exception as error:
         return f"FAIL {code} ({error})"

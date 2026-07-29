@@ -127,6 +127,10 @@ class RawParquetCache:
             **self._pinned_identity_arguments(code, source.artifact_id),
         )
 
+    def verified_identity(self, code: str):
+        """Return a strictly verified identity for a pinned raw cache."""
+        return self._load_pinned_identity(code)
+
     def _verify_pinned_source(self, code: str):
         if self.generation_pin is None:
             raise RuntimeError("pinned source identity requires a generation pin")
