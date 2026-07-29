@@ -20,12 +20,70 @@ from strategy.b1_v3_strategy import (
 )
 
 DEFAULT_OUTPUT_DIR = Path("artifacts/backtests/b1_v3")
+UPDATE_CACHE_PATH = Path("data/.update_cache.json")
+DATASET_MANIFEST_PATH = Path("data/.ths_dataset_manifest.json")
 
 
 def _output_path(args, filename):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir / filename
+
+
+def _latest_completed_data_date():
+    candidates = []
+    sources = (
+        (UPDATE_CACHE_PATH, ("last_update_completed_date",), None),
+        (
+            DATASET_MANIFEST_PATH,
+            ("last_daily_update",),
+            {("thsdk", "COMMITTED"), ("thsdk+yuanhang", "COMPLETED")},
+        ),
+    )
+    for path, fields, accepted_identities in sources:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if path == UPDATE_CACHE_PATH and payload.get("last_update_source") != "thsdk":
+            continue
+        identity = (payload.get("source"), payload.get("status"))
+        if accepted_identities is not None and identity not in accepted_identities:
+            continue
+        for field in fields:
+            value = payload.get(field)
+            if not value:
+                continue
+            try:
+                candidates.append(datetime.strptime(str(value), "%Y-%m-%d").date())
+            except ValueError:
+                continue
+    if not candidates:
+        raise RuntimeError(
+            "no locally completed market-data date is available; update data first"
+        )
+    completed_date = max(candidates)
+    if completed_date > datetime.now().date():
+        raise RuntimeError(
+            f"local market-data completion marker has future date {completed_date}"
+        )
+    return completed_date
+
+
+def _effective_select_date(requested_date=None):
+    completed_date = _latest_completed_data_date()
+    if not requested_date:
+        return completed_date
+    try:
+        requested = datetime.strptime(str(requested_date), "%Y-%m-%d").date()
+    except ValueError as error:
+        raise ValueError("select date must use YYYY-MM-DD") from error
+    if requested > completed_date:
+        raise RuntimeError(
+            f"requested select date {requested} is newer than completed data "
+            f"{completed_date}"
+        )
+    return requested
 
 # ============================================================
 # STOCK LIST
@@ -49,8 +107,9 @@ def cmd_select(args):
     from utils.dingtalk_notifier import DingTalkNotifier
 
     p = B1V3Params()
-    today = datetime.now().strftime('%Y-%m-%d')
-    start_date = (datetime.now() - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
+    effective_date = _effective_select_date(getattr(args, "date", None))
+    today = effective_date.strftime('%Y-%m-%d')
+    start_date = (effective_date - pd.Timedelta(days=7)).strftime('%Y-%m-%d')
 
     codes = get_stock_list(args.max_stocks)
     print(f"Scanning {len(codes)} stocks for B1 signals on {today}...")
@@ -493,6 +552,7 @@ def main():
     ap.add_argument('--start', default='2021-01-01')
     ap.add_argument('--end', default='2026-05-30')
     ap.add_argument('--max-stocks', type=int, default=0)
+    ap.add_argument('--date', help='Completed local data date for select mode')
     ap.add_argument('--output-dir', default=str(DEFAULT_OUTPUT_DIR),
                     help='Directory for generated backtest/sweep CSV files')
 
