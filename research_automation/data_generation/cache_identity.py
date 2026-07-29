@@ -18,6 +18,8 @@ from .generation import GenerationPin
 CACHE_IDENTITY_V1 = "research.data_generation.cache_identity.v1"
 _CACHE_ID_DOMAIN = b"research.data_generation.cache_identity.v1\0"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CACHE_NAMESPACES = frozenset({"production", "research"})
+_CACHE_KINDS = frozenset({"raw_parquet", "indicator", "signal"})
 
 
 class CacheIdentity(StrictContractModel):
@@ -87,6 +89,46 @@ class CacheIdentity(StrictContractModel):
         return hashlib.sha256(_CACHE_ID_DOMAIN + payload).hexdigest()
 
 
+def _validate_build_request(
+    *,
+    cache_namespace: str,
+    cache_kind: str,
+    source_artifact_ids: tuple[str, ...],
+    feature_contract_id: str,
+    content_schema: str,
+    producer: str,
+    logical_role: str,
+) -> tuple[str, ...]:
+    """Reject pure request errors before a pin records touched semantics."""
+    if cache_namespace not in _CACHE_NAMESPACES:
+        raise ValueError("unsupported cache namespace")
+    if cache_kind not in _CACHE_KINDS:
+        raise ValueError("unsupported cache kind")
+    if not isinstance(source_artifact_ids, tuple):
+        raise ValueError("source artifact ids must be a tuple")
+    if not source_artifact_ids:
+        raise ValueError("source artifact ids must not be empty")
+    if any(
+        type(artifact_id) is not str
+        or _SHA256.fullmatch(artifact_id) is None
+        for artifact_id in source_artifact_ids
+    ):
+        raise ValueError("source artifact id must be lowercase SHA-256")
+    if len(source_artifact_ids) != len(set(source_artifact_ids)):
+        raise ValueError("source artifact ids must be unique")
+    if (
+        type(feature_contract_id) is not str
+        or _SHA256.fullmatch(feature_contract_id) is None
+    ):
+        raise ValueError("feature contract id must be lowercase SHA-256")
+    if any(
+        type(value) is not str or not value or value != value.strip()
+        for value in (content_schema, producer, logical_role)
+    ):
+        raise ValueError("cache artifact semantics must be canonical")
+    return tuple(sorted(source_artifact_ids))
+
+
 def build_cache_identity(
     pin: GenerationPin,
     *,
@@ -102,6 +144,15 @@ def build_cache_identity(
     """Content-bind one touched cache without scanning its surrounding tree."""
     if not isinstance(pin, GenerationPin):
         raise TypeError("pin must be a GenerationPin")
+    verified_request_sources = _validate_build_request(
+        cache_namespace=cache_namespace,
+        cache_kind=cache_kind,
+        source_artifact_ids=source_artifact_ids,
+        feature_contract_id=feature_contract_id,
+        content_schema=content_schema,
+        producer=producer,
+        logical_role=logical_role,
+    )
     artifact = pin.verify_artifact(
         relative_path,
         content_schema=content_schema,
@@ -110,7 +161,7 @@ def build_cache_identity(
         logical_role=logical_role,
     )
     verified_source_ids = pin.verify_touched_artifact_ids(
-        source_artifact_ids,
+        verified_request_sources,
         exclude_artifact_id=artifact.artifact_id,
     )
     manifest = pin.manifest

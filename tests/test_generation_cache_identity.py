@@ -66,6 +66,54 @@ class GenerationCacheIdentityTests(unittest.TestCase):
                 adjustment_scheme="qfq-v1",
             )
 
+    def test_invalid_request_does_not_poison_a_later_valid_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            source = data_root / "00" / "000001.csv"
+            cache = data_root / "raw_parquet" / "00" / "000001.parquet"
+            source.parent.mkdir(parents=True)
+            cache.parent.mkdir(parents=True)
+            source.write_bytes(b"source")
+            cache.write_bytes(b"cache")
+            publisher = GenerationPublisher(root / "generations")
+            manifest = _manifest("2026-07-30")
+            publisher.publish(publisher.stage(manifest))
+
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                source_identity = pin.verify_artifact(
+                    "00/000001.csv",
+                    content_schema="a-share.gbk_csv.v1",
+                    kind="source_csv",
+                    logical_role="raw_stock_bars",
+                )
+                arguments = {
+                    "relative_path": "raw_parquet/00/000001.parquet",
+                    "cache_namespace": "production",
+                    "source_artifact_ids": (source_identity.artifact_id,),
+                    "feature_contract_id": "f" * 64,
+                    "content_schema": "parquet.v1",
+                    "producer": "tests.raw_parquet",
+                    "logical_role": "ascending_raw_bars",
+                }
+
+                with self.assertRaises(ValueError):
+                    build_cache_identity(
+                        pin,
+                        cache_kind="bogus",  # type: ignore[arg-type]
+                        **arguments,
+                    )
+                identity = build_cache_identity(
+                    pin,
+                    cache_kind="raw_parquet",
+                    **arguments,
+                )
+
+            self.assertEqual("raw_parquet", identity.cache_kind)
+
     def test_cache_identity_changes_with_generation_and_namespace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
