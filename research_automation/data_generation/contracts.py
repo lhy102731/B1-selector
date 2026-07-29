@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import date
 from typing import Literal
 
@@ -16,7 +17,11 @@ from research_automation.foundations.contract_registry import (
 
 
 GENERATION_MANIFEST_V1 = "research.data_generation.generation_manifest.v1"
+GENERATION_PUBLISH_PENDING_V1 = (
+    "research.data_generation.publish_pending.v1"
+)
 _GENERATION_ID_DOMAIN = b"research.data_generation.generation_manifest.v1\0"
+_GENERATION_ID = re.compile(r"^[0-9a-f]{64}$")
 
 
 class GenerationManifest(StrictContractModel):
@@ -77,16 +82,42 @@ class GenerationManifest(StrictContractModel):
         return hashlib.sha256(_GENERATION_ID_DOMAIN + payload).hexdigest()
 
 
+class GenerationPublishPending(StrictContractModel):
+    """Durable publication intent that blocks later generation leases."""
+
+    schema_version: Literal[
+        "research.data_generation.publish_pending.v1"
+    ]
+    status: Literal["PUBLISH_PENDING"]
+    candidate_generation_id: str
+    expected_current_generation_id: str | None
+
+    @field_validator(
+        "candidate_generation_id",
+        "expected_current_generation_id",
+    )
+    @classmethod
+    def _require_generation_id(cls, value: str | None) -> str | None:
+        if value is not None and _GENERATION_ID.fullmatch(value) is None:
+            raise ValueError("generation id must be a lowercase SHA-256 digest")
+        return value
+
+
 def generation_contract_registry() -> ContractRegistry:
     """Return the versioned registry for data-generation contracts."""
     return ContractRegistry(
         version="research.data_generation.contract_registry.v1",
-        contracts={GENERATION_MANIFEST_V1: GenerationManifest},
+        contracts={
+            GENERATION_MANIFEST_V1: GenerationManifest,
+            GENERATION_PUBLISH_PENDING_V1: GenerationPublishPending,
+        },
     )
 
 
 __all__ = [
     "GENERATION_MANIFEST_V1",
+    "GENERATION_PUBLISH_PENDING_V1",
     "GenerationManifest",
+    "GenerationPublishPending",
     "generation_contract_registry",
 ]

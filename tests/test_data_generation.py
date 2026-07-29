@@ -10,11 +10,51 @@ from research_automation.data_generation.contracts import (
     GenerationManifest,
     generation_contract_registry,
 )
-from research_automation.data_generation.generation import GenerationPublisher
+from research_automation.data_generation.generation import (
+    GenerationPublicationPendingError,
+    GenerationPublisher,
+)
 from research_automation.foundations.contract_registry import ContractValidationError
 
 
 class GenerationManifestContractTests(unittest.TestCase):
+    def test_active_generation_lease_records_pending_until_retry_can_publish(self) -> None:
+        first = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-28",
+            trading_calendar_identity="calendar-cn-a-share-20260728",
+            point_in_time_universe_identity="pit-universe-20260728",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260728",),
+        )
+        second = first.model_copy(update={"csv_cutoff": "2026-07-29"})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "generations"
+            publisher = GenerationPublisher(root, lock_timeout_seconds=0.05)
+            publisher.publish(publisher.stage(first))
+            lease = publisher.acquire_read_lease(
+                expected_generation_id=first.generation_id,
+            )
+            staged = publisher.stage(second)
+
+            with self.assertRaises(GenerationPublicationPendingError):
+                publisher.publish(staged)
+
+            pending = publisher.pending_publication()
+            self.assertIsNotNone(pending)
+            assert pending is not None
+            self.assertEqual(second.generation_id, pending.candidate_generation_id)
+            self.assertEqual(first.generation_id, publisher.read(lease).generation_id)
+            self.assertEqual(first.generation_id, publisher.read_current().generation_id)
+
+            lease.release()
+            published = publisher.publish(staged)
+
+            self.assertEqual(second.generation_id, published.generation_id)
+            self.assertIsNone(publisher.pending_publication())
+
     def test_generation_manifest_strictly_binds_source_and_cache_identities(self) -> None:
         payload = {
             "schema_version": GENERATION_MANIFEST_V1,
