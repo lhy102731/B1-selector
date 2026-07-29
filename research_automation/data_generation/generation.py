@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,14 @@ from research_automation.foundations.immutable_release import (
     ReleaseBusyError,
     ReleaseConflictError,
     ReleaseReadLease,
+)
+from research_automation.foundations.artifact_identity import (
+    ArtifactIdentity,
+    ArtifactIdentityMismatchError,
+    ArtifactLocationError,
+    ArtifactLocator,
+    identify_file,
+    verify_file_identity,
 )
 
 from .contracts import (
@@ -39,6 +48,10 @@ class GenerationPublicationConflictError(RuntimeError):
     """Raised when a different publication intent already exists."""
 
 
+class GenerationMutatedError(RuntimeError):
+    """Raised when a pinned generation or touched artifact changes."""
+
+
 class GenerationReadLease:
     """Generation-specific view over one shared immutable-release lease."""
 
@@ -63,6 +76,112 @@ class GenerationReadLease:
         self._release_lease.release()
 
     def __enter__(self) -> GenerationReadLease:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
+class GenerationPin:
+    """Lease one generation and content-bind only explicitly touched files."""
+
+    __slots__ = (
+        "_publisher",
+        "_lease",
+        "_manifest",
+        "_data_root",
+        "_identities",
+        "_identity_lock",
+    )
+
+    def __init__(
+        self,
+        publisher: GenerationPublisher,
+        lease: GenerationReadLease,
+        manifest: GenerationManifest,
+        data_root: Path,
+    ) -> None:
+        self._publisher = publisher
+        self._lease = lease
+        self._manifest = manifest
+        self._data_root = Path(data_root).resolve(strict=True)
+        self._identities: dict[str, ArtifactIdentity] = {}
+        self._identity_lock = threading.Lock()
+
+    @property
+    def generation_id(self) -> str:
+        return self._manifest.generation_id
+
+    @property
+    def data_snapshot_id(self) -> str:
+        return self.generation_id
+
+    @property
+    def active(self) -> bool:
+        return self._lease.active
+
+    def verify_artifact(
+        self,
+        relative_path: str,
+        *,
+        content_schema: str,
+        kind: str,
+        logical_role: str,
+    ) -> ArtifactIdentity:
+        try:
+            current = self._publisher.read(self._lease)
+            if current.generation_id != self.generation_id:
+                raise GenerationMutatedError("GENERATION_MUTATED")
+            artifact_path = self._data_root / relative_path
+            observed = artifact_path.stat()
+            locator = ArtifactLocator(
+                schema_version="research.artifact_locator.v1",
+                storage_root=self._data_root.as_posix(),
+                path=relative_path,
+                size_bytes=observed.st_size,
+                mtime_ns=observed.st_mtime_ns,
+            )
+            with self._identity_lock:
+                identity = self._identities.get(locator.path)
+                if identity is None:
+                    identity = identify_file(
+                        locator,
+                        content_schema=content_schema,
+                        producer="research.data_generation.GenerationPin",
+                        generation=self.generation_id,
+                        kind=kind,
+                        logical_role=logical_role,
+                    )
+                    self._identities[locator.path] = identity
+                    return identity
+                expected_semantics = (
+                    content_schema,
+                    kind,
+                    logical_role,
+                )
+                observed_semantics = (
+                    identity.content_schema,
+                    identity.kind,
+                    identity.logical_role,
+                )
+                if observed_semantics != expected_semantics:
+                    raise GenerationMutatedError("GENERATION_MUTATED")
+                verify_file_identity(locator, identity)
+                return identity
+        except GenerationMutatedError:
+            raise
+        except (
+            ArtifactIdentityMismatchError,
+            ArtifactLocationError,
+            OSError,
+            ValueError,
+        ) as error:
+            raise GenerationMutatedError("GENERATION_MUTATED") from error
+
+    def release(self) -> None:
+        self._lease.release()
+
+    def __enter__(self) -> GenerationPin:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -188,6 +307,22 @@ class GenerationPublisher:
                 "a pending generation publication blocks a new read lease"
             )
         return GenerationReadLease(release_lease)
+
+    def pin_current(
+        self,
+        *,
+        expected_generation_id: str,
+        data_root: Path,
+    ) -> GenerationPin:
+        lease = self.acquire_read_lease(
+            expected_generation_id=expected_generation_id,
+        )
+        try:
+            manifest = self.read(lease)
+            return GenerationPin(self, lease, manifest, data_root)
+        except Exception:
+            lease.release()
+            raise
 
     def read(self, lease: GenerationReadLease) -> GenerationManifest:
         if not isinstance(lease, GenerationReadLease):
@@ -337,6 +472,8 @@ class GenerationPublisher:
 
 
 __all__ = [
+    "GenerationMutatedError",
+    "GenerationPin",
     "GenerationPublicationConflictError",
     "GenerationPublicationPendingError",
     "GenerationPublisher",

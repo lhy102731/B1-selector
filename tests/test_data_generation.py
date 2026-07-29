@@ -16,6 +16,7 @@ from research_automation.data_generation.contracts import (
     generation_contract_registry,
 )
 from research_automation.data_generation.generation import (
+    GenerationMutatedError,
     GenerationPublicationPendingError,
     GenerationPublisher,
 )
@@ -523,6 +524,59 @@ class GenerationManifestContractTests(unittest.TestCase):
                         GENERATION_MANIFEST_V1,
                         {**payload, "csv_cutoff": cutoff},
                     )
+
+    def test_generation_pin_rejects_same_size_touched_artifact_mutation(self) -> None:
+        manifest = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-29",
+            trading_calendar_identity="calendar-cn-a-share-20260729",
+            point_in_time_universe_identity="pit-universe-20260729",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260729",),
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            data_root = root / "data"
+            artifact = data_root / "00" / "000001.csv"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_bytes(b"AAAA")
+            publisher = GenerationPublisher(root / "generations")
+            publisher.publish(publisher.stage(manifest))
+
+            pin = publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            )
+            try:
+                with patch.object(
+                    Path,
+                    "rglob",
+                    side_effect=AssertionError("generation pin must not scan"),
+                ):
+                    identity = pin.verify_artifact(
+                        "00/000001.csv",
+                        content_schema="a-share.gbk_csv.v1",
+                        kind="source_csv",
+                        logical_role="raw_stock_bars",
+                    )
+                    artifact.write_bytes(b"BBBB")
+                    with self.assertRaisesRegex(
+                        GenerationMutatedError,
+                        "GENERATION_MUTATED",
+                    ):
+                        pin.verify_artifact(
+                            "00/000001.csv",
+                            content_schema="a-share.gbk_csv.v1",
+                            kind="source_csv",
+                            logical_role="raw_stock_bars",
+                        )
+            finally:
+                pin.release()
+
+            self.assertEqual(manifest.generation_id, identity.generation)
+            self.assertEqual(manifest.generation_id, pin.data_snapshot_id)
 
 
 if __name__ == "__main__":
