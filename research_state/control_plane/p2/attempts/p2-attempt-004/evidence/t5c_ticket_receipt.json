@@ -1,0 +1,22 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T5C-SCOPE-ADOPTION",
+  "ticket_id": "29c84bbb4ed839ac2b260d3af2cd878bc6f24425d0a5550e548efe86213b6f3b",
+  "ticket_state": "ISSUED",
+  "authorization_ref": "auth_7af72ccea1b9d909318a2f7628e09d61",
+  "grant_id": "grant_0fdb92bf5cd497ae672e3647a3ec7325",
+  "entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+  "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/task_specs/t5c_scope_adoption.json",
+  "task_spec_sha256": "8d722b25add0477c6d2d555e5ac647597f9c6ae13fccaf55981a3e0d727aad4b",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "recorded_at": "2026-07-30T06:35:16.8823596+08:00",
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "bearer_secret_recorded": false,
+  "closure_rule": "Preflight every receipt, actor, hash, TaskReport field, and output path before begin; then begin, attest, record, finish, mirror, build, and verify through the canonical TaskReport path without calling a private phase-closure primitive."
+}
