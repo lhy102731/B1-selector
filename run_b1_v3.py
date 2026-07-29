@@ -19,6 +19,14 @@ from strategy.b1_v3_strategy import (
     INDICATORS_DIR, RAW_CACHE_DIR,
 )
 
+DEFAULT_OUTPUT_DIR = Path("artifacts/backtests/b1_v3")
+
+
+def _output_path(args, filename):
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir / filename
+
 # ============================================================
 # STOCK LIST
 # ============================================================
@@ -200,9 +208,12 @@ def cmd_backtest(args):
             print(f"  vs {k}: {v['current']:.2f} {icon} {v['target']:.2f} ({v['delta']:+.2f})")
 
     # Save
-    trades_df.to_csv("backtest_trades_v3.csv", index=False, encoding='utf-8-sig')
-    eq_df.to_csv("backtest_equity_v3.csv", index=False, encoding='utf-8-sig')
-    print(f"\n  Trades saved to backtest_trades_v3.csv")
+    trades_path = _output_path(args, "backtest_trades_v3.csv")
+    equity_path = _output_path(args, "backtest_equity_v3.csv")
+    trades_df.to_csv(trades_path, index=False, encoding='utf-8-sig')
+    eq_df.to_csv(equity_path, index=False, encoding='utf-8-sig')
+    print(f"\n  Trades saved to {trades_path}")
+    print(f"  Equity saved to {equity_path}")
 
     return m, p
 
@@ -381,8 +392,9 @@ def cmd_sweep(args):
               f"DD:{best_result['max_drawdown']:.1f}% Score:{best_result['score']:.1f}")
 
     # Save results
-    pd.DataFrame(results).to_csv("sweep_results_v3.csv", index=False, encoding='utf-8-sig')
-    print(f"\n  Results saved to sweep_results_v3.csv")
+    output_path = _output_path(args, "sweep_results_v3.csv")
+    pd.DataFrame(results).to_csv(output_path, index=False, encoding='utf-8-sig')
+    print(f"\n  Results saved to {output_path}")
 
     return results
 
@@ -463,8 +475,9 @@ def cmd_factor_test(args):
         print(f"  {i+1}. {r['factor']:<25s} dRet={r['delta_return']:+6.1f}% "
               f"dWR={r['delta_wr']:+5.1f}% Score={r['score']:.1f}")
 
-    pd.DataFrame(results).to_csv("factor_test_results_v3.csv", index=False, encoding='utf-8-sig')
-    print(f"\n  Results saved to factor_test_results_v3.csv")
+    output_path = _output_path(args, "factor_test_results_v3.csv")
+    pd.DataFrame(results).to_csv(output_path, index=False, encoding='utf-8-sig')
+    print(f"\n  Results saved to {output_path}")
 
     return results
 
@@ -480,6 +493,8 @@ def main():
     ap.add_argument('--start', default='2021-01-01')
     ap.add_argument('--end', default='2026-05-30')
     ap.add_argument('--max-stocks', type=int, default=0)
+    ap.add_argument('--output-dir', default=str(DEFAULT_OUTPUT_DIR),
+                    help='Directory for generated backtest/sweep CSV files')
 
     # Threshold overrides
     ap.add_argument('--j-max', type=float)
