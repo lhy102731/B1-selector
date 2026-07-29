@@ -1,0 +1,69 @@
+{
+  "schema_version": "control_plane.p2r2_t5_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T5-DAILY-UPDATER-STAGING-ADAPTER",
+  "review_receipt_id": "independent-daily-updater-staging-review",
+  "reviewer_id": "independent-daily-updater-staging-reviewer",
+  "reviewer_type": "independent_subagent_with_controller_adjudication",
+  "reviewed_at": "2026-07-29T21:11:50.5744086Z",
+  "reviewed_git_head": "e98281205551a3506c69f6a1d9256bc275a26483",
+  "validation_evidence": {
+    "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t5_validation_receipt.json",
+    "sha256": "c0d630ab0520284bd357f04ec90efa7dd5bfc274f6bac75b5be3947742df7bdb"
+  },
+  "review_findings": [
+    {
+      "finding_id": "P2R2-T5-REVIEW-001",
+      "review_receipt_id": "independent-daily-updater-staging-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Completed-pending recovery could clear its marker based only on manifest identity and bypass the daily candidate validator.",
+      "resolution": "GenerationPublisher now invokes the active candidate validator on CURRENT before clearing a completed pending marker; the regression test proves a tampered CSV leaves PUBLISH_PENDING intact."
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-002",
+      "review_receipt_id": "independent-daily-updater-staging-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The candidate validator was shared mutable state while staging could run concurrently with publish or recovery.",
+      "resolution": "stage(), publish(), and recover_pending_publication() now share one publication guard, so validator state cannot bleed across operations on the same publisher."
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-003",
+      "review_receipt_id": "independent-daily-updater-staging-review",
+      "severity": "NON_BLOCKING",
+      "status": "OPEN",
+      "summary": "Separate GenerationPublisher instances targeting one root rely on the underlying cross-process release lock rather than the in-process guard.",
+      "resolution": null
+    }
+  ],
+  "review_attempts": [
+    {
+      "invocation_id": "p2r2-t5-independent-review-final-001",
+      "result": "GATE_PASS",
+      "counted_as_pass": true,
+      "usage": {
+        "status": "UNKNOWN",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": null
+      }
+    }
+  ],
+  "reported_external_usage": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "unknown_usage_invocations": 1
+  },
+  "final_gate": {
+    "blocking_findings_open": 0,
+    "non_blocking_findings_open": 1,
+    "failed_or_blocked_reviews_counted_as_pass": false,
+    "verdict": "PASS"
+  },
+  "findings_sha256": "7e195084e5162a53eb916f5c3999b4159afa8e641b19f68592417736e85e59ef",
+  "result": "PASS"
+}

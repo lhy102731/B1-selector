@@ -1,0 +1,79 @@
+{
+  "schema_version": "control_plane.p2r2_t5_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T5-DAILY-UPDATER-STAGING-ADAPTER",
+  "validated_at": "2026-07-29T21:11:50.5744086Z",
+  "validated_git_head": "e98281205551a3506c69f6a1d9256bc275a26483",
+  "task_spec_sha256": "7564152880ba35cffaa4c8c895c828f0de327ff8be0a666554c13de9be1985d6",
+  "test_receipts": [
+    {
+      "receipt_id": "daily-updater-staging-tests",
+      "command": "python -B -m unittest tests.test_daily_updater_staging -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 10
+    },
+    {
+      "receipt_id": "daily-updater-publish-pending-tests",
+      "command": "python -B -m unittest tests.test_daily_updater_staging.DailyUpdaterStagingTests.test_published_delta_is_atomic_and_reused_on_pending_recovery tests.test_daily_updater_staging.DailyUpdaterStagingTests.test_generation_publisher_revalidates_delta_inside_publication_lock tests.test_daily_updater_staging.DailyUpdaterStagingTests.test_completed_pending_recovery_revalidates_current_delta_before_clearing -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 3
+    },
+    {
+      "receipt_id": "p2r2-t5-regression-tests",
+      "command": "python -B -m unittest tests.test_data_generation tests.test_update_today_em_client tests.test_generation_cache_identity tests.test_raw_parquet_cache tests.test_signal_cache_identity tests.test_market_data_semantics tests.test_daily_checkpoint_retention -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 102
+    }
+  ],
+  "combined_verification": {
+    "tests_run": 115,
+    "result": "PASS"
+  },
+  "behavior_proofs": {
+    "staging_is_explicit_opt_in_and_legacy_updater_default_is_unchanged": true,
+    "only_caller_provided_staging_root_is_written": true,
+    "delta_bytes_and_each_present_csv_are_content_bound": true,
+    "parent_and_candidate_generation_identities_are_bound": true,
+    "unknown_no_bar_and_fetch_failure_are_fail_closed": true,
+    "only_key_bound_no_bar_confirmation_can_record_suspension": true,
+    "non_present_states_carry_no_feature_signal_entry_or_exit_payload": true,
+    "active_read_lease_yields_publish_pending_and_blocks_new_readers": true,
+    "pending_recovery_reuses_existing_candidate_and_revalidates_current": true,
+    "candidate_and_delta_symlinks_or_unexpected_files_are_rejected": true,
+    "candidate_validator_runs_inside_publication_guard_and_store_lock": true,
+    "real_data_network_backtest_kbase_campaign_holdout_and_scheduler_were_not_accessed": true
+  },
+  "changed_files": [
+    {
+      "path": "research_automation/data_generation/daily_staging.py",
+      "sha256": "ab99f8c0a7f37b991c2a9057aa3c52490d13440ae364a3f0de9fd30c7ad7c9a8"
+    },
+    {
+      "path": "research_automation/data_generation/generation.py",
+      "sha256": "463025e1ecb6285851fd5397db39f5aff39b2f24de71ea74f1d743caa1de9385"
+    },
+    {
+      "path": "tests/test_daily_updater_staging.py",
+      "sha256": "8105a7916558a5d2f8216e973d95bbb6ee0ebfef979b73c5cf9f399cbe89c5b3"
+    }
+  ],
+  "scope_audit": {
+    "all_changes_inside_t5_allowlist": true,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ],
+    "default_production_updater_modified_or_invoked": false,
+    "backtest_or_research_executed": false,
+    "real_data_or_kbase_content_accessed": false,
+    "campaign_or_holdout_started": false,
+    "scheduler_acl_or_external_state_mutated": false,
+    "sealed_p0_code_modified": false
+  },
+  "result": "PASS"
+}
