@@ -211,6 +211,36 @@ def cmd_backtest(args):
 # SWEEP MODE
 # ============================================================
 
+POST_EXTRACTION_SWEEP_PARAMS = frozenset({
+    "cs_shadow_max",
+    "quality_score_min",
+    "top_n_per_day",
+    "stop_loss_width",
+    "t_plus_3_min_return",
+    "exit_break_yellow",
+    "exit_break_white",
+    "exit_profit_25pct",
+    "max_hold_days",
+    "exit_ddt",
+    "exit_distribution",
+    "exit_s1_clear",
+    "s1_skip_types",
+    "s1_exit_mode",
+    "s1_exit_skip",
+    "exit_s1_half",
+    "max_positions",
+    "position_pct",
+    "initial_capital",
+})
+
+
+def _is_post_extraction_sweep_param(name):
+    if name.startswith("w_"):
+        return True
+    if name.startswith("q_") and name != "q_pattern_sim":
+        return True
+    return name in POST_EXTRACTION_SWEEP_PARAMS
+
 def cmd_sweep(args):
     """Grid search over parameter combinations."""
     p = B1V3Params()
@@ -237,16 +267,24 @@ def cmd_sweep(args):
                         vals.append(v)
             sweep_params[key] = vals
 
+    if args.sweep_preset:
+        if args.sweep_preset not in SWEEP_PRESETS:
+            raise ValueError(f"unknown sweep preset: {args.sweep_preset}")
+        preset = SWEEP_PRESETS[args.sweep_preset]
+        sweep_params.update(preset)
+        print(f"Applied preset: {args.sweep_preset}")
+
     if not sweep_params:
         print("No sweep params. Use --sweep param=val1,val2,...")
         print("Presets available:", list(SWEEP_PRESETS.keys()))
         return
 
-    # Also check for preset
-    if args.sweep_preset and args.sweep_preset in SWEEP_PRESETS:
-        preset = SWEEP_PRESETS[args.sweep_preset]
-        sweep_params.update(preset)
-        print(f"Applied preset: {args.sweep_preset}")
+    valid_param_names = set(B1V3Params.__dataclass_fields__)
+    unknown_params = sorted(set(sweep_params) - valid_param_names)
+    if unknown_params:
+        raise ValueError(
+            "unknown B1 V3 parameter(s): " + ", ".join(unknown_params)
+        )
 
     print(f"Sweep params: {list(sweep_params.keys())}")
     for k, v in sweep_params.items():
@@ -257,15 +295,10 @@ def cmd_sweep(args):
     combos = list(itertools.product(*sweep_params.values()))
     print(f"Total combinations: {len(combos)}")
 
-    # Phase 0: extract raw signals (once, with baseline params)
-    t0 = time.time()
-    by_date, _ = build_raw_cache(codes, args.start, args.end, p)
-    total_raw = sum(len(v) for v in by_date.values())
-    print(f"  Phase 0: {time.time()-t0:.0f}s | {total_raw} raw signals")
-
     results = []
     best_score = -1e9
     best_result = None
+    raw_cache_by_extraction_params = {}
 
     for combo_idx, combo in enumerate(combos):
         # Apply combo to params
@@ -278,6 +311,23 @@ def cmd_sweep(args):
             setattr(p_sweep, key, val)
 
         label = ','.join(f"{k}={v}" for k, v in zip(keys, combo))
+
+        extraction_values = tuple(
+            (key, val)
+            for key, val in zip(keys, combo)
+            if not _is_post_extraction_sweep_param(key)
+        )
+        if extraction_values not in raw_cache_by_extraction_params:
+            raw_params = B1V3Params(**vars(p))
+            for key, val in extraction_values:
+                setattr(raw_params, key, val)
+            t0 = time.time()
+            by_date, _ = build_raw_cache(codes, args.start, args.end, raw_params)
+            raw_cache_by_extraction_params[extraction_values] = by_date
+            total_raw = sum(len(v) for v in by_date.values())
+            print(f"  Phase 0: {time.time()-t0:.0f}s | {total_raw} raw signals")
+        else:
+            by_date = raw_cache_by_extraction_params[extraction_values]
 
         # Filter + rank (fast)
         filtered = filter_and_rank(by_date, p_sweep)
