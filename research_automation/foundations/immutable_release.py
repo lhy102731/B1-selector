@@ -31,6 +31,44 @@ class ReleaseConflictError(RuntimeError):
     """Raised when CURRENT changed after the caller prepared a candidate."""
 
 
+class ReleaseReadLease:
+    """Process-scoped shared lock that keeps one CURRENT release stable."""
+
+    __slots__ = ("release_id", "_descriptor", "_released")
+
+    def __init__(self, *, release_id: str, descriptor: int) -> None:
+        self.release_id = release_id
+        self._descriptor = descriptor
+        self._released = False
+
+    @property
+    def active(self) -> bool:
+        return not self._released
+
+    def release(self) -> None:
+        if self._released:
+            return
+        try:
+            os.lseek(self._descriptor, 0, os.SEEK_SET)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(self._descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(self._descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(self._descriptor)
+            self._released = True
+
+    def __enter__(self) -> ReleaseReadLease:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.release()
+
+
 @dataclass(frozen=True, slots=True)
 class PromotionReceipt:
     release_id: str
@@ -79,6 +117,27 @@ class ImmutableReleaseStore:
         if candidate.exists():
             raise FileExistsError(f"release candidate already exists: {canonical_id}")
         return candidate
+
+    def acquire_read_lease(
+        self,
+        *,
+        expected_release_id: str,
+    ) -> ReleaseReadLease:
+        expected_id = self._canonical_release_id(expected_release_id)
+        descriptor = self._acquire_lock_descriptor(shared=True)
+        try:
+            current_id = self._validate_release(self._root / "current")
+            if current_id != expected_id:
+                raise ReleaseConflictError(
+                    "CURRENT identity changed before read lease acquisition"
+                )
+            return ReleaseReadLease(
+                release_id=current_id,
+                descriptor=descriptor,
+            )
+        except Exception:
+            self._unlock_and_close(descriptor)
+            raise
 
     def promote(
         self,
@@ -535,6 +594,13 @@ class ImmutableReleaseStore:
 
     @contextmanager
     def _exclusive_lock(self) -> Iterator[None]:
+        descriptor = self._acquire_lock_descriptor(shared=False)
+        try:
+            yield
+        finally:
+            self._unlock_and_close(descriptor)
+
+    def _acquire_lock_descriptor(self, *, shared: bool) -> int:
         self._root.mkdir(parents=True, exist_ok=True)
         lock = self._root / ".publish.lock"
         descriptor = os.open(lock, os.O_CREAT | os.O_RDWR)
@@ -548,11 +614,13 @@ class ImmutableReleaseStore:
                 if os.name == "nt":
                     import msvcrt
 
-                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                    mode = msvcrt.LK_NBRLCK if shared else msvcrt.LK_NBLCK
+                    msvcrt.locking(descriptor, mode, 1)
                 else:
                     import fcntl
 
-                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                    fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
                 acquired = True
             except OSError as error:
                 if time.monotonic() >= deadline:
@@ -561,21 +629,22 @@ class ImmutableReleaseStore:
                         "immutable release publication is busy"
                     ) from error
                 time.sleep(0.05)
+        return descriptor
+
+    @staticmethod
+    def _unlock_and_close(descriptor: int) -> None:
         try:
-            yield
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            try:
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                if os.name == "nt":
-                    import msvcrt
-
-                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            finally:
-                os.close(descriptor)
+            os.close(descriptor)
 
 
 __all__ = [
@@ -585,5 +654,6 @@ __all__ = [
     "ReleaseAdapter",
     "ReleaseBusyError",
     "ReleaseConflictError",
+    "ReleaseReadLease",
     "RecoveryReceipt",
 ]

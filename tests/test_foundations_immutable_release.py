@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from research_automation.foundations.immutable_release import (
     ImmutableReleaseStore,
+    ReleaseBusyError,
     ReleaseConflictError,
 )
 
@@ -51,6 +52,31 @@ def _write_promotion_transaction(
 
 
 class ImmutableReleaseStoreTests(unittest.TestCase):
+    def test_active_read_lease_prevents_current_from_moving_until_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            store = ImmutableReleaseStore(
+                root,
+                adapter=_ManifestAdapter(),
+                lock_timeout_seconds=0.05,
+            )
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+
+            lease = store.acquire_read_lease(expected_release_id="v1")
+            with self.assertRaises(ReleaseBusyError):
+                store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+
+            lease.release()
+            receipt = store.promote(candidate, expected_current_id="v1")
+
+            self.assertEqual("v2", receipt.release_id)
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+
     def test_promote_failure_restores_current_previous_and_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
