@@ -1,0 +1,83 @@
+{
+  "schema_version": "control_plane.trusted_phase_authorization_activation_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.trusted_phase_authorization_activation_receipt.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-003",
+    "activated_at": "2026-07-30T06:08:01.2980836+08:00",
+    "authorization_ref": "auth_0aa40d6f151c65a4ede3a1331bb48f94",
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_3f5024dcc8e7627fe11da83494760397",
+    "grant_state": "ACTIVE",
+    "claim_recovered_idempotently": false,
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "2542ee98bc697e209683878f1033360a6a0b69181c046d0a7feede13de2f9f42",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "active_entry_policy_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849",
+    "input_artifacts": [
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/scope_manifest.json",
+        "sha256": "78dd2c4f75bd17fba0bf6078b4b2a503847a88c096e23955154850c5893cd7d1"
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/identity_bundle.json",
+        "sha256": "fa1c0b2bd58ee7f6b5b8442c58ff9097144d537c0eb28c06d6557752db45d787"
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_baseline.json",
+        "sha256": "7ce45f732c446d53fb1457464d14bfcfba5425decea03158da7d53d6d791a756"
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/implementation_authorization_receipt.json",
+        "sha256": "fede233ba32194ecabab21f264e393d2c8a13e6138a3cf074e9f06dc76eb747a"
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/authorization_ref_receipt.json",
+        "sha256": "9b59a1ec9f9ee2bbde9b39ac0b69a71fe93d6f34930d617c1291fe52a6b0f7d0"
+      },
+      {
+        "path": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
+        "sha256": "fade85ce8dc1ce1c99a115f8b11faeb9f41e0f32912f2f7617cf14e33bdd65d6"
+      }
+    ],
+    "authority_snapshot": {
+      "active_grant_ids": [
+        "grant_3f5024dcc8e7627fe11da83494760397"
+      ],
+      "open_ticket_ids": [],
+      "succeeded_ticket_ids": [],
+      "failed_ticket_ids": [],
+      "in_doubt_ticket_ids": [],
+      "pending_outbox_count": 0
+    },
+    "predecessor_containment": {
+      "attempt_id": "p2-attempt-002",
+      "state": "CLOSED_FAIL_NONCANONICAL",
+      "trusted_gate_evidence": false,
+      "incident_ref": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/p2r2_noncanonical_closure_incident.json",
+      "incident_sha256": "a4b1d4cab7c9acf5398d808ae7b22e8dfbe7a45f5e114aa5143cdda8a67d136a"
+    },
+    "secret_handling": {
+      "root_capability_recorded": false,
+      "authorization_bearer_recorded": false,
+      "grant_bearer_recorded": false,
+      "dpapi_ciphertext_staged": false,
+      "authority_database_staged": false,
+      "operational_database_staged": false
+    },
+    "phase_boundary": {
+      "P2_AUTHORIZED": true,
+      "P3_AUTHORIZED": false,
+      "CAMPAIGN_AUTHORIZED": false,
+      "FINAL_EVAL_AUTHORIZED": false,
+      "AUTO_ADVANCE": false
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "7fd2be8d0928d21c842ae616e0b2c589de3698c560ad9c1f8a123a8446a0d809"
+  }
+}
