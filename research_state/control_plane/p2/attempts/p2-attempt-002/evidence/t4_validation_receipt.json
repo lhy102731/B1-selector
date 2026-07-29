@@ -1,0 +1,62 @@
+{
+  "schema_version": "control_plane.p2r2_t4_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+  "validated_at": "2026-07-29T20:19:44.206486+00:00",
+  "validated_git_head": "62c71acdd7eb3645497b8caa786ae29c66011e43",
+  "task_spec_sha256": "5211cf880cb556b44187ff958a1b4c35d200d384611ae88caaf04f20f15f378b",
+  "test_receipts": [
+    {
+      "receipt_id": "missing-bar-valuation-semantics-tests",
+      "command": "python -B -m unittest tests.test_market_data_semantics -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 19
+    },
+    {
+      "receipt_id": "p2r2-t4-regression-tests",
+      "command": "python -B -m unittest tests.test_data_generation tests.test_generation_cache_identity tests.test_raw_parquet_cache tests.test_signal_cache_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 63
+    }
+  ],
+  "combined_verification": {
+    "tests_run": 82,
+    "result": "PASS"
+  },
+  "behavior_proofs": {
+    "four_bar_states_remain_distinct": true,
+    "only_key_bound_source_confirmation_means_suspension": true,
+    "fetch_failure_is_key_bound_and_not_suspension": true,
+    "non_present_states_cannot_release_feature_signal_entry_or_exit_payload": true,
+    "present_payload_is_recursively_snapshotted_and_read_only": true,
+    "stale_valuation_is_branded_nav_only_and_model_ineligible": true,
+    "missing_state_and_session_identity_survive_valuation": true,
+    "public_classified_and_valuation_constructors_fail_closed": true
+  },
+  "changed_files": [
+    {
+      "path": "research_automation/data_generation/market_data.py",
+      "sha256": "db86b54d1881718a146ad115a09aeffa23db4112386f18f1e56f5eaf1cbaec07"
+    },
+    {
+      "path": "tests/test_market_data_semantics.py",
+      "sha256": "5af01c204526be0c90a00f58830019f29ba6e5e65f1347ef0e0f23ebbde9a1d5"
+    }
+  ],
+  "scope_audit": {
+    "all_changes_inside_t4_allowlist": true,
+    "daily_updater_modified_or_invoked": false,
+    "backtest_or_research_executed": false,
+    "real_data_kbase_campaign_or_holdout_accessed": false,
+    "scheduler_acl_or_external_state_mutated": false,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ]
+  },
+  "result": "PASS"
+}

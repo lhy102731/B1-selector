@@ -1,0 +1,126 @@
+{
+  "schema_version": "control_plane.p2r2_t4_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T4-MISSING-BAR-VALUATION-SEMANTICS",
+  "review_receipt_id": "independent-missing-bar-valuation-review",
+  "reviewer_id": "independent-missing-bar-valuation-reviewer",
+  "reviewer_type": "external_codex_with_controller_adjudication",
+  "reviewed_at": "2026-07-29T20:19:44.206486+00:00",
+  "reviewed_git_head": "62c71acdd7eb3645497b8caa786ae29c66011e43",
+  "validation_evidence": {
+    "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t4_validation_receipt.json",
+    "sha256": "8bb8c3c9bcf8713a2a834ebe01ac4d4639b8cd8d539b27d7cfed02009ff8443d"
+  },
+  "review_findings": [
+    {
+      "finding_id": "P2R2-T4-REVIEW-001",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Stale portfolio valuation could be stripped to an unmarked float before model use.",
+      "resolution": "STALE_VALUATION now yields a branded NavValuation carrying freshness, source availability, and session key; the model accessor rejects stale values."
+    },
+    {
+      "finding_id": "P2R2-T4-REVIEW-002",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The bar-use check was not bound to the actual payload and therefore protected only cooperative callers.",
+      "resolution": "A PRESENT observation now owns a recursively snapshotted read-only payload and releases it only through the FEATURE, SIGNAL, ENTRY, or EXIT use gate; non-present states carry no payload."
+    },
+    {
+      "finding_id": "P2R2-T4-REVIEW-003",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Suspension and fetch-failure evidence were untyped strings without instrument or session identity.",
+      "resolution": "NoBarConfirmation and FetchFailure are typed, canonical, and bound to an exact six-digit instrument plus trading date; mismatched keys fail closed."
+    },
+    {
+      "finding_id": "P2R2-T4-REVIEW-004",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Tests did not prove missing-state preservation through valuation or close direct constructor bypasses.",
+      "resolution": "The final matrix preserves all three non-present states and session keys through PortfolioValuation and NavValuation; public BarObservation and PortfolioValuation constructors are disabled and invariants are tested."
+    },
+    {
+      "finding_id": "P2R2-T4-REVIEW-005",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The first read-only payload snapshot was shallow and retained nested mutable aliases.",
+      "resolution": "The final implementation recursively snapshots mappings and sequences, freezes them, and rejects cycles, excessive depth, noncanonical keys, and unsupported mutable leaf values."
+    },
+    {
+      "finding_id": "P2R2-T4-REVIEW-006",
+      "review_receipt_id": "independent-missing-bar-valuation-review",
+      "severity": "NON_BLOCKING",
+      "status": "OPEN",
+      "summary": "Caller-supplied current and last-known valuation numbers do not yet carry their own instrument and as-of provenance; T5 must bind adapter inputs before using this T4 factory.",
+      "resolution": null
+    }
+  ],
+  "review_attempts": [
+    {
+      "invocation_id": "p2r2-t4-codex-initial-001",
+      "result": "GATE_FAIL",
+      "counted_as_pass": false,
+      "usage": {
+        "status": "REPORTED",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": 50656
+      }
+    },
+    {
+      "invocation_id": "p2r2-t4-codex-sandbox-retry-002",
+      "result": "BLOCKED_WINDOWS_SANDBOX_READ",
+      "counted_as_pass": false,
+      "usage": {
+        "status": "REPORTED",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": 24555
+      }
+    },
+    {
+      "invocation_id": "p2r2-t4-codex-embedded-rereview-003",
+      "result": "GATE_PASS_WITH_TWO_ADVISORIES",
+      "counted_as_pass": true,
+      "usage": {
+        "status": "REPORTED",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": 27585
+      }
+    },
+    {
+      "invocation_id": "p2r2-t4-codex-final-004",
+      "result": "GATE_PASS",
+      "counted_as_pass": true,
+      "usage": {
+        "status": "REPORTED",
+        "input_tokens": null,
+        "output_tokens": null,
+        "total_tokens": 27041
+      }
+    }
+  ],
+  "reported_external_usage": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": 129837,
+    "unknown_usage_invocations": 0
+  },
+  "final_gate": {
+    "blocking_findings_open": 0,
+    "non_blocking_findings_open": 1,
+    "final_review_used_embedded_final_bytes": true,
+    "failed_or_blocked_reviews_counted_as_pass": false,
+    "verdict": "PASS"
+  },
+  "result": "PASS"
+}
