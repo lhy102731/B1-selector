@@ -1,0 +1,67 @@
+{
+  "schema_version": "control_plane.p2r2_t2_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+  "reviewed_at": "2026-07-29T17:14:52.858672+00:00",
+  "reviewer_id": "independent-p2r2-read-lease-fencing-reviewer",
+  "reviewer_type": "external_llm_with_controller_adjudication",
+  "reviewed_git_head": "36400e6720b4e9f0a4325b11aab7853a5c14e84b",
+  "source_evidence": {
+    "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t2_independent_review_raw.json",
+    "sha256": "1c8329e1261f7628341807b32f1a4a54f4e723b0b8ff39cf58d4ee3db881be5c"
+  },
+  "review_findings": [
+    {
+      "finding_id": "P2R2-T2-REVIEW-001",
+      "review_receipt_id": "independent-p2r2-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "recover_pending_publication returns immediately when no PUBLISH_PENDING marker exists instead of recovering an unrelated lower-level release WAL.",
+      "resolution": "Accepted as bounded behavior: GenerationPublisher durably records PUBLISH_PENDING before calling ImmutableReleaseStore.promote, so a generation publication WAL cannot exist without its marker. Direct lower-level store recovery remains the T1 seam."
+    },
+    {
+      "finding_id": "P2R2-T2-REVIEW-002",
+      "review_receipt_id": "independent-p2r2-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "A retained pending intent after an unreconciled publication is reported as a conflict rather than a transient recovery message.",
+      "resolution": "Retained intentionally as fail-closed wording: the pending identity is preserved and explicit reconciliation is required; no generation or evidence is silently discarded."
+    },
+    {
+      "finding_id": "P2R2-T2-REVIEW-003",
+      "review_receipt_id": "independent-p2r2-read-lease-fencing-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Direct use of the lower-level ImmutableReleaseStore can bypass GenerationPublisher-specific pending admission checks.",
+      "resolution": "This is the intentional private layering boundary: trusted generation consumers use GenerationPublisher and GenerationReadLease; ImmutableReleaseStore remains a reusable release primitive and does not claim generation-policy enforcement."
+    }
+  ],
+  "external_review_attempts": [
+    {
+      "invocation_id": "p2r2-t2-kimi-review-001",
+      "result": "NON_JSON_OUTPUT",
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "p2r2-t2-doubao-review-002",
+      "result": "GATE_PASS",
+      "input_tokens": 18397,
+      "output_tokens": 17821,
+      "total_tokens": 36218
+    }
+  ],
+  "reported_external_usage": {
+    "input_tokens": 18397,
+    "output_tokens": 17821,
+    "total_tokens": 36218,
+    "unreported_or_unknown_invocations": 1
+  },
+  "final_gate": {
+    "blocking_findings_open": 0,
+    "external_failures_counted_as_pass": false,
+    "verdict": "PASS"
+  },
+  "result": "PASS"
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": "control_plane.p2r2_t2_independent_review_raw_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p2r2_t2_independent_review_raw.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "task_id": "P2R2-T2-READ-LEASE-FENCING-PUBLISH-PENDING",
+    "reviewed_at": "2026-07-29T17:13:15.528524+00:00",
+    "reviewer_id": "independent-p2r2-read-lease-fencing-reviewer",
+    "profile": "doubao",
+    "model": "doubao-seed-2.0-pro",
+    "elapsed_seconds": 232.29,
+    "usage": {
+      "input_tokens": 18397,
+      "output_tokens": 17821,
+      "total_tokens": 36218,
+      "status": "REPORTED"
+    },
+    "prior_attempts": [
+      {
+        "profile": "kimi_hs",
+        "result": "NON_JSON_OUTPUT",
+        "usage_status": "UNKNOWN"
+      }
+    ],
+    "result": {
+      "verdict": "PASS",
+      "blocking_findings": [],
+      "non_blocking_findings": [
+        "recover_pending_publication does not call the underlying store's recover() when no pending publication exists, requiring the first write attempt to trigger WAL recovery via error handling. This is functionally safe but introduces a transient error on the first write after a crash that occurred before the pending record was written.",
+        "Error messages for transient crash recovery during publish operations are misleadingly labeled as conflicts, though the pending intent is retained and can be successfully resumed via recover_pending_publication.",
+        "The lower-level ImmutableReleaseStore API can be used to bypass GenerationPublisher's PUBLISH_PENDING checks for read leases, though the public GenerationReadLease API (the intended interface for generation leases) correctly enforces pending checks."
+      ],
+      "reviewed_files": [
+        "research_automation/foundations/immutable_release.py",
+        "research_automation/data_generation/contracts.py",
+        "research_automation/data_generation/generation.py"
+      ],
+      "confidence": "High"
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "288e65922ca384252f840b8e408b41fec2e2d0948e9c93705be85d35f3403d97"
+  }
+}
