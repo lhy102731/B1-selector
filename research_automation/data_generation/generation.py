@@ -159,11 +159,14 @@ class GenerationPublisher:
             raise GenerationPublicationPendingError(
                 "generation publication is pending active read leases"
             ) from error
-        except (FileNotFoundError, ReleaseConflictError):
+        except (FileNotFoundError, ReleaseConflictError) as error:
             completed = self._complete_existing_publication(pending)
             if completed is not None:
                 return completed
-            raise
+            raise GenerationPublicationConflictError(
+                "generation publication conflicted; pending intent was retained "
+                "for explicit reconciliation"
+            ) from error
         self._clear_publish_pending(pending)
         return manifest
 
@@ -316,8 +319,10 @@ class GenerationPublisher:
         return current
 
     def _pending_path(self, pending: GenerationPublishPending) -> Path:
+        expected_id = pending.expected_current_generation_id or "NONE"
         return self._root / (
-            f".publish_pending.{pending.candidate_generation_id}.json"
+            f".publish_pending.{pending.candidate_generation_id}."
+            f"{expected_id}.json"
         )
 
     @staticmethod

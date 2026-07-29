@@ -123,7 +123,11 @@ class GenerationManifestContractTests(unittest.TestCase):
             publisher.publish(publisher.stage(first))
             staged = publisher.stage(second)
             pending_path = (
-                root / f".publish_pending.{second.generation_id}.json"
+                root
+                / (
+                    f".publish_pending.{second.generation_id}."
+                    f"{first.generation_id}.json"
+                )
             )
             real_unlink = Path.unlink
 
