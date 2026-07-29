@@ -1,0 +1,105 @@
+{
+  "schema_version": "control_plane.p2r4_t6_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T6-INTEGRATION-FREEZE",
+  "receipt_id": "independent-p2r4-integration-freeze-review",
+  "reviewer_id": "codex-p2r4-integration-freeze-reviewer",
+  "reviewed_at": "2026-07-30T07:07:32.9514477+08:00",
+  "reviewed_git_head": "43391c28216659a7617c874e09cc2c335a07aba4",
+  "reviewed_git_tree": "545efc890c4e2d5784658de6a7f668a8ad43b70b",
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "details": {
+        "task_spec_sha256": "5c0c3330892da2ba3e72810a0f7f8577e86d799ef705c5f276a9939a107422af",
+        "task_payload_sha256": "72fbd67b4750610d9756497e48b24fbef9cf092e00d5e0880a31949c991be627",
+        "input_evidence_count": 7,
+        "hash_mismatches": []
+      }
+    },
+    {
+      "check_id": "frozen_source_identity",
+      "status": "PASS",
+      "details": {
+        "git_commit": "e18025480d9c1a87cd22d770665ed8ca399967cf",
+        "git_tree": "f06c5bd05f8902c378c920fca034e57ea02a68f4",
+        "source_identity_sha256": "8dafa9149db2c6ae19ae6170eec607034c622a0281b6d78e0047a98248c21e93",
+        "scope_path_drift": 0,
+        "legacy_quarantine_entries": 122,
+        "external_runtime_dependencies": 1,
+        "live_quarantine_and_runtime_recheck": "PASS"
+      }
+    },
+    {
+      "check_id": "post_freeze_change_boundary",
+      "status": "PASS",
+      "details": {
+        "changed_files_since_freeze": 4,
+        "all_changes_under_control_plane_p2": true,
+        "source_code_changes": 0,
+        "data_or_kbase_content_changes": 0
+      }
+    },
+    {
+      "check_id": "offline_test_boundary",
+      "status": "PASS",
+      "details": {
+        "focused_tests": "175/175 PASS",
+        "full_repository_tests": "1122/1122 PASS",
+        "locked_distributions": 33,
+        "scope_static_syntax": "22/22 present Python files PASS",
+        "full_suite_real_runtime_seconds": "129.813"
+      }
+    },
+    {
+      "check_id": "prevalidation_incident_resolution",
+      "status": "PASS",
+      "details": {
+        "wrong_minimal_runtime_attempt": "RESOLVED_BEFORE_LEASE",
+        "inline_quote_loss": "RESOLVED_BEFORE_LEASE",
+        "test_scope_changed": false,
+        "production_side_effect": false
+      }
+    },
+    {
+      "check_id": "authority_prelease_state",
+      "status": "PASS",
+      "details": {
+        "succeeded_ticket_count": 1,
+        "open_ticket_ids": [
+          "c3af5969c06642c88a3353c622e5d1c31b4b96610377251e157aa2c1ef8fdab5"
+        ],
+        "failed_ticket_count": 0,
+        "in_doubt_ticket_count": 0,
+        "t6_trusted_receipt_count": 0,
+        "pending_outbox_count": 0
+      }
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "advisories": [
+    {
+      "finding_id": "P2R2-T4-REVIEW-006",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Valuation inputs require instrument/as-of provenance when a real valuation adapter is introduced."
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-003",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Separate GenerationPublisher instances rely on the shared cross-process publication lock."
+    }
+  ],
+  "external_usage": {
+    "invocation_id": "p2r4-t6-integration-freeze-review-20260730-codex",
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "unknown_is_zero": false
+  },
+  "verdict": "PASS"
+}
