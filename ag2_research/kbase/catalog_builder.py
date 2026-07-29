@@ -2,12 +2,10 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import datetime as dt
 import hashlib
 import json
 import os
-import time
 import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -23,6 +21,7 @@ from .adapters import (
 )
 from .schemas import validate_catalog_entry
 from .overrides import apply_approved_overrides, load_approved_overrides
+from research_automation.foundations.immutable_release import ImmutableReleaseStore
 
 
 GENERATOR_VERSION = "1.0.0-p1"
@@ -227,7 +226,7 @@ def _write_release(directory: Path, entries: list[dict[str, Any]], manifest: dic
     (directory / "build-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def validate_release(directory: Path) -> dict[str, Any]:
+def _validate_catalog_release(directory: Path) -> dict[str, Any]:
     required = {"catalog.jsonl", "facets.json", "manifest.json", "build-report.json"}
     missing = sorted(name for name in required if not (directory / name).is_file())
     errors: list[str] = [f"missing:{name}" for name in missing]
@@ -250,58 +249,60 @@ def validate_release(directory: Path) -> dict[str, Any]:
     return {"ok": not errors, "errors": errors, "entries": len(entries)}
 
 
-@contextlib.contextmanager
-def _publish_lock(output: Path, timeout: float = 30.0):
-    lock = output / ".publish.lock"
-    output.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, f"pid={os.getpid()}\n".encode("ascii"))
-            os.close(fd)
-            break
-        except FileExistsError:
-            try:
-                if time.time() - lock.stat().st_mtime > 3600:
-                    lock.unlink()
-                    continue
-            except FileNotFoundError:
-                continue
-            if time.monotonic() >= deadline:
-                raise TimeoutError(f"catalog publish lock timed out: {lock}")
-            time.sleep(0.1)
-    try:
-        yield
-    finally:
-        lock.unlink(missing_ok=True)
+def validate_release(directory: Path) -> dict[str, Any]:
+    """Return the legacy catalog validation report."""
+    return _validate_catalog_release(directory)
+
+
+class _CatalogReleaseAdapter:
+    def validate(self, release: Path) -> str:
+        validation = _validate_catalog_release(release)
+        if not validation["ok"]:
+            raise ValueError(
+                "catalog release validation failed: "
+                + ",".join(str(error) for error in validation["errors"])
+            )
+        manifest = json.loads(
+            (release / "manifest.json").read_text(encoding="utf-8")
+        )
+        catalog_version = manifest.get("catalog_version")
+        if not isinstance(catalog_version, str) or not catalog_version:
+            raise ValueError("catalog release has no immutable catalog_version")
+        return catalog_version
 
 
 def publish_catalog(vault: Path, *, output_relative: Path = DEFAULT_OUTPUT) -> dict[str, Any]:
     vault = vault.resolve()
     output = (vault / output_relative).resolve()
     output.relative_to(vault / "wiki" / "outputs")
-    with _publish_lock(output):
-        current = output / "current"
-        previous = output / "previous"
-        candidate_root = output / "candidate"
-        candidate_root.mkdir(parents=True, exist_ok=True)
-        build_id = dt.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
-        candidate = candidate_root / build_id
-        entries, manifest, report = build_catalog(vault, previous_dir=current if current.is_dir() else None)
-        _write_release(candidate, entries, manifest, report)
-        validation = validate_release(candidate)
-        if not validation["ok"]:
-            return {"published": False, "candidate": str(candidate), "validation": validation, "manifest": manifest}
+    adapter = _CatalogReleaseAdapter()
+    store = ImmutableReleaseStore(output, adapter=adapter)
+    current = output / "current"
+    expected_current_id = adapter.validate(current) if current.is_dir() else None
+    build_id = dt.datetime.now().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    candidate = store.stage(build_id)
+    entries, manifest, report = build_catalog(
+        vault,
+        previous_dir=current if current.is_dir() else None,
+    )
+    _write_release(candidate, entries, manifest, report)
+    validation = validate_release(candidate)
+    if not validation["ok"]:
+        return {
+            "published": False,
+            "candidate": str(candidate),
+            "validation": validation,
+            "manifest": manifest,
+        }
 
-        archive_root = output / "archive"
-        if previous.exists():
-            archive_root.mkdir(parents=True, exist_ok=True)
-            os.replace(previous, archive_root / ("previous-" + build_id))
-        if current.exists():
-            os.replace(current, previous)
-        os.replace(candidate, current)
-        return {"published": True, "current": str(current), "validation": validation, "manifest": manifest, "report": report}
+    store.promote(candidate, expected_current_id=expected_current_id)
+    return {
+        "published": True,
+        "current": str(current),
+        "validation": validation,
+        "manifest": manifest,
+        "report": report,
+    }
 
 
 def rollback_catalog(vault: Path, *, output_relative: Path = DEFAULT_OUTPUT) -> dict[str, Any]:
@@ -309,21 +310,21 @@ def rollback_catalog(vault: Path, *, output_relative: Path = DEFAULT_OUTPUT) -> 
     vault = vault.resolve()
     output = (vault / output_relative).resolve()
     output.relative_to(vault / "wiki" / "outputs")
-    with _publish_lock(output):
-        current, previous = output / "current", output / "previous"
-        if not current.is_dir() or not previous.is_dir():
-            return {"rolled_back": False, "error": "both current and previous releases are required"}
-        temporary = output / ("rollback-" + uuid.uuid4().hex[:8])
-        os.replace(current, temporary)
-        try:
-            os.replace(previous, current)
-            os.replace(temporary, previous)
-        except Exception:
-            if temporary.exists() and not current.exists():
-                os.replace(temporary, current)
-            raise
-        manifest = json.loads((current / "manifest.json").read_text(encoding="utf-8"))
-        return {"rolled_back": True, "catalog_version": manifest.get("catalog_version"), "current": str(current)}
+    current, previous = output / "current", output / "previous"
+    if not current.is_dir() or not previous.is_dir():
+        return {
+            "rolled_back": False,
+            "error": "both current and previous releases are required",
+        }
+    adapter = _CatalogReleaseAdapter()
+    store = ImmutableReleaseStore(output, adapter=adapter)
+    store.rollback(expected_current_id=adapter.validate(current))
+    manifest = json.loads((current / "manifest.json").read_text(encoding="utf-8"))
+    return {
+        "rolled_back": True,
+        "catalog_version": manifest.get("catalog_version"),
+        "current": str(current),
+    }
 
 
 def main() -> None:

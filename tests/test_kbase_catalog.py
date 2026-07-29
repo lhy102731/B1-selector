@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ag2_research.kbase.adapters import adapt_source_packet, discover_source_packets
 from ag2_research.kbase.catalog_builder import build_catalog, publish_catalog, validate_release
@@ -107,6 +109,47 @@ class KBaseCatalogTests(unittest.TestCase):
 
             self.assertTrue(result["published"])
             self.assertEqual(hashlib.sha256(packet_path.read_bytes()).hexdigest(), before)
+
+    def test_shared_promotion_failure_keeps_current_catalog_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault, packets = self._vault(Path(tmp))
+            first_sha = "a" * 64
+            (packets / f"{first_sha}.json").write_text(
+                json.dumps(packet(first_sha, 2, "first"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            first = publish_catalog(vault)
+            current = Path(first["current"])
+            before = (current / "manifest.json").read_bytes()
+            second_sha = "b" * 64
+            (packets / f"{second_sha}.json").write_text(
+                json.dumps(packet(second_sha, 2, "second"), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            output = current.parent
+            real_replace = os.replace
+
+            def fail_candidate_promotion(source: object, target: object) -> None:
+                source_path = Path(source)
+                if (
+                    source_path.parent == output / "candidate"
+                    and Path(target) == current
+                ):
+                    raise PermissionError("injected shared catalog promotion failure")
+                real_replace(source, target)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=fail_candidate_promotion,
+            ):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected shared catalog promotion failure",
+                ):
+                    publish_catalog(vault)
+
+            self.assertEqual(before, (current / "manifest.json").read_bytes())
+            self.assertTrue(validate_release(current)["ok"])
 
 
 if __name__ == "__main__":
