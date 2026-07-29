@@ -31,13 +31,32 @@ class ReleaseConflictError(RuntimeError):
     """Raised when CURRENT changed after the caller prepared a candidate."""
 
 
+class ReleaseLeaseExpiredError(RuntimeError):
+    """Raised when a released or superseded read lease is reused."""
+
+
 class ReleaseReadLease:
     """Process-scoped shared lock that keeps one CURRENT release stable."""
 
-    __slots__ = ("release_id", "_descriptor", "_released")
+    __slots__ = (
+        "release_id",
+        "fencing_token",
+        "_root",
+        "_descriptor",
+        "_released",
+    )
 
-    def __init__(self, *, release_id: str, descriptor: int) -> None:
+    def __init__(
+        self,
+        *,
+        release_id: str,
+        fencing_token: int,
+        root: Path,
+        descriptor: int,
+    ) -> None:
         self.release_id = release_id
+        self.fencing_token = fencing_token
+        self._root = root
         self._descriptor = descriptor
         self._released = False
 
@@ -74,6 +93,7 @@ class PromotionReceipt:
     release_id: str
     previous_release_id: str | None
     current_path: Path
+    fencing_token: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +101,7 @@ class RollbackReceipt:
     release_id: str
     previous_release_id: str
     current_path: Path
+    fencing_token: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,11 +154,27 @@ class ImmutableReleaseStore:
                 )
             return ReleaseReadLease(
                 release_id=current_id,
+                fencing_token=self._read_fencing_token_locked(descriptor),
+                root=self._root.resolve(),
                 descriptor=descriptor,
             )
         except Exception:
             self._unlock_and_close(descriptor)
             raise
+
+    def validate_read_lease(self, lease: ReleaseReadLease) -> str:
+        if not isinstance(lease, ReleaseReadLease) or not lease.active:
+            raise ReleaseLeaseExpiredError("release read lease is no longer active")
+        if lease._root != self._root.resolve():
+            raise ReleaseLeaseExpiredError(
+                "release read lease belongs to a different store"
+            )
+        if self._read_fencing_token_locked(lease._descriptor) != lease.fencing_token:
+            raise ReleaseLeaseExpiredError("release read lease fencing token expired")
+        current_id = self._validate_release(self._root / "current")
+        if current_id != lease.release_id:
+            raise ReleaseLeaseExpiredError("release read lease identity expired")
+        return current_id
 
     def promote(
         self,
@@ -159,7 +196,7 @@ class ImmutableReleaseStore:
         current = self._root / "current"
         previous = self._root / "previous"
 
-        with self._exclusive_lock():
+        with self._exclusive_lock() as descriptor:
             self._require_no_pending_transactions()
             locked_release_id = self._validate_release(candidate)
             if locked_release_id != release_id or (
@@ -174,6 +211,7 @@ class ImmutableReleaseStore:
                 raise ReleaseConflictError(
                     "CURRENT identity changed before promotion"
                 )
+            fencing_token = self._advance_fencing_token_locked(descriptor)
 
             transaction = self._root / f".promotion.{uuid.uuid4().hex}.tmp"
             parked_current = transaction / "current"
@@ -236,13 +274,14 @@ class ImmutableReleaseStore:
             release_id=release_id,
             previous_release_id=current_id,
             current_path=current,
+            fencing_token=fencing_token,
         )
 
     def rollback(self, *, expected_current_id: str) -> RollbackReceipt:
         expected_id = self._canonical_release_id(expected_current_id)
         current = self._root / "current"
         previous = self._root / "previous"
-        with self._exclusive_lock():
+        with self._exclusive_lock() as descriptor:
             self._require_no_pending_transactions()
             current_id = self._validate_release(current)
             previous_id = self._validate_release(previous)
@@ -250,6 +289,7 @@ class ImmutableReleaseStore:
                 raise ReleaseConflictError(
                     "CURRENT identity changed before rollback"
                 )
+            fencing_token = self._advance_fencing_token_locked(descriptor)
 
             transaction = self._root / f".rollback.{uuid.uuid4().hex}.tmp"
             parked_current = transaction / "current"
@@ -297,6 +337,7 @@ class ImmutableReleaseStore:
             release_id=previous_id,
             previous_release_id=current_id,
             current_path=current,
+            fencing_token=fencing_token,
         )
 
     def recover(self) -> RecoveryReceipt:
@@ -593,12 +634,31 @@ class ImmutableReleaseStore:
             os.fsync(handle.fileno())
 
     @contextmanager
-    def _exclusive_lock(self) -> Iterator[None]:
+    def _exclusive_lock(self) -> Iterator[int]:
         descriptor = self._acquire_lock_descriptor(shared=False)
         try:
-            yield
+            yield descriptor
         finally:
             self._unlock_and_close(descriptor)
+
+    @staticmethod
+    def _read_fencing_token_locked(descriptor: int) -> int:
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        raw = os.read(descriptor, 64)
+        if re.fullmatch(rb"0|[1-9][0-9]{0,18}", raw) is None:
+            raise ReleaseConflictError("publication fencing token is invalid")
+        return int(raw)
+
+    def _advance_fencing_token_locked(self, descriptor: int) -> int:
+        next_token = self._read_fencing_token_locked(descriptor) + 1
+        if next_token >= 10**19:
+            raise ReleaseConflictError("publication fencing token is exhausted")
+        encoded = str(next_token).encode("ascii")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, encoded)
+        os.ftruncate(descriptor, len(encoded))
+        os.fsync(descriptor)
+        return next_token
 
     def _acquire_lock_descriptor(self, *, shared: bool) -> int:
         self._root.mkdir(parents=True, exist_ok=True)
@@ -654,6 +714,7 @@ __all__ = [
     "ReleaseAdapter",
     "ReleaseBusyError",
     "ReleaseConflictError",
+    "ReleaseLeaseExpiredError",
     "ReleaseReadLease",
     "RecoveryReceipt",
 ]

@@ -11,6 +11,7 @@ from research_automation.foundations.immutable_release import (
     ImmutableReleaseStore,
     ReleaseBusyError,
     ReleaseConflictError,
+    ReleaseLeaseExpiredError,
 )
 
 
@@ -76,6 +77,28 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
 
             self.assertEqual("v2", receipt.release_id)
             self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+
+    def test_publication_epoch_fences_released_read_leases(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            lease = store.acquire_read_lease(expected_release_id="v1")
+
+            self.assertEqual("v1", store.validate_read_lease(lease))
+            first_token = lease.fencing_token
+            lease.release()
+            with self.assertRaises(ReleaseLeaseExpiredError):
+                store.validate_read_lease(lease)
+
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+            promotion = store.promote(candidate, expected_current_id="v1")
+            next_lease = store.acquire_read_lease(expected_release_id="v2")
+
+            self.assertGreater(promotion.fencing_token, first_token)
+            self.assertEqual(promotion.fencing_token, next_lease.fencing_token)
+            next_lease.release()
 
     def test_promote_failure_restores_current_previous_and_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
