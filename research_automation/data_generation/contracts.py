@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import date
 from typing import Literal
 
 from pydantic import field_validator
@@ -42,6 +43,32 @@ class GenerationManifest(StrictContractModel):
     def _require_canonical_text(cls, value: str) -> str:
         if not value or value != value.strip():
             raise ValueError("generation identity text must be canonical")
+        return value
+
+    @field_validator("csv_cutoff")
+    @classmethod
+    def _require_canonical_cutoff_date(cls, value: str) -> str:
+        try:
+            parsed = date.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("csv_cutoff must be a valid ISO date") from error
+        if parsed.isoformat() != value:
+            raise ValueError("csv_cutoff must use YYYY-MM-DD")
+        return value
+
+    @field_validator("cache_manifest_references")
+    @classmethod
+    def _require_canonical_cache_references(
+        cls,
+        value: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if any(
+            not reference or reference != reference.strip()
+            for reference in value
+        ):
+            raise ValueError("cache manifest references must be canonical")
+        if len(value) != len(set(value)):
+            raise ValueError("cache manifest references must be unique")
         return value
 
     @property

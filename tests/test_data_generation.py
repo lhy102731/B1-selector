@@ -111,6 +111,48 @@ class GenerationManifestContractTests(unittest.TestCase):
                 payload,
             )
 
+    def test_manifest_rejects_noncanonical_or_duplicate_cache_references(self) -> None:
+        payload = {
+            "schema_version": GENERATION_MANIFEST_V1,
+            "csv_cutoff": "2026-07-28",
+            "trading_calendar_identity": "calendar-cn-a-share-20260728",
+            "point_in_time_universe_identity": "pit-universe-20260728",
+            "adjustment_scheme": "qfq-v1",
+            "missing_data_policy": "four-state-v1",
+            "cache_manifest_references": ["raw-parquet-production-20260728"],
+        }
+
+        invalid_references = (
+            [" "],
+            ["raw-parquet-production-20260728", "raw-parquet-production-20260728"],
+        )
+        for references in invalid_references:
+            with self.subTest(references=references):
+                with self.assertRaises(ContractValidationError):
+                    generation_contract_registry().parse_mapping(
+                        GENERATION_MANIFEST_V1,
+                        {**payload, "cache_manifest_references": references},
+                    )
+
+    def test_manifest_rejects_a_noncanonical_csv_cutoff_date(self) -> None:
+        payload = {
+            "schema_version": GENERATION_MANIFEST_V1,
+            "csv_cutoff": "2026-07-28",
+            "trading_calendar_identity": "calendar-cn-a-share-20260728",
+            "point_in_time_universe_identity": "pit-universe-20260728",
+            "adjustment_scheme": "qfq-v1",
+            "missing_data_policy": "four-state-v1",
+            "cache_manifest_references": ["raw-parquet-production-20260728"],
+        }
+
+        for cutoff in ("2026-7-28", "20260728", "2026-02-30"):
+            with self.subTest(cutoff=cutoff):
+                with self.assertRaises(ContractValidationError):
+                    generation_contract_registry().parse_mapping(
+                        GENERATION_MANIFEST_V1,
+                        {**payload, "csv_cutoff": cutoff},
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()
