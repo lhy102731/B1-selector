@@ -196,6 +196,36 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
             self.assertFalse(any(root.glob(".rollback.*.tmp")))
 
+    def test_cleanup_failure_after_rollback_commit_is_recovered_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v2")
+            _write_release(root / "previous", "v1")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            real_unlink = Path.unlink
+
+            def fail_transaction_cleanup(path: Path, *args: object, **kwargs: object) -> None:
+                if (
+                    path.name == "transaction.json"
+                    and path.parent.name.startswith(".rollback.")
+                ):
+                    raise PermissionError("injected transaction cleanup failure")
+                real_unlink(path, *args, **kwargs)
+
+            with patch.object(Path, "unlink", new=fail_transaction_cleanup):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected transaction cleanup failure",
+                ):
+                    store.rollback(expected_current_id="v2")
+
+            receipt = store.recover()
+
+            self.assertEqual("COMPLETED_INTERRUPTED_ROLLBACK", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(any(root.glob(".rollback.*.tmp")))
+
     def test_recover_restores_an_interrupted_promotion_without_lock_age(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"
@@ -262,6 +292,24 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(transaction.exists())
+
+    def test_recover_cleans_an_empty_transaction_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+
+            receipt = ImmutableReleaseStore(
+                root,
+                adapter=_ManifestAdapter(),
+            ).recover()
+
+            self.assertEqual("CLEANED_EMPTY_TRANSACTION", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertFalse(transaction.exists())
 
     def test_recover_restores_a_previous_slot_parked_by_promotion(self) -> None:
@@ -366,6 +414,43 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
             self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+
+    def test_cleanup_failure_after_promotion_commit_is_recovered_forward(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            store = ImmutableReleaseStore(root, adapter=_ManifestAdapter())
+            candidate = store.stage("v2")
+            _write_release(candidate, "v2")
+            real_replace = os.replace
+
+            def fail_archive_cleanup(source: object, target: object) -> None:
+                source_path = Path(source)
+                if (
+                    source_path.name == "previous"
+                    and source_path.parent.name.startswith(".promotion.")
+                    and Path(target).parent == root / "archive"
+                ):
+                    raise PermissionError("injected archive cleanup failure")
+                real_replace(source, target)
+
+            with patch(
+                "research_automation.foundations.immutable_release.os.replace",
+                side_effect=fail_archive_cleanup,
+            ):
+                with self.assertRaisesRegex(
+                    PermissionError,
+                    "injected archive cleanup failure",
+                ):
+                    store.promote(candidate, expected_current_id="v1")
+
+            receipt = store.recover()
+
+            self.assertEqual("COMPLETED_INTERRUPTED_PROMOTION", receipt.action)
+            self.assertEqual("v2", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "previous"))
+            self.assertFalse(candidate.exists())
 
     def test_public_operations_keep_one_stable_lock_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

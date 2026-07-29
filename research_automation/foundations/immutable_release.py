@@ -131,8 +131,7 @@ class ImmutableReleaseStore:
                     "expected_current_id": expected_current_id,
                 },
             )
-            moved_current_to_previous = False
-            archived_previous: Path | None = None
+            committed = False
             try:
                 if previous.exists():
                     os.replace(previous, parked_previous)
@@ -143,10 +142,12 @@ class ImmutableReleaseStore:
                     raise ReleaseConflictError(
                         "promoted CURRENT identity does not match the candidate"
                     )
+                if current_id is None:
+                    committed = True
 
                 if parked_current.exists():
                     os.replace(parked_current, previous)
-                    moved_current_to_previous = True
+                    committed = True
                 if parked_previous.exists():
                     archive = self._root / "archive"
                     archive.mkdir(exist_ok=True)
@@ -161,19 +162,14 @@ class ImmutableReleaseStore:
                 transaction_record.unlink()
                 transaction.rmdir()
             except Exception:
+                if committed:
+                    raise
                 if current.exists() and not candidate.exists():
                     os.replace(current, candidate)
                 if parked_current.exists():
                     os.replace(parked_current, current)
-                elif moved_current_to_previous and previous.exists():
-                    os.replace(previous, current)
                 if parked_previous.exists():
                     os.replace(parked_previous, previous)
-                elif archived_previous is not None and archived_previous.exists():
-                    os.replace(archived_previous, previous)
-                    archive = archived_previous.parent
-                    if not any(archive.iterdir()):
-                        archive.rmdir()
                 transaction_record.unlink(missing_ok=True)
                 if transaction.exists():
                     transaction.rmdir()
@@ -230,11 +226,8 @@ class ImmutableReleaseStore:
                 transaction.rmdir()
             except Exception:
                 if completed_swap:
-                    parked_rollback = transaction / "rolled-back-current"
-                    os.replace(current, parked_rollback)
-                    os.replace(previous, current)
-                    os.replace(parked_rollback, previous)
-                elif moved_previous:
+                    raise
+                if moved_previous:
                     os.replace(current, previous)
                     if parked_current.exists():
                         os.replace(parked_current, current)
@@ -263,6 +256,13 @@ class ImmutableReleaseStore:
                     "immutable release recovery found ambiguous transactions"
                 )
             transaction = transactions[0]
+            if not any(transaction.iterdir()):
+                transaction.rmdir()
+                current = self._root / "current"
+                return RecoveryReceipt(
+                    action="CLEANED_EMPTY_TRANSACTION",
+                    current_path=current if current.exists() else None,
+                )
             record_path = transaction / "transaction.json"
             try:
                 record = json.loads(record_path.read_text(encoding="utf-8"))
