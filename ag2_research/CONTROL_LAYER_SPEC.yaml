@@ -1,0 +1,280 @@
+# ============================================================
+# CONTROL_LAYER_SPEC.yaml
+# Canonical, enforceable control specification for the AG2 Research OS.
+# config.yaml embeds an advisory mirror of this file; the authoritative
+# definition lives here. Every role's system_message implements these rules.
+# ============================================================
+control_layer_spec:
+  version: "1.0"
+  purpose: >
+    Turn AG2 from a free-form multi-agent chat into a permission-controlled
+    research operating system: single scheduling authority, strict memory
+    priority, a registry experiment gate, a preflight gate, and an explicit
+    forbidden-behavior list.
+
+  # ----------------------------------------------------------
+  # 1. AUTHORITY -- single controller
+  # ----------------------------------------------------------
+  authority:
+    sole_controller: System_Orchestrator
+    rules:
+      - "Only System_Orchestrator advances the pipeline from one stage to the next."
+      - "Only System_Orchestrator grants or denies approval at a gate."
+      - "Only System_Orchestrator commits changes to Snapshot, Handoff, or Registry."
+      - "Only System_Orchestrator reads memory sources and emits the memory_packet (v0.9 PATCH #2)."
+      - "Only System_Orchestrator performs the Registry Gate and issues the registry_verdict; Research_Proposer never classifies the Registry (v0.9 PATCH #1)."
+      - "Every other role produces a structured artifact and hands it back; it never schedules or commits."
+    rationale: >
+      The old Coordinator was neither a controller nor a judge. It is replaced by
+      System_Orchestrator, which holds exclusive scheduling, gating, registry, memory-routing,
+      and commit rights.
+
+  # ----------------------------------------------------------
+  # 2. MEMORY PRIORITY -- Snapshot is highest, Code is last
+  # ----------------------------------------------------------
+  memory_priority:
+    principle: >
+      On any conflict, the higher-priority source wins. The current state of the
+      world is defined by Snapshot, never inferred by reading source code first.
+    order:
+      - rank: 1
+        source: Snapshot
+        file_pattern: "snapshot_<strategy>.yaml"
+        authority: "Current state: champion config, frozen/rejected directions, next priority, risks, unknowns."
+        overrides: "everything below"
+      - rank: 2
+        source: Handoff
+        file_pattern: "handoff_<strategy>_v*.yaml"
+        authority: "Decision rules: must_accept, do_not_repeat, escalation_conditions, when_to_reopen_failed_directions."
+        overrides: "Registry, Research Memory, Code"
+      - rank: 3
+        source: Registry
+        file_pattern: "registry_<strategy>_v*.yaml"
+        authority: "Experiment ledger: id, status (VERIFIED/FAILED/PARTIAL/OPEN/ABANDONED), reopen_condition."
+        overrides: "Research Memory, Code"
+      - rank: 4
+        source: ResearchMemory
+        file_pattern: "<strategy>_memory.yaml + docs/*"
+        authority: "Verified/failed/partial/open conclusions and their evidence."
+        overrides: "Code"
+      - rank: 5
+        source: Code
+        file_pattern: "repository source files"
+        authority: "Implementation detail only. Read specific files solely to reproduce a named baseline."
+        overrides: "nothing"
+    enforcement:
+      - "A role that cites Code to contradict Snapshot is wrong by construction; Snapshot wins."
+      - "Reading Code before exhausting ranks 1-4 is a forbidden behavior (see section 5)."
+
+  # ----------------------------------------------------------
+  # 2b. MEMORY PACKET -- single source of state for all roles (v0.9 PATCH #2)
+  # ----------------------------------------------------------
+  memory_packet:
+    owner: System_Orchestrator
+    principle: >
+      System_Orchestrator alone reads Snapshot/Handoff/Registry/Research Memory
+      (once per cycle) and distills them into a memory_packet. All other roles act
+      ONLY on the memory_packet; they do not open those sources themselves. This
+      removes duplicate reads, token waste, and state drift.
+    orchestrator_explicit_permission: false   # when false, no other role may read memory sources directly
+    schema:
+      current_state: "Distilled from Snapshot (rank 1)."
+      current_objective: "From Snapshot.next_priority / Handoff.active_focus."
+      registry_verdict: "The action implied by registry_status (see registry_gate.match_matrix)."
+      registry_status: "duplicate | partial_overlap | failed | verified | open | none"
+      active_constraints: "Relevant items from Handoff/Snapshot."
+      allowed_actions: "What the next role may do."
+      forbidden_actions: "What the next role may not do."
+      next_required_step: "Which role acts next."
+    enforcement:
+      - "A non-orchestrator role that bypasses the packet to read Snapshot/Registry/Handoff violates role scope."
+      - "Tool access reflects this: only System_Orchestrator holds the research-doc reading tools."
+
+  # ----------------------------------------------------------
+  # 3. REGISTRY GATE -- no proposal without a registry check
+  # ----------------------------------------------------------
+  registry_gate:
+    owner: System_Orchestrator   # v0.9 PATCH #1: gate executed ONLY here
+    trigger: "Before ANY experiment proposal is allowed to exist."
+    proposer_boundary: "Research_Proposer never performs lookup or classification; it consumes the registry_verdict from the memory_packet and drafts within it."
+    procedure:
+      - "1. Load registry_<strategy>_v*.yaml for the target strategy."
+      - "2. Compare the proposed (hypothesis, scope, 口径) against every existing experiment."
+      - "3. Classify the match and apply the mandated action below."
+      - "4. Record the registry_check block inside the proposal. No block => invalid proposal."
+    match_matrix:
+      - match: duplicate
+        definition: "Same hypothesis + same scope + same evaluation 口径 as an existing entry."
+        action: REJECT
+        note: "Do not re-run. Point to the existing id."
+      - match: partial_overlap
+        definition: "Overlaps an existing entry but differs in one controlled dimension."
+        action: MODIFY
+        note: "Narrow into an incremental test stated explicitly against that id."
+      - match: failed
+        definition: "Matches an entry with status FAILED or ABANDONED."
+        action: BLOCK_UNLESS_REOPEN
+        note: "Allowed only if that entry's reopen_condition is fully satisfied; cite how."
+      - match: verified
+        definition: "Matches an entry with status VERIFIED."
+        action: REPRODUCE_ONLY
+        note: "Re-run only to reproduce / productionize / compare a challenger, per reopen_condition."
+      - match: open
+        definition: "Matches an entry with status OPEN (queued next work)."
+        action: PROCEED_AS_PLANNED
+        note: "This is sanctioned next work; proceed within its success_condition_next_phase."
+      - match: none
+        definition: "No existing entry covers it."
+        action: REQUIRE_NOVELTY_JUSTIFICATION
+        note: "State the in-boundary alpha source and why it is genuinely new."
+
+  # ----------------------------------------------------------
+  # 4. PREFLIGHT GATE -- ordered checks before execution
+  # ----------------------------------------------------------
+  preflight_gate:
+    owner: System_Orchestrator
+    description: "All checks must pass before Experiment_Executor is authorized to run."
+    checks:
+      - id: snapshot_loaded
+        pass_if: "Current state was read from Snapshot, not inferred from Code."
+      - id: memory_hierarchy_respected
+        pass_if: "Ranks 1-4 were consulted before any Code read."
+      - id: registry_checked_with_verdict
+        pass_if: "Proposal contains a registry_check block with a valid decision."
+      - id: alpha_boundary_confirmed
+        pass_if: "Alpha source stays inside the target strategy; no B1/B3/Brick cross-contamination; no shared-infra-as-alpha."
+      - id: data_validation_passed
+        pass_if: "Data_Validator returned PASS with no leakage and full production availability."
+      - id: strict_forward_validation_planned
+        pass_if: "Any factor, ML/ranker, score-threshold, or parameter optimization uses the fixed Phase 6 rolling folds: 2020-2022 train -> 2023 validation -> 2024 unseen test; 2021-2023 train -> 2024 validation -> 2025 unseen test; 2022-2024 train -> 2025 validation -> 2026 unseen test. Use purge/embargo where labels or holding windows can overlap, and report average test metrics, worst fold, fold pass rate, and dispersion."
+      - id: compute_acceleration_checked
+        pass_if: "Indicator precompute, heavy ML/ranker training, factor-matrix generation, clustering, SHAP, and large sweeps include a compute_acceleration record: GPU applicability, detected GPU availability, selected backend, CPU fallback, and reason. GPU use must not change validation scope or approved parameters."
+      - id: research_indicator_cache_isolated
+        pass_if: "Exploratory Brick/B1 factor research writes and reads data/research_indicators_cache. data/indicators_cache is production/reference only unless the user explicitly requests production reproduction."
+      - id: brick_v2_entry_open_boundary_checked
+        pass_if: "Brick V2 next-open fields are audited against daily_select.py semantics: overnight_gap_pct, entry_open_to_yellow_pct, and entry_open_to_ma5_pct may use entry_date open, but their close/yellow/MA5 references must be signal-day known values. entry_date high/low/close, intraday future data, T+1 close-derived MA/yellow, return_pct, exit_date, exit_price, and hold_days are forbidden model inputs."
+      - id: brick_production_research_script_isolated
+        pass_if: "Brick AG2 experiments use research-only runners or backtest_brick_v2_research.py. backtest_brick_v2.py is the production signal generator and may be used only for explicit production reproduction."
+      - id: kbase_density_bias_checked
+        pass_if: "KBase-inspired discovery explicitly distinguishes information gain from source abundance and includes a novelty/reopen reason for repeated dense source families."
+      - id: not_a_forbidden_repeat
+        pass_if: "Not a duplicate, and not a FAILED/VERIFIED re-run outside reopen_condition."
+      - id: sanity_check_planned
+        pass_if: "Plan proves two distinct parameter values will yield different results."
+      - id: output_is_structured
+        pass_if: "Every role's deliverable follows its declared schema."
+    on_any_fail: "System_Orchestrator emits decision REJECT or STOP_AND_VERIFY; execution is not authorized."
+
+  # ----------------------------------------------------------
+  # 5. FORBIDDEN BEHAVIORS -- hard stops
+  # ----------------------------------------------------------
+  forbidden_behaviors:
+    - id: propose_without_registry
+      rule: "Proposing an experiment without a completed Registry check."
+      on_violation: "Orchestrator REJECTs; proposer must redo with a registry_check block."
+    - id: repeat_settled_experiment
+      rule: "Re-running FAILED or VERIFIED experiments outside their reopen_condition."
+      on_violation: "Orchestrator REJECTs and cites the existing experiment id."
+    - id: full_codebase_first_scan
+      rule: "Reading Code before exhausting Snapshot/Handoff/Registry/Research Memory; broad codebase scans."
+      on_violation: "Orchestrator STOPs and redirects to the memory hierarchy."
+    - id: silent_scope_change
+      rule: "Changing sample size, date range, thresholds, step size, or test design without explicit user approval."
+      on_violation: "Orchestrator BLOCKs; escalate to user."
+    - id: workaround_instead_of_root_fix
+      rule: "When Codex or AG2-KBase automation fails to use the intended workflow, roster, tools, GPU path, cache path, or validation design, downgrading to a smaller table, single model, reduced scope, weaker validation, CPU fallback, or manual workaround before first diagnosing and repairing the root cause."
+      on_violation: "Orchestrator STOPs, records the failed component and repair attempt, retries the intended workflow when bounded retry is configured, and escalates to the user before any downgrade."
+    - id: non_forward_validated_claim
+      rule: "Claiming a factor, ML/ranker model, score threshold, or parameter setting is effective/validated/champion/production-ready without the fixed Phase 6 rolling chronological validation folds."
+      on_violation: "Orchestrator REJECTs the conclusion; record it as exploratory or INVALID for promotion."
+    - id: silent_cpu_heavy_task
+      rule: "Running indicator precompute, heavy ML/ranker, factor matrix, clustering, SHAP, or large sweep workloads on CPU without a recorded GPU feasibility check and fallback reason."
+      on_violation: "Orchestrator rejects the execution_record and requires compute_acceleration to be filled."
+    - id: research_cache_contamination
+      rule: "Exploratory factor research reads from or overwrites data/indicators_cache instead of using data/research_indicators_cache, unless the approved task explicitly requires production reproduction."
+      on_violation: "Orchestrator rejects the plan or execution_record and requires cache isolation."
+    - id: brick_v2_entry_open_lookahead
+      rule: "For Brick V2, treating entry_open_to_yellow_pct or entry_open_to_ma5_pct as invalid merely because they use entry_date open, or computing them from entry_date close/high/low/intraday future data or T+1 close-derived MA/yellow. The only valid production semantics match daily_select.py: entry_date open versus signal-day known close/yellow/MA5."
+      on_violation: "Orchestrator STOPs; Data_Validator must redo the decision-time availability audit."
+    - id: brick_production_script_contamination
+      rule: "Using or modifying backtest_brick_v2.py for AG2 exploratory research when a research-only runner or backtest_brick_v2_research.py should be used."
+      on_violation: "Orchestrator BLOCKs; isolate the experiment in research code unless the user explicitly requested production reproduction."
+    - id: kbase_source_abundance_bias
+      rule: "Selecting or repeatedly reopening a KBase-inspired direction merely because that source family has more material."
+      on_violation: "Orchestrator REJECTs unless the artifact contains a substantive information-gain, novelty, or reopen justification."
+    - id: touch_param_restoration
+      rule: "Modifying set_param / reset / rollback / parameter-restoration logic without an explicit user request."
+      on_violation: "Orchestrator BLOCKs; escalate to user."
+    - id: continue_on_anomaly
+      rule: "Continuing to run experiments after broadly abnormal (>50%) results."
+      on_violation: "Orchestrator forces STOP_AND_VERIFY."
+    - id: cross_strategy_contamination
+      rule: "Importing B3/Brick alpha into another family, or merging strategy memories."
+      on_violation: "Orchestrator REJECTs and reclassifies by alpha source."
+    - id: shared_infra_as_alpha
+      rule: "Claiming shared indicators/caches/runners/notifications as strategy-owned alpha."
+      on_violation: "Orchestrator REJECTs the synthesis delta."
+    - id: unstructured_output
+      rule: "Emitting free-form prose where a structured record is required."
+      on_violation: "Orchestrator REJECTs and requests re-submission in schema."
+    - id: role_scope_violation
+      rule: "Any role acting outside its single declared responsibility."
+      on_violation: "Orchestrator REJECTs the artifact and re-routes to the correct role."
+
+  # ----------------------------------------------------------
+  # 6. PIPELINE STATE MACHINE
+  # ----------------------------------------------------------
+  pipeline:
+    execution_mode: "sequential single-pass; each role runs once per cycle. No round-robin discussion (v0.9 PATCH #3)."
+    states:
+      - {state: SNAPSHOT_READ,    owner: System_Orchestrator, next: PROPOSED}
+      - {state: PROPOSED,         owner: Research_Proposer,    gate: registry_gate,  next: DATA_CHECKED}
+      - {state: DATA_CHECKED,     owner: Data_Validator,       gate: data_gate,      next: PREFLIGHT}
+      - {state: PREFLIGHT,        owner: System_Orchestrator,  gate: preflight_gate, next: EXECUTED}
+      - {state: EXECUTED,         owner: Experiment_Executor,  next: AUDITED}
+      - {state: AUDITED,          owner: Risk_Controller,      gate: risk_gate,      next: SYNTHESIZED}
+      - {state: SYNTHESIZED,      owner: Strategy_Synthesizer, next: COMMITTED}
+      - {state: COMMITTED,        owner: System_Orchestrator,  next: SNAPSHOT_READ}
+    gate_failure_transitions:
+      registry_gate_fail:  "-> back to PROPOSED (modify) or REJECT"
+      data_gate_fail:      "-> back to PROPOSED (rescope) or REJECT"
+      preflight_fail:      "-> STOP_AND_VERIFY / REJECT"
+      risk_gate_fail:      "-> back to PROPOSED (INVALID) or COMMIT-as-FAILED (record the failure)"
+    anomaly_short_circuit: "anomaly_flag at EXECUTED -> immediate STOP_AND_VERIFY from any state."
+    revision_limit:                                   # v0.9 PATCH #7 -- loop termination
+      max_revision_attempts: 2
+      counts: "Each REJECT->MODIFY round trip on the same proposal increments the counter."
+      on_exceed: "System_Orchestrator MUST emit REJECT or ESCALATE_TO_USER; it may NOT loop further."
+      commit_is_terminal: "COMMITTED -> SNAPSHOT_READ is a NEXT-CYCLE transition, not an automatic re-loop within the same run."
+
+  # ----------------------------------------------------------
+  # 6b. DATA vs RISK BOUNDARY (v0.9 PATCH #8)
+  # ----------------------------------------------------------
+  data_risk_boundary:
+    data_validator_owns:
+      - leakage
+      - feature_availability
+      - production_availability
+      - data_consistency
+    risk_controller_owns:
+      - execution_risk
+      - robustness_risk
+      - regime_risk
+      - deployment_risk
+    rule: >
+      Risk_Controller MUST NOT re-judge leakage or feature/production availability;
+      it consumes Data_Validator's data_verdict as given. Data_Validator MUST NOT
+      judge execution/robustness/regime/deployment risk. The two concerns are disjoint.
+
+  # ----------------------------------------------------------
+  # 7. SUCCESS CRITERIA for the control layer itself
+  # ----------------------------------------------------------
+  success_criteria:
+    - "No proposal can be created without a Registry check, executed ONLY by System_Orchestrator (registry_gate)."
+    - "Snapshot determines current state; Code is never the first source read."
+    - "System_Orchestrator is the only scheduler, gatekeeper, committer, registry checker, and memory reader."
+    - "Non-orchestrator roles act only on the memory_packet; no duplicate memory reads."
+    - "Roles no longer overlap; each artifact has exactly one owning role; data vs risk concerns are disjoint."
+    - "FAILED/VERIFIED experiments are never silently repeated."
+    - "REJECT->MODIFY loops are bounded by max_revision_attempts=2, then REJECT or ESCALATE_TO_USER."
+    - "Every role emits structured output or is rejected."

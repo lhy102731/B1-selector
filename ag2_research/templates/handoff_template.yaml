@@ -1,0 +1,122 @@
+# ============================================================
+# HANDOFF TEMPLATE (updated for the Research OS)
+# Copy to: handoff_<strategy>_v*.yaml  (e.g. handoff_b1_v1.yaml)
+# Memory priority RANK 2 -- this file holds the DECISION RULES.
+# It is overridden by Snapshot (rank 1) but overrides Registry/Memory/Code.
+# Replace every <...> placeholder. Do not delete the control block.
+# ============================================================
+handoff:
+  version: "2.0"
+  generated_at: "<YYYY-MM-DD>"
+
+  # ---- Control integration (do not remove) -----------------
+  control:
+    memory_priority_rank: 2
+    role: "Decision rules: how to decide, what not to repeat, when to escalate, when to reopen."
+    governed_by: "ag2_research/CONTROL_LAYER_SPEC.yaml"
+    memory_priority:                                  # restated so a fresh agent sees it immediately
+      - "1. Snapshot (current state)"
+      - "2. Handoff (this file -- decision rules)"
+      - "3. Registry (experiment history + reopen_condition)"
+      - "4. Research Memory (verified conclusions)"
+      - "5. Code (last resort, specific files only)"
+    registry_gate:
+      owner: "System_Orchestrator only (v0.9 PATCH #1)"
+      rule: "No proposal without a Registry check first; only the Orchestrator performs it."
+      registry_status_taxonomy: [duplicate, partial_overlap, failed, verified, open, none]   # v0.9 PATCH #4
+      duplicate: "REJECT"
+      partial_overlap: "MODIFY into an incremental test"
+      failed: "BLOCK unless that entry's reopen_condition is satisfied"
+      verified: "Reproduce/productionize/challenger only, per reopen_condition"
+      open: "PROCEED as sanctioned next work, within success_condition_next_phase"
+      none: "Require explicit novelty_justification (in-boundary alpha source)"
+    forbidden_behaviors:
+      - "Propose without a Registry check."
+      - "Re-run FAILED/VERIFIED experiments outside reopen_condition."
+      - "Full-codebase first scan / reading Code before the memory hierarchy."
+      - "Change sample/date/threshold/design without explicit user approval."
+      - "Touch set_param/reset/rollback without explicit user request."
+      - "Continue after broadly abnormal (>50%) results."
+      - "For Brick V2, use entry-open fields only under daily_select.py semantics; never use entry_date high/low/close, intraday future data, T+1 close-derived MA/yellow, or exit/return fields as model inputs."
+      - "For exploratory Brick V2 research, do not use or modify backtest_brick_v2.py unless explicitly reproducing production."
+      - "Cross-strategy alpha contamination; shared-infra-as-alpha."
+      - "Unstructured output where a structured record is required."
+
+  project_identity:
+    strategy_id: "<B1 | B3 | Brick | ...>"
+    identity: "<one-line identity>"
+    plain_language: >
+      <What this strategy is and -- importantly -- what it is NOT.>
+    current_baseline_to_start_from: "<champion name, matching Snapshot.current_champion>"
+    baseline_configuration:
+      <param>: <value>
+    effective_factors:
+      - "<factor_1>"
+
+  must_accept:
+    - conclusion: "<established conclusion the new researcher must accept>"
+      why: "<evidence basis>"
+      how_to_use: "<how to apply it>"
+
+  still_debated:
+    - issue: "<open issue>"
+      current_status: "<unresolved | partially known>"
+      what_is_debated: "<the precise open question>"
+      required_evidence: "<what would resolve it; account-level + phase-aware>"
+
+  active_focus:
+    - priority: 1
+      focus: "<top next focus, matching Snapshot.next_priority.primary>"
+      reason: "<why>"
+      expected_output: "<deliverable>"
+
+  do_not_repeat:
+    - item: "<path that must not be repeated>"
+      reason: "<why it failed / is settled>"
+      boundary: "<the limit of this ban -- what it does NOT forbid>"
+
+  common_mistakes:
+    - mistake: "<frequent error>"
+      correction: "<the correct behavior>"
+
+  escalation_conditions:
+    - condition: "A result contradicts the current champion by a large margin."
+      action: "STOP; check data range, cache freshness, parameter restoration, candidate pool, production-data availability."
+    - condition: "Two parameter values produce identical sweep results when they should differ."
+      action: "STOP; verify decoupling, cache loading, parameter application, set_param/reset/rollback."
+    - condition: "A feature depends on future returns, realized outcomes, or fields unavailable at decision time."
+      action: "REJECT for production research unless a decision-time availability audit proves otherwise."
+    - condition: "A Brick V2 proposal uses overnight_gap_pct, entry_open_to_yellow_pct, or entry_open_to_ma5_pct."
+      action: "Verify daily_select.py semantics: entry_date open is allowed, but signal-day known close/yellow/MA5 must be the references and entry_date high/low/close or T+1 close-derived references are forbidden."
+    - condition: "An exploratory Brick V2 run touches backtest_brick_v2.py."
+      action: "Pause and confirm explicit production reproduction; otherwise move the work to backtest_brick_v2_research.py or a research-only runner."
+    - condition: "A factor, ML/ranker model, score threshold, or parameter setting is claimed effective without rolling chronological forward validation."
+      action: "REJECT for promotion; rerun with fixed train -> validation -> unseen test windows rolled forward, plus purge/embargo where needed."
+    - condition: "A KBase-inspired direction is selected mainly because one source family is abundant or repeatedly appears."
+      action: "REJECT unless there is explicit information-gain, novelty, or reopen justification."
+    - condition: "A change requires altering set_param/reset/rollback or parameter-restoration logic."
+      action: "Ask the user explicitly before touching it."
+    - condition: "A proposed direction reuses a failed experiment."
+      action: "Require proof the construct/implementation/口径 is materially different (reopen_condition)."
+    - condition: "Conclusions from one strategy are being applied to another or to shared infrastructure."
+      action: "Reclassify by alpha source; keep strategy memories separate."
+
+  when_to_reopen_failed_directions:
+    - direction: "<a FAILED/ABANDONED direction from the Registry>"
+      reopen_only_if:
+        - "<condition 1 mirroring the Registry entry's reopen_condition>"
+        - "<condition 2>"
+      default_action: "Do not reopen."
+
+  success_definition:
+    next_phase_success:
+      - "<measurable success condition 1>"
+    not_success:
+      - "<a higher headline metric obtained by changing scope/cache/parameter logic>"
+
+  recommended_reading_order:
+    - {order: 1, file: "snapshot_<strategy>.yaml",   reason: "Rank 1: authoritative current state. Read first."}
+    - {order: 2, file: "handoff_<strategy>_v*.yaml",  reason: "Rank 2: decision rules (this file)."}
+    - {order: 3, file: "registry_<strategy>_v*.yaml", reason: "Rank 3: experiment ledger + reopen conditions. Check before proposing."}
+    - {order: 4, file: "<strategy>_memory.yaml",      reason: "Rank 4: verified/failed/partial conclusions."}
+    - {order: 5, file: "relevant reports + reproduction scripts", reason: "Rank 5: Code/docs, only to reproduce a named baseline."}

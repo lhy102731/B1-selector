@@ -1,0 +1,90 @@
+import unittest
+from unittest.mock import Mock, patch
+
+from ag2_research.config import ResearchConfig
+from ag2_research.orchestrator import Orchestrator
+from research_automation.autonomous_runner import AutonomousRunnerV1
+
+
+class AG2ModelRoutingTests(unittest.TestCase):
+    def setUp(self):
+        self.orchestrator = Orchestrator.__new__(Orchestrator)
+        self.orchestrator.config = Mock()
+
+    @staticmethod
+    def _credentialed_config() -> ResearchConfig:
+        return ResearchConfig(
+            environ={
+                "AG2_OPENAI_API_KEY": "test-openai-key",
+                "AG2_OPENAI_BASE_URL": "https://example.invalid/v1",
+                "AG2_DEEPSEEK2_API_KEY": "test-deepseek-key",
+            }
+        )
+
+    def test_sequential_workflow_preserves_per_agent_profiles_by_default(self):
+        with patch("ag2_research.orchestrator.create_agents", return_value={}) as factory:
+            self.orchestrator._build_sequential_invoker(
+                ["source_librarian", "alpha_hunter"], "", None
+            )
+
+        factory.assert_called_once_with(
+            self.orchestrator.config,
+            ["source_librarian", "alpha_hunter"],
+            None,
+            "",
+        )
+
+    def test_sequential_workflow_honors_explicit_global_override(self):
+        override = {"config_list": [{"model": "test-model"}]}
+        with patch("ag2_research.orchestrator.create_agents", return_value={}) as factory:
+            self.orchestrator._build_sequential_invoker(
+                ["source_librarian"], "context", override
+            )
+
+        factory.assert_called_once_with(
+            self.orchestrator.config,
+            ["source_librarian"],
+            override,
+            "context",
+        )
+
+    def test_alpha_hunter_routes_to_deepseek_profile(self):
+        config = ResearchConfig()
+        self.assertEqual(config.get_agent("alpha_hunter")["profile"], "deepseekv4")
+
+    def test_gpt_profile_uses_explicit_xhigh_reasoning(self):
+        entry = self._credentialed_config().get_llm_config("gpt55")["config_list"][0]
+
+        self.assertEqual(entry["extra_body"]["reasoning_effort"], "xhigh")
+
+    def test_deepseek_profile_uses_explicit_max_reasoning(self):
+        entry = self._credentialed_config().get_llm_config("deepseekv4")["config_list"][0]
+
+        self.assertEqual(entry["base_url"], "https://api.deepseek.com")
+        self.assertEqual(entry["model"], "deepseek-v4-pro")
+        self.assertEqual(entry["extra_body"]["thinking"]["type"], "enabled")
+        self.assertEqual(entry["extra_body"]["reasoning_effort"], "max")
+
+    def test_gpt_usage_target_is_centered_at_twenty_percent(self):
+        target = ResearchConfig()._raw["llm"]["usage_targets"]["gpt55"]
+
+        self.assertEqual(20, target["target_share_pct"])
+        self.assertEqual([18, 22], target["acceptable_range_pct"])
+
+    def test_kbase_roundtables_have_two_gpt_slots(self):
+        config = ResearchConfig()
+        for workflow_id in ("kbase_source_first_discovery", "kbase_roundtable_discovery"):
+            participants = config.get_workflow(workflow_id)["roundtable"]["participants"]
+            self.assertEqual(2, sum(p.get("profile") == "gpt55" for p in participants))
+
+    def test_standard_workflows_activate_theory_builder(self):
+        config = ResearchConfig()
+        self.assertIn("theory_builder", config.get_workflow("brainstorm")["pipeline_order"])
+        self.assertIn("theory_builder", config.get_workflow("review")["pipeline_order"])
+
+    def test_director_interval_is_two_cycles(self):
+        self.assertEqual(2, AutonomousRunnerV1.DIRECTOR_INTERVAL)
+
+
+if __name__ == "__main__":
+    unittest.main()

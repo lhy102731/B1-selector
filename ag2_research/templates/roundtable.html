@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>量化多模型圆桌讨论</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary: #06080c;
+    --bg-secondary: #0c1018;
+    --bg-card: #111620;
+    --bg-input: #0f141f;
+    --border: #1a2030;
+    --text-primary: #e2e6ec;
+    --text-secondary: #8896a8;
+    --text-muted: #556070;
+    --accent-cyan: #00d4aa;
+    --accent-blue: #3b82f6;
+    --accent-amber: #f59e0b;
+    --accent-red: #ef4444;
+    --accent-green: #22c55e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Noto Sans SC', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Layout */
+  .app { display: flex; height: 100vh; }
+  .sidebar {
+    width: 260px; min-width: 260px;
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 20px 16px;
+  }
+  .main {
+    flex: 1; display: flex; flex-direction: column;
+    min-width: 0;
+  }
+
+  /* Sidebar */
+  .sidebar-title {
+    font-size: 12px; font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 2px;
+    margin-bottom: 12px;
+  }
+  .model-tag {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-radius: 6px;
+    margin-bottom: 4px; cursor: pointer;
+    font-size: 13px; font-weight: 500;
+    border: 1px solid transparent;
+    transition: all 0.15s;
+  }
+  .model-tag:hover { background: var(--bg-card); border-color: var(--border); }
+  .model-tag.selected { background: var(--bg-card); border-color: var(--accent-cyan); }
+  .model-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .model-dot.speaking { box-shadow: 0 0 6px currentColor; animation: pulse-dot 1s infinite; }
+  @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  /* Header */
+  .header {
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    padding: 16px 24px; display: flex; gap: 12px; align-items: center;
+  }
+  .header input {
+    flex: 1; background: var(--bg-input);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 16px; color: var(--text-primary);
+    font-size: 14px; font-family: inherit;
+    outline: none; transition: border-color 0.2s;
+  }
+  .header input:focus { border-color: var(--accent-cyan); }
+  .header input::placeholder { color: var(--text-muted); }
+  .btn {
+    padding: 10px 20px; border-radius: 8px; border: none;
+    font-size: 14px; font-weight: 500; cursor: pointer;
+    font-family: inherit; transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .btn-start { background: var(--accent-cyan); color: #000; }
+  .btn-start:hover { background: #00e8ba; }
+  .btn-start:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn-stop { background: var(--accent-red); color: #fff; }
+  .btn-stop:hover { background: #f87171; }
+  .btn-interrupt { background: var(--accent-amber); color: #000; }
+  .btn-interrupt:hover { background: #fbbf24; }
+
+  /* Chat area */
+  .chat-area {
+    flex: 1; overflow-y: auto;
+    padding: 0;
+    display: flex; flex-direction: column;
+  }
+  .msg {
+    display: flex; gap: 12px; max-width: 85%;
+    animation: msg-in 0.3s ease-out;
+    padding: 6px 24px;
+  }
+  @keyframes msg-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .msg-avatar {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+    flex-shrink: 0; color: #000;
+  }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-meta { display: flex; gap: 10px; align-items: center; margin-bottom: 4px; }
+  .msg-name { font-weight: 600; font-size: 13px; }
+  .msg-time { font-size: 11px; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
+  .msg-content {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 16px;
+    font-size: 14px; line-height: 1.65; color: var(--text-secondary);
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .msg-content strong { color: var(--text-primary); }
+
+  /* Status bar */
+  .status-bar {
+    padding: 8px 24px; background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+    display: flex; gap: 20px; align-items: center;
+  }
+  .status-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .status-dot.active { background: var(--accent-green); }
+  .status-dot.done { background: var(--accent-amber); }
+
+  /* Empty state */
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--text-muted); gap: 16px;
+  }
+  .empty-state .icon { font-size: 48px; opacity: 0.3; }
+
+  /* Tool call indicator */
+  .tool-call {
+    background: rgba(59,130,246,0.08); border: 1px solid rgba(59,130,246,0.2);
+    border-radius: 6px; padding: 6px 12px; margin-bottom: 6px;
+    font-size: 12px; color: var(--accent-blue);
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
+    .msg { max-width: 100%; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:24px;">
+      <div style="width:24px;height:24px;border-radius:6px;background:var(--accent-cyan);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#000;">Q</div>
+      <span style="font-weight:600;font-size:15px;">量化圆桌</span>
+    </div>
+
+    <div class="sidebar-title">参与模型 <span id="model-count">0</span>/<span id="model-total">0</span></div>
+    <div id="model-list" style="flex:1;overflow-y:auto;"></div>
+
+    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+      <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">快捷操作</div>
+      <button onclick="selectAll()" style="background:none;border:1px solid var(--border);color:var(--text-secondary);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;margin-right:6px;font-family:inherit;">全选</button>
+      <button onclick="deselectAll()" style="background:none;border:1px solid var(--border);color:var(--text-secondary);padding:6px 12px;border-radius:6px;font-size:12px;cursor:pointer;font-family:inherit;">取消</button>
+    </div>
+
+    <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);flex:1;overflow-y:auto;">
+      <div class="sidebar-title">历史记录</div>
+      <div id="history-list" style="font-size:12px;color:var(--text-muted);">加载中...</div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <main class="main">
+    <!-- Sticky title bar (dynamic, hidden by default) -->
+    <div id="sticky-bar" style="display:none;position:sticky;top:0;z-index:10;padding:12px 24px;background:var(--bg-secondary);border-bottom:1px solid var(--border);align-items:center;gap:12px;"></div>
+
+    <!-- Chat -->
+    <div class="chat-area" id="chat-area">
+      <div class="empty-state">
+        <div class="icon">&#9678;</div>
+        <div style="font-size:16px;font-weight:500;">量化多模型圆桌讨论</div>
+        <div style="font-size:13px;">输入研究课题，11 个 AI 模型将展开平等辩论</div>
+      </div>
+    </div>
+
+    <!-- Input bar at bottom -->
+    <div class="header">
+      <input type="text" id="topic-input" placeholder="你的想法或新话题..." autocomplete="off" />
+      <button class="btn btn-start" id="btn-start" onclick="startDiscussion()">开始讨论</button>
+      <button class="btn btn-interrupt" id="btn-interrupt" style="display:none;" onclick="interject()">插话</button>
+    </div>
+
+    <!-- Status -->
+    <div class="status-bar">
+      <div class="status-dot" id="status-dot"></div>
+      <span id="status-text">就绪</span>
+      <span id="msg-count" style="margin-left:auto;">消息: 0</span>
+    </div>
+  </main>
+</div>
+
+<script>
+// Model colors
+const MODEL_COLORS = [
+  '#00d4aa','#3b82f6','#f59e0b','#ef4444','#8b5cf6',
+  '#22c55e','#ec4899','#06b6d4','#f97316','#14b8a6',
+  '#6366f1','#84cc16','#e11d48',
+];
+
+const state = {
+  participants: [],
+  selected: new Set(),
+  discussionId: null,
+  eventSource: null,
+  running: false,
+  msgCount: 0,
+};
+
+async function init() {
+  const resp = await fetch('/api/profiles');
+  const data = await resp.json();
+  state.participants = data.participants;
+  state.selected = new Set(data.participants.map(p => p.label));
+
+  const list = document.getElementById('model-list');
+  data.participants.forEach((p, i) => {
+    const color = MODEL_COLORS[i % MODEL_COLORS.length];
+    const tag = document.createElement('div');
+    tag.className = 'model-tag selected';
+    tag.id = 'model-' + p.label;
+    tag.innerHTML = `<div class="model-dot" style="background:${color};" id="dot-${p.label}"></div><span>${p.label}</span>`;
+    tag.onclick = () => toggleModel(p.label, tag);
+    list.appendChild(tag);
+  });
+
+  document.getElementById('model-total').textContent = data.participants.length;
+  document.getElementById('model-count').textContent = data.participants.length;
+}
+
+function toggleModel(label, tag) {
+  if (state.running) return;
+  if (state.selected.has(label)) {
+    state.selected.delete(label);
+    tag.classList.remove('selected');
+  } else {
+    state.selected.add(label);
+    tag.classList.add('selected');
+  }
+  document.getElementById('model-count').textContent = state.selected.size;
+}
+
+function selectAll() {
+  if (state.running) return;
+  state.participants.forEach(p => state.selected.add(p.label));
+  state.participants.forEach(p => document.getElementById('model-' + p.label)?.classList.add('selected'));
+  document.getElementById('model-count').textContent = state.selected.size;
+}
+
+function deselectAll() {
+  if (state.running) return;
+  state.selected.clear();
+  state.participants.forEach(p => document.getElementById('model-' + p.label)?.classList.remove('selected'));
+  document.getElementById('model-count').textContent = 0;
+}
+
+const NAME_TO_PROFILE = {};
+init().then(() => {
+  state.participants.forEach(p => { NAME_TO_PROFILE[p.label] = p.profile; });
+});
+
+function getSelectedParticipants() {
+  return state.participants.filter(p => state.selected.has(p.label));
+}
+
+async function startDiscussion() {
+  const topic = document.getElementById('topic-input').value.trim();
+  if (!topic) { alert('请输入研究课题'); return; }
+  const participants = getSelectedParticipants();
+  if (participants.length < 2) { alert('请至少选择2个模型参与讨论'); return; }
+
+  state.running = true;
+  state.msgCount = 0;
+  document.getElementById('msg-count').textContent = '消息: 0';
+  // Sticky bar
+  const sticky = document.getElementById('sticky-bar');
+  sticky.style.display = 'flex';
+  sticky.innerHTML = `<div style="flex:1;font-size:14px;font-weight:600;color:var(--accent-cyan);">${escapeHtml(topic)}</div>
+    <button class="btn btn-stop" onclick="stopDiscussion()" style="font-size:12px;padding:8px 16px;">停止</button>`;
+
+  document.getElementById('btn-start').style.display = 'none';
+  document.getElementById('btn-interrupt').style.display = '';
+  document.getElementById('status-dot').className = 'status-dot active';
+  document.getElementById('status-text').textContent = '讨论中...';
+  document.getElementById('topic-input').value = '';
+
+  const area = document.getElementById('chat-area');
+  area.innerHTML = '';
+
+  // Start backend
+  const resp = await fetch('/api/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({topic, participants}),
+  });
+  const data = await resp.json();
+  state.discussionId = data.discussion_id;
+
+  // Connect SSE
+  state.eventSource = makeSSE('/api/stream/' + state.discussionId);
+}
+
+function stopDiscussion() {
+  if (state.eventSource) state.eventSource.close();
+  if (state.discussionId) {
+    fetch('/api/discussions/' + state.discussionId, {method: 'DELETE'});
+  }
+  finishDiscussion();
+}
+
+function finishDiscussion() {
+  state.running = false;
+  if (state.eventSource) { state.eventSource.close(); state.eventSource = null; }
+  document.getElementById('sticky-bar').style.display = 'none';
+  document.getElementById('btn-start').style.display = '';
+  document.getElementById('btn-interrupt').style.display = 'none';
+  document.getElementById('status-dot').className = 'status-dot done';
+  document.getElementById('status-text').textContent = '讨论结束';
+  document.getElementById('topic-input').value = '';
+
+  // Clear speaking dots
+  document.querySelectorAll('.model-dot.speaking').forEach(d => d.classList.remove('speaking'));
+}
+
+function appendMessage(msg) {
+  const area = document.getElementById('chat-area');
+  if (area.querySelector('.empty-state')) area.innerHTML = '';
+
+  state.msgCount++;
+  document.getElementById('msg-count').textContent = '消息: ' + state.msgCount;
+
+  const colorIdx = state.participants.findIndex(p => p.label === msg.name);
+  const color = MODEL_COLORS[colorIdx >= 0 ? colorIdx % MODEL_COLORS.length : 0];
+
+  // Flash model dot
+  const dot = document.getElementById('dot-' + msg.name);
+  if (dot) { dot.classList.add('speaking'); setTimeout(() => dot.classList.remove('speaking'), 2000); }
+
+  // Check for tool calls in content
+  let toolHtml = '';
+  let contentDisplay = msg.content;
+  const toolPattern = /\*\*\*\*\* Suggested tool call [^*]+\*\*\*\*\*/g;
+  if (toolPattern.test(msg.content)) {
+    const parts = msg.content.split(/(\*\*\*\*\*.*?\*\*\*\*\*)/s);
+    toolHtml = parts.filter(p => p.startsWith('*****')).map(p => {
+      const clean = p.replace(/\*/g, '').trim();
+      return `<div class="tool-call">${clean}</div>`;
+    }).join('');
+    contentDisplay = parts.filter(p => !p.startsWith('*****') && p.trim()).join('\n').trim();
+  }
+
+  const initials = msg.name.slice(0, 2).toUpperCase();
+
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.innerHTML = `
+    <div class="msg-avatar" style="background:${color};">${initials}</div>
+    <div class="msg-body">
+      <div class="msg-meta">
+        <span class="msg-name" style="color:${color};">${msg.name}</span>
+        <span class="msg-time">${msg.timestamp}</span>
+      </div>
+      ${toolHtml}
+      ${contentDisplay ? `<div class="msg-content">${escapeHtml(contentDisplay)}</div>` : ''}
+    </div>
+  `;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function appendError(err) {
+  const area = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.innerHTML = `<div class="msg-content" style="border-color:var(--accent-red);color:var(--accent-red);">${escapeHtml(err)}</div>`;
+  area.appendChild(div);
+}
+
+function escapeHtml(text) {
+  return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function handleSSE(msg) {
+  if (msg.type === 'message') { appendMessage(msg); }
+  else if (msg.type === 'done') { finishDiscussion(); }
+  else if (msg.type === 'saved') { state.savedFilename = msg.filename || msg.path; }
+  else if (msg.type === 'vote_update') {
+    document.getElementById('status-text').textContent =
+      `投票中: ${msg.yes}同意 / ${msg.no}反对 / ${msg.total}人`;
+  } else if (msg.type === 'concluded') {
+    const area = document.getElementById('chat-area');
+    const panel = document.createElement('div');
+    panel.style.cssText = 'margin:16px 24px;padding:20px;background:rgba(0,212,170,0.08);border:1px solid var(--accent-cyan);border-radius:10px;';
+    panel.innerHTML = `<div style="font-size:14px;font-weight:700;color:var(--accent-cyan);margin-bottom:12px;">全员通过方案</div>
+      <div style="font-size:13px;color:var(--text-primary);line-height:1.8;white-space:pre-wrap;">${escapeHtml(msg.content || '已达成共识')}</div>
+      ${msg.conclusion_file ? `<div style="font-size:11px;color:var(--text-muted);margin-top:12px;border-top:1px solid var(--border);padding-top:8px;">已导出至: ${escapeHtml(msg.conclusion_file)}</div>` : ''}`;
+    area.appendChild(panel);
+    area.scrollTop = area.scrollHeight;
+    finishDiscussion();
+  } else if (msg.type === 'error') { appendError(msg.content); finishDiscussion(); }
+}
+
+function makeSSE(url, onDone) {
+  const es = new EventSource(url);
+  es.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
+    handleSSE(msg);
+    if (msg.type === 'done' || msg.type === 'concluded') {
+      if (onDone) onDone();
+    }
+  };
+  es.onerror = () => { if (state.running) finishDiscussion(); };
+  return es;
+}
+
+// Load history
+async function loadHistory() {
+  try {
+    const resp = await fetch('/api/discussions');
+    const data = await resp.json();
+    const list = document.getElementById('history-list');
+    if (!data.length) {
+      list.innerHTML = '<div style="padding:8px;">暂无记录</div>';
+      return;
+    }
+    list.innerHTML = data.map(d => `
+      <div class="history-item" onclick="loadDiscussion('${d.filename}')"
+           style="padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:4px;border:1px solid transparent;transition:all 0.15s;"
+           onmouseover="this.style.background='var(--bg-card)';this.style.borderColor='var(--border)';"
+           onmouseout="this.style.background='none';this.style.borderColor='transparent';">
+        <div style="font-weight:500;color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${d.topic}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${d.date} · ${d.size_kb}KB</div>
+      </div>
+    `).join('');
+  } catch(e) {
+    document.getElementById('history-list').innerHTML = '<div style="padding:8px;">加载失败</div>';
+  }
+}
+
+async function loadDiscussion(filename) {
+  if (state.running) return;
+  try {
+    const resp = await fetch('/api/discussions/' + filename);
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    const area = document.getElementById('chat-area');
+    area.innerHTML = '';
+
+    // Sticky bar
+    const sticky = document.getElementById('sticky-bar');
+    sticky.style.display = 'flex';
+    sticky.innerHTML = `<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:var(--accent-cyan);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(data.topic)}</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px;">${data.messages.length} 条消息 · ${filename}</div></div>
+      <button class="btn btn-start" id="sticky-continue-btn" onclick="continueDiscussion('${filename}', '${escapeAttr(data.topic)}');this._origFilename='${filename}';this._origTopic='${escapeAttr(data.topic)}';" style="font-size:12px;padding:8px 16px;">继续讨论</button>`;
+
+    state.loadedHistoryFile = filename;
+    state.loadedHistoryTopic = data.topic;
+
+    // Messages
+    data.messages.forEach((msg, i) => {
+      const colorIdx = state.participants.findIndex(p => p.label === msg.name);
+      const color = MODEL_COLORS[colorIdx >= 0 ? colorIdx % MODEL_COLORS.length : i % MODEL_COLORS.length];
+      const initials = msg.name.slice(0, 2).toUpperCase();
+      const div = document.createElement('div');
+      div.className = 'msg';
+      div.innerHTML = `
+        <div class="msg-avatar" style="background:${color};">${initials}</div>
+        <div class="msg-body">
+          <div class="msg-meta">
+            <span class="msg-name" style="color:${color};">${msg.name}</span>
+          </div>
+          <div class="msg-content">${escapeHtml(msg.content)}</div>
+        </div>
+      `;
+      area.appendChild(div);
+    });
+    area.scrollTop = 0;
+  } catch(e) {
+    alert('加载失败');
+  }
+}
+
+async function interject() {
+  const input = document.getElementById('topic-input').value.trim();
+  if (!input) { alert('请在输入框输入你的想法'); return; }
+
+  // Stop current discussion
+  if (state.eventSource) state.eventSource.close();
+  if (state.discussionId) {
+    await fetch('/api/discussions/' + state.discussionId, {method: 'DELETE'});
+  }
+  state.running = false;
+
+  // Show separator
+  const area = document.getElementById('chat-area');
+  const sep = document.createElement('div');
+  sep.style.cssText = 'text-align:center;padding:16px 0;color:var(--accent-amber);font-size:12px;font-weight:500;border-top:1px dashed var(--border);border-bottom:1px dashed var(--border);margin:12px 0;';
+  sep.textContent = '—— 你的想法：' + input + ' ——';
+  area.appendChild(sep);
+  area.scrollTop = area.scrollHeight;
+
+  // Use discussion file as context instead of dumping full history
+  const contextFile = state.loadedHistoryFile || state.savedFilename;
+  const context = contextFile ? ('discussions/' + contextFile) : '';
+
+  // Restart with context
+  const participants = getSelectedParticipants();
+  state.running = true;
+  state.msgCount = 0;
+  document.getElementById('msg-count').textContent = '消息: 0';
+
+  // Sticky bar
+  const sticky = document.getElementById('sticky-bar');
+  sticky.style.display = 'flex';
+  sticky.innerHTML = `<div style="flex:1;font-size:14px;font-weight:600;color:var(--accent-cyan);">${escapeHtml(input)}</div>
+    <button class="btn btn-stop" onclick="stopDiscussion()" style="font-size:12px;padding:8px 16px;">停止</button>`;
+
+  document.getElementById('btn-start').style.display = 'none';
+  document.getElementById('btn-interrupt').style.display = '';
+  document.getElementById('status-dot').className = 'status-dot active';
+  document.getElementById('status-text').textContent = '继续讨论中...';
+  document.getElementById('topic-input').value = '';
+
+  const saveAs = state.loadedHistoryFile || '';
+  const resp = await fetch('/api/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(Object.assign({topic: input, participants, context: context}, saveAs ? {save_filename: saveAs} : {})),
+  });
+  const data = await resp.json();
+  state.discussionId = data.discussion_id;
+
+  state.eventSource = makeSSE('/api/stream/' + state.discussionId, () => onContinueComplete(filename));
+}
+
+async function continueDiscussion(filename, topic) {
+  if (state.running) {
+    // Stop the running discussion
+    stopDiscussion();
+    return;
+  }
+  const participants = getSelectedParticipants();
+  if (participants.length < 2) { alert('请至少选择2个模型参与讨论'); return; }
+
+  state.running = true;
+  state.msgCount = 0;
+  document.getElementById('msg-count').textContent = '消息: 0';
+  // Sticky bar
+  const sticky = document.getElementById('sticky-bar');
+  sticky.style.display = 'flex';
+  sticky.innerHTML = `<div style="flex:1;font-size:14px;font-weight:600;color:var(--accent-cyan);">${escapeHtml(topic)}</div>
+    <button class="btn btn-stop" onclick="stopDiscussion()" style="font-size:12px;padding:8px 16px;">停止</button>`;
+
+  state.continueBtn = null;
+  document.getElementById('btn-start').style.display = 'none';
+  document.getElementById('btn-interrupt').style.display = '';
+  document.getElementById('status-dot').className = 'status-dot active';
+  document.getElementById('status-text').textContent = '继续讨论中...';
+
+  const resp = await fetch('/api/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({topic, participants, context: 'discussions/' + filename, save_filename: filename}),
+  });
+  const data = await resp.json();
+  state.discussionId = data.discussion_id;
+
+  // Scroll to bottom for new messages
+  const area = document.getElementById('chat-area');
+  const sep = document.createElement('div');
+  sep.style.cssText = 'text-align:center;padding:16px 0;color:var(--accent-amber);font-size:12px;font-weight:500;border-top:1px dashed var(--border);border-bottom:1px dashed var(--border);margin:12px 0;';
+  sep.textContent = '—— 继续讨论 ——';
+  area.appendChild(sep);
+  area.scrollTop = area.scrollHeight;
+  state.continueMode = true;
+
+  state.eventSource = makeSSE('/api/stream/' + state.discussionId, () => onContinueComplete(filename));
+}
+
+async function onContinueComplete(filename) {
+  finishDiscussion();
+  setTimeout(() => {
+    loadDiscussion(filename);
+    loadHistory();
+  }, 500);
+}
+
+function escapeAttr(s) { return s.replace(/'/g, "\\'").replace(/"/g, '&quot;'); }
+
+loadHistory();
+</script>
+</body>
+</html>

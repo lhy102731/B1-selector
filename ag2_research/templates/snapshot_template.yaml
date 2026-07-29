@@ -1,0 +1,91 @@
+# ============================================================
+# SNAPSHOT TEMPLATE (updated for the Research OS)
+# Copy to: snapshot_<strategy>.yaml  (e.g. snapshot_b1.yaml)
+# Memory priority RANK 1 -- this file is the authoritative current state.
+# On any conflict with Handoff/Registry/Research Memory/Code, THIS wins.
+# Replace every <...> placeholder. Do not delete the control block.
+# ============================================================
+snapshot:
+  version: "2.0"
+  generated_at: "<YYYY-MM-DD>"
+  strategy_id: "<B1 | B3 | Brick | ...>"
+
+  # ---- Control integration (do not remove) -----------------
+  control:
+    memory_priority_rank: 1
+    role: "Authoritative current state. Read FIRST, before Handoff/Registry/Memory/Code."
+    registry_pointer: "registry_<strategy>_v*.yaml"     # the experiment ledger this snapshot summarizes
+    handoff_pointer: "handoff_<strategy>_v*.yaml"        # the decision rules
+    governed_by: "ag2_research/CONTROL_LAYER_SPEC.yaml"
+    rule: "No new experiment may be proposed without a Registry check (performed only by System_Orchestrator) against the pointer above. registry_status taxonomy: duplicate | partial_overlap | failed | verified | open | none."
+
+  current_production:
+    name: "<current production/research baseline name>"
+    status: "<current production/research baseline>"
+    description: >
+      <What is actually in production/research now, in plain language.>
+    boundary: >
+      <Alpha-source boundary: what belongs to this strategy and what does NOT
+       (other strategies + shared infrastructure are excluded).>
+
+  current_champion:
+    name: "<champion name>"
+    confidence: "<highest among current evidence | medium | ...>"
+    configuration:
+      # <key champion parameters, e.g. j_max, pe_max, position_mode, ...>
+      <param>: <value>
+    effective_factors:
+      - "<factor_1>"
+      - "<factor_2>"
+    alpha_source: >
+      <Where the trusted alpha actually comes from.>
+
+  active_research:
+    - "<sanctioned open direction 1 (should map to a Registry OPEN entry)>"
+    - "<sanctioned open direction 2>"
+
+  frozen_directions:
+    - direction: "<component frozen as core>"
+      status: "frozen as core component"
+      reason: "<why removing/weakening it is not allowed without explicit ablation>"
+
+  rejected_directions:
+    - direction: "<path proven harmful/ineffective>"
+      includes: ["<sub-item>", "<sub-item>"]
+      reason: "<why it is rejected; maps to a Registry FAILED/ABANDONED entry>"
+
+  highest_roi_hypotheses:
+    - hypothesis: "<high-ROI next idea>"
+      why_high_roi: "<reason>"
+      required_work: "<explicit, in-boundary work>"
+
+  biggest_risks:
+    - "<top risk to the current champion / to research validity>"
+
+  biggest_unknowns:
+    - "<key open question, ideally mapped to a Registry OPEN entry>"
+
+  next_priority:
+    primary: "<the single next experiment direction (must match a Registry OPEN entry or justify novelty)>"
+    secondary: "<second direction, in-boundary>"
+    not_priority:
+      - "<explicitly de-prioritized direction (often a Registry FAILED entry)>"
+
+  first_task_for_new_researcher:
+    task: >
+      <The exact first task, using the champion config as the only baseline.>
+    constraints:
+      - "Do not modify set_param/reset/rollback/parameter-restoration logic."
+      - "Do not change sample size, date range, parameter ranges, or test design without explicit user approval."
+      - "If results are broadly abnormal, STOP and verify assumptions before running more."
+      - "Use GRID TEST methodology, not self-iterating auto-search."
+      - "Use rolling chronological forward validation for any factor, ML/ranker, score-threshold, or parameter optimization: fixed train -> validation -> unseen test windows rolled forward, with purge/embargo when windows can overlap."
+      - "Do not choose thresholds or factor variants by looking at any test window; report average, worst fold, pass rate, and dispersion."
+      - "KBase discovery must optimize for information gain, not source abundance; repeated dense source families require novelty or reopen justification."
+      - "For Brick V2, audited 09:25 entry-open fields are limited to overnight_gap_pct, entry_open_to_yellow_pct, and entry_open_to_ma5_pct under daily_select.py semantics: entry_date open versus signal-day known close/yellow/MA5."
+      - "For exploratory Brick V2 research, keep backtest_brick_v2.py as production-only and use research-only runners or backtest_brick_v2_research.py unless explicitly reproducing production."
+      - "Check the Registry before proposing any experiment."
+
+  success_condition_next_phase:
+    - "<measurable condition 1>"
+    - "<measurable condition 2>"
