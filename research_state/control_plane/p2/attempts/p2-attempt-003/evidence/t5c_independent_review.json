@@ -1,0 +1,61 @@
+{
+  "schema_version": "control_plane.p2r3_t5c_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-003",
+  "task_id": "P2R3-T5C-SCOPE-ADOPTION",
+  "receipt_id": "independent-p2r3-scope-adoption-review",
+  "reviewer_id": "codex-t5-spec-reviewer-franklin",
+  "reviewed_at": "2026-07-30T06:15:39.1383310+08:00",
+  "source_review": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
+    "sha256": "fade85ce8dc1ce1c99a115f8b11faeb9f41e0f32912f2f7617cf14e33bdd65d6",
+    "reviewed_git_head": "5299f1404288d6cfe96fc08bc0980966d17c742a",
+    "result": "PASS"
+  },
+  "replay_binding": {
+    "current_git_head": "bfdd04f884858ee5b479c3fb9c8d9e43e5b5fe3e",
+    "current_git_tree": "4678f6ed8dc622b7faa0c21320a617d713e90b0f",
+    "changed_control_plane_files_since_source_review": 6,
+    "changed_p2r3_code_or_test_paths_since_source_review": 0,
+    "all_23_scope_path_identities_match_adoption_manifest": true,
+    "adoption_source_manifest_ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_adoption_source_manifest.json",
+    "adoption_source_manifest_sha256": "0ec6e357928513af9c42c281625adb78eb85cf7503ea407d8850c49d6d25dcaa"
+  },
+  "validation": {
+    "historical_task_and_completion_bindings": "PASS",
+    "focused_tests": "175/175 PASS",
+    "scope_static_syntax": "22/22 present Python files PASS",
+    "daily_staging_source_review": "PASS",
+    "scope_delta": "exactly two P2-CR-003 paths"
+  },
+  "findings": [
+    {
+      "finding_id": "P2R3-T5C-REVIEW-001",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The predecessor P2R2 closure bypassed the canonical Gate verifier.",
+      "resolution": "P2R2 is permanently classified as noncanonical FAIL-only history; P2R3 does not consume it as Gate evidence and all new closure paths are constrained to public verified TaskReport/Gate APIs."
+    }
+  ],
+  "advisories": [
+    {
+      "finding_id": "P2R2-T4-REVIEW-006",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Valuation inputs still need instrument/as-of provenance when a real valuation adapter is introduced; the T5 staging path does not invoke that factory."
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-003",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Separate GenerationPublisher instances rely on the underlying cross-process publication lock; existing lock-internal candidate revalidation remains covered."
+    }
+  ],
+  "external_usage": {
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null
+  },
+  "blocking_findings_open": 0,
+  "verdict": "PASS"
+}
