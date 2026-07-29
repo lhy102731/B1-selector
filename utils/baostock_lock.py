@@ -15,6 +15,8 @@ from functools import wraps
 from pathlib import Path
 from typing import Callable, Iterator, ParamSpec, TypeVar
 
+from utils.process_lock import ProcessConcurrencyError, process_lock
+
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -35,49 +37,11 @@ def _lock_path() -> Path:
 
 @contextmanager
 def baostock_process_lock() -> Iterator[Path]:
-    path = _lock_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle = path.open("a+b")
-    locked = False
     try:
-        handle.seek(0, os.SEEK_END)
-        if handle.tell() == 0:
-            handle.write(b"0")
-            handle.flush()
-        handle.seek(0)
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            locked = True
-        except OSError as exc:
-            raise BaoStockConcurrencyError(
-                f"BaoStock session already active; lock={path}"
-            ) from exc
-
-        handle.seek(0)
-        handle.truncate()
-        handle.write(str(os.getpid()).encode("ascii"))
-        handle.flush()
-        handle.seek(0)
-        yield path
-    finally:
-        if locked:
-            handle.seek(0)
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+        with process_lock(_lock_path(), "BaoStock session") as path:
+            yield path
+    except ProcessConcurrencyError as error:
+        raise BaoStockConcurrencyError(str(error)) from error
 
 
 def serialized_baostock(function: Callable[P, R]) -> Callable[P, R]:
