@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 import uuid
@@ -20,6 +21,7 @@ from research_automation.foundations.artifact_identity import (
     ArtifactIdentityMismatchError,
     ArtifactLocationError,
     ArtifactLocator,
+    artifact_identity_from_bytes,
     identify_file,
     verify_file_identity,
 )
@@ -237,6 +239,44 @@ class GenerationPin:
             if current.artifact_id != identity.artifact_id:
                 raise GenerationMutatedError("GENERATION_MUTATED")
         return tuple(sorted(artifact_ids))
+
+    def read_verified_bytes(
+        self,
+        relative_path: str,
+        identity: ArtifactIdentity,
+    ) -> bytes:
+        """Return exactly the bytes whose semantic identity was verified."""
+        if not isinstance(identity, ArtifactIdentity):
+            raise TypeError("identity must be an ArtifactIdentity")
+        try:
+            current = self.verify_artifact(
+                relative_path,
+                content_schema=identity.content_schema,
+                producer=identity.producer,
+                kind=identity.kind,
+                logical_role=identity.logical_role,
+            )
+            if not hmac.compare_digest(current.artifact_id, identity.artifact_id):
+                raise GenerationMutatedError("GENERATION_MUTATED")
+            content = self.artifact_path(relative_path).read_bytes()
+            observed = artifact_identity_from_bytes(
+                content,
+                content_schema=identity.content_schema,
+                producer=identity.producer,
+                generation=self.generation_id,
+                kind=identity.kind,
+                logical_role=identity.logical_role,
+            )
+            if not hmac.compare_digest(observed.artifact_id, identity.artifact_id):
+                raise GenerationMutatedError("GENERATION_MUTATED")
+            manifest = self._publisher.read(self._lease)
+            if manifest.generation_id != self.generation_id:
+                raise GenerationMutatedError("GENERATION_MUTATED")
+            return content
+        except GenerationMutatedError:
+            raise
+        except (OSError, ValueError) as error:
+            raise GenerationMutatedError("GENERATION_MUTATED") from error
 
     def release(self) -> None:
         self._lease.release()

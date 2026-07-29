@@ -142,6 +142,48 @@ def _pinned_identity(
 
 
 class GenerationCacheIdentityTests(unittest.TestCase):
+    def test_generation_pin_reads_and_returns_the_same_verified_bytes(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root, _source, cache, publisher, manifest = _published_cache(
+                Path(temporary)
+            )
+            with publisher.pin_current(
+                expected_generation_id=manifest.generation_id,
+                data_root=data_root,
+            ) as pin:
+                identity = pin.verify_artifact(
+                    "raw_parquet/00/000001.parquet",
+                    content_schema="parquet.v1",
+                    producer="tests.raw_parquet",
+                    kind="raw_parquet_cache",
+                    logical_role="ascending_raw_bars",
+                )
+                self.assertEqual(
+                    b"cache",
+                    pin.read_verified_bytes(
+                        "raw_parquet/00/000001.parquet",
+                        identity,
+                    ),
+                )
+                original_read_bytes = Path.read_bytes
+
+                def substituted_bytes(path: Path) -> bytes:
+                    if path == cache:
+                        return b"other"
+                    return original_read_bytes(path)
+
+                with patch.object(Path, "read_bytes", substituted_bytes):
+                    with self.assertRaisesRegex(
+                        GenerationMutatedError,
+                        "GENERATION_MUTATED",
+                    ):
+                        pin.read_verified_bytes(
+                            "raw_parquet/00/000001.parquet",
+                            identity,
+                        )
+
     def test_sidecar_writer_rejects_unpinned_absolute_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

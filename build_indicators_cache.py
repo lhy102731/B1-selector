@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import multiprocessing as mp
-import os
 import re
 from functools import partial
 from pathlib import Path
@@ -26,7 +26,11 @@ from research_automation.data_generation.generation import GenerationPin
 from strategy.unified_b1_strategy import UnifiedB1Strategy
 from utils.csv_manager import CSVManager
 from utils.market_asset_store import MarketAssetStore
-from utils.raw_parquet_cache import RawParquetCache, normalize_raw_stock_frame
+from utils.raw_parquet_cache import (
+    RawParquetCache,
+    normalize_raw_stock_frame,
+    read_stock_csv_bytes,
+)
 from utils.selection_universe import SelectionUniverse
 
 
@@ -38,38 +42,71 @@ def _indicator_cache_is_current(cache_file: Path, csv_file: Path) -> bool:
     return cache_file.exists() and csv_file.exists() and cache_file.stat().st_mtime >= csv_file.stat().st_mtime
 
 
-def _indicator_feature_contract_id(strategy_params: dict | None) -> str:
+def _source_sha256(callable_object) -> str:
+    try:
+        source = inspect.getsource(callable_object)
+    except (OSError, TypeError) as error:
+        raise ValueError("unable to identify indicator implementation") from error
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _indicator_feature_contract_id(
+    strategy,
+    *,
+    use_raw_cache: bool,
+) -> str:
     payload = canonical_json(
         {
-            "contract": "a-share.unified-b1-indicators.v1",
-            "strategy_params": strategy_params or {},
+            "contract": "a-share.unified-b1-indicators.v2",
+            "effective_strategy_params": strategy.params,
+            "calculate_indicators_sha256": _source_sha256(
+                strategy.calculate_indicators
+            ),
+            "raw_normalizer_sha256": _source_sha256(
+                normalize_raw_stock_frame
+            ),
+            "input_mode": "raw_parquet" if use_raw_cache else "direct_csv",
         }
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
 def _pinned_indicator_location(
+    generation_pin: GenerationPin,
     data_dir: str | Path,
     cache_dir: str | Path,
     code: str,
 ) -> tuple[str, str]:
-    data_root = Path(os.path.abspath(data_dir))
-    cache_root = Path(os.path.abspath(cache_dir))
-    try:
-        relative_root = cache_root.relative_to(data_root).as_posix()
-    except ValueError as error:
-        raise ValueError("pinned indicator cache escaped data_dir") from error
-    namespaces = {
-        "indicators_cache": "production",
-        "research_indicators_cache": "research",
+    data_root = Path(data_dir).resolve(strict=True)
+    if data_root != generation_pin.data_root:
+        raise ValueError("data_dir does not match the generation pin root")
+    cache_root = Path(cache_dir)
+    if cache_root.is_symlink() or getattr(
+        cache_root,
+        "is_junction",
+        lambda: False,
+    )():
+        raise ValueError("pinned indicator cache directory is a reparse point")
+    resolved_cache_root = cache_root.resolve(strict=False)
+    locations = {
+        generation_pin.data_root / "indicators_cache": (
+            "production",
+            "indicators_cache",
+        ),
+        generation_pin.data_root / "research_indicators_cache": (
+            "research",
+            "research_indicators_cache",
+        ),
     }
     try:
-        namespace = namespaces[relative_root]
+        namespace, relative_root = locations[resolved_cache_root]
     except KeyError as error:
         raise ValueError(
             "pinned indicator cache directory does not match its namespace"
         ) from error
-    return namespace, f"{relative_root}/{code}.parquet"
+    relative_path = f"{relative_root}/{code}.parquet"
+    generation_pin.artifact_path(relative_path)
+    return namespace, relative_path
 
 
 def safe_cache_name(cache_name: str) -> str:
@@ -88,11 +125,37 @@ def read_raw_stock(
     generation_pin: GenerationPin | None = None,
 ):
     """Read normalized raw bars, preferring data/raw_parquet when enabled."""
+    if (
+        generation_pin is not None
+        and Path(data_dir).resolve(strict=True) != generation_pin.data_root
+    ):
+        raise ValueError("data_dir does not match the generation pin root")
     if use_raw_cache:
         return RawParquetCache(
             data_dir,
             generation_pin=generation_pin,
         ).read_stock(code, refresh=rebuild_raw)
+    if generation_pin is not None:
+        relative_path = _csv_path(data_dir, code).relative_to(
+            Path(data_dir)
+        ).as_posix()
+        identity = generation_pin.verify_artifact(
+            relative_path,
+            content_schema="a-share.gbk_csv.v1",
+            kind="source_csv",
+            logical_role="raw_stock_bars",
+        )
+        frame = read_stock_csv_bytes(
+            generation_pin.read_verified_bytes(relative_path, identity)
+        )
+        generation_pin.verify_artifact(
+            relative_path,
+            content_schema=identity.content_schema,
+            producer=identity.producer,
+            kind=identity.kind,
+            logical_role=identity.logical_role,
+        )
+        return normalize_raw_stock_frame(frame)
     csv_manager = CSVManager(data_dir)
     return normalize_raw_stock_frame(csv_manager.read_stock(code))
 
@@ -132,6 +195,18 @@ def build_one(
     cache_dir = Path(cache_dir)
     cache_file = cache_dir / f"{code}.parquet"
     csv_file = _csv_path(data_dir, code)
+    pinned_location: tuple[str, str] | None = None
+
+    if generation_pin is not None:
+        try:
+            pinned_location = _pinned_indicator_location(
+                generation_pin,
+                data_dir,
+                cache_dir,
+                code,
+            )
+        except Exception as error:
+            return f"FAIL {code} ({error})"
 
     if not csv_file.exists():
         return f"SKIP {code} (CSV missing)"
@@ -147,12 +222,15 @@ def build_one(
         cache_namespace: str | None = None
         cache_relative_path: str | None = None
         pinned_raw_cache: RawParquetCache | None = None
-        if generation_pin is not None:
-            cache_namespace, cache_relative_path = _pinned_indicator_location(
-                data_dir,
-                cache_dir,
-                code,
-            )
+        if pinned_location is not None:
+            cache_namespace, cache_relative_path = pinned_location
+        strategy = UnifiedB1Strategy()
+        if strategy_params:
+            strategy.params.update(strategy_params)
+        feature_contract_id = _indicator_feature_contract_id(
+            strategy,
+            use_raw_cache=use_raw_cache,
+        )
         if generation_pin is not None and use_raw_cache:
             pinned_raw_cache = RawParquetCache(
                 data_dir,
@@ -189,7 +267,6 @@ def build_one(
                     kind="source_csv",
                     logical_role="raw_stock_bars",
                 ).artifact_id
-        feature_contract_id = _indicator_feature_contract_id(strategy_params)
         if (
             generation_pin is not None
             and not rebuild_raw
@@ -213,9 +290,6 @@ def build_one(
         if df_raw.empty or len(df_raw) < 60:
             return f"SKIP {code} (insufficient data)"
 
-        strategy = UnifiedB1Strategy()
-        if strategy_params:
-            strategy.params.update(strategy_params)
         df_ind = strategy.calculate_indicators(df_raw)
         if df_ind.empty:
             return f"FAIL {code} (indicator calculation empty)"

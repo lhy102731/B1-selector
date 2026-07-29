@@ -7,6 +7,7 @@ parsing GBK CSV files.
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 from typing import Literal
 
@@ -53,6 +54,24 @@ def normalize_raw_stock_frame(df: pd.DataFrame) -> pd.DataFrame:
     result = result[result["volume"] > 0]
     result = result.sort_values("date").reset_index(drop=True)
     return result
+
+
+def read_stock_csv_bytes(content: bytes) -> pd.DataFrame:
+    """Parse exact pinned CSV bytes without reopening the mutable path."""
+    if not isinstance(content, bytes) or not content:
+        raise ValueError("stock CSV content must be non-empty bytes")
+    for encoding in ("gbk", "utf-8"):
+        try:
+            return pd.read_csv(
+                io.BytesIO(content),
+                parse_dates=["date"],
+                encoding=encoding,
+            )
+        except UnicodeDecodeError:
+            continue
+        except Exception as error:
+            raise ValueError("unable to parse pinned stock CSV") from error
+    raise ValueError("pinned stock CSV is neither GBK nor UTF-8")
 
 
 class RawParquetCache:
@@ -109,9 +128,13 @@ class RawParquetCache:
         parquet_path = self.parquet_path(code)
         if self.generation_pin is not None:
             if not refresh and parquet_path.exists():
-                self._load_pinned_identity(code)
-                frame = pd.read_parquet(parquet_path)
-                self._load_pinned_identity(code)
+                identity = self._load_pinned_identity(code)
+                content = self.generation_pin.read_verified_bytes(
+                    parquet_path.relative_to(self.data_dir).as_posix(),
+                    identity.artifact,
+                )
+                frame = pd.read_parquet(io.BytesIO(content))
+                self._verify_pinned_source(code)
                 return frame
             return self.build_stock(code)
         if not refresh and self.is_current(code):
@@ -169,7 +192,15 @@ class RawParquetCache:
             if self.generation_pin is not None
             else None
         )
-        raw = self.csv_manager.read_stock(code)
+        if self.generation_pin is not None and source_identity is not None:
+            raw = read_stock_csv_bytes(
+                self.generation_pin.read_verified_bytes(
+                    csv_path.relative_to(self.data_dir).as_posix(),
+                    source_identity,
+                )
+            )
+        else:
+            raw = self.csv_manager.read_stock(code)
         normalized = normalize_raw_stock_frame(raw)
         if normalized.empty:
             return normalized
