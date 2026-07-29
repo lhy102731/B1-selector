@@ -200,13 +200,37 @@ class GenerationPublisher:
         if pending is None:
             return None
         self._store.recover()
-        current = self.read_current()
-        if current.generation_id != pending.candidate_generation_id:
+        current_path = self._root / "current"
+        current = self._read_manifest(current_path) if current_path.is_dir() else None
+        if (
+            current is not None
+            and current.generation_id == pending.candidate_generation_id
+        ):
+            self._clear_publish_pending(pending)
+            return current
+        current_id = None if current is None else current.generation_id
+        if current_id != pending.expected_current_generation_id:
             raise GenerationPublicationConflictError(
-                "pending publication does not match CURRENT"
+                "pending publication expected a different CURRENT"
             )
+        candidate = self._root / "candidate" / pending.candidate_generation_id
+        manifest = self._read_manifest(candidate)
+        if manifest.generation_id != pending.candidate_generation_id:
+            raise GenerationPublicationConflictError(
+                "pending publication candidate identity changed"
+            )
+        try:
+            self._store.promote(
+                candidate,
+                expected_current_id=pending.expected_current_generation_id,
+                expected_candidate_id=pending.candidate_generation_id,
+            )
+        except ReleaseBusyError as error:
+            raise GenerationPublicationPendingError(
+                "generation publication is still waiting for the publication lock"
+            ) from error
         self._clear_publish_pending(pending)
-        return current
+        return manifest
 
     def read_current(self) -> GenerationManifest:
         return self._read_manifest(self._root / "current")

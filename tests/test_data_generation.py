@@ -194,6 +194,37 @@ class GenerationManifestContractTests(unittest.TestCase):
             self.assertFalse(any(root.glob(".promotion.*.tmp")))
             self.assertIsNone(publisher.pending_publication())
 
+    def test_restarted_publisher_resumes_waiting_candidate_from_pending_record(self) -> None:
+        first = GenerationManifest(
+            schema_version=GENERATION_MANIFEST_V1,
+            csv_cutoff="2026-07-28",
+            trading_calendar_identity="calendar-cn-a-share-20260728",
+            point_in_time_universe_identity="pit-universe-20260728",
+            adjustment_scheme="qfq-v1",
+            missing_data_policy="four-state-v1",
+            cache_manifest_references=("raw-parquet-production-20260728",),
+        )
+        second = first.model_copy(update={"csv_cutoff": "2026-07-29"})
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "generations"
+            publisher = GenerationPublisher(root, lock_timeout_seconds=0.05)
+            publisher.publish(publisher.stage(first))
+            lease = publisher.acquire_read_lease(
+                expected_generation_id=first.generation_id,
+            )
+            staged = publisher.stage(second)
+            with self.assertRaises(GenerationPublicationPendingError):
+                publisher.publish(staged)
+            lease.release()
+
+            restarted = GenerationPublisher(root)
+            recovered = restarted.recover_pending_publication()
+
+            self.assertEqual(second.generation_id, recovered.generation_id)
+            self.assertEqual(second.generation_id, restarted.read_current().generation_id)
+            self.assertIsNone(restarted.pending_publication())
+
     def test_cross_process_read_lease_prevents_generation_publication(self) -> None:
         first = GenerationManifest(
             schema_version=GENERATION_MANIFEST_V1,
