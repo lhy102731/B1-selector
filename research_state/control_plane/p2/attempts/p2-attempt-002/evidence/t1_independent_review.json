@@ -1,0 +1,119 @@
+{
+  "schema_version": "control_plane.p2r2_t1_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+  "reviewed_at": "2026-07-29T16:58:27.998561+00:00",
+  "reviewer_id": "independent-p2r2-release-generation-reviewer",
+  "reviewer_type": "external_llm_panel_with_controller_adjudication",
+  "reviewed_git_range": {
+    "baseline": "4e72aff217e3038c6a857c93a06ccdadf71bfb3c",
+    "head": "36400e6720b4e9f0a4325b11aab7853a5c14e84b"
+  },
+  "source_evidence": [
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_independent_review_panel.json",
+      "sha256": "f6b01363cabb5a7f871f7de8c5ed0676591dadf150cde68ae4d1e68cd01280f4"
+    },
+    {
+      "path": "research_state/control_plane/p2/attempts/p2-attempt-002/evidence/t1_lock_fix_rereview.json",
+      "sha256": "2918e91d8cbbebc5c312af145bf590e2d8533d4e3379e80f0da47e1390a55d76"
+    }
+  ],
+  "review_findings": [
+    {
+      "finding_id": "P2R2-T1-REVIEW-001",
+      "review_receipt_id": "independent-p2r2-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The legacy semantic metadata hot-swap mutated current in place and used a second lock implementation that could race or delete the shared lock identity.",
+      "resolution": "Commit bd1c74c9 removes the hot-swap and its create/delete lock; every semantic publish now uses ImmutableReleaseStore, with a public regression proving candidate-to-current and current-to-previous behavior. Kimi final rereview returned PASS."
+    },
+    {
+      "finding_id": "P2R2-T1-REVIEW-002",
+      "review_receipt_id": "independent-p2r2-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "Concurrent cold-root openers could both observe an empty lock file and a late initializer could reset an already advanced fencing token to zero.",
+      "resolution": "Commit 36400e67 creates a fully written and fsynced temporary inode and exposes it with a create-only hard link; concurrent creators converge on the winner without writing the live lock. A deterministic interleaving test changed from token 1 versus 0 to equal tokens."
+    },
+    {
+      "finding_id": "P2R2-T1-REVIEW-003",
+      "review_receipt_id": "independent-p2r2-release-generation-review",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "The initial publication epoch write was not fsynced before the lock became usable.",
+      "resolution": "Commit 36400e67 fsyncs the initialized inode before linking it at .publish.lock; the focused Doubao rereview returned PASS with zero blocking findings."
+    },
+    {
+      "finding_id": "P2R2-T1-REVIEW-004",
+      "review_receipt_id": "independent-p2r2-release-generation-review",
+      "severity": "NON_BLOCKING",
+      "status": "RESOLVED",
+      "summary": "One reviewer requested preservation of the older previous release across a metadata-only publication.",
+      "resolution": "Rejected as a contract change: ImmutableReleaseStore intentionally retains the immediate prior current as the single previous rollback target and archives the older previous. The immutable publication fix preserves that approved behavior."
+    }
+  ],
+  "external_review_attempts": [
+    {
+      "invocation_id": "p2r2-t1-doubao-kbase-round1",
+      "result": "FINDINGS_RETURNED",
+      "input_tokens": 45027,
+      "output_tokens": 7408,
+      "total_tokens": 52435
+    },
+    {
+      "invocation_id": "p2r2-t1-deepseek-core-round1",
+      "result": "NO_PARSEABLE_FINAL_OUTPUT",
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "p2r2-t1-deepseek-core-round2",
+      "result": "REASONING_WITHOUT_FINAL_OUTPUT",
+      "input_tokens": 23392,
+      "output_tokens": 8000,
+      "total_tokens": 31392
+    },
+    {
+      "invocation_id": "p2r2-t1-glm-generation-round2",
+      "result": "TIMEOUT_NO_OUTPUT",
+      "usage_status": "UNKNOWN"
+    },
+    {
+      "invocation_id": "p2r2-t1-doubao-core-round3",
+      "result": "FINDINGS_RETURNED",
+      "input_tokens": 18009,
+      "output_tokens": 13811,
+      "total_tokens": 31820
+    },
+    {
+      "invocation_id": "p2r2-t1-kimi-kbase-fix-round3",
+      "result": "GATE_PASS",
+      "input_tokens": 7818,
+      "output_tokens": 3922,
+      "total_tokens": 11740
+    },
+    {
+      "invocation_id": "p2r2-t1-doubao-lock-fix-final",
+      "result": "GATE_PASS",
+      "input_tokens": 3946,
+      "output_tokens": 2991,
+      "total_tokens": 6937
+    }
+  ],
+  "reported_external_usage": {
+    "input_tokens": 98192,
+    "output_tokens": 36132,
+    "total_tokens": 134324,
+    "unreported_or_unknown_invocations": 2
+  },
+  "final_gate": {
+    "blocking_findings_open": 0,
+    "kbase_fix_rereview": "PASS",
+    "lock_fix_rereview": "PASS",
+    "external_failures_counted_as_pass": false,
+    "verdict": "PASS"
+  },
+  "result": "PASS"
+}

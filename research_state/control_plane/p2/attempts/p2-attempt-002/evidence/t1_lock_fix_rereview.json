@@ -1,0 +1,35 @@
+{
+  "schema_version": "control_plane.p2r2_t1_lock_fix_rereview_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.p2r2_t1_lock_fix_rereview.v1",
+    "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+    "reviewed_at": "2026-07-29T16:57:34.815901+00:00",
+    "reviewer_id": "independent-p2r2-release-generation-reviewer",
+    "model": "doubao-seed-2.0-pro",
+    "usage": {
+      "input_tokens": 3946,
+      "output_tokens": 2991,
+      "total_tokens": 6937,
+      "status": "REPORTED"
+    },
+    "elapsed_seconds": 45.86,
+    "reviewed_commit": "36400e67",
+    "result": {
+      "verdict": "PASS",
+      "blocking_findings": [],
+      "non_blocking_findings": [
+        "Temporary initialization files may be leaked on process crash between temp file creation and cleanup (harmless orphan .tmp files, no functional impact)",
+        "Explicit file mode is not specified when creating lock temp files, relying on umask defaults (no regression from prior behavior, no functional impact for typical single-user store usage)"
+      ],
+      "reviewed_files": [
+        "research_automation/foundations/immutable_release.py",
+        "tests/test_foundations_immutable_release.py"
+      ],
+      "confidence": "HIGH"
+    },
+    "verdict": "PASS"
+  },
+  "computed": {
+    "payload_sha256": "58c9564d07065aa91d33945f7e1963ed2671392683320d8507a6312d8bc338b4"
+  }
+}\n

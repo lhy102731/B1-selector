@@ -1,0 +1,270 @@
+{
+  "schema_version": "control_plane.p2r2_t1_independent_review_panel_envelope.v3",
+  "payload": {
+    "schema_version": "control_plane.p2r2_t1_independent_review_panel.v3",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-002",
+    "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+    "reviewed_at": "2026-07-29T16:50:43.131068+00:00",
+    "reviewer_id": "independent-p2r2-release-generation-reviewer",
+    "review_mode": "bounded_parallel_external_llm_review_with_controller_adjudication",
+    "round1": {
+      "schema_version": "control_plane.p2r2_t1_independent_review_panel.v1",
+      "plan_version": "V3.4.2-P0R2",
+      "phase": "P2",
+      "attempt_id": "p2-attempt-002",
+      "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+      "reviewed_at": "2026-07-29T16:34:18.452306+00:00",
+      "reviewer_id": "independent-p2r2-release-generation-reviewer",
+      "review_mode": "parallel_external_llm_shards_with_controller_adjudication",
+      "lanes": [
+        {
+          "lane": "kbase_adapters",
+          "profile": "doubao",
+          "model_requested": "doubao-seed-2.0-pro",
+          "model_response": "doubao-seed-2.0-pro",
+          "elapsed_seconds": 102.11,
+          "usage": {
+            "input_tokens": 45027,
+            "output_tokens": 7408,
+            "total_tokens": 52435,
+            "status": "REPORTED"
+          },
+          "result": {
+            "verdict": "FAIL",
+            "blocking_findings": [
+              {
+                "finding_id": "B1",
+                "severity": "Critical",
+                "file": "ag2_research/kbase/semantic_index.py",
+                "line": "377-381",
+                "summary": "Semantic metadata hot swap permanently erases the prior full release rollback target",
+                "rationale": "Before applying a metadata-only update, the existing `previous` directory (the only target for the standard `rollback_semantic` command) is archived and replaced with a clone of the current release pre-update. After the update, the standard rollback command can only toggle between two metadata versions of the same payload, not revert to the last distinct full release. The original prior release is moved to an unmanaged archive directory with no public restoration API, breaking required rollback semantics for semantic releases.",
+                "recommended_fix": "Do not replace the existing `previous` release during metadata updates. Only archive and replace `previous` during full directory swaps. For metadata updates, store the pre-update clone of current in a temporary location used only for failure recovery, and restore the original `previous` after a successful update."
+              },
+              {
+                "finding_id": "B2",
+                "severity": "Critical",
+                "file": "ag2_research/kbase/semantic_index.py",
+                "line": "365, 296-307",
+                "summary": "No mutual exclusion between semantic metadata hot swaps and full directory release operations, causing cross-process race conditions",
+                "rationale": "Metadata-only updates use an exclusive lock at `.publish.lock`, while full directory promote/rollback operations (via `ImmutableReleaseStore`) use a separate internal lock. Concurrent execution of a metadata update and a full directory swap can result in a corrupted live `current` release with mixed state from old and new releases, with no guaranteed recovery path.",
+                "recommended_fix": "Use the same locking mechanism for all release-modifying operations. Either re-use `ImmutableReleaseStore`'s internal lock for metadata updates, or wrap all release write operations (including `ImmutableReleaseStore` calls) under the `.publish.lock` exclusive lock."
+              },
+              {
+                "finding_id": "B3",
+                "severity": "Critical",
+                "file": "ag2_research/kbase/semantic_index.py",
+                "line": "383-386",
+                "summary": "Semantic metadata hot swap modifies the live `current` release in place, violating immutability guarantees and causing partial read races",
+                "rationale": "The core `ImmutableReleaseStore` contract requires that published releases are never modified after promotion, ensuring consistent reads and stable identity hashes. Metadata updates modify files inside the live `current` directory in place, leading to: (1) concurrent readers seeing partial, inconsistent state (e.g., old gate report paired with new manifest); (2) invalidation of the release's identity hash after promotion; (3) hardlinks to the original release in other locations pointing to modified content.",
+                "recommended_fix": "Eliminate in-place modification of published releases. For metadata changes, perform a full atomic directory swap via `ImmutableReleaseStore.promote()`: clone the current release, apply metadata changes to the cloned candidate, validate the candidate, then atomically swap it into place as the new current. Resolve Windows Docker mount lock issues via symlink-based swaps or mount reconfiguration instead of in-place modification."
+              }
+            ],
+            "non_blocking_findings": [
+              {
+                "finding_id": "N1",
+                "severity": "Medium",
+                "file": "tests/test_kbase_semantic.py",
+                "line": "N/A",
+                "summary": "No test coverage for semantic metadata update critical behaviors",
+                "rationale": "There are no tests verifying that metadata updates preserve the original prior release rollback target, serialize with full directory swaps, or do not cause partial read races. This allowed the critical blocking defects to go undetected.",
+                "recommended_fix": "Add test cases for: (1) metadata update preserving the original `previous` release; (2) concurrent metadata update and full publish serialization; (3) consistent reads during metadata updates."
+              },
+              {
+                "finding_id": "N2",
+                "severity": "Low",
+                "file": "ag2_research/kbase/semantic_index.py",
+                "line": "341-346",
+                "summary": "Metadata hot swap tradeoffs are undocumented",
+                "rationale": "The comment for `_publish_semantic_metadata_update` notes it works around Windows Docker mount locks, but does not document the tradeoffs: lost rollback capability to prior full releases, violated immutability, and race risk. There is no documentation indicating this workaround is temporary or only applies to specific environments.",
+                "recommended_fix": "Add explicit documentation of the metadata update tradeoffs, and mark it as a Windows-only workaround if applicable."
+              }
+            ],
+            "reviewed_files": [
+              "ag2_research/kbase/catalog_builder.py",
+              "ag2_research/kbase/semantic_index.py",
+              "tests/test_kbase_catalog.py",
+              "tests/test_kbase_semantic.py"
+            ],
+            "confidence": "High"
+          },
+          "raw_response_sha256": "7e9b25b4e08542979ce3ecaeec60daf6d30cae92732799a7d641ff9dc80cfd28"
+        }
+      ],
+      "errors": [
+        {
+          "lane": "release_generation",
+          "error_type": "JSONDecodeError",
+          "error": "Expecting value: line 1 column 1 (char 0)"
+        }
+      ],
+      "blocking_findings_open": 3,
+      "verdict": "FAIL"
+    },
+    "round2": [
+      {
+        "lane": "generation_core",
+        "parse_status": "CALL_FAILED",
+        "error_type": "APITimeoutError",
+        "error": "Request timed out."
+      },
+      {
+        "lane": "immutable_release_core",
+        "profile": "deepseekv4",
+        "model_requested": "deepseek-v4-pro",
+        "model_response": "deepseek-v4-pro",
+        "elapsed_seconds": 148.22,
+        "usage": {
+          "input_tokens": 23392,
+          "output_tokens": 8000,
+          "total_tokens": 31392,
+          "status": "REPORTED"
+        },
+        "raw_response_sha256": "2497507cf7f47f81361ad3a922c33e401b090f3ff20fb3da3ee1d692946a5bb5",
+        "parse_status": "FAIL",
+        "error_type": "ValueError",
+        "error": "response contains no parseable JSON object",
+        "content_bytes": 0,
+        "reasoning_bytes": 37070
+      },
+      {
+        "lane": "kbase_fix_delta",
+        "parse_status": "CALL_FAILED",
+        "error_type": "UnicodeDecodeError",
+        "error": "'gbk' codec can't decode byte 0xae in position 32501: illegal multibyte sequence"
+      }
+    ],
+    "round3": [
+      {
+        "lane": "core_source_final",
+        "profile": "doubao",
+        "model_requested": "doubao-seed-2.0-pro",
+        "model_response": "doubao-seed-2.0-pro",
+        "elapsed_seconds": 176.42,
+        "usage": {
+          "input_tokens": 18009,
+          "output_tokens": 13811,
+          "total_tokens": 31820,
+          "status": "REPORTED"
+        },
+        "raw_response_sha256": "b4ebd01fb3468cf1fb0aa6c0bd1d561d69639c665faddfd0489d849ad17d0525",
+        "result": {
+          "verdict": "FAIL",
+          "blocking_findings": [
+            {
+              "finding_id": "B1",
+              "severity": "CRITICAL",
+              "file": "research_automation/foundations/immutable_release.py",
+              "line": "683-685",
+              "summary": "Race condition in .publish.lock initialization allows fencing token corruption",
+              "rationale": "Fencing token initialization (writing the initial '0' to an empty lock file) occurs before acquiring the file lock. When multiple processes open a newly created lock file concurrently, both may observe an empty file before any writes complete. One process can acquire the exclusive lock, advance the fencing token to a higher valid value, and release the lock. The second process will then write '0' to the shared file before acquiring its lock, overwriting the valid higher token value. This breaks all fencing guarantees, invalidates existing read leases, can enable concurrent promotion operations, and leads to permanent operation failures or data corruption.",
+              "recommended_fix": "Move lock file initialization to after acquiring the exclusive lock. Only initialize the token when holding an exclusive lock, and fsync the write immediately. For shared lock acquisitions that encounter an uninitialized (empty) token, release the shared lock, wait briefly, and retry to allow an exclusive lock holder to complete initialization. Alternatively, use O_CREAT | O_EXCL when creating the lock file to ensure only one process can initialize it, with a mandatory fsync after the initial write."
+            },
+            {
+              "finding_id": "B2",
+              "severity": "HIGH",
+              "file": "research_automation/foundations/immutable_release.py",
+              "line": "685",
+              "summary": "Missing fsync on initial fencing token write causes crash inconsistency",
+              "rationale": "The initial write of '0' to a newly created .publish.lock file is not followed by an fsync. If a crash occurs after the write but before it is persisted to disk, the lock file will be empty on subsequent startup. All operations (read lease acquisition, promotion, recovery) will fail with ReleaseConflictError due to an invalid fencing token, leading to permanent unavailability of the entire release store.",
+              "recommended_fix": "Add os.fsync(descriptor) immediately after the initial write of '0' to the lock file. Ensure this write and fsync only occur while holding an exclusive lock to avoid the race condition documented in B1."
+            }
+          ],
+          "non_blocking_findings": [
+            {
+              "finding_id": "NB1",
+              "severity": "LOW",
+              "file": "research_automation/foundations/immutable_release.py",
+              "line": "187",
+              "summary": "Redundant fencing token validation in read lease validation",
+              "rationale": "Validating the fencing token during read lease validation is functionally redundant. Fencing tokens can only be modified while holding an exclusive lock, which cannot be acquired while any shared locks (held by active read leases) exist. The check provides useful defense-in-depth but is not strictly required for correctness.",
+              "recommended_fix": "No action required; retain the check as a defensive safeguard."
+            },
+            {
+              "finding_id": "NB2",
+              "severity": "LOW",
+              "file": "research_automation/foundations/immutable_release.py",
+              "line": "258, 262",
+              "summary": "Misleading committed boundary in promotion transaction logic",
+              "rationale": "The `committed` flag for promotion transactions is set after moving the parked current release to the previous slot, even though the promotion becomes effective (the current symlink/directory is updated) earlier. This is not a correctness issue because the entire promotion runs under an exclusive lock, so no external observers can see the intermediate state. However, the flag placement is slightly misleading to readers of the code.",
+              "recommended_fix": "No action required; the transaction behaves correctly. A code comment explaining the committed boundary and exclusive lock guarantee may improve readability."
+            }
+          ],
+          "reviewed_files": [
+            "research_automation/foundations/immutable_release.py",
+            "research_automation/data_generation/contracts.py",
+            "research_automation/data_generation/generation.py"
+          ],
+          "confidence": "HIGH"
+        },
+        "parse_status": "PASS"
+      },
+      {
+        "lane": "kbase_fix_final",
+        "profile": "kimi_hs",
+        "model_requested": "kimi-k2.7-code",
+        "model_response": "kimi-k2.7-code",
+        "elapsed_seconds": 67.94,
+        "usage": {
+          "input_tokens": 7818,
+          "output_tokens": 3922,
+          "total_tokens": 11740,
+          "status": "REPORTED"
+        },
+        "raw_response_sha256": "ae793de4cdd86073c12d5f8c91cb7335c5a97e87c1c32d1535b62554bf1e07b5",
+        "result": {
+          "verdict": "PASS",
+          "blocking_findings": [],
+          "non_blocking_findings": [
+            {
+              "finding_id": "NB-1",
+              "severity": "LOW",
+              "file": "ag2_research/kbase/semantic_index.py",
+              "line": null,
+              "summary": "promoted_candidate_archive is now always None",
+              "rationale": "The metadata-only hot-swap path that produced a promoted_candidate_archive path has been removed, but publish_semantic still returns the field as None. This is a benign API artifact with no data-integrity impact.",
+              "recommended_fix": "Either remove promoted_candidate_archive from the returned dict or document that it is reserved for future archive tracking."
+            },
+            {
+              "finding_id": "NB-2",
+              "severity": "LOW",
+              "file": "ag2_research/kbase/semantic_index.py",
+              "line": null,
+              "summary": "_semantic_payload_identity is now only used by tests",
+              "rationale": "The helper remains in production code but is no longer referenced by publish_semantic after the metadata-only path was deleted. This is a cleanup item, not a correctness issue.",
+              "recommended_fix": "Move _semantic_payload_identity to the test file or remove it if no production use is planned."
+            }
+          ],
+          "reviewed_files": [
+            "ag2_research/kbase/semantic_index.py",
+            "tests/test_kbase_semantic.py"
+          ],
+          "confidence": "HIGH"
+        },
+        "parse_status": "PASS"
+      }
+    ],
+    "controller_adjudication": {
+      "accepted_and_resolved": [
+        "B2",
+        "B3",
+        "N1"
+      ],
+      "rejected_with_reason": {
+        "B1": "The approved store intentionally retains only the immediate prior current as previous and archives the older previous; the finding requested a different multi-level rollback contract.",
+        "N2": "Obsolete because the hot-swap workaround was removed."
+      },
+      "resolution_commit": "bd1c74c9",
+      "external_failures_are_not_counted_as_pass": true,
+      "round3_all_lanes_pass": false,
+      "blocking_findings_open": 1,
+      "controller_verdict": "FAIL"
+    },
+    "verdict": "FAIL"
+  },
+  "computed": {
+    "payload_sha256": "02abba23aac1c02cdc914dd0bda619350fdc81840004450dce6e765b71f54437"
+  }
+}

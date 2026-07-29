@@ -1,0 +1,97 @@
+{
+  "schema_version": "control_plane.p2r2_t1_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-002",
+  "task_id": "P2R2-T1-IMMUTABLE-RELEASE-GENERATION-CONTRACTS",
+  "validated_at": "2026-07-29T16:58:27.998561+00:00",
+  "adoption": {
+    "source_attempt": "p2-attempt-001",
+    "source_bytes_authoritative": false,
+    "source_ticket_or_report_counted_toward_pass": false,
+    "baseline_git_head": "4e72aff217e3038c6a857c93a06ccdadf71bfb3c",
+    "validated_git_head": "36400e6720b4e9f0a4325b11aab7853a5c14e84b"
+  },
+  "test_receipts": [
+    {
+      "receipt_id": "immutable-release-public-behavior-tests",
+      "command": "python -B -m unittest tests.test_foundations_immutable_release -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 34
+    },
+    {
+      "receipt_id": "generation-contract-tests",
+      "command": "python -B -m unittest tests.test_data_generation -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 14
+    },
+    {
+      "receipt_id": "kbase-publication-regression-tests",
+      "command": "python -B -m unittest tests.test_kbase_catalog tests.test_kbase_ingest tests.test_kbase_semantic -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 29
+    },
+    {
+      "receipt_id": "foundations-regression-tests",
+      "command": "python -B -m unittest tests.test_foundations_settings tests.test_foundations_protocols tests.test_foundations_legacy_contract_adapters tests.test_foundations_immutable_release tests.test_foundations_dependency_preflight tests.test_foundations_contract_registry tests.test_foundations_artifact_identity -q",
+      "exit_code": 0,
+      "result": "PASS",
+      "tests_run": 133
+    }
+  ],
+  "combined_verification": {
+    "command_receipt_test_total": 210,
+    "result": "PASS"
+  },
+  "tdd_slices": [
+    {
+      "behavior": "Metadata-only semantic publication uses the shared immutable directory swap and retains the immediate prior current as previous.",
+      "red_result": "metadata_hot_swap was observed",
+      "green_result": "directory_swap was observed",
+      "resolution_commit": "bd1c74c9"
+    },
+    {
+      "behavior": "Concurrent cold-start lock creators cannot reset an advanced publication epoch.",
+      "red_result": "promotion token 1 was reset to lease token 0",
+      "green_result": "promotion and subsequent lease tokens remained equal",
+      "resolution_commit": "36400e67"
+    }
+  ],
+  "changed_files": [
+    {
+      "path": "ag2_research/kbase/semantic_index.py",
+      "baseline_sha256": "370a38023763674ca7c310239abacbb004c8573c6260f0cdeab3830b82f4c942",
+      "current_sha256": "ac3e8745ddb3857505669000c4f6baea20e37456827265047288a8413be2f2a3"
+    },
+    {
+      "path": "tests/test_kbase_semantic.py",
+      "baseline_sha256": "784f1a6f08266cad8d1406fb73eeca67824b5dfac786d001fb2275cad5ebbc9a",
+      "current_sha256": "3365872eb6107033d308e96e9c9cf13a0f89df937d5712c608421722275b04f1"
+    },
+    {
+      "path": "research_automation/foundations/immutable_release.py",
+      "baseline_sha256": "7cd861460a0e0f0acacef11d305a9a7fc35bd80506e339259df2ab11d8656594",
+      "current_sha256": "9ddd9ccf0c0c1ca242a7d8823e8687a2ee9c5873c881a3d9eb02c7a72a205c02"
+    },
+    {
+      "path": "tests/test_foundations_immutable_release.py",
+      "baseline_sha256": "da30336ea6a4bb3429691897af18536f8334849d1afcf92569313e38aec3753c",
+      "current_sha256": "d95bb87c17b8c5a4de0ec0bfc6555ea6b8b5d354efda22c4effc88117ecb27eb"
+    }
+  ],
+  "scope_audit": {
+    "all_changes_inside_task_allowlist": true,
+    "protected_user_changes_preserved": [
+      "CHANGELOG.md",
+      "docs/b1_v3_results.md"
+    ],
+    "sealed_p0_code_modified": false,
+    "real_data_or_kbase_content_accessed": false,
+    "backtest_research_campaign_or_holdout_started": false,
+    "scheduler_or_acl_mutated": false
+  },
+  "result": "PASS"
+}
