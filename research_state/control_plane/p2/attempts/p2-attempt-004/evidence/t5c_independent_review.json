@@ -1,0 +1,76 @@
+{
+  "schema_version": "control_plane.p2r4_t5c_independent_review.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T5C-SCOPE-ADOPTION",
+  "receipt_id": "independent-p2r4-scope-adoption-review",
+  "reviewer_id": "codex-p2r4-state-auditor",
+  "reviewed_at": "2026-07-30T06:46:44.7238252+08:00",
+  "source_reviews": [
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/p2r3_preprovision_independent_review.json",
+      "sha256": "fade85ce8dc1ce1c99a115f8b11faeb9f41e0f32912f2f7617cf14e33bdd65d6",
+      "reviewed_git_head": "5299f1404288d6cfe96fc08bc0980966d17c742a",
+      "result": "PASS"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-003/evidence/t5c_independent_review.json",
+      "sha256": "c823552b3252fa7c1b928d2ce2e18cbd8500ef826c5ee42c84352f1df42ef479",
+      "reviewed_git_head": "bfdd04f884858ee5b479c3fb9c8d9e43e5b5fe3e",
+      "result": "PASS"
+    }
+  ],
+  "replay_binding": {
+    "current_git_head": "6f41bbf6ec7699ee3ee6742a44c0d1a0e667f48a",
+    "current_git_tree": "f6d205e86ec776ac538b2add011c9abd9c9ff448",
+    "changed_control_plane_files_since_p2r3_validation": 21,
+    "changed_p2r4_code_or_test_paths_since_source_review": 0,
+    "all_23_scope_path_identities_match_adoption_manifest": true,
+    "input_evidence_hashes_verified": 8,
+    "adoption_source_manifest_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t5c_adoption_source_manifest.json",
+    "adoption_source_manifest_sha256": "577e5423fb3fa9684cd21869d74d19c69684d219d18195b1b387007621675c01",
+    "validation_receipt_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t5c_validation_receipt.json",
+    "validation_receipt_sha256": "e71b0084391ddab707160507a1729cb3d590a7301cd6e3bea5920ef9f65e3100"
+  },
+  "validation": {
+    "historical_task_and_completion_bindings": "5/5 PASS",
+    "focused_tests": "175/175 PASS",
+    "scope_static_syntax": "22/22 present Python files PASS",
+    "daily_staging_source_review": "PASS",
+    "scope_delta": "exactly the two P2-CR-003 paths",
+    "authority_ticket_prelease_state": "ISSUED",
+    "trusted_receipts_before_closure": 0,
+    "pending_outbox_before_closure": 0
+  },
+  "findings": [
+    {
+      "finding_id": "P2R4-T5C-REVIEW-001",
+      "severity": "BLOCKING",
+      "status": "RESOLVED",
+      "summary": "P2R3 lost its ephemeral task lease after beginning because a deterministic review-hash helper was called with the wrong signature.",
+      "resolution": "P2R4 starts from a fresh authority attempt; every deterministic receipt, actor, findings hash, changed-file hash, TaskReport field, and output path must be preflighted before begin, and phase closure remains restricted to PhaseGateVerifier plus PhaseGateCloser."
+    }
+  ],
+  "advisories": [
+    {
+      "finding_id": "P2R2-T4-REVIEW-006",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Valuation inputs still need instrument/as-of provenance when a real valuation adapter is introduced; the T5 staging path does not invoke that factory."
+    },
+    {
+      "finding_id": "P2R2-T5-REVIEW-003",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "Separate GenerationPublisher instances rely on the underlying cross-process publication lock; existing lock-internal candidate revalidation remains covered."
+    }
+  ],
+  "external_usage": {
+    "invocation_id": "p2r4-t5c-state-audit-20260730-codex-subagent",
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null
+  },
+  "blocking_findings_open": 0,
+  "verdict": "PASS"
+}
