@@ -113,6 +113,39 @@ class ImmutableReleaseStoreTests(unittest.TestCase):
             self.assertEqual("v2", _ManifestAdapter().validate(candidate))
             self.assertFalse(transaction.exists())
 
+    def test_recover_cancels_a_journal_only_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "releases"
+            _write_release(root / "current", "v1")
+            _write_release(root / "previous", "v0")
+            candidate = root / "candidate" / "v2"
+            _write_release(candidate, "v2")
+            transaction = root / ".promotion.crash.tmp"
+            transaction.mkdir()
+            (transaction / "transaction.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "immutable_release.transaction.v1",
+                        "operation": "PROMOTE",
+                        "candidate_name": "v2",
+                        "candidate_release_id": "v2",
+                        "expected_current_id": "v1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            receipt = ImmutableReleaseStore(
+                root,
+                adapter=_ManifestAdapter(),
+            ).recover()
+
+            self.assertEqual("ROLLED_BACK_INTERRUPTED_PROMOTION", receipt.action)
+            self.assertEqual("v1", _ManifestAdapter().validate(root / "current"))
+            self.assertEqual("v0", _ManifestAdapter().validate(root / "previous"))
+            self.assertEqual("v2", _ManifestAdapter().validate(candidate))
+            self.assertFalse(transaction.exists())
+
     def test_late_promotion_failure_restores_archived_previous_slot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "releases"

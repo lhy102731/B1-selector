@@ -278,14 +278,27 @@ class ImmutableReleaseStore:
             )
             expected_current_id = record["expected_current_id"]
             if expected_current_id is not None:
-                self._canonical_release_id(expected_current_id)
+                expected_current_id = self._canonical_release_id(
+                    expected_current_id
+                )
             candidate = self._root / "candidate" / candidate_name
             current = self._root / "current"
             previous = self._root / "previous"
             parked_current = transaction / "current"
             parked_previous = transaction / "previous"
 
-            if parked_current.exists():
+            if (
+                not parked_current.exists()
+                and not parked_previous.exists()
+                and candidate.exists()
+                and self._current_id(current) == expected_current_id
+            ):
+                if self._validate_release(candidate) != candidate_release_id:
+                    raise ReleaseConflictError(
+                        "interrupted candidate does not match the transaction"
+                    )
+                action = "ROLLED_BACK_INTERRUPTED_PROMOTION"
+            elif parked_current.exists():
                 if current.exists():
                     if self._validate_release(current) != candidate_release_id:
                         raise ReleaseConflictError(
