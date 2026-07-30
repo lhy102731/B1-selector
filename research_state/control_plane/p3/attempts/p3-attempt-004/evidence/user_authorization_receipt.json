@@ -1,0 +1,1 @@
+{"approval":"P0_P8_P9_PROJECT_AND_INTERNAL_P3_RECOVERY","recorded_at":"2026-07-30T00:00:00Z","schema_version":"control_plane.user_approval_receipt.v1","scope":"control-plane implementation and gates only; no research/backtest/data update/Campaign/Final Holdout","source":"user_messages_and_active_goal"}

@@ -1,0 +1,1 @@
+{"approval":"P0_P8_P9_PROJECT_AND_P3_RETRY","recorded_at":"2026-07-30T00:00:00Z","schema_version":"control_plane.user_approval_receipt.v1","scope":"P3 retry control-plane writes only; no research, backtest, data update, Campaign, or Final Holdout","source":"user_messages_and_active_goal"}
