@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 import sqlite3
 import tempfile
+import time
 from typing import Mapping
 
 from .contracts import SideEffect
@@ -94,7 +95,16 @@ def _durable_create_only(path: Path, raw: bytes) -> None:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
-        if path.read_bytes() != raw:
+        deadline = time.monotonic() + 1.0
+        while True:
+            try:
+                published_raw = path.read_bytes()
+                break
+            except (FileNotFoundError, PermissionError):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.01)
+        if published_raw != raw:
             raise ValueError("content-addressed packet conflict")
     finally:
         if descriptor >= 0:
@@ -310,24 +320,33 @@ def _authority_projection(
     task_report: Mapping[str, object],
 ):
     try:
-        binding = AuthorityReader().verify_task_report_binding(task_report)
+        frozen_report = _json_object(
+            _canonical_bytes(dict(task_report)),
+            "terminal P4 TaskReport",
+        )
+    except (TypeError, ValueError) as error:
+        raise LearningCommitAuthorizationError(
+            "terminal P4 TaskReport is not a stable canonical mapping"
+        ) from error
+    try:
+        binding = AuthorityReader().verify_task_report_binding(frozen_report)
     except (TaskReportAuthorityError, OSError, TypeError, ValueError) as error:
         raise LearningCommitAuthorizationError(
             "terminal P4 TaskReport authority is unavailable"
         ) from error
     if (
-        task_report.get("phase") != "P4"
-        or task_report.get("task_id") != _LEARNING_TASK_ID
+        frozen_report.get("phase") != "P4"
+        or frozen_report.get("task_id") != _LEARNING_TASK_ID
         or binding.ticket_state != "SUCCEEDED"
         or frozenset(binding.allowed_side_effects)
         != {SideEffect.WRITE_CONTROL_PLANE}
-        or frozenset(task_report.get("allowed_files", ()))
+        or frozenset(frozen_report.get("allowed_files", ()))
         != _LEARNING_ALLOWED_FILES
     ):
         raise LearningCommitAuthorizationError(
             "terminal P4 TaskReport does not authorize Learning Commit"
         )
-    input_refs = task_report.get("input_evidence_refs")
+    input_refs = frozen_report.get("input_evidence_refs")
     if not isinstance(input_refs, list):
         raise LearningCommitAuthorizationError("P4 evidence set is invalid")
     refs = {
@@ -344,8 +363,8 @@ def _authority_projection(
         raise LearningCommitAuthorizationError(
             "terminal evidence does not name the Learning decision"
         )
-    baseline_ref = task_report.get("baseline_ref")
-    baseline_sha256 = task_report.get("baseline_sha256")
+    baseline_ref = frozen_report.get("baseline_ref")
+    baseline_sha256 = frozen_report.get("baseline_sha256")
     if not isinstance(baseline_ref, str) or not baseline_ref.startswith(
         "research_state/control_plane/"
     ):
@@ -416,7 +435,7 @@ def _authority_projection(
     decision = _json_object(raw["learning-decision"], "learning decision")
     if decision != expected_decision:
         raise ValueError("learning decision differs from Authority-bound evidence")
-    return binding, evidence, claim, dict(task_report), artifact
+    return binding, evidence, claim, frozen_report, artifact
 
 
 def _validated_learning_packet(root: Path, raw: bytes):

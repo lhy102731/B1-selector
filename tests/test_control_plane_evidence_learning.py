@@ -908,6 +908,102 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
             self.assertEqual(len(set(hashes)), 1)
             self.assertEqual(ledger["event_count"], 1)
 
+    def test_packet_publication_tolerates_transient_windows_read_denial(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report, binding, _, _, _ = self._authority_fixture(root)
+            service = LearningCommitService(repository_root=root)
+            original_read_bytes = Path.read_bytes
+            denials = 0
+
+            def deny_new_packet_twice(path: Path) -> bytes:
+                nonlocal denials
+                if path.parent.name == "learning_packets" and denials < 2:
+                    denials += 1
+                    raise PermissionError("simulated transient sharing denial")
+                return original_read_bytes(path)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ), patch.object(Path, "read_bytes", deny_new_packet_twice):
+                packet_hash = service.commit(report)
+
+            self.assertEqual(denials, 2)
+            self.assertTrue(
+                (
+                    root
+                    / "research_state/control_plane/learning_packets"
+                    / f"{packet_hash}.json"
+                ).is_file()
+            )
+
+    def test_authority_verification_and_projection_share_one_report_snapshot(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        class MutatingReport(dict):
+            armed = False
+            mutated = False
+
+            def get(self, key, default=None):
+                if key == "phase" and self.armed and not self.mutated:
+                    self["input_evidence_refs"] = deepcopy(
+                        self.alternate_input_evidence_refs
+                    )
+                    self.mutated = True
+                return super().get(key, default)
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report, binding, _, _, _ = self._authority_fixture(root)
+            original_refs = deepcopy(report["input_evidence_refs"])
+            alternate_refs = deepcopy(original_refs)
+            for reference in alternate_refs:
+                if reference["evidence_id"] == "learning-decision":
+                    continue
+                original = root / reference["evidence_ref"]
+                alternate = original.with_name(f"alternate-{original.name}")
+                alternate.write_bytes(original.read_bytes())
+                reference["evidence_ref"] = alternate.relative_to(root).as_posix()
+            mutable = MutatingReport(report)
+            mutable.alternate_input_evidence_refs = alternate_refs
+
+            def verify_and_arm(candidate):
+                self.assertEqual(
+                    candidate["input_evidence_refs"],
+                    original_refs,
+                )
+                mutable.armed = True
+                return binding
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=verify_and_arm,
+            ):
+                packet_hash = LearningCommitService(
+                    repository_root=root
+                ).commit(mutable)
+
+            packet = json.loads(
+                (
+                    root
+                    / "research_state/control_plane/learning_packets"
+                    / f"{packet_hash}.json"
+                ).read_bytes()
+            )
+            self.assertEqual(
+                packet["authority_task_report"]["input_evidence_refs"],
+                original_refs,
+            )
+
     def test_rebuild_reports_packet_without_commit_event_as_orphan(self):
         from research_automation.control_plane.evidence_learning import LearningCommitService
 
