@@ -1674,6 +1674,10 @@ class TrustedBootstrapTests(unittest.TestCase):
                     binding.report_payload_sha256,
                     report["report_payload_sha256"],
                 )
+                self.assertEqual(
+                    binding.terminal_evidence_ref,
+                    "evidence/report-binding.json",
+                )
                 forged_draft = dict(report)
                 for computed_field in (
                     "schema_version",

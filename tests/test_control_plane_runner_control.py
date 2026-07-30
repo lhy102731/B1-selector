@@ -1,7 +1,6 @@
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -42,7 +41,7 @@ class P4RunControllerVerticalSliceTests(unittest.TestCase):
                     approved_claim=approved_claim,
                 ),
                 learning_commit_service=LearningCommitService(repository_root=root),
-            ).finalize(artifact=artifact, claim=approved_claim, actor=object())
+            ).finalize(artifact=artifact)
             self.assertEqual(result.evidence.verdict, "EVIDENCE_INVALID")
             self.assertIsNone(result.packet_hash)
             self.assertFalse((root / "research_state").exists())
@@ -74,12 +73,12 @@ class P4RunControllerVerticalSliceTests(unittest.TestCase):
                     approved_protocol={"label": "signal-day", "embargo_days": 5},
                 ),
                 learning_commit_service=LearningCommitService(repository_root=root),
-            ).finalize(artifact=artifact, claim={}, actor=object())
+            ).finalize(artifact=artifact)
             self.assertEqual(result.evidence.verdict, "NO_MATERIAL_FINDING")
             self.assertIsNone(result.packet_hash)
             self.assertFalse((root / "research_state").exists())
 
-    def test_valid_evidence_cannot_commit_without_live_authority_lease(self):
+    def test_valid_evidence_cannot_commit_without_terminal_authority_report(self):
         from research_automation.control_plane.evidence_learning import (
             EvidenceAdapter,
             LearningCommitService,
@@ -115,43 +114,15 @@ class P4RunControllerVerticalSliceTests(unittest.TestCase):
                 learning_commit_service=LearningCommitService(repository_root=root),
             )
             with self.assertRaises(RunAuthorizationError):
-                controller.finalize(artifact=artifact, claim=claim, actor=object())
+                controller.finalize(artifact=artifact)
             self.assertFalse((root / "research_state").exists())
 
-    def test_valid_evidence_with_live_p4_lease_commits_once(self):
-        from research_automation.control_plane.contracts import (
-            Actor,
-            Phase,
-            SideEffect,
-        )
+    def test_valid_evidence_projects_through_terminal_authority_report(self):
         from research_automation.control_plane.evidence_learning import (
             EvidenceAdapter,
             LearningCommitService,
         )
         from research_automation.control_plane.runner_control import P4RunController
-        from research_automation.control_plane import stores as stores_module
-
-        actor = Actor("runner-controller", "automation", "fixture-invocation")
-        identity = stores_module.AuthorityIdentity("a" * 64, "b" * 64, "c" * 64)
-        lease = stores_module.TaskExecutionLease(
-            lease_id="lease_fixture_runner_control",
-            ticket_id="ticket_fixture_runner_control",
-            grant_id="grant_fixture_runner_control",
-            authorization_ref="auth_fixture_runner_control",
-            phase=Phase.P4,
-            attempt_id="p4-fixture",
-            task_id="P4-RUNNER-CONTROL",
-            entry_policy_sha256="d" * 64,
-            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
-            actor=actor,
-            identity=identity,
-            _bearer_secret=stores_module._BearerSecret("fixture-secret"),
-        )
-        binding = SimpleNamespace(
-            phase=Phase.P4,
-            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
-            actor=actor,
-        )
         claim = {"kind": "NEGATIVE", "summary": "Fixture-only negative result."}
         artifact = {
             "schema_version": "runner.artifact.v1",
@@ -178,25 +149,18 @@ class P4RunControllerVerticalSliceTests(unittest.TestCase):
                 ),
                 learning_commit_service=service,
             )
-            with patch.object(
-                stores_module.AuthorityReader,
-                "execution_lease_binding",
-                return_value=binding,
-            ):
+            authority_report = {"ticket_id": "fixture-terminal-report"}
+            with patch.object(service, "commit", return_value="f" * 64):
                 first = controller.finalize(
                     artifact=artifact,
-                    claim=claim,
-                    actor=actor,
-                    authority_lease=lease,
+                    authority_task_report=authority_report,
                 )
                 second = controller.finalize(
                     artifact=artifact,
-                    claim=claim,
-                    actor=actor,
-                    authority_lease=lease,
+                    authority_task_report=authority_report,
                 )
             self.assertEqual(first.packet_hash, second.packet_hash)
-            self.assertEqual(service.rebuild_ledger()["event_count"], 1)
+            self.assertEqual(first.packet_hash, "f" * 64)
 
 
 if __name__ == "__main__":

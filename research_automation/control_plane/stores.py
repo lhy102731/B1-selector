@@ -710,6 +710,7 @@ class TaskReportAuthorityBinding:
     entry_policy_sha256: str | None
     allowed_side_effects: tuple[SideEffect, ...]
     ticket_state: str
+    terminal_evidence_ref: str
     report_payload_sha256: str
 
 
@@ -2200,9 +2201,13 @@ def _verify_task_report_authority(
             row["entry_policy_sha256"],
             "entry_policy_sha256",
         )
+        terminal_evidence_ref = _require_nonempty(
+            row["evidence_ref"],
+            "terminal_evidence_ref",
+        )
     except ValueError as error:
         raise TaskReportAuthorityError(
-            "TaskReport entry-policy authority binding is invalid"
+            "TaskReport terminal authority binding is invalid"
         ) from error
     return TaskReportAuthorityBinding(
         ticket_id=str(row["ticket_id"]),
@@ -2221,6 +2226,7 @@ def _verify_task_report_authority(
         entry_policy_sha256=entry_policy_sha256,
         allowed_side_effects=_effects_from_json(row["allowed_effects_json"]),
         ticket_state=str(row["state"]),
+        terminal_evidence_ref=terminal_evidence_ref,
         report_payload_sha256=str(report["report_payload_sha256"]),
     )
 
