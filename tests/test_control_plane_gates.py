@@ -1207,6 +1207,48 @@ class PhaseGateBuilderTests(unittest.TestCase):
         with self._trusted_gate_fixture(git_source_identity=True) as fixture:
             fixture.verifier.verify(fixture.report)
 
+    def test_public_verifier_accepts_gate_before_and_after_evidence_commit(
+        self,
+    ) -> None:
+        with self._trusted_gate_fixture(git_source_identity=True) as fixture:
+            raw = canonical_json(fixture.report).encode("utf-8")
+            fixture.verifier.verify_bytes(raw)
+            gate_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "official_gate.json"
+            )
+            gate_path.parent.mkdir(parents=True, exist_ok=True)
+            gate_path.write_bytes(raw)
+            relative = gate_path.relative_to(fixture.root).as_posix()
+            subprocess.run(
+                ["git", "add", relative],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Control Plane Tests",
+                    "-c",
+                    "user.email=control-plane@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "record official gate",
+                ],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+
+            fixture.verifier.verify_bytes(raw)
+
     def test_verifier_rejects_legacy_freeze_from_operational_gate(self) -> None:
         with self._trusted_gate_fixture(git_source_identity=False) as fixture:
             with self.assertRaisesRegex(

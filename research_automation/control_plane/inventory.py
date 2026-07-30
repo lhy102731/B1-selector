@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import subprocess
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,37 @@ _QUARANTINE_ELIGIBLE_CLASSIFICATIONS = frozenset(
 )
 _NONBLOCKING_TRACKED_DOCUMENT_PATHS = frozenset(
     {"CHANGELOG.md", "docs/b1_v3_results.md"}
+)
+_IMMUTABLE_GATE_EVIDENCE_PREFIX = "research_state/control_plane/"
+_MAX_IMMUTABLE_GATE_EVIDENCE_BYTES = 4 * 1024 * 1024
+_TRUSTED_GIT_EXECUTABLE = Path("D:/Git/mingw64/bin/git.exe")
+_TRUSTED_GIT_CANONICAL_EXECUTABLE = Path("D:/Git/mingw64/bin/git.exe")
+_TRUSTED_GIT_SHA256 = (
+    "cab4c4eea1d869cf9f7be73868dc9a90ad2df1b1b673e5f8c8714a576c25ea96"
+)
+_TRUSTED_GIT_RUNTIME_CLOSURE_SHA256 = (
+    "02466679eb920bca7fc64ec6113bd93833716039b1b9770f20c32e9fa0adaf93"
+)
+_TRUSTED_GIT_BUILTINS = frozenset(
+    {
+        "diff",
+        "diff-tree",
+        "cat-file",
+        "ls-files",
+        "ls-tree",
+        "merge-base",
+        "rev-list",
+        "rev-parse",
+    }
+)
+_TRUSTED_GIT_RUNTIME_IDENTITIES: dict[
+    str,
+    tuple[int, int, int, int, int],
+] | None = None
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"aux", "con", "nul", "prn"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
 )
 _EXECUTION_EXCLUDED_DIRECTORY_NAMES = frozenset(
     {
@@ -427,43 +460,199 @@ def unavailable_scheduler_sha256(task_path: str) -> str:
     ).hexdigest()
 
 
+def _trusted_git_runtime_files() -> tuple[Path, ...]:
+    lexical_executable = _TRUSTED_GIT_EXECUTABLE
+    current = lexical_executable
+    while current != current.parent:
+        if _is_reparse_point(current):
+            raise UnstableInventoryError(
+                "trusted Git executable path contains a reparse point"
+            )
+        current = current.parent
+    try:
+        executable = lexical_executable.resolve(strict=True)
+        approved = _TRUSTED_GIT_CANONICAL_EXECUTABLE.resolve(strict=True)
+    except OSError as error:
+        raise UnstableInventoryError(
+            "trusted Git executable is unavailable"
+        ) from error
+    if executable != approved:
+        raise UnstableInventoryError(
+            "trusted Git executable does not resolve to its approved path"
+        )
+    runtime_directory = executable.parent
+    try:
+        children = tuple(runtime_directory.iterdir())
+    except OSError as error:
+        raise UnstableInventoryError(
+            "trusted Git runtime closure is unavailable"
+        ) from error
+    candidates = [executable]
+    candidates.extend(
+        child
+        for child in children
+        if child.name.casefold().endswith(".dll")
+    )
+    by_name: dict[str, Path] = {}
+    for candidate in candidates:
+        canonical_name = candidate.name.casefold()
+        if canonical_name in by_name:
+            raise UnstableInventoryError(
+                "trusted Git runtime closure has a canonical name collision"
+            )
+        if _is_reparse_point(candidate) or not candidate.is_file():
+            raise UnstableInventoryError(
+                "trusted Git runtime closure contains an unsafe file"
+            )
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as error:
+            raise UnstableInventoryError(
+                "trusted Git runtime closure is unavailable"
+            ) from error
+        if resolved.parent != runtime_directory:
+            raise UnstableInventoryError(
+                "trusted Git runtime closure escaped its approved directory"
+            )
+        by_name[canonical_name] = resolved
+    if "git.exe" not in by_name:
+        raise UnstableInventoryError(
+            "trusted Git runtime closure is missing the executable"
+        )
+    return tuple(by_name[name] for name in sorted(by_name))
+
+
+def _verify_trusted_git_runtime() -> Path:
+    global _TRUSTED_GIT_RUNTIME_IDENTITIES
+
+    runtime_files = _trusted_git_runtime_files()
+    if _TRUSTED_GIT_RUNTIME_IDENTITIES is None:
+        entries: list[dict[str, object]] = []
+        identities: dict[str, tuple[int, int, int, int, int]] = {}
+        for path in runtime_files:
+            raw, identity = _read_stable_bytes(path, path.as_posix())
+            name = path.name.casefold()
+            entries.append(
+                {
+                    "name": path.name,
+                    "sha256": hashlib.sha256(raw).hexdigest(),
+                    "bytes": len(raw),
+                }
+            )
+            identities[name] = identity
+        closure = {
+            "schema_version": "control_plane.git_runtime_closure.v1",
+            "entries": entries,
+        }
+        digest = hashlib.sha256(canonical_json(closure).encode("utf-8")).hexdigest()
+        if digest != _TRUSTED_GIT_RUNTIME_CLOSURE_SHA256:
+            raise UnstableInventoryError(
+                "trusted Git runtime closure differs from its lock"
+            )
+        _TRUSTED_GIT_RUNTIME_IDENTITIES = identities
+    else:
+        current_identities: dict[str, tuple[int, int, int, int, int]] = {}
+        for path in runtime_files:
+            try:
+                metadata = path.stat()
+            except OSError as error:
+                raise UnstableInventoryError(
+                    "trusted Git runtime closure is unavailable"
+                ) from error
+            current_identities[path.name.casefold()] = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_size,
+                metadata.st_mtime_ns,
+                metadata.st_ctime_ns,
+            )
+        if current_identities != _TRUSTED_GIT_RUNTIME_IDENTITIES:
+            raise UnstableInventoryError(
+                "trusted Git runtime closure changed during use"
+            )
+    return runtime_files[0] if runtime_files[0].name.casefold() == "git.exe" else next(
+        path for path in runtime_files if path.name.casefold() == "git.exe"
+    )
+
+
 def _run_git(root: Path, *arguments: str) -> bytes:
-    environment = os.environ.copy()
-    repository_selectors = {
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        "GIT_ATTR_SOURCE",
-        "GIT_COMMON_DIR",
-        "GIT_DIR",
-        "GIT_INDEX_FILE",
-        "GIT_NAMESPACE",
-        "GIT_OBJECT_DIRECTORY",
-        "GIT_WORK_TREE",
+    if not arguments or arguments[0] not in _TRUSTED_GIT_BUILTINS:
+        raise UnstableInventoryError("Git command is outside the trusted builtin set")
+    git_executable = _verify_trusted_git_runtime()
+    try:
+        git_executable.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise UnstableInventoryError(
+            "trusted Git executable must be outside the repository"
+        )
+    try:
+        git_raw, _ = _read_stable_bytes(
+            git_executable,
+            git_executable.as_posix(),
+        )
+    except UnstableInventoryError as error:
+        raise UnstableInventoryError(
+            "trusted Git executable is unavailable"
+        ) from error
+    if hashlib.sha256(git_raw).hexdigest() != _TRUSTED_GIT_SHA256:
+        raise UnstableInventoryError("trusted Git executable differs from its lock")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        in {
+            "COMSPEC",
+            "LANG",
+            "LC_ALL",
+            "SystemRoot",
+            "TEMP",
+            "TMP",
+            "TMPDIR",
+            "WINDIR",
+        }
     }
-    for key in tuple(environment):
-        if key in repository_selectors or key.startswith("GIT_CONFIG_"):
-            environment.pop(key, None)
+    trusted_path_parts = [str(git_executable.parent)]
+    git_bin = git_executable.parent.parent / "bin"
+    if git_bin.is_dir():
+        trusted_path_parts.append(str(git_bin.resolve()))
+    if os.name == "nt":
+        system_root = environment.get("SystemRoot") or environment.get("WINDIR")
+        if system_root:
+            trusted_path_parts.append(str(Path(system_root) / "System32"))
+    else:
+        trusted_path_parts.extend(("/usr/bin", "/bin"))
+    environment["PATH"] = os.pathsep.join(dict.fromkeys(trusted_path_parts))
+    environment["GIT_EXEC_PATH"] = str(git_executable.parent)
     environment["GIT_NO_REPLACE_OBJECTS"] = "1"
     environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         completed = subprocess.run(
             [
-                "git",
+                str(git_executable),
+                "-C",
+                str(root),
                 "-c",
                 "core.fsmonitor=false",
                 "-c",
                 "core.untrackedCache=false",
+                "-c",
+                "diff.renameLimit=0",
                 *arguments,
             ],
-            cwd=root,
+            cwd=git_executable.parent,
             check=True,
             capture_output=True,
             timeout=15,
             env=environment,
         )
     except (OSError, subprocess.SubprocessError) as error:
+        _verify_trusted_git_runtime()
         raise UnstableInventoryError(
             "repository Git identity is unavailable"
         ) from error
+    _verify_trusted_git_runtime()
     return completed.stdout
 
 
@@ -480,6 +669,269 @@ def _git_object_id(root: Path, revision: str) -> str:
     ):
         raise UnstableInventoryError("repository Git identity is malformed")
     return value
+
+
+def _windows_evidence_path_key(
+    relative: str,
+    *,
+    require_canonical_case: bool,
+    require_json_suffix: bool = True,
+) -> str:
+    if (
+        not relative.startswith(_IMMUTABLE_GATE_EVIDENCE_PREFIX)
+        or (require_json_suffix and not relative.endswith(".json"))
+        or "\\" in relative
+    ):
+        raise UnstableInventoryError(
+            "post-freeze Git delta is outside immutable Gate evidence"
+        )
+    canonical_components: list[str] = []
+    for component in relative.split("/"):
+        normalized = unicodedata.normalize("NFC", component)
+        folded = normalized.casefold()
+        stem = folded.split(".", 1)[0]
+        if (
+            not component
+            or component != normalized
+            or component != component.strip()
+            or component.endswith(".")
+            or component in {".", ".."}
+            or any(
+                ord(character) < 32 or character in '<>:"|?*'
+                for character in component
+            )
+            or stem in _WINDOWS_RESERVED_NAMES
+            or re.fullmatch(r".+~[1-9][0-9]*(?:\..*)?", folded) is not None
+            or (require_canonical_case and component != folded)
+        ):
+            raise UnstableInventoryError(
+                "post-freeze Git evidence has a noncanonical Windows path"
+            )
+        canonical_components.append(folded)
+    return "/".join(canonical_components)
+
+
+def _verify_canonical_git_json_blob(root: Path, object_id: str) -> None:
+    try:
+        size_text = _run_git(root, "cat-file", "-s", object_id).decode(
+            "ascii",
+            errors="strict",
+        ).strip()
+        size = int(size_text)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise UnstableInventoryError(
+            "post-freeze Git evidence blob size is malformed"
+        ) from error
+    if size < 0 or size > _MAX_IMMUTABLE_GATE_EVIDENCE_BYTES:
+        raise UnstableInventoryError(
+            "post-freeze Git evidence blob exceeds its byte limit"
+        )
+    raw = _run_git(root, "cat-file", "blob", object_id)
+    if len(raw) != size:
+        raise UnstableInventoryError(
+            "post-freeze Git evidence blob size changed during verification"
+        )
+    try:
+        payload = parse_strict_json(
+            raw,
+            artifact_name="post-freeze Git evidence",
+        )
+    except ArtifactSemanticError as error:
+        raise UnstableInventoryError(
+            "post-freeze Git evidence is not canonical JSON"
+        ) from error
+    if raw != canonical_json(payload).encode("utf-8"):
+        raise UnstableInventoryError(
+            "post-freeze Git evidence is not canonical JSON"
+        )
+
+
+def _verify_immutable_evidence_commits(
+    root: Path,
+    *,
+    frozen_commit: str,
+    current_commit: str,
+) -> None:
+    """Accept a linear descendant suffix containing only new Gate JSON evidence."""
+
+    _run_git(root, "merge-base", "--is-ancestor", frozen_commit, current_commit)
+    try:
+        commits = _run_git(
+            root,
+            "rev-list",
+            "--reverse",
+            "--parents",
+            f"{frozen_commit}..{current_commit}",
+        ).decode("ascii", errors="strict").splitlines()
+    except UnicodeDecodeError as error:
+        raise UnstableInventoryError(
+            "post-freeze Git history is malformed"
+        ) from error
+    if not commits:
+        raise UnstableInventoryError(
+            "current Git identity has no immutable evidence commits"
+        )
+    expected_parent = frozen_commit
+    added_paths: set[str] = set()
+    frozen_path_keys: dict[str, str] = {}
+    evidence_blob_ids: set[str] = set()
+    frozen_entries = _run_git(
+        root,
+        "ls-tree",
+        "-r",
+        "-z",
+        frozen_commit,
+        "--",
+        _IMMUTABLE_GATE_EVIDENCE_PREFIX,
+    ).split(b"\0")
+    if frozen_entries and frozen_entries[-1] == b"":
+        frozen_entries.pop()
+    for frozen_entry in frozen_entries:
+        try:
+            header, raw_path = frozen_entry.split(b"\t", 1)
+            _mode, object_type, object_id = header.split(b" ")
+            frozen_path = raw_path.decode("utf-8", errors="strict").replace(
+                "\\", "/"
+            )
+            decoded_object_id = object_id.decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise UnstableInventoryError(
+                "frozen Git evidence tree is malformed"
+            ) from error
+        if not frozen_path.startswith(_IMMUTABLE_GATE_EVIDENCE_PREFIX):
+            continue
+        key = _windows_evidence_path_key(
+            frozen_path,
+            require_canonical_case=False,
+            require_json_suffix=False,
+        )
+        if key in frozen_path_keys:
+            raise UnstableInventoryError(
+                "frozen Git evidence contains a Windows path alias"
+            )
+        frozen_path_keys[key] = frozen_path
+        if object_type == b"blob":
+            evidence_blob_ids.add(decoded_object_id)
+    evidence_path_keys = dict(frozen_path_keys)
+    for commit_line in commits:
+        commit_parts = commit_line.split()
+        if len(commit_parts) != 2 or commit_parts[1] != expected_parent:
+            raise UnstableInventoryError(
+                "post-freeze Git history is not a linear single-parent descendant"
+            )
+        commit = commit_parts[0]
+        similarity_changes = _run_git(
+            root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "-z",
+            "-C",
+            "--find-copies-harder",
+            expected_parent,
+            commit,
+            "--",
+        ).split(b"\0")
+        if similarity_changes and similarity_changes[-1] == b"":
+            similarity_changes.pop()
+        similarity_index = 0
+        while similarity_index < len(similarity_changes):
+            status = similarity_changes[similarity_index]
+            similarity_index += 1
+            if status.startswith((b"C", b"R")):
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence was copied or renamed"
+                )
+            similarity_index += 1
+        if similarity_index != len(similarity_changes):
+            raise UnstableInventoryError(
+                "post-freeze Git similarity delta is malformed"
+            )
+        raw_changes = _run_git(
+            root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "-r",
+            "-z",
+            "--no-renames",
+            expected_parent,
+            commit,
+            "--",
+        )
+        parts = raw_changes.split(b"\0")
+        if parts and parts[-1] == b"":
+            parts.pop()
+        if not parts or len(parts) % 2:
+            raise UnstableInventoryError(
+                "post-freeze Git delta is malformed"
+            )
+        for index in range(0, len(parts), 2):
+            if parts[index] != b"A":
+                raise UnstableInventoryError(
+                    "post-freeze Git delta is not immutable add-only evidence"
+                )
+            try:
+                relative = parts[index + 1].decode(
+                    "utf-8",
+                    errors="strict",
+                ).replace("\\", "/")
+            except UnicodeDecodeError as error:
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence path is malformed"
+                ) from error
+            windows_key = _windows_evidence_path_key(
+                relative,
+                require_canonical_case=True,
+            )
+            if windows_key in evidence_path_keys:
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence collides with a Windows path alias"
+                )
+            evidence_path_keys[windows_key] = relative
+            tree_entry = _run_git(
+                root,
+                "ls-tree",
+                "-z",
+                commit,
+                "--",
+                relative,
+            )
+            try:
+                header, tree_path = tree_entry.removesuffix(b"\0").split(
+                    b"\t",
+                    1,
+                )
+                mode, object_type, object_id = header.split(b" ")
+                decoded_tree_path = tree_path.decode("utf-8", errors="strict")
+                decoded_object_id = object_id.decode("ascii", errors="strict")
+            except (UnicodeDecodeError, ValueError) as error:
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence tree entry is malformed"
+                ) from error
+            if (
+                mode != b"100644"
+                or object_type != b"blob"
+                or decoded_tree_path.replace("\\", "/") != relative
+            ):
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence mode or type is unsafe"
+                )
+            if decoded_object_id in evidence_blob_ids:
+                raise UnstableInventoryError(
+                    "post-freeze Git evidence reuses an existing evidence blob"
+                )
+            _verify_canonical_git_json_blob(root, decoded_object_id)
+            evidence_blob_ids.add(decoded_object_id)
+            added_paths.add(relative)
+        expected_parent = commit
+    if expected_parent != current_commit:
+        raise UnstableInventoryError(
+            "post-freeze Git history does not reach the current commit"
+        )
+    for relative in sorted(added_paths):
+        _resolve_stable_file(root, relative)
 
 
 def _assert_git_toplevel(root: Path) -> None:
@@ -1064,9 +1516,26 @@ def verify_current_git_inventory(
     root = _repository_root(repository_root)
     source_before, _ = _capture_git_source_identity(root)
     if canonical_sha256(source_before) != expected_identity:
-        raise UnstableInventoryError(
-            "current executable surface differs from the Git source identity"
+        frozen_commit = freeze_manifest.get("git_commit")
+        frozen_tree = freeze_manifest.get("git_tree")
+        if not isinstance(frozen_commit, str) or not isinstance(frozen_tree, str):
+            raise UnstableInventoryError("Git source identity evidence is invalid")
+        if _git_object_id(root, f"{frozen_commit}^{{tree}}") != frozen_tree:
+            raise UnstableInventoryError(
+                "frozen Git tree does not belong to the frozen commit"
+            )
+        _verify_immutable_evidence_commits(
+            root,
+            frozen_commit=frozen_commit,
+            current_commit=str(source_before["git_commit"]),
         )
+        projected_source = dict(source_before)
+        projected_source["git_commit"] = frozen_commit
+        projected_source["git_tree"] = frozen_tree
+        if canonical_sha256(projected_source) != expected_identity:
+            raise UnstableInventoryError(
+                "current executable surface differs from the Git source identity"
+            )
     try:
         scanned_records = EntryInventory.scan(root, scheduler_records=())
         byte_policy_entry = _byte_identity_policy_entry_from_root(root)
