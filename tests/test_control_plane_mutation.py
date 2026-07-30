@@ -2,13 +2,12 @@ import sys
 import hashlib
 import shutil
 from datetime import datetime, timezone
+from dataclasses import replace
 import json
 from io import BytesIO
 import tempfile
 import unittest
 from pathlib import Path
-from subprocess import TimeoutExpired
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
@@ -133,6 +132,10 @@ class _ContainerHarness:
     def __init__(
         self, transaction, runtime, exit_code, stdout, hang, lease, policy,
         cleanup_returncode,
+        git_stdout,
+        git_hang,
+        git_unavailable,
+        git_callback,
     ):
         self._transaction = transaction
         self._runtime = runtime
@@ -144,6 +147,10 @@ class _ContainerHarness:
         self.lease = lease
         self.policy = policy
         self._cleanup_returncode = cleanup_returncode
+        self._git_stdout = git_stdout
+        self._git_hang = git_hang
+        self._git_unavailable = git_unavailable
+        self._git_callback = git_callback
 
     def apply(self, patch_bytes):
         subprocess_module = __import__("subprocess")
@@ -151,7 +158,29 @@ class _ContainerHarness:
         real_popen = subprocess_module.Popen
 
         class FakePopen:
+            def __new__(nested_class, command, **kwargs):
+                if (
+                    Path(command[0]).name.lower() == "git.exe"
+                    and not self._git_stdout
+                    and not self._git_hang
+                    and not self._git_unavailable
+                    and self._git_callback is None
+                ):
+                    return real_popen(command, **kwargs)
+                return super().__new__(nested_class)
+
             def __init__(nested_self, command, **kwargs):
+                if Path(command[0]).name.lower() == "git.exe":
+                    if self._git_unavailable:
+                        raise FileNotFoundError("git missing")
+                    if self._git_callback is not None:
+                        callback = self._git_callback
+                        self._git_callback = None
+                        callback()
+                    nested_self.returncode = None if self._git_hang else 0
+                    nested_self.stdout = BytesIO(self._git_stdout)
+                    nested_self.stderr = BytesIO()
+                    return
                 self.container_env = dict(kwargs["env"])
                 verb = command[1]
                 if verb == "create":
@@ -207,6 +236,10 @@ def _transaction(*, repository_root, allowed_files, **kwargs):
     sandbox_stdout = kwargs.pop("sandbox_stdout", b"")
     sandbox_hang = kwargs.pop("sandbox_hang", False)
     cleanup_returncode = kwargs.pop("cleanup_returncode", 0)
+    git_stdout = kwargs.pop("git_stdout", b"")
+    git_hang = kwargs.pop("git_hang", False)
+    git_unavailable = kwargs.pop("git_unavailable", False)
+    git_callback = kwargs.pop("git_callback", None)
     support_files = tuple(kwargs.get("support_files", ()))
     runtime_value = shutil.which("docker") or shutil.which("podman")
     git_value = shutil.which("git")
@@ -285,6 +318,10 @@ def _transaction(*, repository_root, allowed_files, **kwargs):
         lease,
         policy,
         cleanup_returncode,
+        git_stdout,
+        git_hang,
+        git_unavailable,
+        git_callback,
     )
 
 
@@ -423,6 +460,61 @@ index 76d6bb0..2ef267e
             self.assertEqual(source.read_bytes(), b"VALUE = 1\n")
             self.assertFalse(outside.exists())
 
+    def test_headerless_second_file_section_is_rejected(self):
+        from research_automation.control_plane.mutation import (
+            MutationRejected,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            source = root / "allowed.py"
+            source.write_bytes(b"VALUE = 1\n")
+            patch_bytes = b"""diff --git a/allowed.py b/allowed.py
+--- a/allowed.py
++++ b/allowed.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+--- /dev/null
++++ b/conftest.py
+@@ -0,0 +1 @@
++ESCAPED = True
+"""
+            with self.assertRaisesRegex(MutationRejected, "ambiguous patch header"):
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("allowed.py",),
+                ).apply(patch_bytes)
+            self.assertEqual(source.read_bytes(), b"VALUE = 1\n")
+
+    def test_windows_case_cannot_bypass_forbidden_path(self):
+        from research_automation.control_plane.mutation import MutationRejected
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            target = root / "DATA" / "x.py"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"VALUE = 1\n")
+            with self.assertRaisesRegex(MutationRejected, "intersects forbidden files"):
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("DATA/x.py",),
+                )
+
+    def test_oversized_patch_is_rejected_before_git(self):
+        from research_automation.control_plane.mutation import MutationRejected
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            (root / "allowed.py").write_bytes(b"VALUE = 1\n")
+            with self.assertRaisesRegex(MutationRejected, "patch exceeds size limit"):
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("allowed.py",),
+                ).apply(b"x" * (4 * 1024 * 1024 + 1))
+
     def test_source_tree_drift_rejects_validated_workspace_result(self):
         from research_automation.control_plane.mutation import (
             MutationRejected,
@@ -441,27 +533,15 @@ index 76d6bb0..2ef267e
 -VALUE = 1
 +VALUE = 2
 """
-            calls = 0
-
-            def simulate_git(*args, **kwargs):
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    source.write_bytes(b"VALUE = 99\n")
-                return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
-
-            with patch(
-                "research_automation.control_plane.mutation.subprocess.run",
-                side_effect=simulate_git,
+            with self.assertRaisesRegex(
+                MutationRejected,
+                "source tree changed during mutation",
             ):
-                with self.assertRaisesRegex(
-                    MutationRejected,
-                    "source tree changed during mutation",
-                ):
-                    _transaction(
-                        repository_root=root,
-                        allowed_files=("allowed.py",),
-                    ).apply(patch_bytes)
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("allowed.py",),
+                    git_callback=lambda: source.write_bytes(b"VALUE = 99\n"),
+                ).apply(patch_bytes)
 
     def test_git_apply_timeout_is_translated_to_mutation_rejection(self):
         from research_automation.control_plane.mutation import (
@@ -480,15 +560,16 @@ index 76d6bb0..2ef267e
 -VALUE = 1
 +VALUE = 2
 """
+            transaction = _transaction(
+                repository_root=root,
+                allowed_files=("allowed.py",),
+                git_hang=True,
+            )
             with patch(
-                "research_automation.control_plane.mutation.subprocess.run",
-                side_effect=TimeoutExpired("git apply", 30),
-            ):
-                with self.assertRaisesRegex(MutationRejected, "git apply timed out"):
-                    _transaction(
-                        repository_root=root,
-                        allowed_files=("allowed.py",),
-                    ).apply(patch_bytes)
+                "research_automation.control_plane.mutation.time.monotonic",
+                side_effect=[0.0, 31.0] + [31.0] * 10,
+            ), self.assertRaisesRegex(MutationRejected, "Git timed out"):
+                transaction.apply(patch_bytes)
 
     def test_git_spawn_failure_is_translated_to_mutation_rejection(self):
         from research_automation.control_plane.mutation import (
@@ -507,15 +588,34 @@ index 76d6bb0..2ef267e
 -VALUE = 1
 +VALUE = 2
 """
-            with patch(
-                "research_automation.control_plane.mutation.subprocess.run",
-                side_effect=FileNotFoundError("git missing"),
-            ):
-                with self.assertRaisesRegex(MutationRejected, "git apply unavailable"):
-                    _transaction(
-                        repository_root=root,
-                        allowed_files=("allowed.py",),
-                    ).apply(patch_bytes)
+            with self.assertRaisesRegex(MutationRejected, "Git unavailable"):
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("allowed.py",),
+                    git_unavailable=True,
+                ).apply(patch_bytes)
+
+    def test_git_output_is_bounded(self):
+        from research_automation.control_plane.mutation import MutationRejected
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            (root / "allowed.py").write_bytes(b"VALUE = 1\n")
+            patch_bytes = b"""diff --git a/allowed.py b/allowed.py
+--- a/allowed.py
++++ b/allowed.py
+@@ -1 +1 @@
+-VALUE = 1
++VALUE = 2
+"""
+            transaction = _transaction(
+                repository_root=root,
+                allowed_files=("allowed.py",),
+                git_stdout=b"x" * (1024 * 1024 + 1),
+            )
+            with self.assertRaisesRegex(MutationRejected, "Git output exceeded limit"):
+                transaction.apply(patch_bytes)
 
     def test_delete_patch_is_rejected_before_workspace_mutation(self):
         from research_automation.control_plane.mutation import (
@@ -747,10 +847,11 @@ KcmZQzWC8#H2mk;8
             )
             with self.assertRaisesRegex(MutationRejected, "output exceeded limit"):
                 transaction.apply(patch_bytes)
-            self.assertEqual(
-                [command[0] for command in transaction.cleanup_commands],
-                ["rm", "container"] * 6,
-            )
+            cleanup_verbs = [
+                command[0] for command in transaction.cleanup_commands
+            ]
+            self.assertGreaterEqual(len(cleanup_verbs), 4)
+            self.assertEqual(cleanup_verbs[:4], ["rm", "container"] * 2)
 
     def test_selected_test_timeout_forces_container_cleanup(self):
         from research_automation.control_plane.mutation import MutationRejected
@@ -771,15 +872,27 @@ KcmZQzWC8#H2mk;8
                 allowed_files=("allowed.py",),
                 sandbox_hang=True,
             )
+            clock_calls = 0
+
+            def fake_monotonic():
+                nonlocal clock_calls
+                clock_calls += 1
+                return (
+                    0.0
+                    if clock_calls < 50
+                    else 121.0 + (clock_calls - 50) * 0.2
+                )
+
             with patch(
                 "research_automation.control_plane.mutation.time.monotonic",
-                side_effect=[0.0, 0.0, 121.0] + [121.0] * 20,
+                side_effect=fake_monotonic,
             ), self.assertRaisesRegex(MutationRejected, "selected test timed out"):
                 transaction.apply(patch_bytes)
-            self.assertEqual(
-                [command[0] for command in transaction.cleanup_commands],
-                ["rm", "container"] * 6,
-            )
+            cleanup_verbs = [
+                command[0] for command in transaction.cleanup_commands
+            ]
+            self.assertGreaterEqual(len(cleanup_verbs), 4)
+            self.assertEqual(cleanup_verbs[:4], ["rm", "container"] * 2)
 
     def test_daemon_failure_cannot_masquerade_as_container_cleanup(self):
         from research_automation.control_plane.mutation import MutationRejected
@@ -800,7 +913,7 @@ KcmZQzWC8#H2mk;8
                 allowed_files=("allowed.py",),
                 cleanup_returncode=125,
             )
-            with self.assertRaisesRegex(MutationRejected, "container cleanup failed"):
+            with self.assertRaisesRegex(MutationRejected, "IN_DOUBT"):
                 transaction.apply(patch_bytes)
 
     def test_selected_test_uses_disposable_support_files_and_records_actor(self):
@@ -922,6 +1035,36 @@ KcmZQzWC8#H2mk;8
                     selected_tests=(("python", "-c", "pass"),),
                     authority_lease=bound.lease,
                     sandbox_policy_bytes=unbound_policy,
+                )
+
+    def test_non_p4_authority_lease_cannot_authorize_mutation(self):
+        from research_automation.control_plane.mutation import (
+            MutationRejected,
+            MutationTransaction,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            (root / "allowed.py").write_bytes(b"VALUE = 1\n")
+            bound = _transaction(
+                repository_root=root,
+                allowed_files=("allowed.py",),
+            )
+            binding = stores_module.AuthorityReader().execution_lease_binding(
+                bound.lease
+            )
+            with patch.object(
+                stores_module.AuthorityReader,
+                "execution_lease_binding",
+                return_value=replace(binding, phase=Phase.P3),
+            ), self.assertRaisesRegex(MutationRejected, "requires P4 authority"):
+                MutationTransaction(
+                    repository_root=root,
+                    allowed_files=("allowed.py",),
+                    selected_tests=(("python", "-c", "pass"),),
+                    authority_lease=bound.lease,
+                    sandbox_policy_bytes=canonical_json(bound.policy).encode("utf-8"),
                 )
 
 

@@ -18,7 +18,12 @@ import threading
 import time
 from types import MappingProxyType
 
-from research_automation.control_plane.contracts import Actor, SideEffect, canonical_json
+from research_automation.control_plane.contracts import (
+    Actor,
+    Phase,
+    SideEffect,
+    canonical_json,
+)
 from research_automation.control_plane.stores import (
     AuthorityReader,
     TaskExecutionLease,
@@ -28,6 +33,10 @@ from research_automation.control_plane.stores import (
 
 class MutationRejected(RuntimeError):
     """Raised before an unsafe or out-of-scope patch can touch a workspace."""
+
+
+class MutationStateInDoubt(MutationRejected):
+    """Raised when a started container cannot be proven absent."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +100,7 @@ def _run_bounded_process(
     timeout_seconds: int,
     output_limit_bytes: int,
     capture_stdout_bytes: int = 0,
+    operation_label: str = "selected test",
 ) -> _BoundedProcessResult:
     try:
         process = subprocess.Popen(
@@ -102,7 +112,7 @@ def _run_bounded_process(
             stderr=subprocess.PIPE,
         )
     except OSError as error:
-        raise MutationRejected("selected test unavailable") from error
+        raise MutationRejected(f"{operation_label} unavailable") from error
     assert process.stdout is not None and process.stderr is not None
     overflow = threading.Event()
     stream_results: dict[str, tuple[str, bytes]] = {}
@@ -129,10 +139,10 @@ def _run_bounded_process(
     failure: str | None = None
     while process.poll() is None:
         if overflow.is_set():
-            failure = "selected test output exceeded limit"
+            failure = f"{operation_label} output exceeded limit"
             break
         if time.monotonic() >= deadline:
-            failure = "selected test timed out"
+            failure = f"{operation_label} timed out"
             break
         overflow.wait(0.02)
     if failure is not None:
@@ -141,15 +151,15 @@ def _run_bounded_process(
         returncode = process.wait(timeout=5)
     except subprocess.TimeoutExpired as error:
         process.kill()
-        raise MutationRejected("selected test process did not stop") from error
+        raise MutationRejected(f"{operation_label} process did not stop") from error
     for reader in readers:
         reader.join(timeout=5)
     if any(reader.is_alive() for reader in readers):
-        raise MutationRejected("selected test output stream did not close")
+        raise MutationRejected(f"{operation_label} output stream did not close")
     if stream_errors:
-        raise MutationRejected("selected test output stream failed") from stream_errors[0]
+        raise MutationRejected(f"{operation_label} output stream failed") from stream_errors[0]
     if failure is None and overflow.is_set():
-        failure = "selected test output exceeded limit"
+        failure = f"{operation_label} output exceeded limit"
     if failure is not None:
         raise MutationRejected(failure)
     return _BoundedProcessResult(
@@ -171,6 +181,10 @@ def _canonical_relative_path(value: str) -> str:
     ):
         raise MutationRejected("patch path is unsafe")
     return path
+
+
+def _windows_path_key(value: str) -> str:
+    return value.replace("\\", "/").rstrip("/").casefold()
 
 
 def _patch_header_path(value: str) -> str | None:
@@ -236,6 +250,8 @@ class MutationTransaction:
             SideEffect.GIT_MUTATION,
             SideEffect.START_SUBPROCESS,
         }
+        if binding.phase is not Phase.P4:
+            raise MutationRejected("mutation requires P4 authority")
         if not required_effects.issubset(binding.allowed_side_effects):
             raise MutationRejected("mutation lease lacks required authority")
         if not isinstance(sandbox_policy_bytes, bytes) or not sandbox_policy_bytes:
@@ -306,10 +322,10 @@ class MutationTransaction:
         ):
             raise MutationRejected("sandbox mutation scope is not Authority-bound")
         for relative in policy_allowed_files | policy_support_files:
-            normalized = relative.rstrip("/")
+            normalized = _windows_path_key(relative)
             if any(
-                normalized == rule.rstrip("/")
-                or normalized.startswith(rule.rstrip("/") + "/")
+                normalized == _windows_path_key(rule)
+                or normalized.startswith(_windows_path_key(rule) + "/")
                 for rule in forbidden_files
                 if isinstance(rule, str) and ":" not in rule
             ):
@@ -418,6 +434,7 @@ class MutationTransaction:
         evidence_refs = task_spec.get("input_evidence_refs", [])
         if (
             binding.actor != self._actor
+            or binding.phase is not Phase.P4
             or not {
                 SideEffect.READ,
                 SideEffect.WRITE_STAGING,
@@ -441,50 +458,68 @@ class MutationTransaction:
         container_identity: str,
         *,
         filter_expression: str,
+        identity_known: bool,
         runtime_path: Path,
         cwd: Path,
         env: dict[str, str],
     ) -> None:
-        absent_count = 0
-        for _ in range(6):
-            removal = _run_bounded_process(
-                (str(runtime_path), "rm", "--force", container_identity),
-                cwd=cwd,
-                env=env,
-                timeout_seconds=15,
-                output_limit_bytes=64 * 1024,
-            )
-            if removal.returncode not in {0, 1}:
-                raise MutationRejected("selected test container cleanup failed")
-            listing = _run_bounded_process(
-                (
-                    str(runtime_path),
-                    "container",
-                    "ls",
-                    "--all",
-                    "--quiet",
-                    "--filter",
-                    filter_expression,
-                ),
-                cwd=cwd,
-                env=env,
-                timeout_seconds=15,
-                output_limit_bytes=64 * 1024,
-                capture_stdout_bytes=256,
-            )
-            if listing.returncode != 0:
-                raise MutationRejected("selected test container cleanup failed")
+        deadline = time.monotonic() + 5
+        absent_since: float | None = None
+        while time.monotonic() < deadline:
+            try:
+                if (
+                    hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+                    != self._container_runtime_sha256
+                ):
+                    raise MutationRejected("staged container runtime changed")
+                removal = _run_bounded_process(
+                    (str(runtime_path), "rm", "--force", container_identity),
+                    cwd=cwd,
+                    env=env,
+                    timeout_seconds=15,
+                    output_limit_bytes=64 * 1024,
+                )
+                listing = _run_bounded_process(
+                    (
+                        str(runtime_path),
+                        "container",
+                        "ls",
+                        "--all",
+                        "--quiet",
+                        "--filter",
+                        filter_expression,
+                    ),
+                    cwd=cwd,
+                    env=env,
+                    timeout_seconds=15,
+                    output_limit_bytes=64 * 1024,
+                    capture_stdout_bytes=256,
+                )
+                if removal.returncode not in {0, 1} or listing.returncode != 0:
+                    raise MutationRejected("container daemon cleanup command failed")
+            except (MutationRejected, OSError):
+                absent_since = None
+                time.sleep(0.1)
+                continue
             if listing.stdout_sample.strip():
-                absent_count = 0
+                absent_since = None
             else:
-                absent_count += 1
+                now = time.monotonic()
+                if absent_since is None:
+                    absent_since = now
+                stable_seconds = now - absent_since
+                if (identity_known and stable_seconds >= 0.1) or stable_seconds >= 1:
+                    return
             time.sleep(0.1)
-        if absent_count < 2:
-            raise MutationRejected("selected test container cleanup failed")
+        raise MutationStateInDoubt(
+            "selected test container state is IN_DOUBT after cleanup deadline"
+        )
 
     def apply(self, patch: bytes) -> MutationResult:
         if not isinstance(patch, bytes) or not patch:
             raise MutationRejected("patch must be non-empty bytes")
+        if len(patch) > 4 * 1024 * 1024:
+            raise MutationRejected("patch exceeds size limit")
         try:
             text = patch.decode("utf-8", errors="strict")
         except UnicodeDecodeError as error:
@@ -528,6 +563,8 @@ class MutationTransaction:
             ):
                 raise MutationRejected("unsupported patch operation")
             if in_hunk:
+                if line.startswith(("--- ", "+++ ")):
+                    raise MutationRejected("ambiguous patch header")
                 continue
             for prefix in ("--- ", "+++ ", "rename from ", "rename to ", "copy from ", "copy to "):
                 if line.startswith(prefix):
@@ -558,6 +595,9 @@ class MutationTransaction:
                 raise MutationRejected("container runtime staging failed") from error
             if runtime_copy_sha256 != self._container_runtime_sha256:
                 raise MutationRejected("container runtime staging failed")
+            patch_file = control / "mutation.diff"
+            patch_file.write_bytes(patch)
+            patch_sha256 = hashlib.sha256(patch).hexdigest()
             for relative in sorted(self._staged_files):
                 source = self._root.joinpath(*relative.split("/"))
                 try:
@@ -583,14 +623,14 @@ class MutationTransaction:
                     "core.autocrlf=false",
                     "apply",
                     "--check",
-                    "-",
+                    str(patch_file),
                 ),
                 (
                     str(self._git_runtime),
                     "-c",
                     "core.autocrlf=false",
                     "apply",
-                    "-",
+                    str(patch_file),
                 ),
             ):
                 self._revalidate_authority()
@@ -602,20 +642,29 @@ class MutationTransaction:
                     raise MutationRejected("Git runtime changed") from error
                 if current_git_sha256 != self._git_runtime_sha256:
                     raise MutationRejected("Git runtime changed")
-                try:
-                    completed = subprocess.run(
-                        command,
-                        cwd=workspace,
-                        input=patch,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        check=False,
-                        timeout=30,
-                    )
-                except subprocess.TimeoutExpired as error:
-                    raise MutationRejected("git apply timed out") from error
-                except OSError as error:
-                    raise MutationRejected("git apply unavailable") from error
+                if hashlib.sha256(patch_file.read_bytes()).hexdigest() != patch_sha256:
+                    raise MutationRejected("patch bytes changed before Git apply")
+                system_root = os.environ.get("SystemRoot")
+                comspec = os.environ.get("ComSpec")
+                if not system_root or not comspec:
+                    raise MutationRejected("Git runtime environment is unavailable")
+                completed = _run_bounded_process(
+                    command,
+                    cwd=workspace,
+                    env={
+                        "SystemRoot": system_root,
+                        "ComSpec": comspec,
+                        "TEMP": str(control),
+                        "TMP": str(control),
+                        "HOME": str(control),
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_CONFIG_GLOBAL": os.devnull,
+                        "GIT_TERMINAL_PROMPT": "0",
+                    },
+                    timeout_seconds=30,
+                    output_limit_bytes=1024 * 1024,
+                    operation_label="Git",
+                )
                 if completed.returncode != 0:
                     raise MutationRejected("git apply rejected the patch")
             files = {
@@ -691,7 +740,13 @@ class MutationTransaction:
                 }
                 cleanup_identity = container_name
                 cleanup_filter = f"name=^/{container_name}$"
+                identity_known = False
                 try:
+                    if (
+                        hashlib.sha256(runtime_copy.read_bytes()).hexdigest()
+                        != self._container_runtime_sha256
+                    ):
+                        raise MutationRejected("staged container runtime changed")
                     created = _run_bounded_process(
                         (str(runtime_copy), *create_arguments),
                         cwd=workspace,
@@ -711,6 +766,12 @@ class MutationTransaction:
                         raise MutationRejected("selected test container identity is invalid")
                     cleanup_identity = container_id
                     cleanup_filter = f"id={container_id}"
+                    identity_known = True
+                    if (
+                        hashlib.sha256(runtime_copy.read_bytes()).hexdigest()
+                        != self._container_runtime_sha256
+                    ):
+                        raise MutationRejected("staged container runtime changed")
                     completed = _run_bounded_process(
                         (str(runtime_copy), "start", "--attach", container_id),
                         cwd=workspace,
@@ -722,6 +783,7 @@ class MutationTransaction:
                     self._cleanup_container(
                         cleanup_identity,
                         filter_expression=cleanup_filter,
+                        identity_known=identity_known,
                         runtime_path=runtime_copy,
                         cwd=workspace,
                         env=container_env,
@@ -790,6 +852,7 @@ class MutationTransaction:
 __all__ = [
     "MutationRejected",
     "MutationResult",
+    "MutationStateInDoubt",
     "MutationTestReceipt",
     "MutationTransaction",
 ]
