@@ -1,0 +1,47 @@
+{
+  "schema_version": "control_plane.p2r4_t8_completion_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T8-OFFICIAL-GATE",
+  "authorization_ref": "auth_7af72ccea1b9d909318a2f7628e09d61",
+  "grant_id": "grant_0fdb92bf5cd497ae672e3647a3ec7325",
+  "ticket_id": "c949df38a9746edf7d380be2be25f9fde6df0397085db78cd11455860851c233",
+  "ticket_state": "SUCCEEDED",
+  "started_at": "2026-07-30T00:50:24.620389+00:00",
+  "completed_at": "2026-07-30T00:50:24.701254+00:00",
+  "closure_runtime_git_head": "c5f062cc4d12fb86008b29fb857e516e1d56e68f",
+  "closure_runtime_git_tree": "c1190f7f8e053f8e6502c15f8fa430f46d1336cd",
+  "task_spec_sha256": "72dd2864283e80f8d906d78b0cccb1fb7874facc83f2438ca7c923f21882d1ac",
+  "task_report_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_task_report.json",
+  "task_report_file_sha256": "0f4c9fd2e2480cb535c2f180be93344a386ef15be5090e6b9c59ad3909c0895e",
+  "task_report_payload_sha256": "89123334433e1bb8ba6cd2833143cc98a0963d0af71f689023734285ae889966",
+  "task_report_authority_binding_verified": true,
+  "trusted_receipt_count": 18,
+  "trusted_receipt_breakdown": {
+    "EVIDENCE": 13,
+    "REVIEW": 2,
+    "TEST": 3
+  },
+  "entry_policy_activation": {
+    "prior_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+    "active_policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+    "compare_and_swap": "PASS",
+    "prior_policy_preserved_immutable": true
+  },
+  "external_usage": {
+    "known_token_lower_bound": 392628,
+    "unknown_invocation_lower_bound": 10,
+    "unknown_is_zero": false
+  },
+  "root_capability_logged_or_written": false,
+  "side_effects": {
+    "control_plane_state_written": true,
+    "p3_entered": false,
+    "real_data_or_kbase_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "pending_outbox_count": 0,
+  "result": "PASS"
+}

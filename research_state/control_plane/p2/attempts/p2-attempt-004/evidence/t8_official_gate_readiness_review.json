@@ -1,0 +1,79 @@
+{
+  "schema_version": "control_plane.p2r4_t8_official_gate_readiness_review.v1",
+  "review_id": "p2r4-t8-official-gate-readiness-review",
+  "receipt_id": "independent-p2r4-t8-official-gate-readiness-review",
+  "reviewed_at": "2026-07-30T00:42:50.520230Z",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "candidate": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_official_gate_readiness_candidate.json",
+    "sha256": "e96d51518e056c403c86a197328e9a38dfb8e55bedd8def517a2cfedd02d9cfe"
+  },
+  "reviewer": {
+    "actor_id": "independent-p2r4-t8-official-gate-readiness-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p2r4-t8-official-gate-readiness-review-20260730-codex-019fb072-060b-7ea0-ad62-81296453d234",
+    "independent_from_task_actor": true
+  },
+  "decision": "PASS",
+  "counts_as_gate_readiness_approval": true,
+  "checks": [
+    {
+      "check_id": "task_spec_contract",
+      "status": "PASS",
+      "detail": "Spec/task/dependency/idempotency/file bounds and receipt requirements match P2-CR-004."
+    },
+    {
+      "check_id": "refreshed_gate_artifacts",
+      "status": "PASS",
+      "detail": "Freeze c5f062cc/c1190f7f, 489-entry inventory, VERIFIED scheduler, and policy 49e728d0 bind exactly."
+    },
+    {
+      "check_id": "authority_task_report_prestate",
+      "status": "PASS",
+      "detail": "T5C/T6/T7 are Authority-valid PASS and exactly equal the succeeded pre-ticket set; adverse sets and pending outbox are empty."
+    },
+    {
+      "check_id": "ticket_and_lease_sequence",
+      "status": "PASS",
+      "detail": "Ticket under d923c4dc, receipt prevalidation, and one retained lease avoid policy circularity and lease loss."
+    },
+    {
+      "check_id": "policy_activation_binding",
+      "status": "PASS",
+      "detail": "CAS activates 49e728d0 under the T8 ticket; after success the verifier accepts the active policy binding."
+    },
+    {
+      "check_id": "four_report_gate_set",
+      "status": "PASS",
+      "detail": "Finish and mirror before TaskReport construction yield exactly four shared-baseline Authority-valid PASS reports."
+    },
+    {
+      "check_id": "public_gate_close_and_replay",
+      "status": "PASS",
+      "detail": "verify_bytes then close_bytes then same-HEAD replay is correct; private close is forbidden and auto_advance false."
+    },
+    {
+      "check_id": "phase_boundary",
+      "status": "PASS",
+      "detail": "No P3 or prohibited data/research/scheduler activity is authorized; stop is P2/P3."
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "advisories": [
+    {
+      "finding_id": "T8-GATE-ADV-001",
+      "status": "REQUIRED_POST_CLOSE_ASSERTION",
+      "summary": "Mirror PHASE_GATE_CLOSED and assert pending_outbox_count is zero after close/replay."
+    }
+  ],
+  "external_usage": {
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "unknown_is_zero": false
+  },
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b"
+}

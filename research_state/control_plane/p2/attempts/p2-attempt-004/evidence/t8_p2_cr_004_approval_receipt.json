@@ -1,0 +1,9 @@
+{
+  "schema_version": "control_plane.p2r4_change_request_approval.v1",
+  "change_request_id": "P2-CR-004",
+  "approval_text": "APPROVE_CHANGE_REQUEST id=P2-CR-004",
+  "approved_at": "2026-07-30T00:33:04.094813Z",
+  "approved_by": "user",
+  "scope": "Minimal T8 freeze/inventory/policy refresh and official P2 Gate closure at current stable HEAD; no source-code change, new attempt, data/KBase read, scheduler/ACL mutation, daily update, backtest, research, Campaign, Holdout, or P3 entry.",
+  "verdict": "APPROVED"
+}

@@ -1,0 +1,142 @@
+{
+  "schema_version": "control_plane.p2r4_t8_official_gate_readiness_candidate.v1",
+  "created_at": "2026-07-30T00:34:07.813468Z",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "identity_binding": {
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "25d11e3d5457c128c57ba34e8694aef2c30e3bb021c0c53a8bd95d6a4a283abc",
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+  },
+  "change_request": {
+    "id": "P2-CR-004",
+    "approval": "APPROVE_CHANGE_REQUEST id=P2-CR-004",
+    "receipt": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_p2_cr_004_approval_receipt.json",
+      "sha256": "04997394a265190eacdacfc5fbe868da34461098c01bc36cf2bcc9efa717421c"
+    }
+  },
+  "task_spec": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/task_specs/t8_official_gate.json",
+    "sha256": "72dd2864283e80f8d906d78b0cccb1fb7874facc83f2438ca7c923f21882d1ac",
+    "task_id": "P2R4-T8-OFFICIAL-GATE",
+    "dependency": "P2R4-T7-FINAL-INVENTORY-POLICY",
+    "idempotency_key": "p2-attempt-004-t8-official-gate"
+  },
+  "authority_pre_ticket": {
+    "active_entry_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+    "active_grant_ids": [
+      "grant_0fdb92bf5cd497ae672e3647a3ec7325"
+    ],
+    "open_ticket_ids": [],
+    "succeeded_ticket_ids": [
+      "29c84bbb4ed839ac2b260d3af2cd878bc6f24425d0a5550e548efe86213b6f3b",
+      "ae22a816579f70978ad507cc810f431760cc7f91ead33aa74e5eb1e63fb728af",
+      "c3af5969c06642c88a3353c622e5d1c31b4b96610377251e157aa2c1ef8fdab5"
+    ],
+    "failed_ticket_ids": [],
+    "in_doubt_ticket_ids": [],
+    "pending_outbox_count": 0
+  },
+  "authority_invariants": {
+    "authorization_ref": "auth_7af72ccea1b9d909318a2f7628e09d61",
+    "active_grant_id": "grant_0fdb92bf5cd497ae672e3647a3ec7325",
+    "p2_gate_closure": null,
+    "t8_ticket_issued": false,
+    "active_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14"
+  },
+  "existing_task_reports": [
+    {
+      "task_id": "P2R4-T5C-SCOPE-ADOPTION",
+      "ticket_id": "29c84bbb4ed839ac2b260d3af2cd878bc6f24425d0a5550e548efe86213b6f3b",
+      "outcome": "PASS",
+      "report_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t5c_task_report.json",
+      "report_sha256": "31dba9a270746f1ddaf66b944616ac4f99fd2722b440eb2a83bfe371238c64f5",
+      "report_payload_sha256": "dfc3c86149f70dc845caf1eed0794ca748bdd0643a3255c2696e5671988c62ef"
+    },
+    {
+      "task_id": "P2R4-T6-INTEGRATION-FREEZE",
+      "ticket_id": "c3af5969c06642c88a3353c622e5d1c31b4b96610377251e157aa2c1ef8fdab5",
+      "outcome": "PASS",
+      "report_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t6_task_report.json",
+      "report_sha256": "9e7d07934f8a065d105036c7616cae8a9744af67b8d84b31d84d01032d148f96",
+      "report_payload_sha256": "c701f22e5bfb751a0f63305e612de6cb46ec064a36b6cf313a13ebc015048e16"
+    },
+    {
+      "task_id": "P2R4-T7-FINAL-INVENTORY-POLICY",
+      "ticket_id": "ae22a816579f70978ad507cc810f431760cc7f91ead33aa74e5eb1e63fb728af",
+      "outcome": "PASS",
+      "report_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_task_report.json",
+      "report_sha256": "f654c00f34304919a4c1449c2c52993cc408af34fd7fcc3d3ab5ca69eee2be4a",
+      "report_payload_sha256": "b08bba604d825ead88389f64c953e0c92cf2052439df0615c1c7fdca29be6fd3"
+    }
+  ],
+  "gate_artifacts": {
+    "implementation_baseline": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/implementation_baseline.json",
+      "sha256": "f4349691c17c93d88e162c4a22797344680fd9665b9057493c43dc71375d8942",
+      "baseline_payload_sha256": "be5067d7d15c36267d2db1d4bd3a609f408238205265a03476bfbff15a55e134"
+    },
+    "code_freeze_manifest": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_closure_code_freeze_manifest_v2.json",
+      "sha256": "9e26770d4bafca3a169665a44ad2ce09e817526e4f539d2404f3237fdaf66f3a",
+      "git_commit": "c5f062cc4d12fb86008b29fb857e516e1d56e68f",
+      "git_tree": "c1190f7f8e053f8e6502c15f8fa430f46d1336cd",
+      "source_identity_sha256": "28a0df1c0f7ac3498f86372a813b2c86e4381d63acfd69e8620a2bb0e260cf5a"
+    },
+    "final_inventory": {
+      "ref": "research_state/control_plane/inventories/final_inventory_v342_p2r4_t8_git_v3.json",
+      "sha256": "9cf2bb7ee5dee5c5bdf15ccaa4062a38a347d41503e2672c00034c3d5adfa1fc",
+      "entry_count": 489,
+      "inventory_payload_sha256": "cfe0bc78e0dcb2f5835ce75cfb8e5a2ab5169dfed33096611ef8a05435f684be"
+    },
+    "scheduler_inventory": {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_external_scheduler_inventory.json",
+      "sha256": "e0681ed68eeaf3812a7fa4f75503c54b67c25101fad61343cc1bf08aa052c361",
+      "status": "VERIFIED"
+    },
+    "reviewed_entry_policy": {
+      "ref": "research_state/control_plane/policies/49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80.json",
+      "sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+      "policy_payload_sha256": "fb141341b0f56989ebb16fa2164c065f1ccae50ff652779a03960e8d99fb7658",
+      "inventory_payload_sha256": "cfe0bc78e0dcb2f5835ce75cfb8e5a2ab5169dfed33096611ef8a05435f684be",
+      "review_receipt_sha256": "fba38a071955a1587671a0f50ee7715548864670e65a7023e6a74c161f3956f6",
+      "reviewer_id": "independent-p2r4-t8-entry-policy-reviewer"
+    }
+  },
+  "execution_contract": {
+    "ticket_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+    "begin_after_deterministic_receipt_prevalidation": true,
+    "single_trusted_process": true,
+    "cas_activate_policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+    "finish_state": "SUCCEEDED",
+    "mirror_outbox_to_zero": true,
+    "build_and_authority_verify_t8_task_report": true
+  },
+  "gate_contract": {
+    "task_report_set_after_t8": [
+      "P2R4-T5C-SCOPE-ADOPTION",
+      "P2R4-T6-INTEGRATION-FREEZE",
+      "P2R4-T7-FINAL-INVENTORY-POLICY",
+      "P2R4-T8-OFFICIAL-GATE"
+    ],
+    "verify_api": "PhaseGateVerifier.verify_bytes",
+    "close_api": "PhaseGateCloser.close_bytes",
+    "direct_private_close_forbidden": true,
+    "idempotent_closer_replay": true,
+    "auto_advance": false,
+    "stop_boundary": "P2/P3"
+  },
+  "required_checks": [
+    "All referenced persisted bytes and semantic validators pass",
+    "Current live Git inventory matches refreshed freeze/inventory",
+    "T5C/T6/T7 reports are Authority-valid PASS and exactly equal the succeeded pre-ticket set",
+    "T8 ticket will be issued under d923c4dc and deterministic receipts are prevalidated before begin",
+    "CAS activation binds the exact independently approved 49e728d0 policy",
+    "T8 TaskReport will become the fourth Authority-valid PASS report",
+    "Gate is verified before close through public APIs and replayed idempotently",
+    "No data/KBase, scheduler/ACL, P3, daily update, backtest, research, Campaign, or Holdout activity"
+  ],
+  "decision_requested": "PASS only if all required checks and P2/P3 boundary constraints are sound before T8 ticket issuance"
+}

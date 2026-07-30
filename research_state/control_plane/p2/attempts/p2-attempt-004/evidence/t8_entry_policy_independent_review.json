@@ -1,0 +1,79 @@
+{
+  "schema_version": "control_plane.p2r4_t8_entry_policy_boundary_review.v1",
+  "review_id": "p2r4-t8-entry-policy-boundary-review",
+  "receipt_id": "independent-p2r4-t8-entry-policy-review",
+  "reviewed_at": "2026-07-30T00:31:52.169541Z",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "candidate": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_entry_policy_review_candidate.json",
+    "sha256": "e6bf1512977b0b49156774c54aa8f3757fdb088a2b5a0c374ad2fdbda444d208"
+  },
+  "reviewer": {
+    "actor_id": "independent-p2r4-t8-entry-policy-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p2r4-t8-entry-policy-review-20260730-codex-019fb068-6cd0-7cc3-a901-667a676911b5",
+    "independent_from_task_actor": true
+  },
+  "decision": "PASS",
+  "counts_as_policy_approval": true,
+  "checks": [
+    {
+      "check_id": "persisted_byte_hashes",
+      "status": "PASS",
+      "detail": "Candidate hashes match persisted freeze, refreshed inventory, scheduler evidence, and active old policy bytes."
+    },
+    {
+      "check_id": "git_freeze_identity",
+      "status": "PASS",
+      "detail": "Commit c5f062cc4d12fb86008b29fb857e516e1d56e68f resolves to tree c1190f7f8e053f8e6502c15f8fa430f46d1336cd; active dirty paths are empty."
+    },
+    {
+      "check_id": "inventory_refresh",
+      "status": "PASS",
+      "detail": "Refreshed inventory has 489 entries; entries exactly equal T7."
+    },
+    {
+      "check_id": "quarantine_runtime_hashes",
+      "status": "PASS",
+      "detail": "122 quarantined executable entries exactly equal T7 and the THS runtime dependency hash is unchanged."
+    },
+    {
+      "check_id": "scheduler_binding",
+      "status": "PASS",
+      "detail": "Scheduler evidence matches inventory and production action bytes; READ_ONLY and VERIFIED with altered_by_p0=false."
+    },
+    {
+      "check_id": "projected_policy_derivation",
+      "status": "PASS",
+      "detail": "Projected policy hashes derive exactly from refreshed inventory and entries are inventory-identical."
+    },
+    {
+      "check_id": "old_policy_immutability_cas",
+      "status": "PASS",
+      "detail": "Old policy is immutable and activation uses compare-and-swap from d923c4dc."
+    },
+    {
+      "check_id": "scope_boundary",
+      "status": "PASS",
+      "detail": "Scope exactly matches APPROVE_CHANGE_REQUEST id=P2-CR-004 and contains no prohibited activity."
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "advisories": [
+    {
+      "finding_id": "T8-ADV-001",
+      "status": "CARRIED_NON_BLOCKING",
+      "summary": "CHANGELOG.md and docs/b1_v3_results.md remain explicit nonblocking tracked dirty paths."
+    }
+  ],
+  "external_usage": {
+    "status": "UNKNOWN",
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "unknown_is_zero": false
+  },
+  "findings_sha256": "e883b06abe3bfd2f73defdc6decfd49fda4f89e69a002b30a5bd4174fcfbd7ea"
+}

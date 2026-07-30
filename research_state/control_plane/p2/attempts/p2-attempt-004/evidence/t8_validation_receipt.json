@@ -1,0 +1,68 @@
+{
+  "schema_version": "control_plane.p2r4_t8_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T8-OFFICIAL-GATE",
+  "ticket_id": "c949df38a9746edf7d380be2be25f9fde6df0397085db78cd11455860851c233",
+  "validated_at": "2026-07-30T00:50:24.617494Z",
+  "validation_git_head": "c5f062cc4d12fb86008b29fb857e516e1d56e68f",
+  "validation_git_tree": "c1190f7f8e053f8e6502c15f8fa430f46d1336cd",
+  "test_receipts": [
+    {
+      "receipt_id": "p2r4-t8-final-artifact-live-inventory",
+      "result": "PASS",
+      "entry_count": 489,
+      "scheduler_status": "VERIFIED",
+      "policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80"
+    },
+    {
+      "receipt_id": "p2r4-t8-gate-regressions",
+      "result": "PASS",
+      "tests_run": 82,
+      "tests_failed": 0,
+      "duration_seconds": "100.190"
+    },
+    {
+      "receipt_id": "p2r4-t8-authority-task-report-set",
+      "result": "PASS",
+      "authority_bound_task_reports": 3,
+      "succeeded_ticket_count": 3,
+      "open_ticket_count": 0,
+      "failed_ticket_count": 0,
+      "in_doubt_ticket_count": 0,
+      "pending_outbox_count": 0
+    }
+  ],
+  "independent_reviews": [
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_entry_policy_independent_review.json",
+      "sha256": "b531b2ba826eb069eb2d7a395629757ca48716dafb54f5561ff5f44ab70a4062",
+      "decision": "PASS"
+    },
+    {
+      "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_official_gate_readiness_review.json",
+      "sha256": "c7d9987dacb2737435dbff98629c8170cd8b498d470e915d98174e514e0a4f2f",
+      "decision": "PASS"
+    }
+  ],
+  "deterministic_receipt_prevalidation": {
+    "test": 3,
+    "review": 2,
+    "evidence": 13,
+    "result": "PASS"
+  },
+  "phase_boundary": {
+    "p3_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "source_code_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

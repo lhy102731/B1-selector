@@ -1,0 +1,163 @@
+{
+  "schema_version": "control_plane.task_spec_envelope.v1",
+  "payload": {
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "plan_version": "V3.4.2-P0R2",
+    "phase": "P2",
+    "attempt_id": "p2-attempt-004",
+    "identity_binding": {
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "scope_hash": "25d11e3d5457c128c57ba34e8694aef2c30e3bb021c0c53a8bd95d6a4a283abc",
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5"
+    },
+    "task": {
+      "task_id": "P2R4-T8-OFFICIAL-GATE",
+      "objective": "Refresh the final P2 Git source identity, bounded executable inventory, read-only production scheduler binding, and independently approved content-addressed entry policy at the current stable HEAD; execute the official P2 Gate through the public verifier and closer, then stop at the P2/P3 boundary.",
+      "dependencies": [
+        "P2R4-T7-FINAL-INVENTORY-POLICY"
+      ],
+      "idempotency_key": "p2-attempt-004-t8-official-gate",
+      "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/task_specs/t8_official_gate.json",
+      "requirements": {
+        "required_test_receipt_ids": [
+          "p2r4-t8-final-artifact-live-inventory",
+          "p2r4-t8-gate-regressions",
+          "p2r4-t8-authority-task-report-set"
+        ],
+        "required_review_receipt_ids": [
+          "independent-p2r4-t8-entry-policy-review",
+          "independent-p2r4-t8-official-gate-readiness-review"
+        ],
+        "required_evidence_ids": [
+          "p2-cr-004-approval",
+          "p2r4-authorization",
+          "implementation-baseline",
+          "t7-task-report",
+          "t7-completion-receipt",
+          "t8-final-code-freeze",
+          "t8-final-inventory",
+          "t8-scheduler-inventory",
+          "t8-policy-review-candidate",
+          "t8-policy-independent-review",
+          "t8-policy-publication-receipt",
+          "t8-published-policy",
+          "prior-active-policy"
+        ]
+      },
+      "allowed_files": [
+        "research_state/control_plane/p2/",
+        "research_state/control_plane/inventories/",
+        "research_state/control_plane/policies/"
+      ],
+      "forbidden_files": [
+        ".env",
+        "ag2_research/",
+        "apps/",
+        "artifacts/",
+        "backtest_optimized.py",
+        "build_indicators_cache.py",
+        "config/",
+        "data/",
+        "data_ths/",
+        "data_pre_ths_backup_20260727_110350/",
+        "docs/",
+        "models/",
+        "outputs/",
+        "requirements/",
+        "research_automation/",
+        "research_state/control_plane/authority/",
+        "research_state/control_plane/operational/",
+        "strategy/",
+        "tests/",
+        "tools/",
+        "utils/",
+        "D:/KBase/"
+      ],
+      "baseline_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/implementation_baseline.json",
+      "baseline_sha256": "f4349691c17c93d88e162c4a22797344680fd9665b9057493c43dc71375d8942",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p2-cr-004-approval",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_p2_cr_004_approval_receipt.json",
+          "evidence_sha256": "04997394a265190eacdacfc5fbe868da34461098c01bc36cf2bcc9efa717421c",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p2r4-authorization",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/trusted_authorization_activation_receipt.json",
+          "evidence_sha256": "809d7d63693c7a38917e6ab09de6ba2a66442b412b38a3060b4e870a1e9cae8b",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "implementation-baseline",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/implementation_baseline.json",
+          "evidence_sha256": "f4349691c17c93d88e162c4a22797344680fd9665b9057493c43dc71375d8942",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t7-task-report",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_task_report.json",
+          "evidence_sha256": "f654c00f34304919a4c1449c2c52993cc408af34fd7fcc3d3ab5ca69eee2be4a",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t7-completion-receipt",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t7_completion_receipt.json",
+          "evidence_sha256": "fe6b6bc5c41fb9383f8efef8ba9aed7382993d5c96cb5d7678a3cc1858fc2526",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-final-code-freeze",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_closure_code_freeze_manifest_v2.json",
+          "evidence_sha256": "9e26770d4bafca3a169665a44ad2ce09e817526e4f539d2404f3237fdaf66f3a",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-final-inventory",
+          "evidence_ref": "research_state/control_plane/inventories/final_inventory_v342_p2r4_t8_git_v3.json",
+          "evidence_sha256": "9cf2bb7ee5dee5c5bdf15ccaa4062a38a347d41503e2672c00034c3d5adfa1fc",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-scheduler-inventory",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_external_scheduler_inventory.json",
+          "evidence_sha256": "e0681ed68eeaf3812a7fa4f75503c54b67c25101fad61343cc1bf08aa052c361",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-policy-review-candidate",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_entry_policy_review_candidate.json",
+          "evidence_sha256": "e6bf1512977b0b49156774c54aa8f3757fdb088a2b5a0c374ad2fdbda444d208",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-policy-independent-review",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_entry_policy_independent_review.json",
+          "evidence_sha256": "b531b2ba826eb069eb2d7a395629757ca48716dafb54f5561ff5f44ab70a4062",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-policy-publication-receipt",
+          "evidence_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_entry_policy_publication_receipt.json",
+          "evidence_sha256": "b5f9cc4a738c9411d52f51f5ceef0406a15665cbc2a43656a87b41e2f726b573",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "t8-published-policy",
+          "evidence_ref": "research_state/control_plane/policies/49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80.json",
+          "evidence_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "prior-active-policy",
+          "evidence_ref": "research_state/control_plane/policies/d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14.json",
+          "evidence_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+          "status": "VERIFIED"
+        }
+      ]
+    }
+  },
+  "computed": {
+    "payload_sha256": "9019007c6f49481cd4f349006c68159294cb005a605bd0d9899fef0e60b58627"
+  }
+}

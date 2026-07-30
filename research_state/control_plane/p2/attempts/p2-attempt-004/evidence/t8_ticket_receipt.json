@@ -1,0 +1,23 @@
+{
+  "schema_version": "control_plane.task_ticket_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "task_id": "P2R4-T8-OFFICIAL-GATE",
+  "ticket_id": "c949df38a9746edf7d380be2be25f9fde6df0397085db78cd11455860851c233",
+  "ticket_state": "ISSUED",
+  "authorization_ref": "auth_7af72ccea1b9d909318a2f7628e09d61",
+  "grant_id": "grant_0fdb92bf5cd497ae672e3647a3ec7325",
+  "entry_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+  "task_spec_ref": "research_state/control_plane/p2/attempts/p2-attempt-004/task_specs/t8_official_gate.json",
+  "task_spec_sha256": "72dd2864283e80f8d906d78b0cccb1fb7874facc83f2438ca7c923f21882d1ac",
+  "allowed_side_effects": [
+    "WRITE_CONTROL_PLANE"
+  ],
+  "recorded_at": "2026-07-30T00:50:24.617221Z",
+  "pending_outbox_count_after_mirror": 0,
+  "lease_started": false,
+  "bearer_secret_recorded": false,
+  "active_policy_before_activation": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+  "candidate_policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80"
+}

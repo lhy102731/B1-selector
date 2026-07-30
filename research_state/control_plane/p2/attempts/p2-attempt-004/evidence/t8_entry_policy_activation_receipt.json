@@ -1,0 +1,40 @@
+{
+  "schema_version": "control_plane.p2r4_t8_entry_policy_activation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "activated_at": "2026-07-30T00:50:24.697597+00:00",
+  "activation": {
+    "compare_and_swap": "PASS",
+    "expected_old_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+    "new_policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+    "policy_payload_sha256": "fb141341b0f56989ebb16fa2164c065f1ccae50ff652779a03960e8d99fb7658",
+    "inventory_payload_sha256": "cfe0bc78e0dcb2f5835ce75cfb8e5a2ab5169dfed33096611ef8a05435f684be",
+    "review_receipt_sha256": "fba38a071955a1587671a0f50ee7715548864670e65a7023e6a74c161f3956f6",
+    "reviewer_id": "independent-p2r4-t8-entry-policy-reviewer",
+    "prior_policy_preserved_immutable": true
+  },
+  "ticket": {
+    "ticket_id": "c949df38a9746edf7d380be2be25f9fde6df0397085db78cd11455860851c233",
+    "state": "SUCCEEDED",
+    "trusted_receipt_count": 18
+  },
+  "task_report": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/evidence/t8_task_report.json",
+    "sha256": "0f4c9fd2e2480cb535c2f180be93344a386ef15be5090e6b9c59ad3909c0895e",
+    "report_payload_sha256": "89123334433e1bb8ba6cd2833143cc98a0963d0af71f689023734285ae889966",
+    "outcome": "PASS"
+  },
+  "outbox": {
+    "scanned": 21,
+    "inserted": 21,
+    "acknowledged": 21
+  },
+  "capability_custody": {
+    "dpapi_current_user": true,
+    "plaintext_logged": false,
+    "plaintext_persisted": false,
+    "root_capability_staged": false
+  },
+  "verdict": "PASS"
+}

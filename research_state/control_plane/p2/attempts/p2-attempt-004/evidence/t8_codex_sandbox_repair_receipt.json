@@ -1,0 +1,74 @@
+{
+  "schema_version": "control_plane.p2r4_t8_codex_sandbox_repair_receipt.v1",
+  "recorded_at": "2026-07-30T00:42:50.520800Z",
+  "root_cause": "The PATH shim for Codex 0.144.6 could not resolve/copy its same-version command runner; the Windows read-only sandbox helper then failed. Calling the real standalone release binary resolved the matching codex-resources directory and produced SANDBOX_PASS.",
+  "fallback_used": false,
+  "scope_or_review_parameters_changed": false,
+  "invalid_review_counted_as_approval": false,
+  "attempts": [
+    {
+      "thread_id": "019fb05b-99ed-7a31-8f2f-105fa7bb24bd",
+      "purpose": "entry-policy review before sandbox repair",
+      "result": "DIAGNOSTIC_ONLY_NOT_COUNTED",
+      "sandbox_integrity": "FAILED",
+      "usage_observed": {
+        "input_tokens": 2088671,
+        "output_tokens": 11169
+      }
+    },
+    {
+      "thread_id": "019fb060-d20a-70b3-80a8-1205fa988767",
+      "purpose": "PATH-shim sandbox probe",
+      "result": "FAIL",
+      "sandbox_integrity": "FAILED",
+      "usage_observed": {
+        "input_tokens": 42256,
+        "output_tokens": 102
+      }
+    },
+    {
+      "thread_id": "019fb061-5ca0-7fd1-8df7-d02df34207d8",
+      "purpose": "real-release-binary sandbox probe",
+      "result": "SANDBOX_PASS",
+      "sandbox_integrity": "PASS",
+      "usage_observed": {
+        "input_tokens": 42259,
+        "output_tokens": 62
+      }
+    },
+    {
+      "thread_id": "019fb062-09a7-7da2-8fd0-b074ce3dd965",
+      "purpose": "entry-policy review with repaired sandbox",
+      "result": "TOOL_TIMEOUT_NO_FINAL",
+      "sandbox_integrity": "PASS",
+      "usage_observed": null
+    },
+    {
+      "thread_id": "019fb068-6cd0-7cc3-a901-667a676911b5",
+      "purpose": "counted independent entry-policy review",
+      "result": "PASS",
+      "sandbox_integrity": "PASS",
+      "usage_observed": {
+        "input_tokens": 1515696,
+        "output_tokens": 14013
+      }
+    },
+    {
+      "thread_id": "019fb072-060b-7ea0-ad62-81296453d234",
+      "purpose": "counted independent official-gate readiness review",
+      "result": "PASS",
+      "sandbox_integrity": "PASS",
+      "usage_observed": {
+        "input_tokens": 3238260,
+        "output_tokens": 14822
+      }
+    }
+  ],
+  "unknown_usage_accounting": {
+    "historical_unknown_invocation_lower_bound": 8,
+    "t8_independent_reviews_added": 2,
+    "current_unknown_invocation_lower_bound": 10,
+    "unknown_is_zero": false
+  },
+  "verdict": "PASS"
+}

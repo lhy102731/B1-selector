@@ -1,0 +1,20 @@
+{
+  "schema_version": "control_plane.p2r4_t8_entry_policy_publication_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "published_at": "2026-07-30T00:31:52.190062Z",
+  "policy_ref": "research_state/control_plane/policies/49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80.json",
+  "policy_file_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+  "policy_payload_sha256": "fb141341b0f56989ebb16fa2164c065f1ccae50ff652779a03960e8d99fb7658",
+  "inventory_payload_sha256": "cfe0bc78e0dcb2f5835ce75cfb8e5a2ab5169dfed33096611ef8a05435f684be",
+  "review_receipt_sha256": "fba38a071955a1587671a0f50ee7715548864670e65a7023e6a74c161f3956f6",
+  "reviewer_id": "independent-p2r4-t8-entry-policy-reviewer",
+  "entry_count": 489,
+  "publication_mode": "CREATE_ONLY_CONTENT_ADDRESSED",
+  "existing_policy_overwritten": false,
+  "active_policy_changed": false,
+  "activation_requires_live_t8_lease": true,
+  "prior_active_policy_sha256": "d923c4dc08c4db3742c0b1a415cb33e15c959c556cfb8c69189f1a70a71d6e14",
+  "verdict": "PASS"
+}

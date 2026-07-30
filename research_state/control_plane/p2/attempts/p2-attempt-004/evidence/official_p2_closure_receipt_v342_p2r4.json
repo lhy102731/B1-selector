@@ -1,0 +1,66 @@
+{
+  "schema_version": "control_plane.official_p2_closure_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P2",
+  "attempt_id": "p2-attempt-004",
+  "gate": {
+    "ref": "research_state/control_plane/p2/attempts/p2-attempt-004/gates/official_p2_gate_v342_p2r4.json",
+    "sha256": "1daa0e0f65a512027679d79a0512f4f55f744c939bdc1f312025470e3409ecd0",
+    "gate_report_sha256": "dbd72ab0f7ef8a82f33057c3b03a160990600c64961d161d71fd9d3bf928a6f4",
+    "verdict": "PASS",
+    "auto_advance": false
+  },
+  "closure": {
+    "gate_report_sha256": "dbd72ab0f7ef8a82f33057c3b03a160990600c64961d161d71fd9d3bf928a6f4",
+    "verdict": "PASS",
+    "closed_at": "2026-07-30T00:50:27.842741+00:00",
+    "idempotent_replay": "PASS",
+    "public_verifier_called_before_closer": true,
+    "public_closer_called": true,
+    "direct_private_close_called": false
+  },
+  "authority_final": {
+    "active_entry_policy_sha256": "49e728d0a8c458a792b3077272e71725d5e2ea00e20cd614054a6bf4651b4d80",
+    "active_grant_ids": [],
+    "open_ticket_ids": [],
+    "succeeded_ticket_ids": [
+      "29c84bbb4ed839ac2b260d3af2cd878bc6f24425d0a5550e548efe86213b6f3b",
+      "ae22a816579f70978ad507cc810f431760cc7f91ead33aa74e5eb1e63fb728af",
+      "c3af5969c06642c88a3353c622e5d1c31b4b96610377251e157aa2c1ef8fdab5",
+      "c949df38a9746edf7d380be2be25f9fde6df0397085db78cd11455860851c233"
+    ],
+    "failed_ticket_ids": [],
+    "in_doubt_ticket_ids": [],
+    "pending_outbox_count": 0
+  },
+  "outbox_after_close": {
+    "scanned": 1,
+    "inserted": 1,
+    "acknowledged": 1
+  },
+  "task_report_set": {
+    "count": 4,
+    "task_ids": [
+      "P2R4-T5C-SCOPE-ADOPTION",
+      "P2R4-T6-INTEGRATION-FREEZE",
+      "P2R4-T7-FINAL-INVENTORY-POLICY",
+      "P2R4-T8-OFFICIAL-GATE"
+    ],
+    "all_authority_valid_pass": true
+  },
+  "git_identity": {
+    "head": "c5f062cc4d12fb86008b29fb857e516e1d56e68f",
+    "tree": "c1190f7f8e053f8e6502c15f8fa430f46d1336cd",
+    "unchanged_through_close": true
+  },
+  "phase_boundary": {
+    "p3_started": false,
+    "campaign_started": false,
+    "holdout_opened": false,
+    "daily_update_backtest_or_research_started": false,
+    "auto_advance": false,
+    "stop": "P2/P3"
+  },
+  "root_capability_logged_or_written": false,
+  "verdict": "PASS"
+}
