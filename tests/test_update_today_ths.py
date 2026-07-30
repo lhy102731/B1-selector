@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import json
+import subprocess
+import sys
 
 import pandas as pd
 
 from tools import update_today_ths as updater
+from utils.process_lock import process_lock
 from utils.ths_data_source import THSHistoryPermissionError
 
 
@@ -167,6 +171,45 @@ def _write_old(path: Path):
 
 
 class THSDailyUpdateTests(unittest.TestCase):
+    def test_run_rejects_concurrent_process_for_same_dataset(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            (root / updater.DATASET_MANIFEST).write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lock_path = root / updater.UPDATE_LOCK_FILENAME
+
+            with process_lock(lock_path, "test THS writer"):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import sys; "
+                            "from tools import update_today_ths as updater; "
+                            "raise SystemExit(updater.run(sys.argv[1]))"
+                        ),
+                        str(root),
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                    check=False,
+                )
+
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("THS daily update already active", result.stderr)
+
     def test_rebases_short_adjusted_slice_to_committed_overlap(self):
         local = pd.DataFrame(
             {
@@ -420,6 +463,8 @@ class THSDailyUpdateTests(unittest.TestCase):
                         "source": "thsdk+yuanhang", "status": "COMPLETED",
                         "schema_version": 3, "data_quality_version": 4,
                         "stock_count": 1,
+                        "last_daily_update": "2026-07-01",
+                        "last_daily_update_source": "thsdk",
                     }
                 ),
                 encoding="utf-8",
@@ -436,8 +481,345 @@ class THSDailyUpdateTests(unittest.TestCase):
             )
             added = report.loc[report["code"].astype(str).str.zfill(6) == "000002"]
             self.assertEqual("failed_validation", added.iloc[0]["status"])
+            manifest = json.loads(
+                (root / updater.DATASET_MANIFEST).read_text(encoding="utf-8")
+            )
+            self.assertEqual("2026-07-01", manifest["last_daily_update"])
 
     def test_manifest_count_stays_consistent_when_existing_merge_fails(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "last_daily_update": "2026-07-01",
+                        "last_daily_update_source": "thsdk",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = updater.run(root, source=_UniverseSource(fail_existing=True))
+
+            self.assertEqual(2, result)
+            self.assertTrue((root / "00" / "000002.csv").exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(2, manifest["stock_count"])
+            self.assertEqual("2026-07-01", manifest["last_daily_update"])
+
+    def test_no_history_orphan_without_pending_intent_fails_closed(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            source = _UniverseSource()
+            history = updater._normalise_history(
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2026-07-23"]),
+                        "open": [9.0], "high": [11.0], "low": [8.0],
+                        "close": [10.0], "close_raw": [10.0],
+                        "volume": [1000.0], "amount": [10000.0],
+                        "turnover": [2.0], "market_cap": [500000.0],
+                    }
+                )
+            )
+            updater._atomic_csv(history, root / "00" / "000002.csv")
+            source.history_calls.clear()
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "inventory_codes": ["000001"],
+                        "start": "1990-01-01",
+                        "no_history_codes": ["000002", "000003"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            before = manifest_path.read_bytes()
+
+            with self.assertRaisesRegex(RuntimeError, "stock_count"):
+                updater.run(root, source=source)
+
+            self.assertEqual([], source.history_calls)
+            self.assertEqual(before, manifest_path.read_bytes())
+
+    def test_new_listing_inventory_is_committed_before_existing_file_loop(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "start": "1990-01-01",
+                        "no_history_codes": ["000003"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                updater,
+                "_fetch_realtime_batch_or_empty",
+                side_effect=KeyboardInterrupt("simulated interruption"),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    updater.run(root, source=_UniverseSource())
+
+            self.assertTrue((root / "00" / "000002.csv").exists())
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(2, manifest["stock_count"])
+            self.assertEqual(["000003"], manifest["no_history_codes"])
+
+    def test_resumes_new_listing_interrupted_before_csv_write(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "start": "1990-01-01",
+                        "no_history_codes": ["000003"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.object(
+                updater,
+                "_atomic_csv",
+                side_effect=KeyboardInterrupt("simulated interruption before CSV commit"),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    updater.run(root, source=_UniverseSource())
+
+            self.assertFalse((root / "00" / "000002.csv").exists())
+            interrupted_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(1, interrupted_manifest["stock_count"])
+            self.assertEqual(["000001"], interrupted_manifest["inventory_codes"])
+            self.assertEqual(
+                ["000002"],
+                interrupted_manifest["pending_inventory_additions"],
+            )
+
+            resumed_source = _UniverseSource()
+            result = updater.run(root, source=resumed_source)
+
+            self.assertEqual(0, result)
+            self.assertEqual(["000002", "000003"], resumed_source.history_calls)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(2, manifest["stock_count"])
+            self.assertEqual(["000001", "000002"], manifest["inventory_codes"])
+            self.assertNotIn("pending_inventory_additions", manifest)
+
+    def test_recovers_brand_new_listing_interrupted_after_csv_write(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "start": "1990-01-01",
+                        "no_history_codes": ["000003"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            class SingleRowUniverseSource(_UniverseSource):
+                def fetch_history(self, code, start, end):
+                    self.history_calls.append(code)
+                    if code == "000003":
+                        return pd.DataFrame()
+                    return pd.DataFrame(
+                        {
+                            "date": pd.to_datetime(["2026-07-23"]),
+                            "open": [9.0], "high": [11.0], "low": [8.0],
+                            "close": [10.0], "close_raw": [10.0],
+                            "volume": [1000.0], "amount": [10000.0],
+                            "turnover": [2.0], "market_cap": [500000.0],
+                        }
+                    )
+
+            real_atomic_csv = updater._atomic_csv
+
+            def write_then_interrupt(frame, path):
+                real_atomic_csv(frame, path)
+                if path.stem == "000002":
+                    raise KeyboardInterrupt("simulated interruption after CSV commit")
+
+            with patch.object(updater, "_atomic_csv", side_effect=write_then_interrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    updater.run(root, source=SingleRowUniverseSource())
+
+            self.assertTrue((root / "00" / "000002.csv").exists())
+            interrupted_manifest = json.loads(
+                manifest_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(1, interrupted_manifest["stock_count"])
+            self.assertEqual(["000001"], interrupted_manifest["inventory_codes"])
+            self.assertEqual(
+                ["000002"],
+                interrupted_manifest["pending_inventory_additions"],
+            )
+            resumed_source = SingleRowUniverseSource()
+            result = updater.run(root, source=resumed_source)
+
+            self.assertEqual(0, result)
+            self.assertEqual(["000003"], resumed_source.history_calls)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(2, manifest["stock_count"])
+            self.assertEqual(["000003"], manifest["no_history_codes"])
+            self.assertNotIn("pending_inventory_additions", manifest)
+
+    def test_inventory_codes_reject_mixed_missing_and_untracked_files(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            history = updater._normalise_history(
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2026-07-23"]),
+                        "open": [9.0], "high": [11.0], "low": [8.0],
+                        "close": [10.0], "close_raw": [10.0],
+                        "volume": [1000.0], "amount": [10000.0],
+                        "turnover": [2.0], "market_cap": [500000.0],
+                    }
+                )
+            )
+            updater._atomic_csv(history, root / "00" / "000002.csv")
+            updater._atomic_csv(history, root / "00" / "000999.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 2,
+                        "inventory_codes": ["000001", "000004"],
+                        "no_history_codes": ["000002"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = manifest_path.read_bytes()
+
+            with self.assertRaisesRegex(RuntimeError, "stock_count|inventory"):
+                updater.validate_dataset_manifest(
+                    root,
+                    recover_interrupted_new_history=True,
+                )
+
+            self.assertEqual(before, manifest_path.read_bytes())
+
+    def test_invalid_pending_recovery_candidate_fails_without_manifest_write(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            invalid_history = updater._normalise_history(
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2026-07-23"]),
+                        "open": [10.0], "high": [11.0], "low": [9.0],
+                        "close": [10.0], "close_raw": [10.0],
+                        "volume": [1000.0], "amount": [1.0],
+                        "turnover": [2.0], "market_cap": [500000.0],
+                    }
+                )
+            )
+            updater._atomic_csv(invalid_history, root / "00" / "000002.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "inventory_codes": ["000001"],
+                        "pending_inventory_additions": ["000002"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = manifest_path.read_bytes()
+
+            with self.assertRaisesRegex(RuntimeError, "stock_count"):
+                updater.validate_dataset_manifest(
+                    root,
+                    recover_interrupted_new_history=True,
+                )
+
+            self.assertEqual(before, manifest_path.read_bytes())
+
+    def test_legacy_manifest_refuses_ambiguous_count_mismatch_recovery(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            history = updater._normalise_history(
+                pd.DataFrame(
+                    {
+                        "date": pd.to_datetime(["2026-07-23"]),
+                        "open": [9.0], "high": [11.0], "low": [8.0],
+                        "close": [10.0], "close_raw": [10.0],
+                        "volume": [1000.0], "amount": [10000.0],
+                        "turnover": [2.0], "market_cap": [500000.0],
+                    }
+                )
+            )
+            updater._atomic_csv(history, root / "00" / "000002.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "no_history_codes": ["000002"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            before = manifest_path.read_bytes()
+
+            with self.assertRaisesRegex(RuntimeError, "lacks inventory_codes"):
+                updater.validate_dataset_manifest(
+                    root,
+                    recover_interrupted_new_history=True,
+                )
+
+            self.assertEqual(before, manifest_path.read_bytes())
+
+    def test_unbounded_run_bootstraps_inventory_codes_for_legacy_manifest(self):
         with TemporaryDirectory() as temp:
             root = Path(temp) / "data"
             (root / "00").mkdir(parents=True)
@@ -454,12 +836,123 @@ class THSDailyUpdateTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = updater.run(root, source=_UniverseSource(fail_existing=True))
+            result = updater.run(root, source=_FakeSource())
 
-            self.assertEqual(2, result)
-            self.assertTrue((root / "00" / "000002.csv").exists())
+            self.assertEqual(0, result)
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            self.assertEqual(2, manifest["stock_count"])
+            self.assertEqual(["000001"], manifest["inventory_codes"])
+
+    def test_unbounded_run_records_completed_bar_date_when_inventory_is_unchanged(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "inventory_codes": ["000001"],
+                        "last_daily_update": "2026-07-01",
+                        "last_daily_update_source": "thsdk",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = updater.run(root, source=_FakeSource())
+
+            self.assertEqual(0, result)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-24", manifest["last_daily_update"])
+            self.assertEqual("thsdk", manifest["last_daily_update_source"])
+
+    def test_unbounded_run_uses_local_date_when_remote_history_is_empty(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            _write_old(root / "00" / "000001.csv")
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "inventory_codes": ["000001"],
+                        "last_daily_update": "2026-07-23",
+                        "last_daily_update_source": "thsdk",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class EmptyKlineSource(_FakeSource):
+                def fetch_klines(self, code, start, end):
+                    return pd.DataFrame()
+
+            result = updater.run(root, source=EmptyKlineSource())
+
+            self.assertEqual(0, result)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-23", manifest["last_daily_update"])
+            validation = json.loads(
+                (
+                    root
+                    / "_daily_updates"
+                    / updater.TODAY_STR
+                    / "checkpoint_validation.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertTrue(validation["valid"])
+            self.assertEqual("2026-07-23", validation["latest_completed_data_date"])
+
+    def test_unbounded_run_does_not_regress_date_on_stale_remote_history(self):
+        with TemporaryDirectory() as temp:
+            root = Path(temp) / "data"
+            (root / "00").mkdir(parents=True)
+            path = root / "00" / "000001.csv"
+            local = _FakeSource().fetch_klines("000001", "2026-07-23", "2026-07-24")
+            local["turnover"] = [1.0, 2.0]
+            local["market_cap"] = [500000.0, 550000.0]
+            updater._atomic_csv(local, path)
+            manifest_path = root / updater.DATASET_MANIFEST
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "source": "thsdk+yuanhang", "status": "COMPLETED",
+                        "schema_version": 3, "data_quality_version": 4,
+                        "stock_count": 1,
+                        "inventory_codes": ["000001"],
+                        "last_daily_update": "2026-07-24",
+                        "last_daily_update_source": "thsdk",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class StaleKlineSource(_FakeSource):
+                def fetch_klines(self, code, start, end):
+                    return super().fetch_klines(code, start, end).iloc[:1].copy()
+
+            result = updater.run(root, source=StaleKlineSource())
+
+            self.assertEqual(0, result)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-24", manifest["last_daily_update"])
+            validation = json.loads(
+                (
+                    root
+                    / "_daily_updates"
+                    / updater.TODAY_STR
+                    / "checkpoint_validation.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual("2026-07-24", validation["latest_completed_data_date"])
+            cache = json.loads((root / ".update_cache.json").read_text(encoding="utf-8"))
+            self.assertEqual("2026-07-24", cache["last_update_completed_date"])
 
     def test_all_new_listing_reconciliation_does_not_issue_empty_snapshot(self):
         with TemporaryDirectory() as temp:

@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 
 from utils.csv_manager import CSVManager
 from utils.checkpoint_retention import prune_checkpoint_history
+from utils.process_lock import process_lock
 from utils.ths_data_source import THSDataSource, THSDataSourceError, THSHistoryPermissionError
 from tools.rebuild_all_ths import _normalise_history, validate_history
 
@@ -38,6 +39,7 @@ REPORT_PATH = CHECKPOINT_DIR / "ths_update_report.csv"
 VALIDATION_PATH = CHECKPOINT_DIR / "checkpoint_validation.json"
 UPDATE_CACHE_PATH = DATA_DIR / ".update_cache.json"
 DATASET_MANIFEST = ".ths_dataset_manifest.json"
+UPDATE_LOCK_FILENAME = ".ths_daily_update.lock"
 MIN_DATASET_SCHEMA_VERSION = 3
 MIN_DATA_QUALITY_VERSION = 4
 
@@ -49,7 +51,11 @@ def iter_stock_files(data_dir: Path = DATA_DIR, max_stocks: int | None = None) -
     return files[:max_stocks] if max_stocks else files
 
 
-def validate_dataset_manifest(data_dir: Path) -> dict[str, Any]:
+def validate_dataset_manifest(
+    data_dir: Path,
+    *,
+    recover_interrupted_new_history: bool = False,
+) -> dict[str, Any]:
     """Require a fully committed THS baseline before incremental writes."""
     path = data_dir / DATASET_MANIFEST
     if not path.exists():
@@ -77,11 +83,48 @@ def validate_dataset_manifest(data_dir: Path) -> dict[str, Any]:
             raise RuntimeError(
                 f"THS dataset manifest requires {field}>={minimum}; got {version}"
             )
-    live_count = len(iter_stock_files(data_dir))
-    if int(manifest.get("stock_count", -1)) != live_count:
+    live_codes = _live_inventory_codes(data_dir)
+    live_count = len(live_codes)
+    try:
+        recorded_count = int(manifest.get("stock_count", -1))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("THS dataset manifest has invalid stock_count") from exc
+    inventory_codes = _manifest_inventory_codes(manifest)
+    if inventory_codes is not None and len(inventory_codes) != recorded_count:
+        raise RuntimeError(
+            "THS dataset manifest inventory_codes count "
+            f"{len(inventory_codes)} does not match stock_count={recorded_count}"
+        )
+    if recorded_count != live_count and inventory_codes is None:
+        raise RuntimeError(
+            "THS dataset manifest lacks inventory_codes; an existing count "
+            "mismatch cannot be recovered safely. Run one consistent unbounded "
+            "update to bootstrap the exact inventory first."
+        )
+    if recorded_count != live_count or (
+        inventory_codes is not None and inventory_codes != live_codes
+    ):
+        if recover_interrupted_new_history:
+            manifest = _recover_interrupted_new_history_inventory(
+                data_dir,
+                manifest,
+                live_count=live_count,
+            )
+            live_codes = _live_inventory_codes(data_dir)
+            live_count = len(live_codes)
+            recorded_count = int(manifest.get("stock_count", -1))
+            inventory_codes = _manifest_inventory_codes(manifest)
+    if recorded_count != live_count:
         raise RuntimeError(
             f"THS dataset manifest stock_count={manifest.get('stock_count')} "
             f"does not match live CSV count={live_count}"
+        )
+    if inventory_codes is not None and inventory_codes != live_codes:
+        missing = sorted(inventory_codes - live_codes)
+        unexpected = sorted(live_codes - inventory_codes)
+        raise RuntimeError(
+            "THS dataset inventory mismatch: "
+            f"missing={missing[:10]} unexpected={unexpected[:10]}"
         )
     return manifest
 
@@ -203,6 +246,198 @@ def _manifest_no_history_codes(manifest: dict[str, Any] | None) -> set[str]:
     }
 
 
+def _manifest_pending_inventory_additions(manifest: dict[str, Any] | None) -> set[str]:
+    if not manifest:
+        return set()
+    values = manifest.get("pending_inventory_additions", [])
+    if not isinstance(values, (list, tuple, set)):
+        return set()
+    return {
+        code
+        for code in (str(value).strip().zfill(6) for value in values)
+        if len(code) == 6 and code.isdigit()
+    }
+
+
+def _manifest_inventory_codes(manifest: dict[str, Any] | None) -> set[str] | None:
+    if not manifest or "inventory_codes" not in manifest:
+        return None
+    values = manifest.get("inventory_codes")
+    if not isinstance(values, (list, tuple, set)):
+        raise RuntimeError("THS dataset manifest has invalid inventory_codes")
+    normalized = [str(value).strip().zfill(6) for value in values]
+    if any(
+        len(code) != 6
+        or not code.isdigit()
+        or not code.startswith(("00", "30", "60", "68"))
+        for code in normalized
+    ):
+        raise RuntimeError("THS dataset manifest has invalid inventory_codes")
+    codes = set(normalized)
+    if len(codes) != len(normalized):
+        raise RuntimeError("THS dataset manifest has duplicate inventory_codes")
+    return codes
+
+
+def _live_inventory_codes(data_dir: Path) -> set[str]:
+    files = iter_stock_files(data_dir)
+    codes = [path.stem for path in files]
+    unique = set(codes)
+    if len(unique) != len(codes):
+        raise RuntimeError("THS dataset inventory contains duplicate stock CSV codes")
+    return unique
+
+
+def _sync_manifest_inventory(
+    data_dir: Path,
+    manifest: dict[str, Any] | None,
+    no_history_codes: set[str],
+    *,
+    pending_inventory_additions: set[str] | None = None,
+    recovery_codes: set[str] | None = None,
+    mark_daily_update: bool = False,
+    completed_data_date: str | None = None,
+) -> dict[str, Any] | None:
+    """Persist stock-file inventory independently of the full daily checkpoint.
+
+    Existing stock files are updated idempotently, but a newly listed stock
+    changes the manifest's structural inventory.  Persist the pending intent
+    before the CSV and the exact inventory after it so either side of an
+    interruption remains recoverable without weakening the strict gate.
+    """
+    if manifest is None:
+        return None
+    live_codes = _live_inventory_codes(data_dir)
+    live_count = len(live_codes)
+    normalized_no_history = sorted(no_history_codes)
+    normalized_pending = sorted(
+        _manifest_pending_inventory_additions(manifest)
+        if pending_inventory_additions is None
+        else pending_inventory_additions
+    )
+    daily_marker = completed_data_date
+    if mark_daily_update and daily_marker is None:
+        raise ValueError(
+            "completed_data_date is required when marking a daily update"
+        )
+    current_inventory = _manifest_inventory_codes(manifest)
+    if current_inventory is not None:
+        current_pending = _manifest_pending_inventory_additions(manifest)
+        # Only a previously committed intent (or an explicitly validated
+        # recovery candidate) may authorize a new live file.  The pending set
+        # supplied by this same write cannot retroactively bless an orphan.
+        allowed_additions = current_pending | set(recovery_codes or ())
+        missing = current_inventory - live_codes
+        unexpected = live_codes - current_inventory - allowed_additions
+        if missing or unexpected:
+            raise RuntimeError(
+                "THS dataset inventory transition mismatch: "
+                f"missing={sorted(missing)[:10]} "
+                f"unexpected={sorted(unexpected)[:10]}"
+            )
+    changed = (
+        int(manifest.get("stock_count", -1)) != live_count
+        or sorted(_manifest_no_history_codes(manifest)) != normalized_no_history
+        or sorted(_manifest_pending_inventory_additions(manifest)) != normalized_pending
+        or current_inventory != live_codes
+        or (
+            mark_daily_update
+            and (
+                manifest.get("last_daily_update") != daily_marker
+                or manifest.get("last_daily_update_source") != "thsdk"
+            )
+        )
+    )
+    if not changed and not recovery_codes:
+        return manifest
+    updated = dict(manifest)
+    updated["stock_count"] = live_count
+    updated["inventory_codes"] = sorted(live_codes)
+    updated["no_history_codes"] = normalized_no_history
+    if normalized_pending:
+        updated["pending_inventory_additions"] = normalized_pending
+    else:
+        updated.pop("pending_inventory_additions", None)
+    updated["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    if recovery_codes:
+        updated["last_inventory_recovery"] = {
+            "reason": "interrupted_new_history_manifest_commit",
+            "codes": sorted(recovery_codes),
+            "recovered_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    if mark_daily_update:
+        updated["last_daily_update"] = daily_marker
+        updated["last_daily_update_source"] = "thsdk"
+    _atomic_json(updated, data_dir / DATASET_MANIFEST)
+    manifest.clear()
+    manifest.update(updated)
+    return manifest
+
+
+def _recover_interrupted_new_history_inventory(
+    data_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    live_count: int,
+) -> dict[str, Any]:
+    """Recover only the bounded orphan-file state produced by a killed run.
+
+    A safe orphan must already have a write-ahead pending intent and must pass
+    the same history validator as a normal THS rebuild.  A legacy no-history
+    marker alone cannot prove who wrote a new CSV, so it remains a hard failure.
+    """
+    try:
+        recorded_count = int(manifest.get("stock_count", -1))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("THS dataset manifest has invalid stock_count") from exc
+    excess = live_count - recorded_count
+    if excess <= 0:
+        return manifest
+    no_history_codes = _manifest_no_history_codes(manifest)
+    pending_additions = _manifest_pending_inventory_additions(manifest)
+    inventory_codes = _manifest_inventory_codes(manifest)
+    candidates = [
+        path
+        for path in iter_stock_files(data_dir)
+        if path.stem in pending_additions
+    ]
+    if len(candidates) != excess:
+        return manifest
+    candidate_codes = {path.stem for path in candidates}
+    if inventory_codes is not None:
+        expected_live_codes = inventory_codes | candidate_codes
+        live_codes = _live_inventory_codes(data_dir)
+        if live_codes != expected_live_codes:
+            missing = sorted(inventory_codes - live_codes)
+            unexpected = sorted(live_codes - expected_live_codes)
+            raise RuntimeError(
+                "THS dataset inventory mismatch during recovery: "
+                f"missing={missing[:10]} unexpected={unexpected[:10]}"
+            )
+    recovered: set[str] = set()
+    for path in candidates:
+        history = _normalise_history(_read(path))
+        validation = validate_history(history, path.stem)
+        if not validation.get("valid"):
+            return manifest
+        recovered.add(path.stem)
+    no_history_codes.difference_update(recovered)
+    pending_additions.difference_update(recovered)
+    _sync_manifest_inventory(
+        data_dir,
+        manifest,
+        no_history_codes,
+        pending_inventory_additions=pending_additions,
+        recovery_codes=recovered,
+    )
+    print(
+        "[RECOVER] reconciled interrupted THS listing inventory: "
+        + ",".join(sorted(recovered)),
+        flush=True,
+    )
+    return manifest
+
+
 def _fetch_realtime_batch_or_empty(
     source: THSDataSource,
     codes: list[str],
@@ -220,7 +455,7 @@ def _add_new_history_files(
     current_codes: set[str],
     local_codes: set[str],
     manifest: dict[str, Any] | None,
-) -> tuple[list[dict[str, Any]], set[str], set[str]]:
+) -> tuple[list[dict[str, Any]], set[str], set[str], set[str]]:
     """Fetch and validate current THS listings absent from the local tree.
 
     This is intentionally separate from the incremental K-line merge.  A new
@@ -231,7 +466,12 @@ def _add_new_history_files(
     """
     missing = sorted(current_codes - local_codes)
     if not missing:
-        return [], _manifest_no_history_codes(manifest), set()
+        return (
+            [],
+            _manifest_no_history_codes(manifest),
+            set(),
+            _manifest_pending_inventory_additions(manifest),
+        )
 
     # Preserve the baseline's requested start where available.  New listings
     # generally have a much shorter history, but asking THS from the baseline
@@ -240,6 +480,7 @@ def _add_new_history_files(
     start = str((manifest or {}).get("start") or "1990-01-01")
     end = TODAY_STR
     no_history = _manifest_no_history_codes(manifest)
+    pending_additions = _manifest_pending_inventory_additions(manifest)
     rows: list[dict[str, Any]] = []
     added_codes: set[str] = set()
 
@@ -249,7 +490,14 @@ def _add_new_history_files(
         try:
             fetched = source.fetch_history(code, start, end)
             if fetched is None or fetched.empty:
+                pending_additions.discard(code)
                 no_history.add(code)
+                _sync_manifest_inventory(
+                    data_dir,
+                    manifest,
+                    no_history,
+                    pending_inventory_additions=pending_additions,
+                )
                 rows.append({
                     "code": code,
                     "status": "no_history_yet",
@@ -263,17 +511,45 @@ def _add_new_history_files(
             validation["status"] = "added" if validation.get("valid") else "failed_validation"
             validation["elapsed_seconds"] = round(datetime.now().timestamp() - started, 4)
             if validation.get("valid"):
+                pending_additions.add(code)
+                _sync_manifest_inventory(
+                    data_dir,
+                    manifest,
+                    no_history,
+                    pending_inventory_additions=pending_additions,
+                )
                 _atomic_csv(history, target)
-                _invalidate_indicator_cache(code, data_dir)
                 added_codes.add(code)
                 no_history.discard(code)
+                pending_additions.discard(code)
+                _invalidate_indicator_cache(code, data_dir)
+                _sync_manifest_inventory(
+                    data_dir,
+                    manifest,
+                    no_history,
+                    pending_inventory_additions=pending_additions,
+                )
             else:
+                pending_additions.discard(code)
+                _sync_manifest_inventory(
+                    data_dir,
+                    manifest,
+                    no_history,
+                    pending_inventory_additions=pending_additions,
+                )
                 rows.append(validation)
                 continue
             rows.append(validation)
         except Exception as exc:
             if _is_no_history_error(exc):
+                pending_additions.discard(code)
                 no_history.add(code)
+                _sync_manifest_inventory(
+                    data_dir,
+                    manifest,
+                    no_history,
+                    pending_inventory_additions=pending_additions,
+                )
                 rows.append({
                     "code": code,
                     "status": "no_history_yet",
@@ -282,6 +558,14 @@ def _add_new_history_files(
                     "elapsed_seconds": round(datetime.now().timestamp() - started, 4),
                 })
             else:
+                if code in pending_additions and not target.exists():
+                    pending_additions.discard(code)
+                    _sync_manifest_inventory(
+                        data_dir,
+                        manifest,
+                        no_history,
+                        pending_inventory_additions=pending_additions,
+                    )
                 rows.append({
                     "code": code,
                     "status": "failed",
@@ -290,7 +574,7 @@ def _add_new_history_files(
                     "elapsed_seconds": round(datetime.now().timestamp() - started, 4),
                 })
 
-    return rows, no_history, added_codes
+    return rows, no_history, added_codes, pending_additions
 
 
 def _backup(path: Path, data_dir: Path, backup_dir: Path) -> None:
@@ -413,10 +697,10 @@ def _latest_completed_data_date(rows: list[dict[str, Any]]) -> str | None:
     for row in rows:
         if row.get("status") not in {"updated", "no_today_bar", "added"}:
             continue
-        value = row.get("remote_last_date") or row.get("date_end")
-        parsed = pd.to_datetime(value, errors="coerce")
-        if pd.notna(parsed):
-            dates.append(pd.Timestamp(parsed).tz_localize(None))
+        for field in ("local_last_date", "remote_last_date", "date_end"):
+            parsed = pd.to_datetime(row.get(field), errors="coerce")
+            if pd.notna(parsed):
+                dates.append(pd.Timestamp(parsed).tz_localize(None))
     return max(dates).strftime("%Y-%m-%d") if dates else None
 
 
@@ -433,15 +717,24 @@ def _merge_one(
     if local.empty:
         return None, {"code": code, "status": "empty_or_bad_csv"}
     local_max = local["date"].max()
+    local_last_date = local_max.strftime("%Y-%m-%d")
     start = (local_max.date() - timedelta(days=max(5, int(lookback_days)))).isoformat()
     end = TODAY_STR
     remote = source.fetch_klines(code, start, end)
     if remote.empty:
-        return None, {"code": code, "status": "no_today_bar"}
+        return None, {
+            "code": code,
+            "status": "no_today_bar",
+            "local_last_date": local_last_date,
+        }
     remote = _normalise_dates(remote)
     remote = remote.loc[_completed_bar_mask(remote)].copy()
     if remote.empty:
-        return None, {"code": code, "status": "no_today_bar"}
+        return None, {
+            "code": code,
+            "status": "no_today_bar",
+            "local_last_date": local_last_date,
+        }
     remote = _rebase_remote_adjusted_ohlc(local, remote)
     remote_max = remote["date"].max()
     new_dates = set(remote.loc[remote["date"] > local_max, "date"])
@@ -449,6 +742,7 @@ def _merge_one(
         return None, {
             "code": code,
             "status": "no_today_bar",
+            "local_last_date": local_last_date,
             "remote_last_date": remote_max.strftime("%Y-%m-%d"),
             "new_rows": 0,
             "touched_rows": 0,
@@ -578,7 +872,7 @@ def _merge_one(
     }
 
 
-def run(
+def _run_unlocked(
     data_dir: str | Path = DATA_DIR,
     max_stocks: int | None = None,
     source: THSDataSource | None = None,
@@ -588,7 +882,10 @@ def run(
     data_dir = Path(data_dir)
     manifest: dict[str, Any] | None = None
     if require_ths_manifest:
-        manifest = validate_dataset_manifest(data_dir)
+        manifest = validate_dataset_manifest(
+            data_dir,
+            recover_interrupted_new_history=max_stocks is None,
+        )
     else:
         # Test/repair callers may deliberately run without a baseline gate.
         # If a manifest is present, still load it so a successful unbounded
@@ -617,12 +914,18 @@ def run(
         # manifest/no-history list.
         added_rows: list[dict[str, Any]] = []
         no_history_codes = _manifest_no_history_codes(manifest)
+        pending_inventory_additions = _manifest_pending_inventory_additions(manifest)
         added_codes: set[str] = set()
         current_codes: set[str] = set()
         if max_stocks is None and hasattr(source, "fetch_stock_universe"):
             current_codes = _universe_codes(source.fetch_stock_universe())
             local_codes = {path.stem for path in iter_stock_files(data_dir)}
-            added_rows, no_history_codes, added_codes = _add_new_history_files(
+            (
+                added_rows,
+                no_history_codes,
+                added_codes,
+                pending_inventory_additions,
+            ) = _add_new_history_files(
                 data_dir=data_dir,
                 source=source,
                 current_codes=current_codes,
@@ -709,19 +1012,16 @@ def run(
         # invocation blocked by a stale count.  No manifest is synthesized for
         # explicitly un-gated test/repair runs.
         if manifest is not None:
-            live_count = len(iter_stock_files(data_dir))
-            old_no_history = _manifest_no_history_codes(manifest)
-            if (
-                int(manifest.get("stock_count", -1)) != live_count
-                or sorted(old_no_history) != sorted(no_history_codes)
-            ):
-                updated_manifest = dict(manifest)
-                updated_manifest["stock_count"] = live_count
-                updated_manifest["no_history_codes"] = sorted(no_history_codes)
-                updated_manifest["last_daily_update"] = TODAY_STR
-                updated_manifest["last_daily_update_source"] = "thsdk"
-                updated_manifest["updated_at"] = datetime.now().isoformat(timespec="seconds")
-                _atomic_json(updated_manifest, data_dir / DATASET_MANIFEST)
+            _sync_manifest_inventory(
+                data_dir,
+                manifest,
+                no_history_codes,
+                pending_inventory_additions=pending_inventory_additions,
+                mark_daily_update=(
+                    validation["valid"] and latest_completed_date is not None
+                ),
+                completed_data_date=latest_completed_date,
+            )
         if validation["valid"]:
             cache = {}
             if cache_path.exists():
@@ -754,6 +1054,24 @@ def run(
     print(f"THS daily update: updated={successful} unchanged={unchanged} failed={failed}")
     print(f"report={report_path}")
     return 0 if validation["valid"] else 2
+
+
+def run(
+    data_dir: str | Path = DATA_DIR,
+    max_stocks: int | None = None,
+    source: THSDataSource | None = None,
+    *,
+    require_ths_manifest: bool = True,
+) -> int:
+    """Serialize one dataset's incremental writes across daily-update entry points."""
+    data_dir = Path(data_dir)
+    with process_lock(data_dir / UPDATE_LOCK_FILENAME, "THS daily update"):
+        return _run_unlocked(
+            data_dir=data_dir,
+            max_stocks=max_stocks,
+            source=source,
+            require_ths_manifest=require_ths_manifest,
+        )
 
 
 def main() -> int:
