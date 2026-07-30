@@ -839,11 +839,11 @@ def _verify_immutable_evidence_commits(
         while similarity_index < len(similarity_changes):
             status = similarity_changes[similarity_index]
             similarity_index += 1
-            if status.startswith((b"C", b"R")):
+            if status.startswith(b"R"):
                 raise UnstableInventoryError(
                     "post-freeze Git evidence was copied or renamed"
                 )
-            similarity_index += 1
+            similarity_index += 2 if status.startswith(b"C") else 1
         if similarity_index != len(similarity_changes):
             raise UnstableInventoryError(
                 "post-freeze Git similarity delta is malformed"

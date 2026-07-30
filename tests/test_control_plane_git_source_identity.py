@@ -1226,13 +1226,96 @@ class GitSourceIdentityTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 UnstableInventoryError,
-                "copied or renamed",
+                "reuses an existing evidence blob",
             ):
                 verify_current_git_inventory(
                     root,
                     freeze_manifest=freeze,
                     final_inventory=inventory,
                 )
+
+    def test_live_verifier_accepts_similar_but_distinct_refresh_evidence(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._repository(root)
+            evidence_root = root / "research_state" / "control_plane" / "p0"
+            prior = evidence_root / "attempt-001.json"
+            prior.parent.mkdir(parents=True)
+            prior.write_bytes(
+                canonical_json(
+                    {
+                        "attempt_id": "p0-attempt-001",
+                        "entries": ["bounded-entry"] * 100,
+                        "verdict": "PASS",
+                    }
+                ).encode("utf-8")
+            )
+            self._git(root, "add", prior.relative_to(root).as_posix())
+            self._git(
+                root,
+                "-c",
+                "user.name=Control Plane Tests",
+                "-c",
+                "user.email=control-plane@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "add prior refresh evidence",
+            )
+            freeze = build_code_freeze_manifest(
+                root,
+                plan_version="V3.4.2-P0R2",
+                phase="P0",
+                attempt_id="p0-attempt-002",
+                identity_binding=self.identity,
+            )
+            inventory = build_final_entry_inventory(
+                root,
+                plan_version="V3.4.2-P0R2",
+                phase="P0",
+                attempt_id="p0-attempt-002",
+                identity_binding=self.identity,
+                freeze_manifest=freeze,
+                scheduler_records=[],
+            )
+            refreshed = evidence_root / "attempt-002.json"
+            refreshed.write_bytes(
+                canonical_json(
+                    {
+                        "attempt_id": "p0-attempt-002",
+                        "entries": ["bounded-entry"] * 100,
+                        "verdict": "PASS",
+                    }
+                ).encode("utf-8")
+            )
+            self.assertNotEqual(
+                self._git(root, "hash-object", prior.relative_to(root).as_posix()),
+                self._git(
+                    root,
+                    "hash-object",
+                    refreshed.relative_to(root).as_posix(),
+                ),
+            )
+            self._git(root, "add", refreshed.relative_to(root).as_posix())
+            self._git(
+                root,
+                "-c",
+                "user.name=Control Plane Tests",
+                "-c",
+                "user.email=control-plane@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "add distinct refresh evidence",
+            )
+
+            verify_current_git_inventory(
+                root,
+                freeze_manifest=freeze,
+                final_inventory=inventory,
+            )
 
     def test_live_verifier_rejects_exact_blob_reuse_without_copy_heuristics(
         self,
