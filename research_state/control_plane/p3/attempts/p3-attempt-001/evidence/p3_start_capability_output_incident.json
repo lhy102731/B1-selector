@@ -1,0 +1,29 @@
+{
+  "schema_version": "control_plane.capability_output_incident.v1",
+  "phase": "P3",
+  "attempt_id": "p3-attempt-001",
+  "occurred_at": "2026-07-30T09:20:00Z",
+  "classification": "LOCAL_TOOL_OUTPUT_EXPOSURE",
+  "cause": "A PowerShell DPAPI decryption attempt wrote bytes through Console.OpenStandardOutput, bypassing the intended pipeline into the trusted Python process.",
+  "impact": {
+    "plaintext_root_capability_entered_local_tool_output": true,
+    "plaintext_written_to_repository_or_temp_file": false,
+    "external_network_recipient": false,
+    "authority_or_operational_database_staged": false,
+    "dpapi_ciphertext_modified": false
+  },
+  "containment": {
+    "failed_pipeline_abandoned": true,
+    "subsequent_decryption_is_in_process_via_crypt_unprotect_data": true,
+    "plaintext_is_never_printed_or_piped": true
+  },
+  "required_remediation": {
+    "rotate_root_capability_after_p3_gate_revokes_the_active_grant": true,
+    "update_authority_and_operational_root_hashes_without_attach": true,
+    "replace_dpapi_ciphertext_create_only_via_atomic_swap": true,
+    "verify_old_capability_rejected_and_new_capability_accepted": true,
+    "gate_must_not_claim_no_historical_plaintext_output": true
+  },
+  "scientific_or_production_data_impact": false,
+  "status": "CONTAINED_PENDING_CREDENTIAL_ROTATION"
+}

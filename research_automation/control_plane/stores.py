@@ -23,7 +23,12 @@ from .contracts import Actor, Phase, SideEffect
 from .sqlite_uow import (
     _SqliteUnitOfWork,
     _StoreSpec,
+    _schema_sha256,
     _schema_sha256_for_statements,
+    _sqlite_authorizer,
+    _translate_sqlite_error,
+    SqliteFutureSchemaError,
+    SqliteSchemaError,
 )
 
 
@@ -59,7 +64,8 @@ _TASK_SPEC_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_STORE_SCHEMA_VERSION = 1
+_AUTHORITY_SCHEMA_VERSION = 1
+_OPERATIONAL_SCHEMA_VERSION = 2
 MAX_REVIEWED_POLICY_BYTES = 4 * 1024 * 1024
 _POLICY_NAMESPACE = ("research_state", "control_plane", "policies")
 _POLICY_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
@@ -205,7 +211,7 @@ _AUTHORITY_SCHEMA = (
     )
     """,
 )
-_OPERATIONAL_SCHEMA = (
+_OPERATIONAL_SCHEMA_V1 = (
     """
     CREATE TABLE journal_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,6 +225,61 @@ _OPERATIONAL_SCHEMA = (
         created_at TEXT NOT NULL,
         mirrored_at TEXT NOT NULL
     )
+    """,
+)
+_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V1 + (
+    """
+    CREATE TABLE access_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        operation TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        generation_id TEXT,
+        dataset_role TEXT NOT NULL,
+        fields_json TEXT NOT NULL,
+        date_start TEXT,
+        date_end TEXT,
+        input_refs_json TEXT NOT NULL,
+        output_refs_json TEXT NOT NULL,
+        taint_in_json TEXT NOT NULL,
+        taint_out_json TEXT NOT NULL,
+        metadata_json TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE derivation_edges (
+        input_ref TEXT NOT NULL,
+        output_ref TEXT NOT NULL,
+        event_id TEXT NOT NULL REFERENCES access_events(event_id),
+        PRIMARY KEY(input_ref, output_ref, event_id),
+        CHECK(input_ref <> output_ref)
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE taint_projection (
+        artifact_ref TEXT NOT NULL,
+        taint TEXT NOT NULL,
+        source_event_id TEXT NOT NULL REFERENCES access_events(event_id),
+        PRIMARY KEY(artifact_ref, taint)
+    ) WITHOUT ROWID
+    """,
+    """
+    CREATE TABLE fold_test_attempts (
+        candidate_id TEXT NOT NULL,
+        protocol_id TEXT NOT NULL,
+        fold_id TEXT NOT NULL,
+        event_id TEXT NOT NULL UNIQUE REFERENCES access_events(event_id),
+        actor_id TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        consumed_at TEXT NOT NULL,
+        PRIMARY KEY(candidate_id, protocol_id, fold_id)
+    ) WITHOUT ROWID
     """,
 )
 
@@ -716,6 +777,11 @@ def _provision_store(
     installation_id: str,
     root_capability_sha256: str,
 ) -> None:
+    schema_version = (
+        _AUTHORITY_SCHEMA_VERSION
+        if store_kind == "AUTHORITY_STORE"
+        else _OPERATIONAL_SCHEMA_VERSION
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(path, isolation_level=None)
     try:
@@ -731,11 +797,11 @@ def _provision_store(
             (
                 ("installation_id", installation_id),
                 ("root_capability_sha256", root_capability_sha256),
-                ("schema_version", str(_STORE_SCHEMA_VERSION)),
+                ("schema_version", str(schema_version)),
                 ("store_kind", store_kind),
             ),
         )
-        connection.execute(f"PRAGMA user_version = {_STORE_SCHEMA_VERSION}")
+        connection.execute(f"PRAGMA user_version = {schema_version}")
         connection.commit()
     finally:
         connection.close()
@@ -1459,7 +1525,7 @@ def _authority_spec() -> _StoreSpec:
         path=_AUTHORITY_STORE_PATH,
         store_kind="AUTHORITY_STORE",
         metadata_table="authority_meta",
-        schema_version=_STORE_SCHEMA_VERSION,
+        schema_version=_AUTHORITY_SCHEMA_VERSION,
         expected_schema_sha256=_expected_schema_sha256(
             "AUTHORITY_STORE",
             "authority_meta",
@@ -1472,12 +1538,131 @@ def _operational_spec() -> _StoreSpec:
         path=_OPERATIONAL_STORE_PATH,
         store_kind="OPERATIONAL_JOURNAL",
         metadata_table="operational_meta",
-        schema_version=_STORE_SCHEMA_VERSION,
+        schema_version=_OPERATIONAL_SCHEMA_VERSION,
         expected_schema_sha256=_expected_schema_sha256(
             "OPERATIONAL_JOURNAL",
             "operational_meta",
         ),
     )
+
+
+def _operational_v1_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_OPERATIONAL_STORE_PATH,
+        store_kind="OPERATIONAL_JOURNAL",
+        metadata_table="operational_meta",
+        schema_version=1,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("operational_meta"),)
+            + _OPERATIONAL_SCHEMA_V1
+        ),
+    )
+
+
+def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
+    """Atomically migrate only the fixed OperationalJournal from v1 to v2."""
+
+    supplied_sha256 = _root_secret_sha256(root_secret)
+    path = Path(_OPERATIONAL_STORE_PATH).resolve(strict=False)
+    if _path_identity(path) == _path_identity(_AUTHORITY_STORE_PATH):
+        raise StoreConfigurationError(
+            "authority and operational stores must use different SQLite files"
+        )
+    try:
+        if os.path.samefile(path, Path(_AUTHORITY_STORE_PATH)):
+            raise StoreConfigurationError(
+                "authority and operational stores must use different SQLite files"
+            )
+    except FileNotFoundError:
+        pass
+    if not os.path.lexists(path):
+        raise StoreBootstrapIncompleteError("operational journal is missing")
+    authority_installation_id = _read_store_identity(_authority_spec()).installation_id
+    connection = sqlite3.connect(
+        f"{path.as_uri()}?mode=rw",
+        uri=True,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.set_authorizer(_sqlite_authorizer)
+    transaction_started = False
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        transaction_started = True
+        try:
+            if os.path.samefile(path, Path(_AUTHORITY_STORE_PATH)):
+                raise StoreConfigurationError(
+                    "authority and operational stores must use different SQLite files"
+                )
+        except FileNotFoundError as error:
+            raise StoreBootstrapIncompleteError("operational journal disappeared") from error
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if user_version > _OPERATIONAL_SCHEMA_VERSION:
+            raise SqliteFutureSchemaError("future store schema is not supported")
+        metadata = {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute(
+                "SELECT key, value FROM operational_meta"
+            )
+        }
+        if metadata.get("store_kind") != "OPERATIONAL_JOURNAL":
+            raise SqliteSchemaError(
+                "control-plane store schema identity mismatch"
+            )
+        if metadata.get("installation_id") != authority_installation_id:
+            raise StoreConfigurationError("authority and operational installation identities differ")
+        stored_root = metadata.get("root_capability_sha256")
+        if stored_root is None or not hmac.compare_digest(
+            stored_root,
+            supplied_sha256,
+        ):
+            raise AuthorityRootError("authority root capability is invalid")
+        if user_version == _OPERATIONAL_SCHEMA_VERSION:
+            if (
+                metadata.get("schema_version")
+                != str(_OPERATIONAL_SCHEMA_VERSION)
+                or _schema_sha256(connection)
+                != _operational_spec().expected_schema_sha256
+            ):
+                raise SqliteSchemaError(
+                    "control-plane store schema structure mismatch"
+                )
+            connection.rollback()
+            transaction_started = False
+            return False
+        if (
+            user_version != 1
+            or metadata.get("schema_version") != "1"
+            or _schema_sha256(connection)
+            != _operational_v1_spec().expected_schema_sha256
+        ):
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        for statement in _OPERATIONAL_SCHEMA[len(_OPERATIONAL_SCHEMA_V1) :]:
+            connection.execute(statement)
+        connection.execute(
+            "UPDATE operational_meta SET value = ? WHERE key = 'schema_version'",
+            (str(_OPERATIONAL_SCHEMA_VERSION),),
+        )
+        connection.execute(f"PRAGMA user_version = {_OPERATIONAL_SCHEMA_VERSION}")
+        if _schema_sha256(connection) != _operational_spec().expected_schema_sha256:
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        connection.commit()
+        transaction_started = False
+        return True
+    except sqlite3.DatabaseError as error:
+        if transaction_started:
+            connection.rollback()
+        raise _translate_sqlite_error(error, read_only=False) from error
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _canonical_payload(payload: dict[str, object]) -> tuple[str, str]:
@@ -3880,6 +4065,11 @@ class _OperationalJournal:
         root_secret: str,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        try:
+            _migrate_operational_journal_v2(root_secret=root_secret)
+        except StoreConfigurationError as error:
+            if "installation identities differ" not in str(error):
+                raise
         _require_store_root(_operational_spec(), root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
