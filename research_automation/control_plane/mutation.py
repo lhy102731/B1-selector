@@ -97,7 +97,7 @@ def _run_bounded_process(
     *,
     cwd: Path,
     env: dict[str, str],
-    timeout_seconds: int,
+    timeout_seconds: float,
     output_limit_bytes: int,
     capture_stdout_bytes: int = 0,
     operation_label: str = "selected test",
@@ -184,7 +184,10 @@ def _canonical_relative_path(value: str) -> str:
 
 
 def _windows_path_key(value: str) -> str:
-    return value.replace("\\", "/").rstrip("/").casefold()
+    return "/".join(
+        part.rstrip(" .").casefold()
+        for part in value.replace("\\", "/").rstrip("/").split("/")
+    )
 
 
 def _patch_header_path(value: str) -> str | None:
@@ -466,6 +469,8 @@ class MutationTransaction:
         deadline = time.monotonic() + 5
         absent_since: float | None = None
         while time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            command_timeout = max(0.1, min(1.0, remaining))
             try:
                 if (
                     hashlib.sha256(runtime_path.read_bytes()).hexdigest()
@@ -476,7 +481,7 @@ class MutationTransaction:
                     (str(runtime_path), "rm", "--force", container_identity),
                     cwd=cwd,
                     env=env,
-                    timeout_seconds=15,
+                    timeout_seconds=command_timeout,
                     output_limit_bytes=64 * 1024,
                 )
                 listing = _run_bounded_process(
@@ -491,7 +496,7 @@ class MutationTransaction:
                     ),
                     cwd=cwd,
                     env=env,
-                    timeout_seconds=15,
+                    timeout_seconds=command_timeout,
                     output_limit_bytes=64 * 1024,
                     capture_stdout_bytes=256,
                 )
@@ -508,7 +513,7 @@ class MutationTransaction:
                 if absent_since is None:
                     absent_since = now
                 stable_seconds = now - absent_since
-                if (identity_known and stable_seconds >= 0.1) or stable_seconds >= 1:
+                if identity_known and stable_seconds >= 0.1:
                     return
             time.sleep(0.1)
         raise MutationStateInDoubt(

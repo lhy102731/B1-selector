@@ -502,6 +502,20 @@ index 76d6bb0..2ef267e
                     allowed_files=("DATA/x.py",),
                 )
 
+    def test_windows_trailing_dot_alias_cannot_bypass_forbidden_path(self):
+        from research_automation.control_plane.mutation import MutationRejected
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            target = root / "data" / "x.py"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"VALUE = 1\n")
+            with self.assertRaisesRegex(MutationRejected, "intersects forbidden files"):
+                _transaction(
+                    repository_root=root,
+                    allowed_files=("data./x.py",),
+                )
+
     def test_oversized_patch_is_rejected_before_git(self):
         from research_automation.control_plane.mutation import MutationRejected
 
