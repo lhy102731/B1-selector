@@ -470,7 +470,7 @@ class MutationTransaction:
         absent_since: float | None = None
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
-            command_timeout = max(0.1, min(1.0, remaining))
+            removal_timeout = max(0.1, min(1.0, remaining))
             try:
                 if (
                     hashlib.sha256(runtime_path.read_bytes()).hexdigest()
@@ -481,9 +481,13 @@ class MutationTransaction:
                     (str(runtime_path), "rm", "--force", container_identity),
                     cwd=cwd,
                     env=env,
-                    timeout_seconds=command_timeout,
+                    timeout_seconds=removal_timeout,
                     output_limit_bytes=64 * 1024,
                 )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                listing_timeout = max(0.1, min(1.0, remaining))
                 listing = _run_bounded_process(
                     (
                         str(runtime_path),
@@ -496,7 +500,7 @@ class MutationTransaction:
                     ),
                     cwd=cwd,
                     env=env,
-                    timeout_seconds=command_timeout,
+                    timeout_seconds=listing_timeout,
                     output_limit_bytes=64 * 1024,
                     capture_stdout_bytes=256,
                 )
