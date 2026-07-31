@@ -2637,6 +2637,79 @@ class ContextAssemblerTests(unittest.TestCase):
 
 
 class LearningContextRouterTests(unittest.TestCase):
+    def test_committed_ledger_reader_quarantines_oversized_parent_lineage(self) -> None:
+        from research_automation.control_plane.memory import CommittedLearningLedgerReader
+
+        def packet(summary: str, parents: list[str]) -> dict[str, object]:
+            return {
+                "schema_version": "control_plane.learning_packet.v2",
+                "authority_task_report": {"task_id": "p4-learning-commit"},
+                "claim": {
+                    "kind": "NEGATIVE",
+                    "summary": summary,
+                    "scope": json.dumps(
+                        scope(regime="bull"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "parent_lineage": parents,
+                    "reopen_predicate": "[]",
+                    "future_usage_guidance": (
+                        '{"conclusion":"AVOID","directional_status":"avoid"}'
+                    ),
+                },
+                "evidence_refs": [],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            parent_hashes: list[str] = []
+            for index in range(257):
+                raw = json.dumps(
+                    packet(f"parent-{index}", []),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+                digest = hashlib.sha256(raw).hexdigest()
+                (packet_dir / f"{digest}.json").write_bytes(raw)
+                parent_hashes.append(digest)
+            parent_hashes.sort()
+            child_raw = json.dumps(
+                packet("oversized-child", parent_hashes),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            child_hash = hashlib.sha256(child_raw).hexdigest()
+            (packet_dir / f"{child_hash}.json").write_bytes(child_raw)
+            ledger = {
+                "schema_version": "control_plane.learning_ledger.v2",
+                "packet_hashes": [*parent_hashes, child_hash],
+            }
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "LearningCommitService.rebuild_ledger",
+                return_value=ledger,
+            ):
+                projection_input = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+
+        self.assertEqual(257, len(projection_input["claims"]))
+        self.assertIn(
+            {
+                "claim_id": child_hash,
+                "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+            },
+            projection_input["excluded_claims"],
+        )
+
     def test_committed_ledger_reader_projects_hash_bound_learning_packet(self) -> None:
         from research_automation.control_plane.memory import CommittedLearningLedgerReader
 

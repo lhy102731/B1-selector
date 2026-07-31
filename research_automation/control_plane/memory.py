@@ -960,9 +960,17 @@ class CommittedLearningLedgerReader:
                 )
                 if not set(reopen_predicates).issubset(_REOPEN_PREDICATES):
                     raise ValueError("committed Learning reopen predicates are invalid")
+                raw_parent_lineage = raw_claim.get("parent_lineage", [])
+                if (
+                    isinstance(raw_parent_lineage, list)
+                    and len(raw_parent_lineage) > _MAX_CLAIM_REFS
+                ):
+                    raise ValueError(
+                        "committed Learning parent lineage cardinality exceeds limit"
+                    )
                 parent_claim_ids = list(
                     _canonical_identifiers(
-                        raw_claim.get("parent_lineage", []), "claim.parent_lineage"
+                        raw_parent_lineage, "claim.parent_lineage"
                     )
                 )
             except (TypeError, ValueError):
