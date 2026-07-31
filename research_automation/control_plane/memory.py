@@ -352,6 +352,23 @@ class ConflictClassifier:
         if left_execution == right_execution and left_kind != right_kind:
             classification = "REPRODUCIBILITY_FAILURE"
             resolution_owner = "reproducibility_owner"
+        elif left_execution != right_execution:
+            left_semantic = _nonempty_string(
+                left.get("semantic_identity"), "left.semantic_identity"
+            )
+            right_semantic = _nonempty_string(
+                right.get("semantic_identity"), "right.semantic_identity"
+            )
+            positive_negative = (
+                left_kind == "POSITIVE"
+                and right_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
+            ) or (
+                right_kind == "POSITIVE"
+                and left_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
+            )
+            if left_semantic == right_semantic and positive_negative:
+                classification = "SCOPE_OR_PROTOCOL_CONFLICT"
+                resolution_owner = "scope_protocol_owner"
         return {
             "schema_version": "control_plane.learning_conflict.v1",
             "claim_ids": sorted([left_id, right_id]),

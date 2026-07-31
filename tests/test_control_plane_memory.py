@@ -318,6 +318,32 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("reproducibility_owner", conflict["resolution_owner"])
         self.assertEqual("event-001", conflict["actor_event"]["event_id"])
 
+    def test_opposing_specs_are_scope_or_protocol_conflict(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        left = {
+            "claim_id": "claim-spec-left",
+            "kind": "POSITIVE",
+            "execution_identity": "execution-left",
+            "semantic_identity": "yellow-line",
+            "scope": scope(regime="bull"),
+        }
+        right = {
+            "claim_id": "claim-spec-right",
+            "kind": "FAILED_USAGE",
+            "execution_identity": "execution-right",
+            "semantic_identity": "yellow-line",
+            "scope": scope(regime="bear"),
+        }
+        conflict = ConflictClassifier().classify(
+            left,
+            right,
+            actor_event={"event_id": "event-002", "actor_id": "reviewer-002"},
+        )
+
+        self.assertEqual("SCOPE_OR_PROTOCOL_CONFLICT", conflict["classification"])
+        self.assertEqual("scope_protocol_owner", conflict["resolution_owner"])
+
 
 if __name__ == "__main__":
     unittest.main()
