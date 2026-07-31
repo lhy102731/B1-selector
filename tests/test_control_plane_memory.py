@@ -585,6 +585,88 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("LEGACY_EVIDENCE_CONFLICT", conflict["classification"])
         self.assertEqual("legacy_evidence_owner", conflict["resolution_owner"])
 
+    def test_conflict_classification_priority_is_deterministic(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        def claim(
+            claim_id: str,
+            *,
+            kind: str,
+            execution: str,
+            generation: str = "ths_daily_v1",
+            trust_state: str = "controller_audited",
+            semantic: str = "yellow-line",
+        ) -> dict[str, object]:
+            claim_scope = scope(regime="bull")
+            claim_scope["generation_families"] = [generation]
+            return {
+                "claim_id": claim_id,
+                "kind": kind,
+                "execution_identity": execution,
+                "semantic_identity": semantic,
+                "scope": claim_scope,
+                "trust_state": trust_state,
+            }
+
+        cases = (
+            (
+                claim("same-left", kind="POSITIVE", execution="same"),
+                claim(
+                    "same-right",
+                    kind="NEGATIVE",
+                    execution="same",
+                    generation="ths_daily_v2",
+                    trust_state="legacy_unaudited",
+                ),
+                "REPRODUCIBILITY_FAILURE",
+            ),
+            (
+                claim("legacy-left", kind="POSITIVE", execution="legacy-left"),
+                claim(
+                    "legacy-right",
+                    kind="NEGATIVE",
+                    execution="legacy-right",
+                    generation="ths_daily_v2",
+                    trust_state="legacy_unaudited",
+                ),
+                "LEGACY_EVIDENCE_CONFLICT",
+            ),
+            (
+                claim("drift-left", kind="POSITIVE", execution="drift-left"),
+                claim(
+                    "drift-right",
+                    kind="NEGATIVE",
+                    execution="drift-right",
+                    generation="ths_daily_v2",
+                ),
+                "DATA_DRIFT_CONFLICT",
+            ),
+            (
+                claim("none-left", kind="POSITIVE", execution="none-left"),
+                claim(
+                    "none-right",
+                    kind="NEGATIVE",
+                    execution="none-right",
+                    semantic="unrelated-factor",
+                ),
+                "NONE",
+            ),
+        )
+        for left, right, expected in cases:
+            with self.subTest(expected=expected):
+                decision = ConflictClassifier().classify(
+                    left,
+                    right,
+                    actor_event={
+                        "event_id": f"event-{expected.lower()}",
+                        "actor_id": "priority-reviewer",
+                    },
+                )
+                self.assertEqual(expected, decision["classification"])
+                self.assertEqual(
+                    "priority-reviewer", decision["actor_event"]["actor_id"]
+                )
+
 
 class LearningReopenTests(unittest.TestCase):
     def test_declared_new_mechanism_predicate_reopens_claim(self) -> None:
@@ -754,6 +836,30 @@ class LearningReopenTests(unittest.TestCase):
                     "reopen_predicates": ["MANUAL_OVERRIDE"],
                 },
             )
+
+    def test_unchanged_scope_does_not_satisfy_reopen_predicates(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        for predicate in (
+            "NEW_MECHANISM",
+            "NEW_USAGE_MODE",
+            "NEW_MARKET_REGIME",
+            "NEW_TIME_WINDOW",
+            "NEW_UNIVERSE",
+            "NEW_LIQUIDITY_BUCKET",
+            "DATA_DRIFT",
+        ):
+            with self.subTest(predicate=predicate):
+                decision = ReopenPredicateEvaluator().evaluate(
+                    {"scope": scope(regime="bull")},
+                    {
+                        "claim_id": f"claim-unchanged-{predicate.lower()}",
+                        "scope": scope(regime="bull"),
+                        "reopen_predicates": [predicate],
+                    },
+                )
+                self.assertFalse(decision["qualified"])
+                self.assertEqual([], decision["reason_codes"])
 
 
 if __name__ == "__main__":
