@@ -32,6 +32,8 @@ _SCOPE_FIELDS = frozenset(
 _MAX_SCOPE_VALUES_PER_FIELD = 64
 _MAX_SCOPE_VALUES_TOTAL = 256
 _MAX_SCOPE_TIME_WINDOWS = 64
+_MAX_CONTEXT_CLAIMS = 4096
+_MAX_CLAIM_REFS = 256
 
 _EVIDENCE_GRADE_RANK = {
     "UNSPECIFIED": -1,
@@ -1250,6 +1252,12 @@ class ContextProjection:
     def project(
         self, claims: Sequence[Mapping[str, object]]
     ) -> dict[str, object]:
+        if (
+            not isinstance(claims, Sequence)
+            or isinstance(claims, (str, bytes))
+            or len(claims) > _MAX_CONTEXT_CLAIMS
+        ):
+            raise ValueError("projection claim collection cardinality exceeds limit")
         claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
         projected_claims: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
@@ -1474,6 +1482,11 @@ class ContextAssembler:
         excluded_claims = projection.get("excluded_claims")
         if not isinstance(claims, list) or not isinstance(excluded_claims, list):
             raise ValueError("context projection collections are invalid")
+        if (
+            len(claims) > _MAX_CONTEXT_CLAIMS
+            or len(excluded_claims) > _MAX_CONTEXT_CLAIMS
+        ):
+            raise ValueError("context projection collection cardinality exceeds limit")
         priority = self._ROLE_PRIORITIES[role]
         target_scope_mapping = (
             None
@@ -1546,6 +1559,10 @@ class ContextAssembler:
             rebuilt_claim["scope"] = _validate_projected_scope(claim.get("scope"))
             for field_name in ref_fields:
                 refs = claim.get(field_name)
+                if isinstance(refs, list) and len(refs) > _MAX_CLAIM_REFS:
+                    raise ValueError(
+                        "context projection claim reference cardinality exceeds limit"
+                    )
                 if (
                     not isinstance(refs, list)
                     or any(not _is_opaque_ref(item) for item in refs)
@@ -1556,6 +1573,10 @@ class ContextAssembler:
             if rebuilt_claim["taint_refs"] or rebuilt_claim["invalidation_codes"]:
                 raise ValueError("context projection contains an unsafe included claim")
             predicates = claim.get("reopen_predicates")
+            if isinstance(predicates, list) and len(predicates) > _MAX_CLAIM_REFS:
+                raise ValueError(
+                    "context projection claim reopen predicate cardinality exceeds limit"
+                )
             if (
                 not isinstance(predicates, list)
                 or predicates != sorted(set(predicates))

@@ -1509,6 +1509,23 @@ class LearningReopenTests(unittest.TestCase):
 
 
 class ContextProjectionTests(unittest.TestCase):
+    def test_projection_bounds_claim_collection_before_lineage_processing(self) -> None:
+        from research_automation.control_plane.memory import ContextProjection
+
+        claims = [
+            {
+                "claim_id": f"claim-cardinality-{index}",
+                "parent_claim_ids": [],
+                "audit_grade": "PASS",
+                "taint_refs": [],
+                "invalidation_codes": [],
+            }
+            for index in range(4097)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextProjection().project(claims)
+
     def test_negative_learning_guidance_supports_required_actions(self) -> None:
         from research_automation.control_plane.memory import ContextProjection
 
@@ -1823,6 +1840,116 @@ class ContextAssemblerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "cardinality"):
             ContextAssembler().assemble(projection, role="factor_engineer")
 
+    def test_assembler_bounds_forged_projection_collection_counts(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        projection = {
+            "schema_version": "control_plane.context_projection.v1",
+            "claims": [],
+            "excluded_claims": [
+                {
+                    "claim_id": f"{index:064x}",
+                    "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                }
+                for index in range(4097)
+            ],
+        }
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_bounds_forged_projection_reference_counts(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-reference-count",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-reference-count"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["evidence_refs"] = [
+            f"{index:064x}" for index in range(257)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_bounds_forged_projection_reopen_predicate_counts(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-reopen-count",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-reopen-count"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["reopen_predicates"] = [
+            "NEW_MECHANISM" for _ in range(257)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_bounds_forged_projection_parent_counts(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-parent-count",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-parent-count"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["parent_claim_ids"] = [
+            f"{index:064x}" for index in range(257)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
 
     def test_assembler_rejects_forged_contradictory_guidance(self) -> None:
         from research_automation.control_plane.memory import (
