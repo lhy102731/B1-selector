@@ -5,11 +5,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from ag2_research.orchestrator import MemoryRouter, RegistryGate
+from ag2_research.orchestrator import LegacyMemoryAdapter, MemoryRouter, RegistryGate
 from research_automation.registry_updater import RegistryMergeError, RegistryUpdater
 
 
 class AG2MemoryAndRegistryTests(unittest.TestCase):
+    def test_legacy_memory_adapter_scans_only_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            router = LegacyMemoryAdapter("b1", root=directory)
+            with patch.object(router, "_latest", wraps=router._latest) as latest:
+                router.build_packet("first")
+                router.build_packet("second")
+
+            self.assertEqual(3, latest.call_count)
+
     def test_chinese_near_duplicate_is_detected(self):
         gate = RegistryGate([{
             "id": "exp-1",

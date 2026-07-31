@@ -12,7 +12,7 @@ def create_agents(
     config: ResearchConfig,
     agent_ids: list[str],
     llm_config: dict | None = None,
-    research_context: str = "",
+    research_context: str | dict[str, str] = "",
 ) -> dict[str, autogen.AssistantAgent]:
     """Create AG2 agents from config templates.
 
@@ -38,8 +38,13 @@ def create_agents(
             continue
 
         system_message = template["system_message"]
-        if research_context:
-            system_message = system_message.replace("{research_context}", research_context)
+        agent_context = (
+            research_context.get(agent_id, "")
+            if isinstance(research_context, dict)
+            else research_context
+        )
+        if agent_context:
+            system_message = system_message.replace("{research_context}", agent_context)
 
         tool_names = template.get("tools", [])
 

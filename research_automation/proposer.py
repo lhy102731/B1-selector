@@ -10,17 +10,17 @@ from pathlib import Path
 
 import yaml
 
-from ag2_research.orchestrator import MemoryRouter
+from ag2_research.orchestrator import LegacyMemoryAdapter
 
 _HERE = Path(__file__).resolve().parent
 
 
 class ParameterProposer:
     def __init__(self, strategy: str = "b1", search_space_path: str | Path | None = None,
-                 memory_router: MemoryRouter | None = None):
+                 memory_router: LegacyMemoryAdapter | None = None):
         self.strategy = strategy.lower()
         self.search_space_path = Path(search_space_path) if search_space_path else (_HERE / "search_space.yaml")
-        self.router = memory_router or MemoryRouter(self.strategy)
+        self.router = memory_router or LegacyMemoryAdapter(self.strategy)
         self._space = self._load_space()
 
     def _load_space(self) -> dict:

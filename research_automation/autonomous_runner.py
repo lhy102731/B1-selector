@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from ag2_research.orchestrator import MemoryRouter
+from ag2_research.orchestrator import LegacyMemoryAdapter
 from .automation_controller import AutomationController
 from .ag2_task_adapter import AG2TaskAdapter
 from .experiment import StandardMetrics
@@ -84,7 +84,7 @@ class AutonomousRunnerV1:
         self.recent_n = memory_packet_recent_n
         self.workspace_mode = workspace_mode
         self.research_mode = research_mode  # "parameter" (default, unchanged) | "code"
-        self.router = MemoryRouter(self.strategy)
+        self.router = LegacyMemoryAdapter(self.strategy)
         self.proposer = ParameterProposer(self.strategy, search_space_path, memory_router=self.router)
         self._scope = self.proposer._space.get("scope", {}) or {}
         self._grid = self.proposer._space.get("grid", {}) or {}

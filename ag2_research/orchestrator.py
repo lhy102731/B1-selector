@@ -6,6 +6,7 @@ import sys
 import time
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -143,11 +144,11 @@ class RegistryGate:
         }.get(status, "pass")
 
 
-class MemoryRouter:
-    """Sole reader of Snapshot/Handoff/Registry/Research Memory/Project Memory (PATCH #2).
+class LegacyMemoryAdapter:
+    """One-time adapter for legacy machine-control memory files.
 
-    Builds the single memory_packet that downstream agents consume. Worker agents
-    must never open these files themselves.
+    The packet is retained only for deterministic machine gates. V3.4 agent
+    context is built exclusively through LearningContextRouter.
     """
 
     def __init__(self, strategy_id: str = "b1", root: str | Path | None = None):
@@ -155,6 +156,7 @@ class MemoryRouter:
         self.root = Path(root) if root else Path(__file__).resolve().parent.parent
         self.registry_entries = self._load_registry_entries()
         self.registry_gate = RegistryGate(self.registry_entries)
+        self._packet_cache: dict | None = None
 
     # ---- file discovery ----------------------------------------------------
     def _latest(self, pattern: str) -> Path | None:
@@ -185,15 +187,19 @@ class MemoryRouter:
 
     # ---- packet ------------------------------------------------------------
     def build_packet(self, objective: str = "") -> dict:
+        if self._packet_cache is not None:
+            packet = deepcopy(self._packet_cache)
+            packet["current_objective"] = objective
+            return packet
         snap = self._load(self._latest(f"snapshot_{self.strategy_id}.yaml")).get("snapshot", {})
         hand = self._load(self._latest(f"handoff_{self.strategy_id}_v*.yaml")).get("handoff", {})
         proj = self._load(self._latest(f"project_{self.strategy_id}_v*.yaml")).get("project", {})
         mem_path = self.root / f"{self.strategy_id}_memory.yaml"
         mem = self._load(mem_path if mem_path.exists() else None)
 
-        return {
+        self._packet_cache = {
             "strategy_id": self.strategy_id,
-            "current_objective": objective,
+            "current_objective": "",
             "snapshot": {
                 "current_champion": snap.get("current_champion"),
                 "next_priority": snap.get("next_priority"),
@@ -213,6 +219,13 @@ class MemoryRouter:
             "active_constraints": (snap.get("frozen_directions") or []),
             "forbidden_actions": [d.get("item") for d in hand.get("do_not_repeat", []) if isinstance(d, dict)],
         }
+        packet = deepcopy(self._packet_cache)
+        packet["current_objective"] = objective
+        return packet
+
+
+# Backward-compatible import for external legacy tests and adapters.
+MemoryRouter = LegacyMemoryAdapter
 
 
 class Orchestrator:
@@ -244,6 +257,7 @@ class Orchestrator:
         agent_ids: list[str] | None = None,
         max_rounds: int = 25,
         llm_config: dict | None = None,
+        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a round-robin GroupChat brainstorm session.
 
@@ -272,7 +286,10 @@ class Orchestrator:
         # ``None`` means every role selects the profile declared in config.
         # Only a caller-supplied override may force one model onto all roles.
         _llm = llm_config or self.llm_config
-        agents = create_agents(self.config, agent_ids, llm_config, research_context)
+        trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
+            agent_ids, research_context, learning_claims
+        )
+        agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
         # Phase 1: read runtime params from config instead of hard-coding.
         speaker = self._resolve_speaker_method(wf.get("speaker_selection", "round_robin"))
@@ -281,7 +298,7 @@ class Orchestrator:
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=[],
+            messages=list(next(iter(untrusted_contexts.values()), [])),
             max_round=rounds,
             speaker_selection_method=speaker,
             allow_repeat_speaker=allow_repeat,
@@ -302,6 +319,7 @@ class Orchestrator:
         strategy_description: str,
         research_context: str = "",
         llm_config: dict | None = None,
+        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a quick strategy review with Risk Manager + Strategy Architect.
 
@@ -316,7 +334,10 @@ class Orchestrator:
         wf = self.config.get_workflow("review")
         agent_ids = wf["agents"]
 
-        agents = create_agents(self.config, agent_ids, llm_config, research_context)
+        trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
+            agent_ids, research_context, learning_claims
+        )
+        agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
         # Phase 1: config-driven speaker selection / repeat / rounds.
         speaker = self._resolve_speaker_method(wf.get("speaker_selection", "auto"))
@@ -324,7 +345,7 @@ class Orchestrator:
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=[],
+            messages=list(next(iter(untrusted_contexts.values()), [])),
             max_round=wf.get("max_rounds", 10),
             speaker_selection_method=speaker,
             allow_repeat_speaker=allow_repeat,
@@ -353,6 +374,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         research_context: str = "",
         max_rounds: int = 15,
         llm_config: dict | None = None,
+        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a custom GroupChat with arbitrary agent combination.
 
@@ -366,11 +388,14 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         Returns:
             Dict with status.
         """
-        agents = create_agents(self.config, agent_ids, llm_config, research_context)
+        trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
+            agent_ids, research_context, learning_claims
+        )
+        agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=[],
+            messages=list(next(iter(untrusted_contexts.values()), [])),
             max_round=max_rounds,
             speaker_selection_method="round_robin",
             allow_repeat_speaker=True,
@@ -448,12 +473,13 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         strategy_id: str = "b1",
         research_context: str = "",
         agent_invoker: Callable | None = None,
-        memory_router: MemoryRouter | None = None,
+        memory_router: LegacyMemoryAdapter | None = None,
         max_revision_attempts: int | None = None,
         llm_config: dict | None = None,
         initial_outputs: dict[str, Any] | None = None,
         memory_packet: dict[str, Any] | None = None,
         require_kbase_inspired: bool = False,
+        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Deterministic, gated, single-pass pipeline (Phases 2/3/4/5).
 
@@ -487,7 +513,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                    else cl.get("revision_limit", {}).get("max_revision_attempts", 2))
 
         # STEP 0 -- System_Orchestrator builds the single memory_packet.
-        router = memory_router or MemoryRouter(strategy_id)
+        router = memory_router or LegacyMemoryAdapter(strategy_id)
         packet = dict(memory_packet or router.build_packet(objective=topic))
         if require_kbase_inspired:
             packet["_workflow_constraints"] = {
@@ -497,7 +523,12 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                     "approved source brief provides no support. Report the source mismatch."
                 ),
             }
-        invoker = agent_invoker or self._build_sequential_invoker(stages, research_context, llm_config)
+        invoker = agent_invoker or self._build_sequential_invoker(
+            stages,
+            research_context,
+            llm_config,
+            learning_claims=learning_claims,
+        )
 
         transcript: list[dict] = []
         last_outputs: dict[str, Any] = dict(initial_outputs or {})
@@ -793,7 +824,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             issues.append(f"invalid fold ratios: {invalid_ratios}")
         return issues
 
-    def _gate(self, stage: str, output: dict, router: MemoryRouter, packet: dict,
+    def _gate(self, stage: str, output: dict, router: LegacyMemoryAdapter, packet: dict,
               last_outputs: dict | None = None, *, require_kbase_inspired: bool = False):
         """Orchestrator gate decision per stage. Returns (decision, reason, registry_status)."""
         last_outputs = last_outputs or {}
@@ -1462,13 +1493,66 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             "alpha_hunter": 24,
         }.get(stage, 8)
 
-    def _build_sequential_invoker(self, stages: list[str], research_context: str,
-                                  llm_config: dict | None) -> Callable:
+    @staticmethod
+    def _context_role(stage: str) -> str:
+        return {
+            "source_librarian": "source_librarian",
+            "alpha_hunter": "alpha_hunter",
+            "research_proposer": "alpha_hunter",
+            "falsification_officer": "falsification_officer",
+            "risk_controller": "falsification_officer",
+            "data_validator": "falsification_officer",
+            "statistician": "falsification_officer",
+        }.get(stage, "factor_engineer")
+
+    def _prepare_v342_agent_context(
+        self,
+        stages: list[str],
+        research_context: str,
+        learning_claims: list[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, str], dict[str, list[dict[str, str]]]]:
+        from research_automation.control_plane.memory import LearningContextRouter
+
+        trusted_contexts: dict[str, str] = {}
+        untrusted_contexts: dict[str, list[dict[str, str]]] = {}
+        context_router = LearningContextRouter(
+            tokenizer_kind="AG2", tokenizer_name="gpt-4o-mini"
+        )
+        sources = (
+            [{"source_ref": "legacy-research-context", "content": research_context}]
+            if research_context
+            else None
+        )
+        for stage in stages:
+            context_messages = context_router.build_messages(
+                learning_claims or [],
+                role=self._context_role(stage),
+                untrusted_sources=sources,
+            )
+            if context_messages["status"] != "OK":
+                raise RuntimeError(
+                    f"V3.4 learning context unavailable for stage '{stage}': "
+                    f"{context_messages['status']}"
+                )
+            trusted_contexts[stage] = context_messages["system_message"]["content"]
+            untrusted_contexts[stage] = context_messages["untrusted_messages"]
+        return trusted_contexts, untrusted_contexts
+
+    def _build_sequential_invoker(
+        self,
+        stages: list[str],
+        research_context: str,
+        llm_config: dict | None,
+        learning_claims: list[dict[str, Any]] | None = None,
+    ) -> Callable:
         """Default invoker: one bounded tool-capable conversation per stage agent."""
         # Preserve per-agent model routing unless the caller explicitly asks
         # for a workflow-wide override.  The orchestrator default is for
         # manager duties, not an implicit override for every specialist.
-        agents = create_agents(self.config, stages, llm_config, research_context)
+        trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
+            stages, research_context, learning_claims
+        )
+        agents = create_agents(self.config, stages, llm_config, trusted_contexts)
         id_to_name = {sid: (self.config.get_agent(sid) or {}).get("name") for sid in stages}
         source_tool_audit: list[dict[str, Any]] = []
         source_conversation_history: list[dict[str, Any]] = []
@@ -1487,6 +1571,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                     conversation_history=(
                         source_conversation_history if stage == "source_librarian" else None
                     ),
+                    initial_messages=untrusted_contexts[stage],
                 )
             except Exception as exc:
                 output = {
@@ -1509,6 +1594,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                                    max_tool_rounds: int = 8,
                                    tool_audit: list[dict[str, Any]] | None = None,
                                    conversation_history: list[dict[str, Any]] | None = None,
+                                   initial_messages: list[dict[str, str]] | None = None,
                                    ) -> str | dict | None:
         """Run one stage through AG2's tool-call cycle with a hard safety bound.
 
@@ -1521,6 +1607,8 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             raise ValueError("max_tool_rounds must be at least 1")
 
         messages = conversation_history if conversation_history is not None else []
+        if not messages and initial_messages:
+            messages.extend(dict(item) for item in initial_messages)
         messages.append({"role": "user", "content": message})
         tool_rounds = 0
         pending_tool_calls: dict[str, dict[str, Any]] = {}
@@ -1631,9 +1719,8 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         parts = [
             f"Sequential Research OS pipeline. You are the '{stage}' role.",
             f"Objective: {topic}",
-            "Use ONLY the memory_packet below; do NOT read memory files directly.",
-            "memory_packet:",
-            yaml.safe_dump(packet, allow_unicode=True, sort_keys=False),
+            "Use only the V3.4 trusted learning system context and explicit upstream "
+            "stage outputs; do not read legacy memory files directly.",
         ]
         public_outputs = {
             key: self._public_stage_output(value) if isinstance(value, dict) else value
@@ -2618,7 +2705,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         rt_cfg = wf.get("roundtable", {}) if isinstance(wf.get("roundtable"), dict) else {}
         context_parts = [research_context] if research_context else []
         try:
-            router = MemoryRouter(strategy_id)
+            router = LegacyMemoryAdapter(strategy_id)
             packet = router.build_packet(objective=topic)
             context_parts += [
                 "memory_packet:",

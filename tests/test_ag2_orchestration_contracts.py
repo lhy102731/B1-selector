@@ -95,6 +95,18 @@ def _compute_acceleration():
 
 
 class AG2OrchestrationContractTests(unittest.TestCase):
+    def test_stage_prompt_never_serializes_legacy_memory_packet(self):
+        prompt = Orchestrator._build_stage_message(
+            Orchestrator.__new__(Orchestrator),
+            "factor_engineer",
+            {"legacy_secret": "RAW_MEMORY_PACKET_SENTINEL"},
+            {},
+            "bounded objective",
+        )
+
+        self.assertNotIn("RAW_MEMORY_PACKET_SENTINEL", prompt)
+        self.assertNotIn("memory_packet:", prompt)
+
     def test_ag2_candidate_failure_does_not_downgrade_to_parameter_proposer(self):
         runner = AutonomousRunnerV1.__new__(AutonomousRunnerV1)
         runner.auto_source = "ag2"

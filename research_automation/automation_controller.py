@@ -13,7 +13,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ag2_research.orchestrator import MemoryRouter
+from ag2_research.orchestrator import LegacyMemoryAdapter
 
 from .approval_gate import ApprovalGate
 from .experiment import Experiment, ExperimentStatus, Proposal
@@ -49,7 +49,7 @@ class AutomationController:
         code_executor: CodeChangeExecutor | None = None,
         backtest_executor: BacktestExecutor | None = None,
         approval_gate: ApprovalGate | None = None,
-        memory_router: MemoryRouter | None = None,
+        memory_router: LegacyMemoryAdapter | None = None,
         workspace_manager=None,
         workspace_mode: bool = False,
         execution_lease=None,
@@ -60,7 +60,7 @@ class AutomationController:
         self.strategy_id = strategy_id
         self.workspace = Path(workspace)
         self.output_root = Path(output_root)
-        self.router = memory_router or MemoryRouter(strategy_id)
+        self.router = memory_router or LegacyMemoryAdapter(strategy_id)
         # injectable boundaries (default to offline stubs)
         self.code_executor = code_executor or StubCodeChangeExecutor()
         self.backtest_executor = backtest_executor or StubBacktestExecutor()
