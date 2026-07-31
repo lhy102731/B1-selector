@@ -420,6 +420,8 @@ class ConflictClassifier:
         }
         left_id = _nonempty_string(left.get("claim_id"), "left.claim_id")
         right_id = _nonempty_string(right.get("claim_id"), "right.claim_id")
+        if left_id == right_id:
+            raise ValueError("conflict claims must be distinct")
         left_execution = _nonempty_string(
             left.get("execution_identity"), "left.execution_identity"
         )

@@ -477,6 +477,35 @@ class LearningConflictTests(unittest.TestCase):
                 },
             )
 
+    def test_conflict_requires_distinct_claims_and_canonical_actor_event(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        claim = {
+            "claim_id": "claim-duplicate",
+            "kind": "POSITIVE",
+            "execution_identity": "execution-duplicate",
+            "scope": scope(regime="bull"),
+        }
+        opposing = {**claim, "kind": "NEGATIVE"}
+        with self.assertRaisesRegex(ValueError, "distinct"):
+            ConflictClassifier().classify(
+                claim,
+                opposing,
+                actor_event={"event_id": "event-duplicate", "actor_id": "reviewer"},
+            )
+        for actor_event in (
+            {"event_id": "event-only"},
+            {"event_id": "event-extra", "actor_id": "reviewer", "extra": "x"},
+            {"event_id": "", "actor_id": "reviewer"},
+        ):
+            with self.subTest(actor_event=actor_event):
+                with self.assertRaises(ValueError):
+                    ConflictClassifier().classify(
+                        {**claim, "claim_id": "claim-left"},
+                        {**opposing, "claim_id": "claim-right"},
+                        actor_event=actor_event,
+                    )
+
     def test_opposing_specs_are_scope_or_protocol_conflict(self) -> None:
         from research_automation.control_plane.memory import ConflictClassifier
 
