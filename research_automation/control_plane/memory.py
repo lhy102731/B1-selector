@@ -90,6 +90,22 @@ def _canonical_values(value: object, field_name: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _canonical_refs(value: object, field_name: str) -> tuple[str, ...]:
+    if (
+        not isinstance(value, list)
+        or any(
+            not isinstance(item, str)
+            or not item
+            or item != item.strip()
+            or len(item) > 256
+            for item in value
+        )
+        or value != sorted(set(value))
+    ):
+        raise ValueError(f"{field_name} must be a sorted unique string array")
+    return tuple(value)
+
+
 @dataclass(frozen=True)
 class ClaimScope:
     mechanisms: tuple[str, ...]
@@ -552,10 +568,10 @@ class ReopenPredicateEvaluator:
             ):
                 reasons.append("STRONGER_EVIDENCE")
         if "DECLARED_RESEARCH_GAP" in predicates:
-            proposal_gaps = _canonical_values(
+            proposal_gaps = _canonical_refs(
                 proposal.get("research_gap_refs"), "research_gap_refs"
             )
-            declared_gaps = _canonical_values(
+            declared_gaps = _canonical_refs(
                 claim.get("declared_research_gap_refs"),
                 "declared_research_gap_refs",
             )

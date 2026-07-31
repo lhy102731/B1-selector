@@ -707,6 +707,25 @@ class LearningReopenTests(unittest.TestCase):
         self.assertEqual(["DECLARED_RESEARCH_GAP"], matching["reason_codes"])
         self.assertFalse(unrelated["qualified"])
 
+    def test_empty_research_gap_reference_does_not_reopen(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        decision = ReopenPredicateEvaluator().evaluate(
+            {
+                "scope": scope(regime="bull"),
+                "research_gap_refs": [],
+            },
+            {
+                "claim_id": "claim-no-research-gap",
+                "scope": scope(regime="bull"),
+                "declared_research_gap_refs": ["gap-001"],
+                "reopen_predicates": ["DECLARED_RESEARCH_GAP"],
+            },
+        )
+
+        self.assertFalse(decision["qualified"])
+        self.assertEqual([], decision["reason_codes"])
+
     def test_manual_reopen_bypass_is_rejected(self) -> None:
         from research_automation.control_plane.memory import ReopenPredicateEvaluator
 
