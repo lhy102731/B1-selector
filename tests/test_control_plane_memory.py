@@ -263,6 +263,41 @@ class LearningGateTests(unittest.TestCase):
                     excluded["claim-untrusted-grandchild"]["reason_codes"],
                 )
 
+    def test_invalid_lineage_graph_fails_closed(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        def claim(claim_id: str, parent_ids: list[str]) -> dict[str, object]:
+            return {
+                "claim_id": claim_id,
+                "kind": "FAILED_USAGE",
+                "execution_identity": f"execution-{claim_id}",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+                "audit_grade": "PASS",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": parent_ids,
+                "reopen_predicates": [],
+                "universal_factor_rejection": False,
+            }
+
+        cases = (
+            [claim("missing-child", ["missing-parent"])],
+            [claim("self-parent", ["self-parent"])],
+            [claim("cycle-a", ["cycle-b"]), claim("cycle-b", ["cycle-a"])],
+        )
+        for claims in cases:
+            with self.subTest(claim_ids=[item["claim_id"] for item in claims]):
+                with self.assertRaisesRegex(ValueError, "lineage"):
+                    LearningGate().classify(
+                        {
+                            "execution_identity": "execution-proposal",
+                            "semantic_identity": "yellow-line",
+                            "scope": scope(regime="bull"),
+                        },
+                        claims,
+                    )
+
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

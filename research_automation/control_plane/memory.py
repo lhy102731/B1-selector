@@ -246,6 +246,27 @@ class LearningGate:
             parents_by_claim[claim_id] = tuple(parent_ids)
             if audit_grade != "PASS" or taint_refs or invalidation_codes:
                 invalidated_claim_ids.add(claim_id)
+        known_claim_ids = set(parents_by_claim)
+        for claim_id, parent_ids in parents_by_claim.items():
+            if claim_id in parent_ids:
+                raise ValueError("claim lineage cannot contain a self-parent edge")
+            if not set(parent_ids).issubset(known_claim_ids):
+                raise ValueError("claim lineage references an unknown parent")
+        visit_state: dict[str, int] = {}
+
+        def visit_lineage(claim_id: str) -> None:
+            state = visit_state.get(claim_id, 0)
+            if state == 1:
+                raise ValueError("claim lineage cannot contain a cycle")
+            if state == 2:
+                return
+            visit_state[claim_id] = 1
+            for parent_id in parents_by_claim[claim_id]:
+                visit_lineage(parent_id)
+            visit_state[claim_id] = 2
+
+        for claim_id in sorted(known_claim_ids):
+            visit_lineage(claim_id)
         parent_invalidated_ids: set[str] = set()
         changed = True
         while changed:
