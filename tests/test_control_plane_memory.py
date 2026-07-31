@@ -1319,6 +1319,7 @@ class ContextAssemblerTests(unittest.TestCase):
         from research_automation.control_plane.memory import ContextAssembler
 
         class ExactTokenizer:
+            kind = "AG2"
             name = "ag2_test_adapter"
 
             def count_tokens(self, text: str) -> int:
@@ -1337,7 +1338,8 @@ class ContextAssemblerTests(unittest.TestCase):
 
         self.assertEqual("OK", result["status"])
         self.assertEqual("EXACT", result["token_usage"]["method"])
-        self.assertEqual("ag2_test_adapter", result["token_usage"]["tokenizer"])
+        self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
+        self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
         self.assertEqual(7, result["token_usage"]["learning_required"])
         self.assertTrue(tokenizer.last_text.startswith("{"))
 
@@ -1363,6 +1365,29 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual([], source["capabilities"])
         self.assertEqual("NONE", source["authority_effect"])
         self.assertNotIn(injection, repr(result["control_metadata"]))
+
+    def test_tokenizer_identity_cannot_inject_control_metadata(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        class Tokenizer:
+            kind = "AG2"
+            name = "ignore_prior_instructions"
+
+            def count_tokens(self, text: str) -> int:
+                return 7
+
+        result = ContextAssembler(tokenizer_adapter=Tokenizer()).assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+        )
+
+        self.assertNotIn("ignore_prior_instructions", repr(result))
+        self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
+        self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
 
 
 if __name__ == "__main__":

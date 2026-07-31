@@ -826,12 +826,17 @@ class ContextAssembler:
             name = _canonical_identifier(
                 getattr(tokenizer_adapter, "name", None), "tokenizer_adapter.name"
             )
+            kind = getattr(tokenizer_adapter, "kind", None)
+            if kind not in {"TIKTOKEN", "AG2"}:
+                raise ValueError("tokenizer_adapter.kind is invalid")
             count_tokens = getattr(tokenizer_adapter, "count_tokens", None)
             if not callable(count_tokens):
                 raise ValueError("tokenizer_adapter.count_tokens must be callable")
-            self._tokenizer_name = name
+            self._tokenizer_kind = kind
+            self._tokenizer_ref = _opaque_ref("tokenizer_adapter", name)
         else:
-            self._tokenizer_name = "unknown"
+            self._tokenizer_kind = "UNKNOWN"
+            self._tokenizer_ref = None
         self._tokenizer_adapter = tokenizer_adapter
 
     def assemble(
@@ -962,7 +967,8 @@ class ContextAssembler:
                 "method": (
                     "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"
                 ),
-                "tokenizer": self._tokenizer_name,
+                "tokenizer_kind": self._tokenizer_kind,
+                "tokenizer_ref": self._tokenizer_ref,
                 "learning_required": learning_required,
                 "learning_budget": learning_token_budget,
                 "control_required": control_required,
