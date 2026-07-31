@@ -1287,7 +1287,14 @@ class ContextAssemblerTests(unittest.TestCase):
                 }
             )
         projection = ContextProjection().project(claims)
-        assembler = ContextAssembler()
+        class RoleTestTokenizer:
+            kind = "AG2"
+            name = "role_test_tokenizer"
+
+            def count_tokens(self, text: str) -> int:
+                return 100
+
+        assembler = ContextAssembler(tokenizer_adapter=RoleTestTokenizer())
 
         alpha = assembler.assemble(projection, role="alpha_hunter")
         falsification = assembler.assemble(
@@ -1343,6 +1350,25 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertIsNone(result["learning_memory"])
         self.assertEqual("ESTIMATED", result["token_usage"]["method"])
         self.assertGreater(result["token_usage"]["learning_required"], 1)
+
+    def test_unknown_tokenizer_uses_utf8_byte_upper_bound(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        result = ContextAssembler().assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+            learning_token_budget=700,
+            untrusted_sources=[
+                {"source_ref": "source-byte-bound", "content": "x" * 800}
+            ],
+        )
+
+        self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
+        self.assertGreater(result["token_usage"]["learning_required"], 700)
 
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
