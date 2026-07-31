@@ -923,28 +923,34 @@ class ContextAssembler:
         },
     }
 
-    def __init__(self, *, tokenizer_adapter: object | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tokenizer_kind: str | None = None,
+        tokenizer_name: str | None = None,
+        tokenizer_adapter: object | None = None,
+    ) -> None:
         if tokenizer_adapter is not None:
-            if type(tokenizer_adapter) not in {
-                AG2TokenizerAdapter,
-                TiktokenTokenizerAdapter,
-            }:
-                raise ValueError("tokenizer_adapter must be a registered adapter")
-            name = _canonical_identifier(
-                getattr(tokenizer_adapter, "name", None), "tokenizer_adapter.name"
-            )
-            kind = getattr(tokenizer_adapter, "kind", None)
-            if kind not in {"TIKTOKEN", "AG2"}:
-                raise ValueError("tokenizer_adapter.kind is invalid")
-            count_tokens = getattr(tokenizer_adapter, "count_tokens", None)
-            if not callable(count_tokens):
-                raise ValueError("tokenizer_adapter.count_tokens must be callable")
-            self._tokenizer_kind = kind
-            self._tokenizer_ref = _opaque_ref("tokenizer_adapter", name)
-        else:
+            raise ValueError("mutable tokenizer object configuration is forbidden")
+        if tokenizer_kind is None and tokenizer_name is None:
             self._tokenizer_kind = "UNKNOWN"
             self._tokenizer_ref = None
-        self._tokenizer_adapter = tokenizer_adapter
+            self._tokenizer_counter = None
+        else:
+            if tokenizer_kind not in {"TIKTOKEN", "AG2"}:
+                raise ValueError("tokenizer_kind is invalid")
+            name = _canonical_identifier(tokenizer_name, "tokenizer_name")
+            self._tokenizer_kind = tokenizer_kind
+            self._tokenizer_ref = _opaque_ref("tokenizer_adapter", name)
+            if tokenizer_kind == "TIKTOKEN":
+                import tiktoken
+
+                encoding = tiktoken.encoding_for_model(name)
+                self._tokenizer_counter = lambda text: len(encoding.encode(text))
+            else:
+                from autogen.token_count_utils import count_token
+
+                self._tokenizer_counter = lambda text: count_token(text, model=name)
 
     def assemble(
         self,
@@ -1139,10 +1145,10 @@ class ContextAssembler:
                 sort_keys=True,
                 separators=(",", ":"),
             )
-            if self._tokenizer_adapter is None:
+            if self._tokenizer_counter is None:
                 encoded = canonical.encode("utf-8")
                 return max(1, len(encoded))
-            token_count = self._tokenizer_adapter.count_tokens(canonical)
+            token_count = self._tokenizer_counter(canonical)
             if type(token_count) is not int or token_count < 1:
                 raise ValueError("tokenizer adapter returned an invalid token count")
             return token_count
@@ -1173,7 +1179,7 @@ class ContextAssembler:
         }
 
         learning_required = count_tokens(learning_memory)
-        method = "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"
+        method = "ESTIMATED" if self._tokenizer_counter is None else "EXACT"
         control_required = 0
         status = (
             "CONTEXT_BUDGET_EXCEEDED"

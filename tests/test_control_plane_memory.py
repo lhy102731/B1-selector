@@ -1220,6 +1220,16 @@ class ContextProjectionTests(unittest.TestCase):
 
 
 class ContextAssemblerTests(unittest.TestCase):
+    def test_assembler_rejects_mutable_tokenizer_objects(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            TiktokenTokenizerAdapter,
+        )
+
+        adapter = TiktokenTokenizerAdapter(name="gpt-4o-mini")
+        with self.assertRaisesRegex(ValueError, "configuration"):
+            ContextAssembler(tokenizer_adapter=adapter)
+
     def test_nested_projection_rows_reject_injected_authority_fields(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
 
@@ -1313,7 +1323,7 @@ class ContextAssemblerTests(unittest.TestCase):
             )
         projection = ContextProjection().project(claims)
         assembler = ContextAssembler(
-            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
         )
 
         alpha = assembler.assemble(projection, role="alpha_hunter")
@@ -1434,7 +1444,7 @@ class ContextAssemblerTests(unittest.TestCase):
             )
         projection = ContextProjection().project(claims)
         result = ContextAssembler(
-            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
         ).assemble(
             projection,
             role="factor_engineer",
@@ -1495,7 +1505,7 @@ class ContextAssemblerTests(unittest.TestCase):
             ]
         )
         result = ContextAssembler(
-            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
         ).assemble(
             projection,
             role="alpha_hunter",
@@ -1514,8 +1524,9 @@ class ContextAssemblerTests(unittest.TestCase):
             TiktokenTokenizerAdapter,
         )
 
-        tokenizer = TiktokenTokenizerAdapter(name="gpt-4o-mini")
-        result = ContextAssembler(tokenizer_adapter=tokenizer).assemble(
+        result = ContextAssembler(
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
+        ).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
                 "claims": [],
@@ -1528,6 +1539,24 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("EXACT", result["token_usage"]["method"])
         self.assertEqual("TIKTOKEN", result["token_usage"]["tokenizer_kind"])
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
+        self.assertGreater(result["token_usage"]["learning_required"], 0)
+
+    def test_ag2_tokenizer_configuration_uses_official_counter(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        result = ContextAssembler(
+            tokenizer_kind="AG2", tokenizer_name="gpt-4o-mini"
+        ).assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+        )
+
+        self.assertEqual("EXACT", result["token_usage"]["method"])
+        self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
         self.assertGreater(result["token_usage"]["learning_required"], 0)
 
     def test_prompt_injection_remains_structured_untrusted_data(self) -> None:
@@ -1560,7 +1589,7 @@ class ContextAssemblerTests(unittest.TestCase):
         )
 
         result = ContextAssembler(
-            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
         ).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
@@ -1584,7 +1613,7 @@ class ContextAssemblerTests(unittest.TestCase):
             def count_tokens(self, text: str) -> int:
                 return 7
 
-        with self.assertRaisesRegex(ValueError, "registered"):
+        with self.assertRaisesRegex(ValueError, "configuration"):
             ContextAssembler(tokenizer_adapter=DuckTokenizer())
 
     def test_registered_adapter_rejects_subclass_override(self) -> None:
@@ -1603,7 +1632,7 @@ class ContextAssemblerTests(unittest.TestCase):
             def count_tokens(self, text: str) -> int:
                 return 1
 
-        with self.assertRaisesRegex(ValueError, "registered"):
+        with self.assertRaisesRegex(ValueError, "configuration"):
             ContextAssembler(tokenizer_adapter=MaliciousAdapter())
 
 
