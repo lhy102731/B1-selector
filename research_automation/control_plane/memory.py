@@ -59,6 +59,9 @@ class TimeWindow:
     def is_within(self, other: "TimeWindow") -> bool:
         return other.start <= self.start and self.end <= other.end
 
+    def to_mapping(self) -> dict[str, str]:
+        return {"start": self.start.isoformat(), "end": self.end.isoformat()}
+
 
 def _canonical_values(value: object, field_name: str) -> tuple[str, ...]:
     if (
@@ -140,6 +143,38 @@ class ClaimScope:
             return ScopeMatch.SUBSET
         return ScopeMatch.OVERLAP
 
+    def intersection(self, other: "ClaimScope") -> dict[str, object] | None:
+        relation = self.classify_proposal(other)
+        if relation is ScopeMatch.DISJOINT:
+            return None
+        windows = sorted(
+            {
+                TimeWindow(max(left.start, right.start), min(left.end, right.end))
+                for left in self.time_windows
+                for right in other.time_windows
+                if left.overlaps(right)
+            }
+        )
+        return {
+            "mechanisms": sorted(set(self.mechanisms) & set(other.mechanisms)),
+            "usage_modes": sorted(set(self.usage_modes) & set(other.usage_modes)),
+            "market_regimes": sorted(
+                set(self.market_regimes) & set(other.market_regimes)
+            ),
+            "time_windows": [window.to_mapping() for window in windows],
+            "universes": sorted(set(self.universes) & set(other.universes)),
+            "liquidity_buckets": sorted(
+                set(self.liquidity_buckets) & set(other.liquidity_buckets)
+            ),
+            "label_protocol_families": sorted(
+                set(self.label_protocol_families)
+                & set(other.label_protocol_families)
+            ),
+            "generation_families": sorted(
+                set(self.generation_families) & set(other.generation_families)
+            ),
+        }
+
 
 def _nonempty_string(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
@@ -185,6 +220,7 @@ class LearningGate:
                 {
                     "claim_id": claim_id,
                     "scope_match": relation.value,
+                    "applicable_scope": proposal_scope.intersection(learned_scope),
                     "exact_execution_identity": exact_execution,
                     "semantic_similarity": semantic_match,
                 }

@@ -46,6 +46,40 @@ class LearningGateTests(unittest.TestCase):
         self.assertEqual([], decision["hard_block_claim_ids"])
         self.assertEqual("DISJOINT", decision["matches"][0]["scope_match"])
 
+    def test_partial_scope_applies_only_to_intersection(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        proposal_scope = scope(regime="bear")
+        proposal_scope["market_regimes"] = ["bear", "bull"]
+        learned_scope = scope(regime="bull")
+        learned_scope["market_regimes"] = ["bull", "sideways"]
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "proposal-002",
+                "semantic_identity": "yellow-line",
+                "scope": proposal_scope,
+            },
+            [
+                {
+                    "claim_id": "claim-partial",
+                    "kind": "PARTIAL",
+                    "execution_identity": "prior-partial",
+                    "semantic_identity": "yellow-line",
+                    "scope": learned_scope,
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            ],
+        )
+
+        match = decision["matches"][0]
+        self.assertEqual("OVERLAP", match["scope_match"])
+        self.assertEqual(["bull"], match["applicable_scope"]["market_regimes"])
+
 
 if __name__ == "__main__":
     unittest.main()
