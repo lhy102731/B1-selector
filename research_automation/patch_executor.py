@@ -802,10 +802,12 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                     changes_log.append(f"CODE_REVIEWER_REQUEST_CHANGES: {review_text[:300]}")
                 else:
                     changes_log.append(f"CODE_REVIEWER_APPROVE: {review_text[:300]}")
-            except ImportError:
-                pass  # AG2 unavailable; do not block production code path
             except Exception as _cr_err:
-                changes_log.append(f"CODE_REVIEWER_SKIPPED: {_cr_err}")
+                return CodeChangeResult(
+                    ok=False,
+                    error=f"code reviewer unavailable: {_cr_err}",
+                    logs=["discard the isolated workspace to roll back"],
+                )
 
         changed_files = [rel_file] if find_text in target_content else []
         changed_hash = hashlib.sha256(target_path.read_bytes()).hexdigest()

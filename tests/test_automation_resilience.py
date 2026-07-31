@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from research_automation.task_queue import ExperimentTask, QueuePersistenceError, TaskQueue
@@ -18,6 +19,16 @@ from research_automation.patch_executor import (
 )
 from research_automation.safety import UnsafeWriteError, assert_safe_path
 from research_automation.control_plane.entry_guard import AuthorizationError
+from research_automation.control_plane.contracts import Actor, Phase, SideEffect
+from research_automation.control_plane.sink_guard import (
+    ExecutionInvocation,
+    RunnerIdentity,
+)
+from research_automation.control_plane.stores import (
+    AuthorityIdentity,
+    TaskExecutionLease,
+    _BearerSecret,
+)
 
 
 class ControlPlaneSafetyTests(unittest.TestCase):
@@ -161,6 +172,129 @@ class BaselineFailFastTests(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertIn("execution lease", (result.error or "").lower())
             run.assert_not_called()
+
+    def test_patch_executor_fails_closed_when_review_context_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            task = root / "task.md"
+            task.write_text("change one bounded constant", encoding="utf-8")
+            workspace = root / "workspace"
+            target = workspace / "strategy" / "brick_chart_strategy.py"
+            target.parent.mkdir(parents=True)
+            target.write_text("VALUE = 1\n", encoding="utf-8")
+            executor = ClaudePatchExecutor(binary="claude")
+            prompt = executor._build_patch_prompt(
+                task.read_text(encoding="utf-8"),
+                target.read_text(encoding="utf-8"),
+                "strategy/brick_chart_strategy.py",
+            )
+            actor = Actor("patch-test", "automation", "patch-test-invocation")
+            identity = AuthorityIdentity("a" * 64, "b" * 64, "c" * 64)
+            lease = TaskExecutionLease(
+                lease_id="lease-test",
+                ticket_id="ticket-test",
+                grant_id="grant-test",
+                authorization_ref="auth-test",
+                phase=Phase.P4,
+                attempt_id="p4-test",
+                task_id="PATCH-TEST",
+                entry_policy_sha256="d" * 64,
+                allowed_side_effects=(
+                    SideEffect.GIT_MUTATION,
+                    SideEffect.NETWORK_EGRESS,
+                ),
+                actor=actor,
+                identity=identity,
+                _bearer_secret=_BearerSecret("test-secret"),
+            )
+            runner = RunnerIdentity(
+                module="research_automation.patch_executor",
+                callable_name="ClaudePatchExecutor.apply",
+                source_ref="research_automation/patch_executor.py",
+                source_sha256="e" * 64,
+            )
+
+            def invocation(effect, argv):
+                return ExecutionInvocation(
+                    intent_ref=f"intent-{effect.value}",
+                    entry_id=f"entry-{effect.value}",
+                    effect=effect,
+                    operation="PATCH_APPLY",
+                    argv=tuple(argv),
+                    cwd=str(workspace),
+                    runner=runner,
+                    resource_paths=(),
+                )
+
+            git_invocation = invocation(SideEffect.GIT_MUTATION, ("apply",))
+            llm_invocation = invocation(
+                SideEffect.NETWORK_EGRESS,
+                ("claude", "-p", prompt),
+            )
+            review_invocation = invocation(
+                SideEffect.NETWORK_EGRESS,
+                ("review",),
+            )
+            experiment = {
+                "scope": {
+                    "code_change": {
+                        "file": "strategy/brick_chart_strategy.py",
+                    }
+                }
+            }
+
+            with (
+                patch(
+                    "research_automation.patch_executor.ExecutionSinkGuard.authorize",
+                    side_effect=lambda _lease, item: SimpleNamespace(
+                        operation="PATCH_APPLY", effect=item.effect
+                    ),
+                ),
+                patch(
+                    "research_automation.patch_executor.AuthorizedSubprocess.run",
+                    return_value=SimpleNamespace(
+                        returncode=0,
+                        stdout="FIND: VALUE = 1\nREPLACE WITH: VALUE = 2\n",
+                        stderr="",
+                    ),
+                ),
+                patch(
+                    "research_automation.patch_executor.AuthorizedPatchApplier.apply"
+                ),
+                patch(
+                    "research_automation.patch_executor.compile_gate",
+                    return_value={"ok": True, "output": ""},
+                ),
+                patch(
+                    "research_automation.kb_gate.gate_proposal_kb",
+                    return_value={"verdict": "pass"},
+                ),
+                patch(
+                    "research_automation.control_plane.memory."
+                    "CommittedLearningLedgerReader.read_projection_input",
+                    side_effect=RuntimeError("committed context unavailable"),
+                ),
+            ):
+                result = executor.apply(
+                    task,
+                    workspace,
+                    experiment=experiment,
+                    lease=lease,
+                    invocation=git_invocation,
+                    llm_lease=lease,
+                    llm_invocation=llm_invocation,
+                    patch_lease=lease,
+                    patch_invocation=git_invocation,
+                    compile_lease=lease,
+                    compile_invocation=git_invocation,
+                    review_lease=lease,
+                    review_invocation=review_invocation,
+                    repository_root=root,
+                )
+
+        self.assertFalse(result.ok)
+        self.assertIn("committed context unavailable", result.error or "")
+        self.assertIn("discard the isolated workspace", " ".join(result.logs))
 
     def test_legacy_patch_helper_fails_closed_without_authorized_sink(self):
         with tempfile.TemporaryDirectory() as td:
