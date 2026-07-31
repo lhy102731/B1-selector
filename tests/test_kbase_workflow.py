@@ -76,8 +76,12 @@ class KBaseWorkflowTests(unittest.TestCase):
                         ]
                     },
                 ),
+            ) as prepare,
+            patch.object(
+                orchestrator.config,
+                "get_llm_config",
+                return_value={"config_list": [{"model": "gpt-4o-mini"}]},
             ),
-            patch.object(orchestrator.config, "get_llm_config", return_value={}),
             patch(
                 "ag2_research.orchestrator.create_profiled_assistant_agent",
                 return_value=agent,
@@ -94,6 +98,11 @@ class KBaseWorkflowTests(unittest.TestCase):
         system_message = factory.call_args.kwargs["system_message"]
         self.assertIn("TRUSTED_ROUNDTABLE_CONTEXT", system_message)
         self.assertNotIn(injection, system_message)
+        prepare.assert_called_once_with(
+            ["roundtable_peer_0"],
+            injection,
+            tokenizer_names={"roundtable_peer_0": "gpt-4o-mini"},
+        )
 
     @staticmethod
     def _credentialed_config() -> ResearchConfig:

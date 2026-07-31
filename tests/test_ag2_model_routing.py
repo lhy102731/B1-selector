@@ -132,6 +132,50 @@ class AG2ModelRoutingTests(unittest.TestCase):
         trusted_context = factory.call_args.args[3]["source_librarian"]
         self.assertIn('"claims":[{', trusted_context)
 
+    def test_sequential_context_uses_each_recipient_model_tokenizer(self):
+        self.orchestrator.config.get_agent_llm_config.side_effect = (
+            lambda stage: {
+                "config_list": [
+                    {
+                        "model": {
+                            "source_librarian": "gpt-4o-mini",
+                            "alpha_hunter": "deepseek-v4-pro",
+                        }[stage]
+                    }
+                ]
+            }
+        )
+        bundle = {
+            "status": "OK",
+            "system_message": {"content": "trusted"},
+            "untrusted_messages": [],
+        }
+        with (
+            patch(
+                "research_automation.control_plane.memory."
+                "CommittedLearningLedgerReader.read_claims",
+                return_value=[],
+            ),
+            patch(
+                "research_automation.control_plane.memory.LearningContextRouter"
+            ) as router,
+            patch("ag2_research.orchestrator.create_agents", return_value={}),
+        ):
+            router.return_value.build_messages.return_value = bundle
+            self.orchestrator._build_sequential_invoker(
+                ["source_librarian", "alpha_hunter"], "", None
+            )
+
+        self.assertEqual(
+            [
+                unittest.mock.call(
+                    tokenizer_kind="AG2", tokenizer_name="gpt-4o-mini"
+                ),
+                unittest.mock.call(),
+            ],
+            router.call_args_list,
+        )
+
     def test_sequential_agent_receives_untrusted_data_as_separate_history_message(self):
         seen = {}
 

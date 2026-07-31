@@ -286,7 +286,7 @@ class Orchestrator:
         # Only a caller-supplied override may force one model onto all roles.
         _llm = llm_config or self.llm_config
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context
+            agent_ids, research_context, llm_config=llm_config
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -333,7 +333,7 @@ class Orchestrator:
         agent_ids = wf["agents"]
 
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context
+            agent_ids, research_context, llm_config=llm_config
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -386,7 +386,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             Dict with status.
         """
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context
+            agent_ids, research_context, llm_config=llm_config
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -1504,6 +1504,9 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         self,
         stages: list[str],
         research_context: str,
+        *,
+        llm_config: dict | None = None,
+        tokenizer_names: dict[str, str] | None = None,
     ) -> tuple[dict[str, str], dict[str, list[dict[str, str]]]]:
         from research_automation.control_plane.memory import (
             CommittedLearningLedgerReader,
@@ -1512,9 +1515,6 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
 
         trusted_contexts: dict[str, str] = {}
         untrusted_contexts: dict[str, list[dict[str, str]]] = {}
-        context_router = LearningContextRouter(
-            tokenizer_kind="AG2", tokenizer_name="gpt-4o-mini"
-        )
         committed_claims = CommittedLearningLedgerReader(
             Path(__file__).resolve().parent.parent
         ).read_claims()
@@ -1524,6 +1524,19 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             else None
         )
         for stage in stages:
+            tokenizer_name = (
+                (tokenizer_names or {}).get(stage)
+                or self._llm_config_model_name(llm_config)
+                or self._configured_stage_model_name(stage)
+            )
+            context_router = (
+                LearningContextRouter(
+                    tokenizer_kind="AG2", tokenizer_name=tokenizer_name
+                )
+                if tokenizer_name is not None
+                and self._has_exact_tokenizer(tokenizer_name)
+                else LearningContextRouter()
+            )
             context_messages = context_router.build_messages(
                 committed_claims,
                 role=self._context_role(stage),
@@ -1538,6 +1551,38 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             untrusted_contexts[stage] = context_messages["untrusted_messages"]
         return trusted_contexts, untrusted_contexts
 
+    @staticmethod
+    def _llm_config_model_name(llm_config: object) -> str | None:
+        if not isinstance(llm_config, dict):
+            return None
+        config_list = llm_config.get("config_list")
+        if not isinstance(config_list, list) or not config_list:
+            return None
+        first = config_list[0]
+        if not isinstance(first, dict):
+            return None
+        model = first.get("model")
+        if not isinstance(model, str) or not model or model != model.strip():
+            return None
+        return model
+
+    def _configured_stage_model_name(self, stage: str) -> str | None:
+        try:
+            llm_config = self.config.get_agent_llm_config(stage)
+        except (KeyError, TypeError, ValueError):
+            return None
+        return self._llm_config_model_name(llm_config)
+
+    @staticmethod
+    def _has_exact_tokenizer(model_name: str) -> bool:
+        import tiktoken
+
+        try:
+            tiktoken.encoding_for_model(model_name)
+        except KeyError:
+            return False
+        return True
+
     def _build_sequential_invoker(
         self,
         stages: list[str],
@@ -1549,7 +1594,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         # for a workflow-wide override.  The orchestrator default is for
         # manager duties, not an implicit override for every specialist.
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            stages, research_context
+            stages, research_context, llm_config=llm_config
         )
         agents = create_agents(self.config, stages, llm_config, trusted_contexts)
         id_to_name = {sid: (self.config.get_agent(sid) or {}).get("name") for sid in stages}
@@ -3014,8 +3059,22 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         context_keys = [
             f"roundtable_peer_{index}" for index in range(len(participants))
         ]
+        tokenizer_names: dict[str, str] = {}
+        for index, participant in enumerate(participants):
+            try:
+                participant_llm = self.config.get_llm_config(
+                    participant.get("profile", "aggregator"),
+                    model=participant.get("model"),
+                )
+            except KeyError:
+                continue
+            participant_model = self._llm_config_model_name(participant_llm)
+            if participant_model is not None:
+                tokenizer_names[context_keys[index]] = participant_model
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            context_keys, research_context
+            context_keys,
+            research_context,
+            tokenizer_names=tokenizer_names,
         )
 
         # Create one agent per LLM, each with its own model name
