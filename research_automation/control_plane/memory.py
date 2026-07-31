@@ -495,12 +495,15 @@ class UniversalRejectionDeriver:
         claims: Sequence[Mapping[str, object]],
         *,
         required_scope: Mapping[str, object],
+        semantic_identity: str | None = None,
     ) -> bool:
         claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
         coverage = ClaimScope.from_mapping(required_scope)
-        executions: set[str] = set()
-        semantics: set[str] = set()
-        scopes: list[ClaimScope] = []
+        target_semantic = (
+            None
+            if semantic_identity is None
+            else _nonempty_string(semantic_identity, "semantic_identity")
+        )
         for claim in claim_rows:
             manual_value = claim.get("universal_factor_rejection", False)
             if type(manual_value) is not bool:
@@ -511,8 +514,7 @@ class UniversalRejectionDeriver:
                 raise ValueError(
                     "universal_factor_rejection is derived, not manually supplied"
                 )
-        if len(claim_rows) < 3 or parent_invalidated_ids:
-            return False
+        scopes_by_semantic: dict[str, list[tuple[str, ClaimScope]]] = {}
         for claim in claim_rows:
             if (
                 claim.get("kind") not in _NEGATIVE_CLAIM_KINDS
@@ -520,43 +522,53 @@ class UniversalRejectionDeriver:
                 or claim.get("evidence_grade") != "INDEPENDENTLY_REPRODUCED"
                 or claim.get("taint_refs")
                 or claim.get("invalidation_codes")
+                or claim.get("claim_id") in parent_invalidated_ids
             ):
-                return False
+                continue
             execution = _nonempty_string(
                 claim.get("execution_identity"), "claim.execution_identity"
             )
-            if execution in executions:
-                return False
-            executions.add(execution)
-            semantics.add(
-                _nonempty_string(
-                    claim.get("semantic_identity"), "claim.semantic_identity"
-                )
+            semantic = _nonempty_string(
+                claim.get("semantic_identity"), "claim.semantic_identity"
             )
-            scopes.append(ClaimScope.from_mapping(claim.get("scope")))
-        if len(semantics) != 1 or len(
-            {json.dumps(scope.to_mapping(), sort_keys=True) for scope in scopes}
-        ) < 3:
-            return False
+            if target_semantic is not None and semantic != target_semantic:
+                continue
+            scopes_by_semantic.setdefault(semantic, []).append(
+                (execution, ClaimScope.from_mapping(claim.get("scope")))
+            )
         categorical_fields = tuple(_SCOPE_FIELDS - {"time_windows"})
-        required_combinations = product(
-            *(getattr(coverage, field_name) for field_name in categorical_fields)
-        )
-        return all(
-            any(
-                all(
-                    value in getattr(observed_scope, field_name)
-                    for field_name, value in zip(categorical_fields, combination)
+        for rows in scopes_by_semantic.values():
+            executions = [execution for execution, _scope in rows]
+            scopes = [scope for _execution, scope in rows]
+            if (
+                len(rows) < 3
+                or len(executions) != len(set(executions))
+                or len(
+                    {json.dumps(scope.to_mapping(), sort_keys=True) for scope in scopes}
                 )
-                and any(
-                    required_window.is_within(observed_window)
-                    for observed_window in observed_scope.time_windows
-                )
-                for observed_scope in scopes
+                < 3
+            ):
+                continue
+            required_combinations = product(
+                *(getattr(coverage, field_name) for field_name in categorical_fields)
             )
-            for combination in required_combinations
-            for required_window in coverage.time_windows
-        )
+            if all(
+                any(
+                    all(
+                        value in getattr(observed_scope, field_name)
+                        for field_name, value in zip(categorical_fields, combination)
+                    )
+                    and any(
+                        required_window.is_within(observed_window)
+                        for observed_window in observed_scope.time_windows
+                    )
+                    for observed_scope in scopes
+                )
+                for combination in required_combinations
+                for required_window in coverage.time_windows
+            ):
+                return True
+        return False
 
 
 class LearningGate:
@@ -583,7 +595,9 @@ class LearningGate:
             False
             if universal_required_scope is None
             else UniversalRejectionDeriver().derive(
-                claim_rows, required_scope=universal_required_scope
+                claim_rows,
+                required_scope=universal_required_scope,
+                semantic_identity=proposal_semantic,
             )
         )
         matches: list[dict[str, object]] = []
@@ -593,15 +607,8 @@ class LearningGate:
         warning_codes: set[str] = set()
         if universal_rejection:
             required_scope = ClaimScope.from_mapping(universal_required_scope)
-            semantic_identities = {
-                _nonempty_string(
-                    claim.get("semantic_identity"), "claim.semantic_identity"
-                )
-                for claim in claim_rows
-            }
             if (
-                proposal_semantic in semantic_identities
-                and proposal_scope.classify_proposal(required_scope)
+                proposal_scope.classify_proposal(required_scope)
                 is not ScopeMatch.DISJOINT
             ):
                 hard_blocks.append("DERIVED_UNIVERSAL_REJECTION")
