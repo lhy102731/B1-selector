@@ -821,6 +821,19 @@ class ContextAssembler:
         },
     }
 
+    def __init__(self, *, tokenizer_adapter: object | None = None) -> None:
+        if tokenizer_adapter is not None:
+            name = _canonical_identifier(
+                getattr(tokenizer_adapter, "name", None), "tokenizer_adapter.name"
+            )
+            count_tokens = getattr(tokenizer_adapter, "count_tokens", None)
+            if not callable(count_tokens):
+                raise ValueError("tokenizer_adapter.count_tokens must be callable")
+            self._tokenizer_name = name
+        else:
+            self._tokenizer_name = "unknown"
+        self._tokenizer_adapter = tokenizer_adapter
+
     def assemble(
         self,
         projection: Mapping[str, object],
@@ -878,17 +891,23 @@ class ContextAssembler:
             "excluded_claims": deepcopy(excluded_claims),
         }
 
-        def estimated_tokens(value: object) -> int:
+        def count_tokens(value: object) -> int:
             canonical = json.dumps(
                 value,
                 ensure_ascii=False,
                 sort_keys=True,
                 separators=(",", ":"),
-            ).encode("utf-8")
-            return max(1, (len(canonical) + 1) // 2)
+            )
+            if self._tokenizer_adapter is None:
+                encoded = canonical.encode("utf-8")
+                return max(1, (len(encoded) + 1) // 2)
+            token_count = self._tokenizer_adapter.count_tokens(canonical)
+            if type(token_count) is not int or token_count < 0:
+                raise ValueError("tokenizer adapter returned an invalid token count")
+            return token_count
 
-        learning_required = estimated_tokens(learning_memory)
-        control_required = estimated_tokens(control_metadata)
+        learning_required = count_tokens(learning_memory)
+        control_required = count_tokens(control_metadata)
         budget_exceeded = (
             learning_required > learning_token_budget
             or control_required > control_token_budget
@@ -904,7 +923,10 @@ class ContextAssembler:
                 None if control_required > control_token_budget else control_metadata
             ),
             "token_usage": {
-                "method": "ESTIMATED",
+                "method": (
+                    "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"
+                ),
+                "tokenizer": self._tokenizer_name,
                 "learning_required": learning_required,
                 "learning_budget": learning_token_budget,
                 "control_required": control_required,

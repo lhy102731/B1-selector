@@ -1315,6 +1315,32 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("ESTIMATED", result["token_usage"]["method"])
         self.assertGreater(result["token_usage"]["learning_required"], 1)
 
+    def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        class ExactTokenizer:
+            name = "ag2_test_adapter"
+
+            def count_tokens(self, text: str) -> int:
+                self.last_text = text
+                return 7
+
+        tokenizer = ExactTokenizer()
+        result = ContextAssembler(tokenizer_adapter=tokenizer).assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+        )
+
+        self.assertEqual("OK", result["status"])
+        self.assertEqual("EXACT", result["token_usage"]["method"])
+        self.assertEqual("ag2_test_adapter", result["token_usage"]["tokenizer"])
+        self.assertEqual(7, result["token_usage"]["learning_required"])
+        self.assertTrue(tokenizer.last_text.startswith("{"))
+
 
 if __name__ == "__main__":
     unittest.main()
