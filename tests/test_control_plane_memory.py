@@ -1047,6 +1047,38 @@ class LearningReopenTests(unittest.TestCase):
 
 
 class ContextProjectionTests(unittest.TestCase):
+    def test_negative_learning_guidance_supports_required_actions(self) -> None:
+        from research_automation.control_plane.memory import ContextProjection
+
+        cases = (
+            ("AVOID", "avoid"),
+            ("SOFT_PENALTY", "soft_penalty"),
+            ("ANTI_FACTOR", "anti_factor"),
+            ("REGIME_CONDITIONAL", "regime_conditional"),
+            ("FUTURE_EXPERIMENT", "future_experiment"),
+        )
+        for conclusion, status in cases:
+            with self.subTest(conclusion=conclusion):
+                projected = ContextProjection().project(
+                    [
+                        {
+                            "claim_id": f"claim-guidance-{status}",
+                            "kind": "NEGATIVE",
+                            "conclusion": conclusion,
+                            "scope": scope(regime="bull"),
+                            "audit_grade": "PASS",
+                            "evidence_grade": "EXPLORATORY",
+                            "evidence_refs": [f"evidence-guidance-{status}"],
+                            "taint_refs": [],
+                            "invalidation_codes": [],
+                            "reopen_predicates": [],
+                            "parent_claim_ids": [],
+                            "directional_status": status,
+                        }
+                    ]
+                )
+                self.assertEqual(conclusion, projected["claims"][0]["conclusion"])
+
     def test_projection_contains_only_safe_structured_claim_fields(self) -> None:
         from research_automation.control_plane.memory import ContextProjection
 

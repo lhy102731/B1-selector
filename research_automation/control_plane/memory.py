@@ -61,6 +61,9 @@ _CONCLUSION_CODES = frozenset(
         "REGIME_CONDITIONAL",
         "NO_MATERIAL_FINDING",
         "DO_NOT_HARD_GATE",
+        "AVOID",
+        "SOFT_PENALTY",
+        "FUTURE_EXPERIMENT",
     }
 )
 _DIRECTIONAL_STATUSES = frozenset(
@@ -72,6 +75,9 @@ _DIRECTIONAL_STATUSES = frozenset(
         "negative_directional",
         "anti_factor",
         "regime_conditional",
+        "avoid",
+        "soft_penalty",
+        "future_experiment",
     }
 )
 _IDENTIFIER_CHARS = frozenset(
