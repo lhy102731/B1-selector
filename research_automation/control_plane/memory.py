@@ -11,6 +11,7 @@ from datetime import date
 from enum import Enum
 from collections import deque
 from collections.abc import Mapping, Sequence
+from hashlib import sha256
 
 
 _SCOPE_FIELDS = frozenset(
@@ -166,6 +167,22 @@ def _canonical_identifiers(value: object, field_name: str) -> tuple[str, ...]:
     for item in refs:
         _canonical_identifier(item, field_name)
     return refs
+
+
+def _opaque_ref(domain: str, value: str) -> str:
+    return sha256(
+        f"control_plane.context_projection.v1:{domain}\0{value}".encode("utf-8")
+    ).hexdigest()
+
+
+def _opaque_scope(scope_value: ClaimScope) -> dict[str, object]:
+    scope_mapping = scope_value.to_mapping()
+    for field_name in _SCOPE_FIELDS - {"time_windows"}:
+        scope_mapping[field_name] = [
+            _opaque_ref(f"scope.{field_name}", item)
+            for item in scope_mapping[field_name]
+        ]
+    return scope_mapping
 
 
 @dataclass(frozen=True)
@@ -718,7 +735,10 @@ class ContextProjection:
                 exclusion_codes.append("PARENT_INVALIDATED")
             if exclusion_codes:
                 excluded_claims.append(
-                    {"claim_id": claim_id, "reason_codes": exclusion_codes}
+                    {
+                        "claim_id": _opaque_ref("claim_id", claim_id),
+                        "reason_codes": exclusion_codes,
+                    }
                 )
                 continue
             conclusion = _canonical_identifier(
@@ -734,22 +754,29 @@ class ContextProjection:
                 raise ValueError("projection directional_status is invalid")
             projected_claims.append(
                 {
-                    "claim_id": claim_id,
+                    "claim_id": _opaque_ref("claim_id", claim_id),
                     "kind": kind,
                     "conclusion": conclusion,
-                    "scope": scope_value.to_mapping(),
+                    "scope": _opaque_scope(scope_value),
                     "audit_grade": audit_grade,
                     "evidence_grade": evidence_grade,
                     "evidence_refs": list(
-                        _canonical_identifiers(
+                        _opaque_ref("evidence_ref", item)
+                        for item in _canonical_identifiers(
                             raw_claim.get("evidence_refs"), "claim.evidence_refs"
                         )
                     ),
-                    "taint_refs": list(taint_refs),
-                    "invalidation_codes": list(invalidation_codes),
+                    "taint_refs": [
+                        _opaque_ref("taint_ref", item) for item in taint_refs
+                    ],
+                    "invalidation_codes": [
+                        _opaque_ref("invalidation_code", item)
+                        for item in invalidation_codes
+                    ],
                     "reopen_predicates": list(reopen_predicates),
                     "parent_claim_ids": list(
-                        _canonical_identifiers(
+                        _opaque_ref("claim_id", item)
+                        for item in _canonical_identifiers(
                             raw_claim.get("parent_claim_ids"),
                             "claim.parent_claim_ids",
                         )
