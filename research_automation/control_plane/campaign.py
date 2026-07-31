@@ -20,10 +20,15 @@ class InvocationOutcome(str, Enum):
     SUCCESS = "SUCCESS"
     EMPTY_OUTPUT = "EMPTY_OUTPUT"
     INVALID_JSON = "INVALID_JSON"
+    TIMEOUT = "TIMEOUT"
 
 
 class InvalidModelResponseError(ValueError):
     """Raised when a provider response cannot satisfy the invocation contract."""
+
+
+class ModelInvocationTimeoutError(TimeoutError):
+    """Raised after a timed-out provider attempt has been accounted for."""
 
 
 @dataclass(frozen=True)
@@ -39,7 +44,7 @@ class UsageEnvelope:
     provider: str
     profile: str
     request_model: str
-    response_model: str
+    response_model: str | None
     call_id: str
     attempt_id: str
     usage_status: UsageStatus
@@ -89,7 +94,13 @@ def _raw_usage_sha256(raw_usage: Mapping[str, object]) -> str:
 class ModelInvocation:
     """Invoke one provider attempt and account for it before parsing output."""
 
-    __slots__ = ("_provider", "_usage_journal", "_provider_name", "_profile")
+    __slots__ = (
+        "_provider",
+        "_usage_journal",
+        "_provider_name",
+        "_profile",
+        "_request_model",
+    )
 
     def __init__(
         self,
@@ -98,11 +109,13 @@ class ModelInvocation:
         usage_journal: UsageJournal,
         provider_name: str,
         profile: str,
+        request_model: str,
     ) -> None:
         self._provider = provider
         self._usage_journal = usage_journal
         self._provider_name = provider_name
         self._profile = profile
+        self._request_model = request_model
 
     def invoke_json(
         self,
@@ -111,7 +124,26 @@ class ModelInvocation:
         call_id: str,
         attempt_id: str,
     ) -> object:
-        response = self._provider.invoke(request)
+        try:
+            response = self._provider.invoke(request)
+        except TimeoutError as error:
+            self._usage_journal.begin(
+                UsageEnvelope(
+                    provider=self._provider_name,
+                    profile=self._profile,
+                    request_model=self._request_model,
+                    response_model=None,
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.UNKNOWN,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    outcome=InvocationOutcome.TIMEOUT,
+                    raw_usage_sha256=_raw_usage_sha256({}),
+                )
+            )
+            raise ModelInvocationTimeoutError("provider invocation timed out") from error
         raw_usage = response.raw_usage
         values = {
             field: _reported_token(raw_usage, field)
@@ -126,7 +158,7 @@ class ModelInvocation:
             UsageEnvelope(
                 provider=self._provider_name,
                 profile=self._profile,
-                request_model=response.request_model,
+                request_model=self._request_model,
                 response_model=response.response_model,
                 call_id=call_id,
                 attempt_id=attempt_id,
@@ -166,6 +198,7 @@ __all__ = [
     "InvalidModelResponseError",
     "InvocationOutcome",
     "ModelInvocation",
+    "ModelInvocationTimeoutError",
     "ProviderResponse",
     "UsageEnvelope",
     "UsageJournal",

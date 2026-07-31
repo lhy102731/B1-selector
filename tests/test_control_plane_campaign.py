@@ -5,6 +5,7 @@ import unittest
 from research_automation.control_plane.campaign import (
     InvalidModelResponseError,
     InvocationOutcome,
+    ModelInvocationTimeoutError,
     ModelInvocation,
     ProviderResponse,
     UsageEnvelope,
@@ -46,6 +47,11 @@ class _NullOutputProvider:
         )
 
 
+class _TimeoutProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        raise TimeoutError("fake provider timeout")
+
+
 class _RecordingUsageJournal:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
@@ -71,6 +77,7 @@ class ModelInvocationTests(unittest.TestCase):
             usage_journal=journal,
             provider_name="fake",
             profile="offline",
+            request_model="fake-request-model",
         )
 
         with self.assertRaises(InvalidModelResponseError):
@@ -101,6 +108,7 @@ class ModelInvocationTests(unittest.TestCase):
             usage_journal=journal,
             provider_name="fake",
             profile="offline",
+            request_model="fake-request-model",
         )
 
         with self.assertRaises(InvalidModelResponseError):
@@ -128,6 +136,7 @@ class ModelInvocationTests(unittest.TestCase):
             usage_journal=journal,
             provider_name="fake",
             profile="offline",
+            request_model="fake-request-model",
         )
 
         with self.assertRaises(InvalidModelResponseError):
@@ -141,6 +150,34 @@ class ModelInvocationTests(unittest.TestCase):
             journal.events[1][1],
             ("call-003", "attempt-001", InvocationOutcome.EMPTY_OUTPUT),
         )
+
+    def test_timeout_records_unknown_usage_before_error_is_exposed(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_TimeoutProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationTimeoutError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-004",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.request_model, "fake-request-model")
+        self.assertIsNone(envelope.response_model)
+        self.assertIsNone(envelope.input_tokens)
+        self.assertIsNone(envelope.output_tokens)
+        self.assertIsNone(envelope.total_tokens)
 
 
 if __name__ == "__main__":
