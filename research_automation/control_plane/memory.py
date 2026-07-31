@@ -388,10 +388,47 @@ class ConflictClassifier:
         }
 
 
+class ReopenPredicateEvaluator:
+    """Evaluate declared reopen predicates from structured proposal facts."""
+
+    def evaluate(
+        self,
+        proposal: Mapping[str, object],
+        claim: Mapping[str, object],
+    ) -> dict[str, object]:
+        if not isinstance(proposal, Mapping) or not isinstance(claim, Mapping):
+            raise ValueError("reopen proposal and claim must be mappings")
+        claim_id = _nonempty_string(claim.get("claim_id"), "claim.claim_id")
+        proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
+        learned_scope = ClaimScope.from_mapping(claim.get("scope"))
+        predicates = claim.get("reopen_predicates")
+        if (
+            not isinstance(predicates, list)
+            or any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in predicates
+            )
+            or predicates != sorted(set(predicates))
+        ):
+            raise ValueError("claim.reopen_predicates must be a sorted unique string array")
+        reasons: list[str] = []
+        if "NEW_MECHANISM" in predicates and not set(
+            proposal_scope.mechanisms
+        ).issubset(learned_scope.mechanisms):
+            reasons.append("NEW_MECHANISM")
+        return {
+            "schema_version": "control_plane.learning_reopen_decision.v1",
+            "claim_id": claim_id,
+            "qualified": bool(reasons),
+            "reason_codes": reasons,
+        }
+
+
 __all__ = [
     "ClaimScope",
     "ConflictClassifier",
     "LearningGate",
+    "ReopenPredicateEvaluator",
     "ScopeMatch",
     "TimeWindow",
 ]

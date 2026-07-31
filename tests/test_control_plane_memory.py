@@ -398,5 +398,25 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("legacy_evidence_owner", conflict["resolution_owner"])
 
 
+class LearningReopenTests(unittest.TestCase):
+    def test_declared_new_mechanism_predicate_reopens_claim(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        learned_scope = scope(regime="bull")
+        proposal_scope = scope(regime="bull")
+        proposal_scope["mechanisms"] = ["volume-price divergence"]
+        decision = ReopenPredicateEvaluator().evaluate(
+            {"scope": proposal_scope},
+            {
+                "claim_id": "claim-reopen-mechanism",
+                "scope": learned_scope,
+                "reopen_predicates": ["NEW_MECHANISM"],
+            },
+        )
+
+        self.assertTrue(decision["qualified"])
+        self.assertEqual(["NEW_MECHANISM"], decision["reason_codes"])
+
+
 if __name__ == "__main__":
     unittest.main()
