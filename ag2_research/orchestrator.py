@@ -1515,9 +1515,11 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
 
         trusted_contexts: dict[str, str] = {}
         untrusted_contexts: dict[str, list[dict[str, str]]] = {}
-        committed_claims = CommittedLearningLedgerReader(
+        committed_projection_input = CommittedLearningLedgerReader(
             Path(__file__).resolve().parent.parent
-        ).read_claims()
+        ).read_projection_input()
+        committed_claims = committed_projection_input["claims"]
+        preexcluded_claims = committed_projection_input["excluded_claims"]
         sources = (
             [{"source_ref": "legacy-research-context", "content": research_context}]
             if research_context
@@ -1541,6 +1543,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 committed_claims,
                 role=self._context_role(stage),
                 untrusted_sources=sources,
+                preexcluded_claims=preexcluded_claims,
             )
             if context_messages["status"] != "OK":
                 raise RuntimeError(

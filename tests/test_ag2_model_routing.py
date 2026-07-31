@@ -119,8 +119,12 @@ class AG2ModelRoutingTests(unittest.TestCase):
         with (
             patch(
                 "research_automation.control_plane.memory."
-                "CommittedLearningLedgerReader.read_claims",
-                return_value=[committed_claim],
+                "CommittedLearningLedgerReader.read_projection_input",
+                return_value={
+                    "schema_version": "control_plane.committed_learning_input.v1",
+                    "claims": [committed_claim],
+                    "excluded_claims": [],
+                },
             ) as reader,
             patch("ag2_research.orchestrator.create_agents", return_value={}) as factory,
         ):
@@ -131,6 +135,36 @@ class AG2ModelRoutingTests(unittest.TestCase):
         reader.assert_called_once_with()
         trusted_context = factory.call_args.args[3]["source_librarian"]
         self.assertIn('"claims":[{', trusted_context)
+
+    def test_unprojectable_committed_packet_remains_in_control_metadata(self):
+        packet_id = "e" * 64
+        self.orchestrator.config.get_agent_llm_config.return_value = {
+            "config_list": [{"model": "gpt-4o-mini"}]
+        }
+        with (
+            patch(
+                "research_automation.control_plane.memory."
+                "CommittedLearningLedgerReader.read_projection_input",
+                return_value={
+                    "schema_version": "control_plane.committed_learning_input.v1",
+                    "claims": [],
+                    "excluded_claims": [
+                        {
+                            "claim_id": packet_id,
+                            "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                        }
+                    ],
+                },
+            ),
+            patch("ag2_research.orchestrator.create_agents", return_value={}) as factory,
+        ):
+            self.orchestrator._build_sequential_invoker(
+                ["source_librarian"], "", None
+            )
+
+        trusted_context = factory.call_args.args[3]["source_librarian"]
+        self.assertIn("P5_PACKET_NOT_PROJECTABLE", trusted_context)
+        self.assertNotIn(packet_id, trusted_context)
 
     def test_sequential_context_uses_each_recipient_model_tokenizer(self):
         self.orchestrator.config.get_agent_llm_config.side_effect = (
@@ -153,8 +187,12 @@ class AG2ModelRoutingTests(unittest.TestCase):
         with (
             patch(
                 "research_automation.control_plane.memory."
-                "CommittedLearningLedgerReader.read_claims",
-                return_value=[],
+                "CommittedLearningLedgerReader.read_projection_input",
+                return_value={
+                    "schema_version": "control_plane.committed_learning_input.v1",
+                    "claims": [],
+                    "excluded_claims": [],
+                },
             ),
             patch(
                 "research_automation.control_plane.memory.LearningContextRouter"

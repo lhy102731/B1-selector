@@ -135,6 +135,8 @@ _EXCLUSION_CODES = frozenset(
         "TAINTED_CLAIM",
         "INVALIDATED_CLAIM",
         "PARENT_INVALIDATED",
+        "P5_PACKET_NOT_PROJECTABLE",
+        "P5_PARENT_UNAVAILABLE",
     }
 )
 
@@ -839,7 +841,7 @@ class CommittedLearningLedgerReader:
             raise ValueError(f"committed {field_name} must be canonical JSON text")
         return parsed
 
-    def read_claims(self) -> list[dict[str, object]]:
+    def read_projection_input(self) -> dict[str, object]:
         from .evidence_learning import LearningCommitService
 
         ledger = LearningCommitService(repository_root=self._root).rebuild_ledger()
@@ -852,6 +854,7 @@ class CommittedLearningLedgerReader:
             raise ValueError("committed Learning ledger packet hashes are invalid")
         packet_dir = self._root / "research_state/control_plane/learning_packets"
         claims: list[dict[str, object]] = []
+        excluded_claims: list[dict[str, object]] = []
         for packet_hash in packet_hashes:
             packet_path = packet_dir / f"{packet_hash}.json"
             try:
@@ -893,32 +896,65 @@ class CommittedLearningLedgerReader:
             kind = _canonical_identifier(raw_claim.get("kind"), "claim.kind")
             if kind not in _LEARNING_CLAIM_KINDS:
                 raise ValueError("committed Learning claim kind is invalid")
-            summary = _nonempty_string(raw_claim.get("summary"), "claim.summary")
-            if len(summary) > 4096:
-                raise ValueError("committed Learning claim summary is invalid")
-            scope_mapping = self._canonical_json_text(
-                raw_claim.get("scope"), "claim.scope"
-            )
-            normalized_scope = ClaimScope.from_mapping(scope_mapping).to_mapping()
-            guidance = self._canonical_json_text(
-                raw_claim.get("future_usage_guidance"),
-                "claim.future_usage_guidance",
-            )
-            if not isinstance(guidance, Mapping) or set(guidance) != {
-                "conclusion",
-                "directional_status",
-            }:
-                raise ValueError("committed Learning guidance is invalid")
-            reopen_predicates = self._canonical_json_text(
-                raw_claim.get("reopen_predicate"), "claim.reopen_predicate"
-            )
-            if not isinstance(reopen_predicates, list):
-                raise ValueError("committed Learning reopen predicates are invalid")
-            parent_claim_ids = list(
-                _canonical_identifiers(
-                    raw_claim.get("parent_lineage", []), "claim.parent_lineage"
+            try:
+                summary = _nonempty_string(raw_claim.get("summary"), "claim.summary")
+                if len(summary) > 4096:
+                    raise ValueError("committed Learning claim summary is invalid")
+                scope_mapping = self._canonical_json_text(
+                    raw_claim.get("scope"), "claim.scope"
                 )
-            )
+                normalized_scope = ClaimScope.from_mapping(scope_mapping).to_mapping()
+                guidance = self._canonical_json_text(
+                    raw_claim.get("future_usage_guidance"),
+                    "claim.future_usage_guidance",
+                )
+                if not isinstance(guidance, Mapping) or set(guidance) != {
+                    "conclusion",
+                    "directional_status",
+                }:
+                    raise ValueError("committed Learning guidance is invalid")
+                conclusion = _canonical_identifier(
+                    guidance.get("conclusion"), "claim.conclusion"
+                )
+                directional_status = _canonical_identifier(
+                    guidance.get("directional_status"),
+                    "claim.directional_status",
+                )
+                if (
+                    conclusion not in _CONCLUSION_CODES
+                    or directional_status not in _DIRECTIONAL_STATUSES
+                    or (conclusion, directional_status)
+                    not in _GUIDANCE_PAIRS_BY_KIND[kind]
+                ):
+                    raise ValueError("committed Learning guidance is invalid")
+                raw_reopen = raw_claim.get("reopen_predicate")
+                reopen_predicates = (
+                    []
+                    if raw_reopen is None
+                    else self._canonical_json_text(
+                        raw_reopen, "claim.reopen_predicate"
+                    )
+                )
+                if not isinstance(reopen_predicates, list):
+                    raise ValueError("committed Learning reopen predicates are invalid")
+                reopen_predicates = list(
+                    _canonical_refs(reopen_predicates, "claim.reopen_predicates")
+                )
+                if not set(reopen_predicates).issubset(_REOPEN_PREDICATES):
+                    raise ValueError("committed Learning reopen predicates are invalid")
+                parent_claim_ids = list(
+                    _canonical_identifiers(
+                        raw_claim.get("parent_lineage", []), "claim.parent_lineage"
+                    )
+                )
+            except (TypeError, ValueError):
+                excluded_claims.append(
+                    {
+                        "claim_id": packet_hash,
+                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                    }
+                )
+                continue
             evidence_refs = packet.get("evidence_refs")
             if not isinstance(evidence_refs, list) or any(
                 not isinstance(reference, Mapping)
@@ -963,7 +999,7 @@ class CommittedLearningLedgerReader:
                     "semantic_identity": _opaque_ref(
                         "learning_semantic_identity", f"{kind}\0{summary}"
                     ),
-                    "conclusion": guidance.get("conclusion"),
+                    "conclusion": conclusion,
                     "scope": normalized_scope,
                     "audit_grade": packet.get("audit_grade"),
                     "evidence_grade": "UNSPECIFIED",
@@ -972,11 +1008,46 @@ class CommittedLearningLedgerReader:
                     "invalidation_codes": invalidation_codes,
                     "reopen_predicates": reopen_predicates,
                     "parent_claim_ids": parent_claim_ids,
-                    "directional_status": guidance.get("directional_status"),
+                    "directional_status": directional_status,
                     "universal_factor_rejection": False,
                 }
             )
-        return claims
+        available_claim_ids = {claim["claim_id"] for claim in claims}
+        while True:
+            unavailable_children = [
+                claim
+                for claim in claims
+                if not set(claim["parent_claim_ids"]).issubset(available_claim_ids)
+            ]
+            if not unavailable_children:
+                break
+            unavailable_ids = {claim["claim_id"] for claim in unavailable_children}
+            claims = [
+                claim for claim in claims if claim["claim_id"] not in unavailable_ids
+            ]
+            available_claim_ids.difference_update(unavailable_ids)
+            excluded_claims.extend(
+                {
+                    "claim_id": claim_id,
+                    "reason_codes": ["P5_PARENT_UNAVAILABLE"],
+                }
+                for claim_id in unavailable_ids
+            )
+        excluded_by_id = {
+            excluded["claim_id"]: excluded for excluded in excluded_claims
+        }
+        return {
+            "schema_version": "control_plane.committed_learning_input.v1",
+            "claims": claims,
+            "excluded_claims": [
+                excluded_by_id[packet_hash]
+                for packet_hash in packet_hashes
+                if packet_hash in excluded_by_id
+            ],
+        }
+
+    def read_claims(self) -> list[dict[str, object]]:
+        return list(self.read_projection_input()["claims"])
 
 
 class ConflictClassifier:
@@ -1733,8 +1804,35 @@ class LearningContextRouter:
         control_token_budget: int = 500,
         untrusted_sources: Sequence[Mapping[str, object]] | None = None,
         target_scope: Mapping[str, object] | None = None,
+        preexcluded_claims: Sequence[Mapping[str, object]] | None = None,
     ) -> dict[str, object]:
         projection = self._projection.project(claims)
+        if preexcluded_claims is not None:
+            if not isinstance(preexcluded_claims, Sequence) or isinstance(
+                preexcluded_claims, (str, bytes)
+            ):
+                raise ValueError("preexcluded claims must be a sequence")
+            for excluded in preexcluded_claims:
+                if not isinstance(excluded, Mapping) or set(excluded) != {
+                    "claim_id",
+                    "reason_codes",
+                }:
+                    raise ValueError("preexcluded claim is invalid")
+                claim_id = _canonical_identifier(
+                    excluded.get("claim_id"), "preexcluded_claim.claim_id"
+                )
+                reason_codes = _canonical_refs(
+                    excluded.get("reason_codes"),
+                    "preexcluded_claim.reason_codes",
+                )
+                if not reason_codes or not set(reason_codes).issubset(_EXCLUSION_CODES):
+                    raise ValueError("preexcluded claim reason codes are invalid")
+                projection["excluded_claims"].append(
+                    {
+                        "claim_id": _opaque_ref("claim_id", claim_id),
+                        "reason_codes": list(reason_codes),
+                    }
+                )
         return self._assembler.assemble(
             projection,
             role=role,
@@ -1753,6 +1851,7 @@ class LearningContextRouter:
         control_token_budget: int = 500,
         untrusted_sources: Sequence[Mapping[str, object]] | None = None,
         target_scope: Mapping[str, object] | None = None,
+        preexcluded_claims: Sequence[Mapping[str, object]] | None = None,
     ) -> dict[str, object]:
         """Separate trusted control facts from untrusted source-message content."""
         context = self.build_context(
@@ -1762,6 +1861,7 @@ class LearningContextRouter:
             control_token_budget=control_token_budget,
             untrusted_sources=untrusted_sources,
             target_scope=target_scope,
+            preexcluded_claims=preexcluded_claims,
         )
         if context["status"] != "OK":
             return {
