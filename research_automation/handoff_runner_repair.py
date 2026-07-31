@@ -315,9 +315,28 @@ def _run_code_reviewer(diff_text: str, prompt: str, output_dir: Path) -> tuple[b
     try:
         from ag2_research.agents import create_agents
         from ag2_research.config import ResearchConfig
+        from research_automation.control_plane.memory import (
+            CommittedLearningLedgerReader,
+            LearningContextRouter,
+        )
 
         cfg = ResearchConfig()
-        agents = create_agents(cfg, ["code_reviewer"], research_context="")
+        root = Path(__file__).resolve().parent.parent
+        committed = CommittedLearningLedgerReader(root).read_projection_input()
+        context_messages = LearningContextRouter().build_messages(
+            committed["claims"],
+            role="falsification_officer",
+            preexcluded_claims=committed["excluded_claims"],
+        )
+        if context_messages["status"] != "OK":
+            return False, "code review learning context budget exceeded"
+        agents = create_agents(
+            cfg,
+            ["code_reviewer"],
+            research_context={
+                "code_reviewer": context_messages["system_message"]["content"]
+            },
+        )
         reviewer = next(iter(agents.values()))
         review_prompt = (
             "Review this auto-generated research runner patch. "

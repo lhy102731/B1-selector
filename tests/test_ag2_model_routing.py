@@ -8,6 +8,16 @@ from research_automation.autonomous_runner import AutonomousRunnerV1
 
 
 class AG2ModelRoutingTests(unittest.TestCase):
+    def test_agent_factory_rejects_plain_string_context(self):
+        config = Mock()
+
+        with self.assertRaisesRegex(ValueError, "trusted context mapping"):
+            create_agents(
+                config,
+                ["code_reviewer"],
+                research_context="UNTRUSTED KBASE TEXT",
+            )
+
     def test_agent_without_context_placeholder_receives_trusted_envelope(self):
         config = Mock()
         config.default_profile = "default"

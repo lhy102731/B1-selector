@@ -717,6 +717,10 @@ class ClaudePatchExecutor(CodeChangeExecutor):
             try:
                 from ag2_research.config import ResearchConfig
                 from ag2_research.agents import create_agents
+                from research_automation.control_plane.memory import (
+                    CommittedLearningLedgerReader,
+                    LearningContextRouter,
+                )
                 _cfg = ResearchConfig()
                 _kb_ctx = ""
                 try:
@@ -724,8 +728,33 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                     _kb_ctx = _bc("b1_v3", mode="brief")
                 except Exception:
                     pass
-                reviewer_agents = create_agents(_cfg, ["code_reviewer"],
-                                                research_context=_kb_ctx)
+                context_root = (
+                    Path(repository_root).resolve()
+                    if repository_root is not None
+                    else Path(__file__).resolve().parent.parent
+                )
+                committed = CommittedLearningLedgerReader(
+                    context_root
+                ).read_projection_input()
+                context_messages = LearningContextRouter().build_messages(
+                    committed["claims"],
+                    role="falsification_officer",
+                    untrusted_sources=(
+                        [{"source_ref": "code-review-kbase", "content": _kb_ctx}]
+                        if _kb_ctx
+                        else None
+                    ),
+                    preexcluded_claims=committed["excluded_claims"],
+                )
+                if context_messages["status"] != "OK":
+                    raise RuntimeError("code review learning context budget exceeded")
+                reviewer_agents = create_agents(
+                    _cfg,
+                    ["code_reviewer"],
+                    research_context={
+                        "code_reviewer": context_messages["system_message"]["content"]
+                    },
+                )
                 reviewer_agent = next(iter(reviewer_agents.values()))
                 hypothesis = ""
                 try:
@@ -750,9 +779,12 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                     f"Patch applied to file: {rel_file}\n\n"
                     f"FIND:\n{find_text[:1500]}\n\nREPLACE WITH:\n{replace_text[:1500]}\n"
                 )
-                review_out = reviewer_agent.generate_reply(messages=[
-                    {"role": "user", "content": review_prompt}
-                ])
+                review_out = reviewer_agent.generate_reply(
+                    messages=[
+                        *context_messages["untrusted_messages"],
+                        {"role": "user", "content": review_prompt},
+                    ]
+                )
                 review_text = review_out if isinstance(review_out, str) else str(review_out)
                 # Parse verdict keyword; allow APPROVE without strict YAML.
                 verdict_upper = review_text.upper()
@@ -760,7 +792,7 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                     return CodeChangeResult(
                         ok=False,
                         error=f"Code_Reviewer REJECT: {review_text[:400]}",
-                        logs=[f"kb_ctx: {_kb_ctx[:80]}...", review_text[:1500],
+                        logs=["kb_ctx: structured UNTRUSTED_DATA", review_text[:1500],
                               "discard the isolated workspace to roll back"],
                     )
                 if "REQUEST_CHANGES" in verdict_upper:

@@ -12,7 +12,7 @@ def create_agents(
     config: ResearchConfig,
     agent_ids: list[str],
     llm_config: dict | None = None,
-    research_context: str | dict[str, str] = "",
+    research_context: dict[str, str] | None = None,
 ) -> dict[str, autogen.AssistantAgent]:
     """Create AG2 agents from config templates.
 
@@ -28,6 +28,18 @@ def create_agents(
     Returns:
         Dict mapping agent name -> AssistantAgent instance.
     """
+    if (
+        not isinstance(research_context, dict)
+        or set(research_context) != set(agent_ids)
+        or any(
+            not isinstance(value, str) or not value
+            for value in research_context.values()
+        )
+    ):
+        raise ValueError(
+            "research_context must be a non-empty trusted context mapping "
+            "for every agent id"
+        )
     forced_llm_config = llm_config  # None -> per-agent profile dispatch
 
     agents: dict[str, autogen.AssistantAgent] = {}
@@ -38,11 +50,7 @@ def create_agents(
             continue
 
         system_message = template["system_message"]
-        agent_context = (
-            research_context.get(agent_id, "")
-            if isinstance(research_context, dict)
-            else research_context
-        )
+        agent_context = research_context[agent_id]
         if agent_context:
             if "{research_context}" in system_message:
                 system_message = system_message.replace(

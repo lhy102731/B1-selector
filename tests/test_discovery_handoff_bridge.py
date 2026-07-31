@@ -474,8 +474,10 @@ class DiscoveryHandoffBridgeTests(unittest.TestCase):
         with patch("ag2_research.agents.autogen.AssistantAgent") as agent_cls:
             agent_cls.return_value = MagicMock()
             create_agents(
-                ResearchConfig(), ["research_proposer"],
-                {"config_list": [{"model": "test"}]}, "HANDOFF-CONTEXT",
+                ResearchConfig(),
+                ["research_proposer"],
+                {"config_list": [{"model": "test"}]},
+                {"research_proposer": "HANDOFF-CONTEXT"},
             )
 
         system_message = agent_cls.call_args.kwargs["system_message"]
