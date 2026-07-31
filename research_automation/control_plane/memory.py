@@ -584,13 +584,15 @@ class UniversalRejectionDeriver:
         for rows in scopes_by_semantic.values():
             executions = [execution for execution, _scope in rows]
             scopes = [scope for _execution, scope in rows]
+            relevant_scope_signatures = {
+                json.dumps(intersection, sort_keys=True)
+                for scope in scopes
+                if (intersection := scope.intersection(coverage)) is not None
+            }
             if (
                 len(rows) < 3
                 or len(executions) != len(set(executions))
-                or len(
-                    {json.dumps(scope.to_mapping(), sort_keys=True) for scope in scopes}
-                )
-                < 3
+                or len(relevant_scope_signatures) < 3
             ):
                 continue
             categorically_complete_scopes = [

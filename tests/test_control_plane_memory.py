@@ -291,6 +291,41 @@ class LearningGateTests(unittest.TestCase):
             )
         )
 
+    def test_out_of_scope_supersets_cannot_manufacture_distinct_evidence(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        claims = []
+        for index, extra_regime in enumerate(
+            ("crisis", "panic", "sideways"), start=1
+        ):
+            claim_scope = scope(regime="bull")
+            claim_scope["market_regimes"] = ["bull", extra_regime]
+            claim_scope["market_regimes"].sort()
+            claims.append(
+                {
+                    "claim_id": f"claim-superset-padding-{index}",
+                    "kind": "NEGATIVE",
+                    "execution_identity": f"execution-superset-padding-{index}",
+                    "semantic_identity": "factor-superset-padding",
+                    "scope": claim_scope,
+                    "audit_grade": "PASS",
+                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        self.assertFalse(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-superset-padding",
+            )
+        )
+
     def test_universal_rejection_blocks_only_the_covered_intersection(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
