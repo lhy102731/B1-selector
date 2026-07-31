@@ -1018,6 +1018,14 @@ class CommittedLearningLedgerReader:
                 for reference in evidence_refs
             ):
                 raise ValueError("committed Learning evidence refs are invalid")
+            if len(evidence_refs) > _MAX_CLAIM_REFS:
+                excluded_claims.append(
+                    {
+                        "claim_id": packet_hash,
+                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                    }
+                )
+                continue
             evidence_ids = sorted(
                 _opaque_ref(
                     "learning_evidence_ref",

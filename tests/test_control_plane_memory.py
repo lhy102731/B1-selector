@@ -2637,6 +2637,67 @@ class ContextAssemblerTests(unittest.TestCase):
 
 
 class LearningContextRouterTests(unittest.TestCase):
+    def test_committed_ledger_reader_quarantines_oversized_evidence_refs(self) -> None:
+        from research_automation.control_plane.memory import CommittedLearningLedgerReader
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet = {
+                "schema_version": "control_plane.learning_packet.v2",
+                "authority_task_report": {"task_id": "p4-learning-commit"},
+                "claim": {
+                    "kind": "NEGATIVE",
+                    "summary": "oversized evidence packet",
+                    "scope": json.dumps(
+                        scope(regime="bull"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "parent_lineage": [],
+                    "reopen_predicate": "[]",
+                    "future_usage_guidance": (
+                        '{"conclusion":"AVOID","directional_status":"avoid"}'
+                    ),
+                },
+                "evidence_refs": [
+                    {"ref": f"evidence/{index}.json", "sha256": f"{index:064x}"}
+                    for index in range(257)
+                ],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+            raw = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            (packet_dir / f"{digest}.json").write_bytes(raw)
+            ledger = {
+                "schema_version": "control_plane.learning_ledger.v2",
+                "packet_hashes": [digest],
+            }
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "LearningCommitService.rebuild_ledger",
+                return_value=ledger,
+            ):
+                projection_input = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+
+        self.assertEqual([], projection_input["claims"])
+        self.assertEqual(
+            [
+                {
+                    "claim_id": digest,
+                    "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                }
+            ],
+            projection_input["excluded_claims"],
+        )
+
     def test_committed_ledger_reader_quarantines_oversized_parent_lineage(self) -> None:
         from research_automation.control_plane.memory import CommittedLearningLedgerReader
 
