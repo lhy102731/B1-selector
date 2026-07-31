@@ -991,7 +991,7 @@ class ContextAssembler:
                 encoded = canonical.encode("utf-8")
                 return max(1, len(encoded))
             token_count = self._tokenizer_adapter.count_tokens(canonical)
-            if type(token_count) is not int or token_count < 0:
+            if type(token_count) is not int or token_count < 1:
                 raise ValueError("tokenizer adapter returned an invalid token count")
             return token_count
 

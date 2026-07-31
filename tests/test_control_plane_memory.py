@@ -1444,6 +1444,26 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
 
+    def test_exact_tokenizer_cannot_report_zero_for_nonempty_payload(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        class ZeroTokenizer:
+            kind = "AG2"
+            name = "zero_tokenizer"
+
+            def count_tokens(self, text: str) -> int:
+                return 0
+
+        with self.assertRaisesRegex(ValueError, "token count"):
+            ContextAssembler(tokenizer_adapter=ZeroTokenizer()).assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [],
+                    "excluded_claims": [],
+                },
+                role="source_librarian",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
