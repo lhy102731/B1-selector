@@ -1567,7 +1567,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         if not isinstance(llm_config, dict):
             return None
         config_list = llm_config.get("config_list")
-        if not isinstance(config_list, list) or not config_list:
+        if not isinstance(config_list, list) or len(config_list) != 1:
             return None
         first = config_list[0]
         if not isinstance(first, dict):

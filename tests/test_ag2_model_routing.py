@@ -224,6 +224,39 @@ class AG2ModelRoutingTests(unittest.TestCase):
             router.call_args_list,
         )
 
+    def test_multi_model_fallback_context_uses_estimated_token_count(self):
+        bundle = {
+            "status": "OK",
+            "system_message": {"content": "trusted"},
+            "untrusted_messages": [],
+        }
+        llm_config = {
+            "config_list": [
+                {"model": "gpt-4o-mini"},
+                {"model": "gpt-4o"},
+            ]
+        }
+        with (
+            patch(
+                "research_automation.control_plane.memory."
+                "CommittedLearningLedgerReader.read_projection_input",
+                return_value={
+                    "schema_version": "control_plane.committed_learning_input.v1",
+                    "claims": [],
+                    "excluded_claims": [],
+                },
+            ),
+            patch(
+                "research_automation.control_plane.memory.LearningContextRouter"
+            ) as router,
+        ):
+            router.return_value.build_messages.return_value = bundle
+            self.orchestrator._prepare_v342_agent_context(
+                ["source_librarian"], "", llm_config=llm_config
+            )
+
+        router.assert_called_once_with()
+
     def test_sequential_agent_receives_untrusted_data_as_separate_history_message(self):
         seen = {}
 
