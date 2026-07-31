@@ -1112,6 +1112,29 @@ class ContextProjectionTests(unittest.TestCase):
                 )
                 self.assertEqual(conclusion, projected["claims"][0]["conclusion"])
 
+    def test_projection_rejects_contradictory_guidance_pair(self) -> None:
+        from research_automation.control_plane.memory import ContextProjection
+
+        with self.assertRaisesRegex(ValueError, "guidance"):
+            ContextProjection().project(
+                [
+                    {
+                        "claim_id": "claim-contradictory-guidance",
+                        "kind": "NEGATIVE",
+                        "conclusion": "POSITIVE_DIRECTIONAL",
+                        "scope": scope(regime="bull"),
+                        "audit_grade": "PASS",
+                        "evidence_grade": "EXPLORATORY",
+                        "evidence_refs": ["evidence-contradictory-guidance"],
+                        "taint_refs": [],
+                        "invalidation_codes": [],
+                        "reopen_predicates": [],
+                        "parent_claim_ids": [],
+                        "directional_status": "positive_directional",
+                    }
+                ]
+            )
+
     def test_projection_contains_only_safe_structured_claim_fields(self) -> None:
         from research_automation.control_plane.memory import ContextProjection
 

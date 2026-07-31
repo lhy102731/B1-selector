@@ -80,6 +80,31 @@ _DIRECTIONAL_STATUSES = frozenset(
         "future_experiment",
     }
 )
+_GUIDANCE_PAIRS_BY_KIND = {
+    "POSITIVE": frozenset({("POSITIVE_DIRECTIONAL", "positive_directional")}),
+    "NEGATIVE": frozenset(
+        {
+            ("NEGATIVE_DIRECTIONAL", "negative_directional"),
+            ("HARD_GATE_FAILED", "research_only"),
+            ("DO_NOT_HARD_GATE", "do_not_hard_gate"),
+            ("DO_NOT_HARD_GATE", "research_only"),
+            ("ANTI_FACTOR", "anti_factor"),
+            ("AVOID", "avoid"),
+            ("SOFT_PENALTY", "soft_penalty"),
+            ("REGIME_CONDITIONAL", "regime_conditional"),
+            ("FUTURE_EXPERIMENT", "future_experiment"),
+        }
+    ),
+    "PARTIAL": frozenset({("REGIME_CONDITIONAL", "regime_conditional")}),
+    "ANTI_FACTOR": frozenset({("ANTI_FACTOR", "anti_factor")}),
+    "FAILED_USAGE": frozenset(
+        {
+            ("HARD_GATE_FAILED", "research_only"),
+            ("USAGE_FAILED", "research_only"),
+            ("DO_NOT_HARD_GATE", "do_not_hard_gate"),
+        }
+    ),
+}
 _IDENTIFIER_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-"
 )
@@ -882,6 +907,8 @@ class ContextProjection:
             )
             if directional_status not in _DIRECTIONAL_STATUSES:
                 raise ValueError("projection directional_status is invalid")
+            if (conclusion, directional_status) not in _GUIDANCE_PAIRS_BY_KIND[kind]:
+                raise ValueError("projection guidance is contradictory")
             projected_claims.append(
                 {
                     "claim_id": _opaque_ref("claim_id", claim_id),
