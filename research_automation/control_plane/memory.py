@@ -77,6 +77,30 @@ _DIRECTIONAL_STATUSES = frozenset(
 _IDENTIFIER_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-"
 )
+_PROJECTED_CLAIM_FIELDS = frozenset(
+    {
+        "claim_id",
+        "kind",
+        "conclusion",
+        "scope",
+        "audit_grade",
+        "evidence_grade",
+        "evidence_refs",
+        "taint_refs",
+        "invalidation_codes",
+        "reopen_predicates",
+        "parent_claim_ids",
+        "directional_status",
+    }
+)
+_EXCLUSION_CODES = frozenset(
+    {
+        "AUDIT_GRADE_NOT_PASS",
+        "TAINTED_CLAIM",
+        "INVALIDATED_CLAIM",
+        "PARENT_INVALIDATED",
+    }
+)
 
 
 class ScopeMatch(str, Enum):
@@ -873,11 +897,35 @@ class ContextAssembler:
         priority = self._ROLE_PRIORITIES[role]
         indexed_claims: list[tuple[int, Mapping[str, object]]] = []
         for index, claim in enumerate(claims):
-            if not isinstance(claim, Mapping) or claim.get("kind") not in (
-                _LEARNING_CLAIM_KINDS
+            if (
+                not isinstance(claim, Mapping)
+                or set(claim) != _PROJECTED_CLAIM_FIELDS
+                or claim.get("kind") not in _LEARNING_CLAIM_KINDS
             ):
                 raise ValueError("context projection claim is invalid")
             indexed_claims.append((index, claim))
+        validated_excluded_claims: list[dict[str, object]] = []
+        for excluded in excluded_claims:
+            if not isinstance(excluded, Mapping) or set(excluded) != {
+                "claim_id",
+                "reason_codes",
+            }:
+                raise ValueError("context projection excluded claim is invalid")
+            claim_ref = excluded.get("claim_id")
+            reason_codes = excluded.get("reason_codes")
+            if (
+                not isinstance(claim_ref, str)
+                or len(claim_ref) != 64
+                or any(character not in "0123456789abcdef" for character in claim_ref)
+                or not isinstance(reason_codes, list)
+                or not reason_codes
+                or len(reason_codes) != len(set(reason_codes))
+                or not set(reason_codes).issubset(_EXCLUSION_CODES)
+            ):
+                raise ValueError("context projection excluded claim is invalid")
+            validated_excluded_claims.append(
+                {"claim_id": claim_ref, "reason_codes": list(reason_codes)}
+            )
         ordered_claims = [
             deepcopy(claim)
             for _, claim in sorted(
@@ -929,7 +977,7 @@ class ContextAssembler:
         }
         control_metadata = {
             "projection_schema_version": projection["schema_version"],
-            "excluded_claims": deepcopy(excluded_claims),
+            "excluded_claims": validated_excluded_claims,
         }
 
         def count_tokens(value: object) -> int:

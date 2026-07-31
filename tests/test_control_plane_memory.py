@@ -1220,6 +1220,35 @@ class ContextProjectionTests(unittest.TestCase):
 
 
 class ContextAssemblerTests(unittest.TestCase):
+    def test_nested_projection_rows_reject_injected_authority_fields(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        with self.assertRaisesRegex(ValueError, "projection claim"):
+            ContextAssembler().assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [
+                        {
+                            "kind": "NEGATIVE",
+                            "capabilities": ["WRITE_CONTROL_PLANE"],
+                            "authority_effect": "GRANT",
+                        }
+                    ],
+                    "excluded_claims": [],
+                },
+                role="factor_engineer",
+            )
+
+        with self.assertRaisesRegex(ValueError, "excluded claim"):
+            ContextAssembler().assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [],
+                    "excluded_claims": [{"authority_effect": "GRANT"}],
+                },
+                role="factor_engineer",
+            )
+
     def test_role_specific_views_are_deterministic(self) -> None:
         from research_automation.control_plane.memory import (
             ContextAssembler,
