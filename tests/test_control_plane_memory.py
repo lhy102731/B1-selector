@@ -19,6 +19,82 @@ def scope(*, regime: str) -> dict[str, object]:
 
 
 class LearningGateTests(unittest.TestCase):
+    def test_scope_cardinality_is_bounded_before_coverage_evaluation(self) -> None:
+        from research_automation.control_plane.memory import ClaimScope
+
+        oversized_scope = scope(regime="bull")
+        oversized_scope["mechanisms"] = [
+            f"mechanism_{index:03d}" for index in range(65)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ClaimScope.from_mapping(oversized_scope)
+
+    def test_scope_aggregate_cardinality_is_bounded(self) -> None:
+        from research_automation.control_plane.memory import ClaimScope
+
+        oversized_scope = scope(regime="bull")
+        for field_name in (
+            "mechanisms",
+            "usage_modes",
+            "market_regimes",
+            "universes",
+            "liquidity_buckets",
+            "label_protocol_families",
+            "generation_families",
+        ):
+            oversized_scope[field_name] = [
+                f"{field_name}_{index:02d}" for index in range(40)
+            ]
+
+        with self.assertRaisesRegex(ValueError, "aggregate cardinality"):
+            ClaimScope.from_mapping(oversized_scope)
+
+    def test_universal_coverage_is_bounded_across_many_scope_dimensions(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        for field_name in (
+            "mechanisms",
+            "usage_modes",
+            "universes",
+            "liquidity_buckets",
+            "label_protocol_families",
+            "generation_families",
+        ):
+            required_scope[field_name] = [
+                f"{field_name}_{index:02d}" for index in range(8)
+            ]
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        claims = []
+        for index, regime in enumerate(("bear", "bull", "sideways"), start=1):
+            claim_scope = {**required_scope, "market_regimes": [regime]}
+            claims.append(
+                {
+                    "claim_id": f"claim-bounded-{index}",
+                    "kind": "NEGATIVE",
+                    "execution_identity": f"execution-bounded-{index}",
+                    "semantic_identity": "factor-bounded",
+                    "scope": claim_scope,
+                    "audit_grade": "PASS",
+                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        started = perf_counter()
+        derived = UniversalRejectionDeriver().derive(
+            claims,
+            required_scope=required_scope,
+            semantic_identity="factor-bounded",
+        )
+
+        self.assertTrue(derived)
+        self.assertLess(perf_counter() - started, 0.25)
+
     def test_universal_rejection_is_derived_from_strict_scope_coverage(self) -> None:
         from research_automation.control_plane.memory import (
             LearningGate,

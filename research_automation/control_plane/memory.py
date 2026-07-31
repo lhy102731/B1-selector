@@ -14,7 +14,6 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
 import json
-from itertools import product
 
 
 _SCOPE_FIELDS = frozenset(
@@ -29,6 +28,9 @@ _SCOPE_FIELDS = frozenset(
         "generation_families",
     }
 )
+_MAX_SCOPE_VALUES_PER_FIELD = 64
+_MAX_SCOPE_VALUES_TOTAL = 256
+_MAX_SCOPE_TIME_WINDOWS = 64
 
 _EVIDENCE_GRADE_RANK = {
     "EXPLORATORY": 0,
@@ -173,6 +175,8 @@ class TimeWindow:
 
 
 def _canonical_values(value: object, field_name: str) -> tuple[str, ...]:
+    if isinstance(value, list) and len(value) > _MAX_SCOPE_VALUES_PER_FIELD:
+        raise ValueError(f"scope.{field_name} exceeds cardinality limit")
     if (
         not isinstance(value, list)
         or not value
@@ -306,22 +310,26 @@ class ClaimScope:
         raw_windows = value["time_windows"]
         if not isinstance(raw_windows, list) or not raw_windows:
             raise ValueError("scope.time_windows must be a non-empty array")
+        if len(raw_windows) > _MAX_SCOPE_TIME_WINDOWS:
+            raise ValueError("scope.time_windows exceeds cardinality limit")
         windows = tuple(TimeWindow.from_mapping(item) for item in raw_windows)
         if windows != tuple(sorted(set(windows))):
             raise ValueError("scope.time_windows must be sorted and unique")
+        categorical_values = {
+            field_name: _canonical_values(value[field_name], field_name)
+            for field_name in _SCOPE_FIELDS - {"time_windows"}
+        }
+        if sum(map(len, categorical_values.values())) > _MAX_SCOPE_VALUES_TOTAL:
+            raise ValueError("scope exceeds aggregate cardinality limit")
         return cls(
-            mechanisms=_canonical_values(value["mechanisms"], "mechanisms"),
-            usage_modes=_canonical_values(value["usage_modes"], "usage_modes"),
-            market_regimes=_canonical_values(value["market_regimes"], "market_regimes"),
+            mechanisms=categorical_values["mechanisms"],
+            usage_modes=categorical_values["usage_modes"],
+            market_regimes=categorical_values["market_regimes"],
             time_windows=windows,
-            universes=_canonical_values(value["universes"], "universes"),
-            liquidity_buckets=_canonical_values(value["liquidity_buckets"], "liquidity_buckets"),
-            label_protocol_families=_canonical_values(
-                value["label_protocol_families"], "label_protocol_families"
-            ),
-            generation_families=_canonical_values(
-                value["generation_families"], "generation_families"
-            ),
+            universes=categorical_values["universes"],
+            liquidity_buckets=categorical_values["liquidity_buckets"],
+            label_protocol_families=categorical_values["label_protocol_families"],
+            generation_families=categorical_values["generation_families"],
         )
 
     def classify_proposal(self, learned: "ClaimScope") -> ScopeMatch:
@@ -536,7 +544,7 @@ class UniversalRejectionDeriver:
             scopes_by_semantic.setdefault(semantic, []).append(
                 (execution, ClaimScope.from_mapping(claim.get("scope")))
             )
-        categorical_fields = tuple(_SCOPE_FIELDS - {"time_windows"})
+        categorical_fields = tuple(sorted(_SCOPE_FIELDS - {"time_windows"}))
         for rows in scopes_by_semantic.values():
             executions = [execution for execution, _scope in rows]
             scopes = [scope for _execution, scope in rows]
@@ -549,22 +557,29 @@ class UniversalRejectionDeriver:
                 < 3
             ):
                 continue
-            required_combinations = product(
-                *(getattr(coverage, field_name) for field_name in categorical_fields)
-            )
             if all(
                 any(
-                    all(
-                        value in getattr(observed_scope, field_name)
-                        for field_name, value in zip(categorical_fields, combination)
+                    set(getattr(coverage, partition_field)).issubset(
+                        set().union(
+                            *(
+                                set(getattr(observed_scope, partition_field))
+                                for observed_scope in scopes
+                                if any(
+                                    required_window.is_within(observed_window)
+                                    for observed_window in observed_scope.time_windows
+                                )
+                                and all(
+                                    set(getattr(coverage, other_field)).issubset(
+                                        getattr(observed_scope, other_field)
+                                    )
+                                    for other_field in categorical_fields
+                                    if other_field != partition_field
+                                )
+                            )
+                        )
                     )
-                    and any(
-                        required_window.is_within(observed_window)
-                        for observed_window in observed_scope.time_windows
-                    )
-                    for observed_scope in scopes
+                    for partition_field in categorical_fields
                 )
-                for combination in required_combinations
                 for required_window in coverage.time_windows
             ):
                 return True
