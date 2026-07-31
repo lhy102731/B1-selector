@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from time import perf_counter
 
 
 def scope(*, regime: str) -> dict[str, object]:
@@ -369,6 +370,48 @@ class LearningGateTests(unittest.TestCase):
                 },
                 claims,
             )
+
+    def test_deep_parent_invalidation_is_bounded_for_large_ledger(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claims = []
+        claim_count = 5000
+        for index in range(claim_count):
+            claim_id = f"invalid-deep-{index:04d}"
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "FAILED_USAGE",
+                    "execution_identity": f"execution-{claim_id}",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "INVALID" if index + 1 == claim_count else "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": (
+                        [f"invalid-deep-{index + 1:04d}"]
+                        if index + 1 < claim_count
+                        else []
+                    ),
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        started = perf_counter()
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-invalid-deep-0000",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+            },
+            claims,
+        )
+        duration = perf_counter() - started
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+        self.assertEqual(claim_count, len(decision["excluded_claims"]))
+        self.assertLess(duration, 1.5)
 
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate

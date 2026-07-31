@@ -303,27 +303,23 @@ class LearningGate:
             ),
             reverse=True,
         )
+        parent_invalidated_ids: set[str] = set()
         visited_count = 0
         while ready:
             parent_id = ready.pop()
             visited_count += 1
+            parent_is_invalid = (
+                parent_id in invalidated_claim_ids
+                or parent_id in parent_invalidated_ids
+            )
             for child_id in children_by_parent[parent_id]:
+                if parent_is_invalid:
+                    parent_invalidated_ids.add(child_id)
                 remaining_parent_count[child_id] -= 1
                 if remaining_parent_count[child_id] == 0:
                     ready.append(child_id)
         if visited_count != len(known_claim_ids):
             raise ValueError("claim lineage cannot contain a cycle")
-        parent_invalidated_ids: set[str] = set()
-        changed = True
-        while changed:
-            changed = False
-            invalid_lineage = invalidated_claim_ids | parent_invalidated_ids
-            for claim_id, parent_ids in parents_by_claim.items():
-                if claim_id not in invalid_lineage and any(
-                    parent_id in invalid_lineage for parent_id in parent_ids
-                ):
-                    parent_invalidated_ids.add(claim_id)
-                    changed = True
         matches: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
