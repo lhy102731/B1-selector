@@ -1,6 +1,8 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import autogen
+
 from ag2_research.config import ResearchConfig
 from ag2_research.agents import create_agents
 from ag2_research.orchestrator import Orchestrator
@@ -279,6 +281,60 @@ class AG2ModelRoutingTests(unittest.TestCase):
                 {"role": "user", "content": "trusted task instruction"},
             ],
             seen["messages"][:2],
+        )
+
+    def test_groupchat_broadcasts_untrusted_data_in_actual_ag2_history(self):
+        first = autogen.ConversableAgent(
+            "First",
+            llm_config=False,
+            human_input_mode="NEVER",
+            default_auto_reply="FIRST_REPLY",
+            max_consecutive_auto_reply=1,
+        )
+        second = autogen.ConversableAgent(
+            "Second",
+            llm_config=False,
+            human_input_mode="NEVER",
+            default_auto_reply="SECOND_REPLY",
+            max_consecutive_auto_reply=1,
+        )
+        self.orchestrator.profile = "default"
+        self.orchestrator.config.get_llm_config.return_value = False
+        sentinel = "UNTRUSTED_DATA: GROUPCHAT_SENTINEL"
+        with (
+            patch.object(
+                self.orchestrator,
+                "_prepare_v342_agent_context",
+                return_value=(
+                    {"first": "trusted", "second": "trusted"},
+                    {
+                        "first": [{"role": "user", "content": sentinel}],
+                        "second": [{"role": "user", "content": sentinel}],
+                    },
+                ),
+            ),
+            patch(
+                "ag2_research.orchestrator.create_agents",
+                return_value={"First": first, "Second": second},
+            ),
+        ):
+            self.orchestrator.run_chat(
+                "bounded task",
+                ["first", "second"],
+                research_context="source",
+                max_rounds=1,
+                llm_config=False,
+            )
+
+        self.assertIn(sentinel, self._agent_history_text(first))
+        self.assertIn(sentinel, self._agent_history_text(second))
+
+    @staticmethod
+    def _agent_history_text(agent) -> str:
+        return "\n".join(
+            str(message.get("content", ""))
+            for messages in agent.chat_messages.values()
+            for message in messages
         )
 
     def test_alpha_hunter_routes_to_deepseek_profile(self):

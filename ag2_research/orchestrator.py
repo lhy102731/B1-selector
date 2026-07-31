@@ -297,7 +297,7 @@ class Orchestrator:
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=list(next(iter(untrusted_contexts.values()), [])),
+            messages=[],
             max_round=rounds,
             speaker_selection_method=speaker,
             allow_repeat_speaker=allow_repeat,
@@ -308,7 +308,13 @@ class Orchestrator:
         coordinator = self._resolve_coordinator(agents, wf)
         initial_message = self._build_brainstorm_prompt(topic, agent_ids, agents)
 
-        result = coordinator.initiate_chat(manager, message=initial_message)
+        result = coordinator.initiate_chat(
+            manager,
+            message=self._groupchat_initial_turn(
+                initial_message,
+                next(iter(untrusted_contexts.values()), []),
+            ),
+        )
 
         self._session = ResearchSession(config=self.config, agents=agents)
         return {"status": "completed", "chat_history": getattr(result, "chat_history", [])}
@@ -343,7 +349,7 @@ class Orchestrator:
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=list(next(iter(untrusted_contexts.values()), [])),
+            messages=[],
             max_round=wf.get("max_rounds", 10),
             speaker_selection_method=speaker,
             allow_repeat_speaker=allow_repeat,
@@ -362,7 +368,13 @@ Risk_Controller: Assess execution / robustness / regime / deployment risk and em
 Strategy_Synthesizer: Draft the memory deltas implied by the result.
 System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJECT / ESCALATE_TO_USER / COMMIT — with rationale."""
 
-        coordinator.initiate_chat(manager, message=prompt)
+        coordinator.initiate_chat(
+            manager,
+            message=self._groupchat_initial_turn(
+                prompt,
+                next(iter(untrusted_contexts.values()), []),
+            ),
+        )
         return {"status": "completed"}
 
     def run_chat(
@@ -392,7 +404,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
 
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=list(next(iter(untrusted_contexts.values()), [])),
+            messages=[],
             max_round=max_rounds,
             speaker_selection_method="round_robin",
             allow_repeat_speaker=True,
@@ -403,7 +415,13 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         )
 
         first_agent = list(agents.values())[0]
-        first_agent.initiate_chat(manager, message=prompt)
+        first_agent.initiate_chat(
+            manager,
+            message=self._groupchat_initial_turn(
+                prompt,
+                next(iter(untrusted_contexts.values()), []),
+            ),
+        )
         return {"status": "completed"}
 
     # ---- Runtime v1.0: dispatcher + helpers --------------------------------
@@ -419,6 +437,35 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         if value in ("auto", "round_robin", "random", "manual"):
             return value
         return "round_robin"
+
+    @staticmethod
+    def _groupchat_initial_turn(
+        task_message: str,
+        untrusted_messages: list[dict[str, str]],
+    ) -> str:
+        if not isinstance(task_message, str) or not task_message.strip():
+            raise ValueError("groupchat task message must be non-empty")
+        if not isinstance(untrusted_messages, list):
+            raise ValueError("groupchat untrusted messages must be a list")
+        source_parts: list[str] = []
+        for message in untrusted_messages:
+            if (
+                not isinstance(message, dict)
+                or set(message) != {"role", "content"}
+                or message.get("role") != "user"
+                or not isinstance(message.get("content"), str)
+            ):
+                raise ValueError("groupchat untrusted message is invalid")
+            source_parts.append(message["content"])
+        return "\n\n".join(
+            [
+                "BEGIN_UNTRUSTED_SOURCE_DATA",
+                *source_parts,
+                "END_UNTRUSTED_SOURCE_DATA",
+                "TASK_REQUEST",
+                task_message,
+            ]
+        )
 
     def _resolve_coordinator(self, agents: dict, wf: dict):
         """Pick the initiator from the config `coordinator` field, else fallbacks."""
@@ -3213,7 +3260,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         manager_llm = self.config.get_llm_config(coordinator_profile)
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=list(untrusted_contexts[active_context_keys[0]]),
+            messages=[],
             max_round=max_rounds,
             speaker_selection_method="round_robin",
             allow_repeat_speaker=bool(rt.get("allow_repeat_speaker", False)),
@@ -3273,7 +3320,13 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         log_file = log_dir / f"roundtable_{timestamp}.md"
         roundtable_error: Exception | None = None
         try:
-            first_agent.initiate_chat(manager, message=initial_message)
+            first_agent.initiate_chat(
+                manager,
+                message=self._groupchat_initial_turn(
+                    initial_message,
+                    untrusted_contexts[active_context_keys[0]],
+                ),
+            )
         except Exception as exc:
             roundtable_error = exc
 
