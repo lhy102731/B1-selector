@@ -202,6 +202,7 @@ class LearningGate:
         if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
             raise ValueError("claims must be a sequence")
         matches: list[dict[str, object]] = []
+        excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
         warning_codes: set[str] = set()
         for raw_claim in claims:
@@ -217,6 +218,32 @@ class LearningGate:
                     "universal_factor_rejection is derived, not manually supplied"
                 )
             claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+            audit_grade = raw_claim.get("audit_grade")
+            taint_refs = raw_claim.get("taint_refs")
+            invalidation_codes = raw_claim.get("invalidation_codes")
+            if not isinstance(audit_grade, str) or not audit_grade:
+                raise ValueError("claim.audit_grade must be a non-empty string")
+            for value, field_name in (
+                (taint_refs, "claim.taint_refs"),
+                (invalidation_codes, "claim.invalidation_codes"),
+            ):
+                if not isinstance(value, list) or any(
+                    not isinstance(item, str) or not item or item != item.strip()
+                    for item in value
+                ):
+                    raise ValueError(f"{field_name} must be a string array")
+            exclusion_codes: list[str] = []
+            if audit_grade != "PASS":
+                exclusion_codes.append("AUDIT_GRADE_NOT_PASS")
+            if taint_refs:
+                exclusion_codes.append("TAINTED_CLAIM")
+            if invalidation_codes:
+                exclusion_codes.append("INVALIDATED_CLAIM")
+            if exclusion_codes:
+                excluded_claims.append(
+                    {"claim_id": claim_id, "reason_codes": exclusion_codes}
+                )
+                continue
             learned_scope = ClaimScope.from_mapping(raw_claim.get("scope"))
             relation = proposal_scope.classify_proposal(learned_scope)
             exact_execution = raw_claim.get("execution_identity") == proposal_execution
@@ -240,6 +267,9 @@ class LearningGate:
             "hard_block_claim_ids": sorted(hard_blocks),
             "warning_codes": sorted(warning_codes),
             "matches": sorted(matches, key=lambda item: str(item["claim_id"])),
+            "excluded_claims": sorted(
+                excluded_claims, key=lambda item: str(item["claim_id"])
+            ),
         }
 
 

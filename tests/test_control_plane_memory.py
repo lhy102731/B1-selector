@@ -105,6 +105,45 @@ class LearningGateTests(unittest.TestCase):
                 [claim],
             )
 
+    def test_invalid_or_tainted_claim_is_excluded(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claims = []
+        for claim_id, audit_grade, taint_refs in (
+            ("claim-invalid", "INVALID", []),
+            ("claim-tainted", "PASS", ["holdout-event"]),
+        ):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "NEGATIVE",
+                    "execution_identity": "proposal-exact",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": audit_grade,
+                    "taint_refs": taint_refs,
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "proposal-exact",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+            },
+            claims,
+        )
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+        self.assertEqual([], decision["matches"])
+        self.assertEqual(
+            ["claim-invalid", "claim-tainted"],
+            [item["claim_id"] for item in decision["excluded_claims"]],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
