@@ -345,8 +345,8 @@ class ConflictClassifier:
         )
         left_kind = _nonempty_string(left.get("kind"), "left.kind")
         right_kind = _nonempty_string(right.get("kind"), "right.kind")
-        ClaimScope.from_mapping(left.get("scope"))
-        ClaimScope.from_mapping(right.get("scope"))
+        left_scope = ClaimScope.from_mapping(left.get("scope"))
+        right_scope = ClaimScope.from_mapping(right.get("scope"))
         classification = "NONE"
         resolution_owner = None
         if left_execution == right_execution and left_kind != right_kind:
@@ -367,8 +367,12 @@ class ConflictClassifier:
                 and left_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
             )
             if left_semantic == right_semantic and positive_negative:
-                classification = "SCOPE_OR_PROTOCOL_CONFLICT"
-                resolution_owner = "scope_protocol_owner"
+                if left_scope.generation_families != right_scope.generation_families:
+                    classification = "DATA_DRIFT_CONFLICT"
+                    resolution_owner = "data_steward"
+                else:
+                    classification = "SCOPE_OR_PROTOCOL_CONFLICT"
+                    resolution_owner = "scope_protocol_owner"
         return {
             "schema_version": "control_plane.learning_conflict.v1",
             "claim_ids": sorted([left_id, right_id]),

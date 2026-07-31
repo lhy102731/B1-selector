@@ -344,6 +344,33 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("SCOPE_OR_PROTOCOL_CONFLICT", conflict["classification"])
         self.assertEqual("scope_protocol_owner", conflict["resolution_owner"])
 
+    def test_generation_change_is_data_drift_conflict(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        left_scope = scope(regime="bull")
+        right_scope = scope(regime="bull")
+        right_scope["generation_families"] = ["ths_daily_v2"]
+        conflict = ConflictClassifier().classify(
+            {
+                "claim_id": "claim-generation-left",
+                "kind": "POSITIVE",
+                "execution_identity": "execution-generation-left",
+                "semantic_identity": "yellow-line",
+                "scope": left_scope,
+            },
+            {
+                "claim_id": "claim-generation-right",
+                "kind": "NEGATIVE",
+                "execution_identity": "execution-generation-right",
+                "semantic_identity": "yellow-line",
+                "scope": right_scope,
+            },
+            actor_event={"event_id": "event-003", "actor_id": "reviewer-003"},
+        )
+
+        self.assertEqual("DATA_DRIFT_CONFLICT", conflict["classification"])
+        self.assertEqual("data_steward", conflict["resolution_owner"])
+
 
 if __name__ == "__main__":
     unittest.main()
