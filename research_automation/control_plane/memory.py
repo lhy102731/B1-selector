@@ -215,6 +215,18 @@ class ClaimScope:
             ),
         }
 
+    def to_mapping(self) -> dict[str, object]:
+        return {
+            "mechanisms": list(self.mechanisms),
+            "usage_modes": list(self.usage_modes),
+            "market_regimes": list(self.market_regimes),
+            "time_windows": [window.to_mapping() for window in self.time_windows],
+            "universes": list(self.universes),
+            "liquidity_buckets": list(self.liquidity_buckets),
+            "label_protocol_families": list(self.label_protocol_families),
+            "generation_families": list(self.generation_families),
+        }
+
 
 def _nonempty_string(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
@@ -603,9 +615,89 @@ class ReopenPredicateEvaluator:
         }
 
 
+class ContextProjection:
+    """Project committed Learning claims into a structured, safe fact view."""
+
+    def project(
+        self, claims: Sequence[Mapping[str, object]]
+    ) -> dict[str, object]:
+        if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
+            raise ValueError("projection claims must be a sequence")
+        projected_claims: list[dict[str, object]] = []
+        seen_claim_ids: set[str] = set()
+        for raw_claim in claims:
+            if not isinstance(raw_claim, Mapping):
+                raise ValueError("projection claim must be a mapping")
+            claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+            if claim_id in seen_claim_ids:
+                raise ValueError("projection claim_id must be unique")
+            seen_claim_ids.add(claim_id)
+            kind = _nonempty_string(raw_claim.get("kind"), "claim.kind")
+            if kind not in _LEARNING_CLAIM_KINDS:
+                raise ValueError("projection claim kind is invalid")
+            scope_value = ClaimScope.from_mapping(raw_claim.get("scope"))
+            audit_grade = _nonempty_string(
+                raw_claim.get("audit_grade"), "claim.audit_grade"
+            )
+            evidence_grade = _nonempty_string(
+                raw_claim.get("evidence_grade"), "claim.evidence_grade"
+            )
+            if evidence_grade not in _EVIDENCE_GRADE_RANK:
+                raise ValueError("projection evidence_grade is invalid")
+            reopen_predicates = _canonical_refs(
+                raw_claim.get("reopen_predicates"), "claim.reopen_predicates"
+            )
+            if not set(reopen_predicates).issubset(_REOPEN_PREDICATES):
+                raise ValueError("claim.reopen_predicates contains an unknown predicate")
+            projected_claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": kind,
+                    "conclusion": _nonempty_string(
+                        raw_claim.get("conclusion"), "claim.conclusion"
+                    ),
+                    "scope": scope_value.to_mapping(),
+                    "audit_grade": audit_grade,
+                    "evidence_grade": evidence_grade,
+                    "evidence_refs": list(
+                        _canonical_refs(
+                            raw_claim.get("evidence_refs"), "claim.evidence_refs"
+                        )
+                    ),
+                    "taint_refs": list(
+                        _canonical_refs(
+                            raw_claim.get("taint_refs"), "claim.taint_refs"
+                        )
+                    ),
+                    "invalidation_codes": list(
+                        _canonical_refs(
+                            raw_claim.get("invalidation_codes"),
+                            "claim.invalidation_codes",
+                        )
+                    ),
+                    "reopen_predicates": list(reopen_predicates),
+                    "parent_claim_ids": list(
+                        _canonical_refs(
+                            raw_claim.get("parent_claim_ids"),
+                            "claim.parent_claim_ids",
+                        )
+                    ),
+                    "directional_status": _nonempty_string(
+                        raw_claim.get("directional_status"),
+                        "claim.directional_status",
+                    ),
+                }
+            )
+        return {
+            "schema_version": "control_plane.context_projection.v1",
+            "claims": projected_claims,
+        }
+
+
 __all__ = [
     "ClaimScope",
     "ConflictClassifier",
+    "ContextProjection",
     "LearningGate",
     "ReopenPredicateEvaluator",
     "ScopeMatch",
