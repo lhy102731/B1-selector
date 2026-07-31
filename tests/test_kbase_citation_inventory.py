@@ -213,14 +213,24 @@ class KBaseCitationInventoryTests(unittest.TestCase):
         attempts = [make_brief(CHIMERA_ID), make_brief(CORRECT_ID)]
         revision_seen = []
 
-        def invoker(stage, packet, last_outputs, topic):
+        def invoker(stage, packet, last_outputs, topic, _context_bundle):
             if len(attempts) == 1:
                 revision_seen.append(deepcopy(last_outputs.get("__controller_revision__")))
             output = attempts.pop(0)
             output["_citation_inventory"] = deepcopy(self.inventory)
             return output
 
-        with patch("ag2_research.kbase.repository.KBaseRepository", DummyRepository):
+        with (
+            patch("ag2_research.kbase.repository.KBaseRepository", DummyRepository),
+            patch.object(
+                orchestrator,
+                "_prepare_v342_agent_context",
+                return_value=(
+                    {"source_librarian": "trusted"},
+                    {"source_librarian": []},
+                ),
+            ),
+        ):
             result = orchestrator.run_sequential_workflow(
                 "kbase_source_brief",
                 topic="find a new dimension",

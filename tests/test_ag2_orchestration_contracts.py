@@ -169,6 +169,62 @@ class AG2OrchestrationContractTests(unittest.TestCase):
                     memory_router=_Router(),
                 )
 
+    def test_custom_agent_invoker_receives_stage_context_bundle(self):
+        class SingleStageConfig:
+            _raw = {"control_layer": {}}
+
+            @staticmethod
+            def get_workflow(_workflow_id):
+                return {"pipeline_order": ["theory_builder"]}
+
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        orchestrator.config = SingleStageConfig()
+        seen = {}
+
+        def invoke(stage, _packet, _last_outputs, _topic, context_bundle):
+            seen[stage] = context_bundle
+            return {
+                "theory_hypothesis": {
+                    "mechanism": "temporary supply absorption",
+                    "expected_market": "range-to-recovery",
+                    "failure_mode": "broad risk-off selloff",
+                    "observable_signature": "volume contracts before recovery",
+                    "falsification_link": None,
+                }
+            }
+
+        with patch.object(
+            orchestrator,
+            "_prepare_v342_agent_context",
+            return_value=(
+                {"theory_builder": "TRUSTED_CONTEXT_SENTINEL"},
+                {
+                    "theory_builder": [
+                        {"role": "user", "content": "UNTRUSTED_CONTEXT_SENTINEL"}
+                    ]
+                },
+            ),
+        ):
+            result = orchestrator.run_sequential_workflow(
+                "test",
+                topic="bounded test",
+                research_context="provided",
+                agent_invoker=invoke,
+                memory_router=_Router(),
+            )
+
+        self.assertEqual("APPROVED", result["status"])
+        self.assertEqual(
+            {
+                "schema_version": "control_plane.custom_invoker_context.v1",
+                "trusted_system_message": "TRUSTED_CONTEXT_SENTINEL",
+                "untrusted_messages": [
+                    {"role": "user", "content": "UNTRUSTED_CONTEXT_SENTINEL"}
+                ],
+            },
+            seen["theory_builder"],
+        )
+
     def test_stage_prompt_never_serializes_legacy_memory_packet(self):
         prompt = Orchestrator._build_stage_message(
             Orchestrator.__new__(Orchestrator),
@@ -426,7 +482,7 @@ class AG2OrchestrationContractTests(unittest.TestCase):
         seen_by_risk = {}
         statistician_runs = 0
 
-        def invoke(stage, _packet, last_outputs, _topic):
+        def invoke(stage, _packet, last_outputs, _topic, _context_bundle):
             nonlocal statistician_runs
             if stage == "statistician":
                 statistician_runs += 1

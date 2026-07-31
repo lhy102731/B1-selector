@@ -573,12 +573,25 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 llm_config,
             )
         else:
-            self._prepare_v342_agent_context(
+            trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
                 stages,
                 research_context,
                 llm_config=llm_config,
             )
-            invoker = agent_invoker
+
+            def invoker(stage, packet, last_outputs, objective):
+                context_bundle = {
+                    "schema_version": "control_plane.custom_invoker_context.v1",
+                    "trusted_system_message": trusted_contexts[stage],
+                    "untrusted_messages": untrusted_contexts[stage],
+                }
+                return agent_invoker(
+                    stage,
+                    packet,
+                    last_outputs,
+                    objective,
+                    deepcopy(context_bundle),
+                )
 
         transcript: list[dict] = []
         last_outputs: dict[str, Any] = dict(initial_outputs or {})
