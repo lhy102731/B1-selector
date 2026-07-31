@@ -491,6 +491,34 @@ class LearningReopenTests(unittest.TestCase):
         self.assertEqual(["STRONGER_EVIDENCE"], upgraded["reason_codes"])
         self.assertFalse(unchanged["qualified"])
 
+    def test_declared_research_gap_requires_matching_structured_reference(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        evaluator = ReopenPredicateEvaluator()
+        claim = {
+            "claim_id": "claim-research-gap",
+            "scope": scope(regime="bull"),
+            "declared_research_gap_refs": ["gap-001"],
+            "reopen_predicates": ["DECLARED_RESEARCH_GAP"],
+        }
+        matching = evaluator.evaluate(
+            {
+                "scope": scope(regime="bull"),
+                "research_gap_refs": ["gap-001"],
+            },
+            claim,
+        )
+        unrelated = evaluator.evaluate(
+            {
+                "scope": scope(regime="bull"),
+                "research_gap_refs": ["gap-999"],
+            },
+            claim,
+        )
+
+        self.assertEqual(["DECLARED_RESEARCH_GAP"], matching["reason_codes"])
+        self.assertFalse(unrelated["qualified"])
+
 
 if __name__ == "__main__":
     unittest.main()

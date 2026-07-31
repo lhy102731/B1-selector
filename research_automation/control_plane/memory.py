@@ -469,6 +469,16 @@ class ReopenPredicateEvaluator:
                 > _EVIDENCE_GRADE_RANK[learned_grade]
             ):
                 reasons.append("STRONGER_EVIDENCE")
+        if "DECLARED_RESEARCH_GAP" in predicates:
+            proposal_gaps = _canonical_values(
+                proposal.get("research_gap_refs"), "research_gap_refs"
+            )
+            declared_gaps = _canonical_values(
+                claim.get("declared_research_gap_refs"),
+                "declared_research_gap_refs",
+            )
+            if not set(proposal_gaps).isdisjoint(declared_gaps):
+                reasons.append("DECLARED_RESEARCH_GAP")
         return {
             "schema_version": "control_plane.learning_reopen_decision.v1",
             "claim_id": claim_id,
