@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 from ag2_research.orchestrator import Orchestrator
 from ag2_research.config import ResearchConfig
 from research_automation.autonomous_runner import AutonomousRunnerV1
@@ -95,6 +96,23 @@ def _compute_acceleration():
 
 
 class AG2OrchestrationContractTests(unittest.TestCase):
+    def test_custom_agent_invoker_cannot_bypass_committed_learning(self):
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        orchestrator.config = _WorkflowConfig()
+        with patch(
+            "research_automation.control_plane.memory."
+            "CommittedLearningLedgerReader.read_projection_input",
+            side_effect=RuntimeError("committed ledger unavailable"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "committed ledger unavailable"):
+                orchestrator.run_sequential_workflow(
+                    "test",
+                    topic="bounded test",
+                    research_context="trusted test context",
+                    agent_invoker=lambda *_args: {},
+                    memory_router=_Router(),
+                )
+
     def test_stage_prompt_never_serializes_legacy_memory_packet(self):
         prompt = Orchestrator._build_stage_message(
             Orchestrator.__new__(Orchestrator),

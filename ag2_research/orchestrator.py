@@ -519,11 +519,19 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                     "approved source brief provides no support. Report the source mismatch."
                 ),
             }
-        invoker = agent_invoker or self._build_sequential_invoker(
-            stages,
-            research_context,
-            llm_config,
-        )
+        if agent_invoker is None:
+            invoker = self._build_sequential_invoker(
+                stages,
+                research_context,
+                llm_config,
+            )
+        else:
+            self._prepare_v342_agent_context(
+                stages,
+                research_context,
+                llm_config=llm_config,
+            )
+            invoker = agent_invoker
 
         transcript: list[dict] = []
         last_outputs: dict[str, Any] = dict(initial_outputs or {})
@@ -1572,7 +1580,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
     def _configured_stage_model_name(self, stage: str) -> str | None:
         try:
             llm_config = self.config.get_agent_llm_config(stage)
-        except (KeyError, TypeError, ValueError):
+        except (AttributeError, KeyError, TypeError, ValueError):
             return None
         return self._llm_config_model_name(llm_config)
 
