@@ -1483,7 +1483,45 @@ class ContextAssemblerTests(unittest.TestCase):
             projection["claims"][1]["claim_id"],
             result["learning_memory"]["claims"][0]["claim_id"],
         )
-        self.assertEqual(1, len(result["control_metadata"]["omitted_claim_ids"]))
+        self.assertEqual(1, result["control_metadata"]["omitted_claim_count"])
+
+    def test_omitted_claim_summary_is_bounded(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        claims = []
+        for index in range(20):
+            claims.append(
+                {
+                    "claim_id": f"claim-omitted-{index:02d}",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-omitted-{index:02d}"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            )
+        result = ContextAssembler(
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
+        ).assemble(
+            ContextProjection().project(claims),
+            role="factor_engineer",
+            learning_token_budget=300,
+        )
+
+        self.assertEqual("OK", result["status"])
+        metadata = result["control_metadata"]
+        self.assertGreater(metadata["omitted_claim_count"], 0)
+        self.assertRegex(metadata["omitted_claims_digest"], r"^[0-9a-f]{64}$")
+        self.assertNotIn("omitted_claim_ids", metadata)
 
     def test_disjoint_scope_never_outranks_applicable_scope(self) -> None:
         from research_automation.control_plane.memory import (

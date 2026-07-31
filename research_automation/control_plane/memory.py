@@ -1177,7 +1177,17 @@ class ContextAssembler:
         control_metadata = {
             "projection_schema_version": projection["schema_version"],
             "excluded_claims": validated_excluded_claims,
-            "omitted_claim_ids": omitted_claim_ids,
+            "omitted_claim_count": len(omitted_claim_ids),
+            "omitted_claims_digest": (
+                None
+                if not omitted_claim_ids
+                else sha256(
+                    (
+                        "control_plane.omitted_claims.v1\0"
+                        + "\0".join(omitted_claim_ids)
+                    ).encode("utf-8")
+                ).hexdigest()
+            ),
         }
 
         learning_required = count_tokens(learning_memory)
