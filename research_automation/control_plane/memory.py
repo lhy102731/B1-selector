@@ -1029,14 +1029,54 @@ class ContextAssembler:
             return token_count
 
         learning_required = count_tokens(learning_memory)
-        control_required = count_tokens(control_metadata)
-        budget_exceeded = (
-            learning_required > learning_token_budget
-            or control_required > control_token_budget
+        method = "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"
+        control_required = 0
+        status = (
+            "CONTEXT_BUDGET_EXCEEDED"
+            if learning_required > learning_token_budget
+            else "OK"
         )
+        for _ in range(16):
+            token_usage = {
+                "method": method,
+                "tokenizer_kind": self._tokenizer_kind,
+                "tokenizer_ref": self._tokenizer_ref,
+                "learning_required": learning_required,
+                "learning_budget": learning_token_budget,
+                "control_required": control_required,
+                "control_budget": control_token_budget,
+            }
+            candidate_required = count_tokens(
+                {
+                    "schema_version": "control_plane.context_assembly.v1",
+                    "status": status,
+                    "role": role,
+                    "control_metadata": control_metadata,
+                    "token_usage": token_usage,
+                }
+            )
+            candidate_status = (
+                "CONTEXT_BUDGET_EXCEEDED"
+                if learning_required > learning_token_budget
+                or candidate_required > control_token_budget
+                else "OK"
+            )
+            if candidate_required == control_required and candidate_status == status:
+                break
+            control_required = candidate_required
+            status = candidate_status
+        token_usage = {
+            "method": method,
+            "tokenizer_kind": self._tokenizer_kind,
+            "tokenizer_ref": self._tokenizer_ref,
+            "learning_required": learning_required,
+            "learning_budget": learning_token_budget,
+            "control_required": control_required,
+            "control_budget": control_token_budget,
+        }
         return {
             "schema_version": "control_plane.context_assembly.v1",
-            "status": "CONTEXT_BUDGET_EXCEEDED" if budget_exceeded else "OK",
+            "status": status,
             "role": role,
             "learning_memory": (
                 None if learning_required > learning_token_budget else learning_memory
@@ -1044,17 +1084,7 @@ class ContextAssembler:
             "control_metadata": (
                 None if control_required > control_token_budget else control_metadata
             ),
-            "token_usage": {
-                "method": (
-                    "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"
-                ),
-                "tokenizer_kind": self._tokenizer_kind,
-                "tokenizer_ref": self._tokenizer_ref,
-                "learning_required": learning_required,
-                "learning_budget": learning_token_budget,
-                "control_required": control_required,
-                "control_budget": control_token_budget,
-            },
+            "token_usage": token_usage,
         }
 
 

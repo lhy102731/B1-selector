@@ -16,6 +16,13 @@ class FakeAG2Encoder:
         return list(range(self.token_count))
 
 
+class ByteAG2Encoder:
+    __module__ = "ag2.testing"
+
+    def encode(self, text: str) -> list[int]:
+        return list(text.encode("utf-8"))
+
+
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1379,6 +1386,30 @@ class ContextAssemblerTests(unittest.TestCase):
 
         self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
         self.assertGreater(result["token_usage"]["learning_required"], 700)
+
+    def test_control_budget_counts_the_complete_control_envelope(self) -> None:
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
+
+        result = ContextAssembler(
+            tokenizer_adapter=AG2TokenizerAdapter(
+                name="byte_encoder", encoder=ByteAG2Encoder()
+            )
+        ).assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+            control_token_budget=150,
+        )
+
+        self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
+        self.assertIsNone(result["control_metadata"])
+        self.assertGreater(result["token_usage"]["control_required"], 150)
 
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
         from research_automation.control_plane.memory import (
