@@ -463,6 +463,34 @@ class LearningReopenTests(unittest.TestCase):
         self.assertTrue(decision["qualified"])
         self.assertEqual(["DATA_DRIFT"], decision["reason_codes"])
 
+    def test_declared_stronger_evidence_predicate_requires_grade_upgrade(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        evaluator = ReopenPredicateEvaluator()
+        claim = {
+            "claim_id": "claim-evidence-upgrade",
+            "scope": scope(regime="bull"),
+            "evidence_grade": "EXPLORATORY",
+            "reopen_predicates": ["STRONGER_EVIDENCE"],
+        }
+        upgraded = evaluator.evaluate(
+            {
+                "scope": scope(regime="bull"),
+                "evidence_grade": "STRICT_FORWARD_VALIDATED",
+            },
+            claim,
+        )
+        unchanged = evaluator.evaluate(
+            {
+                "scope": scope(regime="bull"),
+                "evidence_grade": "EXPLORATORY",
+            },
+            claim,
+        )
+
+        self.assertEqual(["STRONGER_EVIDENCE"], upgraded["reason_codes"])
+        self.assertFalse(unchanged["qualified"])
+
 
 if __name__ == "__main__":
     unittest.main()

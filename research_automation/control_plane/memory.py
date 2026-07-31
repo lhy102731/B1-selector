@@ -25,6 +25,12 @@ _SCOPE_FIELDS = frozenset(
     }
 )
 
+_EVIDENCE_GRADE_RANK = {
+    "EXPLORATORY": 0,
+    "STRICT_FORWARD_VALIDATED": 1,
+    "INDEPENDENTLY_REPRODUCED": 2,
+}
+
 
 class ScopeMatch(str, Enum):
     EXACT = "EXACT"
@@ -446,6 +452,23 @@ class ReopenPredicateEvaluator:
             != learned_scope.generation_families
         ):
             reasons.append("DATA_DRIFT")
+        if "STRONGER_EVIDENCE" in predicates:
+            proposal_grade = _nonempty_string(
+                proposal.get("evidence_grade"), "proposal.evidence_grade"
+            )
+            learned_grade = _nonempty_string(
+                claim.get("evidence_grade"), "claim.evidence_grade"
+            )
+            if (
+                proposal_grade not in _EVIDENCE_GRADE_RANK
+                or learned_grade not in _EVIDENCE_GRADE_RANK
+            ):
+                raise ValueError("evidence_grade is not a recognized grade")
+            if (
+                _EVIDENCE_GRADE_RANK[proposal_grade]
+                > _EVIDENCE_GRADE_RANK[learned_grade]
+            ):
+                reasons.append("STRONGER_EVIDENCE")
         return {
             "schema_version": "control_plane.learning_reopen_decision.v1",
             "claim_id": claim_id,
