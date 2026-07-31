@@ -446,6 +446,23 @@ class LearningReopenTests(unittest.TestCase):
                 self.assertTrue(decision["qualified"])
                 self.assertEqual([predicate], decision["reason_codes"])
 
+    def test_declared_data_drift_predicate_reopens_generation_change(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        proposal_scope = scope(regime="bull")
+        proposal_scope["generation_families"] = ["ths_daily_v2"]
+        decision = ReopenPredicateEvaluator().evaluate(
+            {"scope": proposal_scope},
+            {
+                "claim_id": "claim-data-drift",
+                "scope": scope(regime="bull"),
+                "reopen_predicates": ["DATA_DRIFT"],
+            },
+        )
+
+        self.assertTrue(decision["qualified"])
+        self.assertEqual(["DATA_DRIFT"], decision["reason_codes"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -440,6 +440,12 @@ class ReopenPredicateEvaluator:
             for window in proposal_scope.time_windows
         ):
             reasons.append("NEW_TIME_WINDOW")
+        if (
+            "DATA_DRIFT" in predicates
+            and proposal_scope.generation_families
+            != learned_scope.generation_families
+        ):
+            reasons.append("DATA_DRIFT")
         return {
             "schema_version": "control_plane.learning_reopen_decision.v1",
             "claim_id": claim_id,
