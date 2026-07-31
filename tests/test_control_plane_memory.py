@@ -1582,6 +1582,29 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("NONE", source["authority_effect"])
         self.assertNotIn(injection, repr(result["control_metadata"]))
 
+    def test_tiktoken_counts_special_token_text_as_untrusted_content(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        result = ContextAssembler(
+            tokenizer_kind="TIKTOKEN", tokenizer_name="gpt-4o-mini"
+        ).assemble(
+            {
+                "schema_version": "control_plane.context_projection.v1",
+                "claims": [],
+                "excluded_claims": [],
+            },
+            role="source_librarian",
+            untrusted_sources=[
+                {"source_ref": "special-token-source", "content": "<|endoftext|>"}
+            ],
+        )
+
+        self.assertEqual("OK", result["status"])
+        self.assertEqual(
+            "<|endoftext|>",
+            result["learning_memory"]["untrusted_data"][0]["content"],
+        )
+
     def test_tokenizer_identity_cannot_inject_control_metadata(self) -> None:
         from research_automation.control_plane.memory import (
             ContextAssembler,

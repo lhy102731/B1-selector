@@ -946,7 +946,9 @@ class ContextAssembler:
                 import tiktoken
 
                 encoding = tiktoken.encoding_for_model(name)
-                self._tokenizer_counter = lambda text: len(encoding.encode(text))
+                self._tokenizer_counter = lambda text: len(
+                    encoding.encode_ordinary(text)
+                )
             else:
                 from autogen.token_count_utils import count_token
 
