@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import hashlib
+import json
+import tempfile
+from pathlib import Path
 from time import perf_counter
 from unittest.mock import patch
 
@@ -2334,6 +2338,59 @@ class ContextAssemblerTests(unittest.TestCase):
 
 
 class LearningContextRouterTests(unittest.TestCase):
+    def test_committed_ledger_reader_projects_hash_bound_learning_packet(self) -> None:
+        from research_automation.control_plane.memory import CommittedLearningLedgerReader
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet = {
+                "schema_version": "control_plane.learning_packet.v2",
+                "authority_task_report": {"task_id": "p4-learning-commit"},
+                "claim": {
+                    "kind": "NEGATIVE",
+                    "summary": "yellow-line factor failed",
+                    "scope": json.dumps(
+                        scope(regime="bull"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "parent_lineage": [],
+                    "reopen_predicate": '["NEW_MARKET_REGIME"]',
+                    "future_usage_guidance": (
+                        '{"conclusion":"AVOID","directional_status":"avoid"}'
+                    ),
+                },
+                "evidence_refs": [{"ref": "evidence/result.json", "sha256": "a" * 64}],
+                "access_event_refs": ["access-event-001"],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+            raw = json.dumps(packet, sort_keys=True, separators=(",", ":")).encode()
+            digest = hashlib.sha256(raw).hexdigest()
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            (packet_dir / f"{digest}.json").write_bytes(raw)
+            ledger = {
+                "schema_version": "control_plane.learning_ledger.v2",
+                "packet_hashes": [digest],
+            }
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "LearningCommitService.rebuild_ledger",
+                return_value=ledger,
+            ):
+                claims = CommittedLearningLedgerReader(root).read_claims()
+
+        self.assertEqual(1, len(claims))
+        self.assertEqual(digest, claims[0]["claim_id"])
+        self.assertEqual("NEGATIVE", claims[0]["kind"])
+        self.assertEqual("AVOID", claims[0]["conclusion"])
+        self.assertEqual("avoid", claims[0]["directional_status"])
+        self.assertEqual("INDEPENDENTLY_REPRODUCED", claims[0]["evidence_grade"])
+        self.assertEqual(scope(regime="bull"), claims[0]["scope"])
+
     def test_prompt_injection_is_separated_from_system_and_tool_authority(self) -> None:
         from research_automation.control_plane.memory import LearningContextRouter
 

@@ -257,7 +257,6 @@ class Orchestrator:
         agent_ids: list[str] | None = None,
         max_rounds: int = 25,
         llm_config: dict | None = None,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a round-robin GroupChat brainstorm session.
 
@@ -287,7 +286,7 @@ class Orchestrator:
         # Only a caller-supplied override may force one model onto all roles.
         _llm = llm_config or self.llm_config
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context, learning_claims
+            agent_ids, research_context
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -319,7 +318,6 @@ class Orchestrator:
         strategy_description: str,
         research_context: str = "",
         llm_config: dict | None = None,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a quick strategy review with Risk Manager + Strategy Architect.
 
@@ -335,7 +333,7 @@ class Orchestrator:
         agent_ids = wf["agents"]
 
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context, learning_claims
+            agent_ids, research_context
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -374,7 +372,6 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         research_context: str = "",
         max_rounds: int = 15,
         llm_config: dict | None = None,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Run a custom GroupChat with arbitrary agent combination.
 
@@ -389,7 +386,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             Dict with status.
         """
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            agent_ids, research_context, learning_claims
+            agent_ids, research_context
         )
         agents = create_agents(self.config, agent_ids, llm_config, trusted_contexts)
 
@@ -479,7 +476,6 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         initial_outputs: dict[str, Any] | None = None,
         memory_packet: dict[str, Any] | None = None,
         require_kbase_inspired: bool = False,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> dict:
         """Deterministic, gated, single-pass pipeline (Phases 2/3/4/5).
 
@@ -527,7 +523,6 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             stages,
             research_context,
             llm_config,
-            learning_claims=learning_claims,
         )
 
         transcript: list[dict] = []
@@ -1509,15 +1504,20 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         self,
         stages: list[str],
         research_context: str,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> tuple[dict[str, str], dict[str, list[dict[str, str]]]]:
-        from research_automation.control_plane.memory import LearningContextRouter
+        from research_automation.control_plane.memory import (
+            CommittedLearningLedgerReader,
+            LearningContextRouter,
+        )
 
         trusted_contexts: dict[str, str] = {}
         untrusted_contexts: dict[str, list[dict[str, str]]] = {}
         context_router = LearningContextRouter(
             tokenizer_kind="AG2", tokenizer_name="gpt-4o-mini"
         )
+        committed_claims = CommittedLearningLedgerReader(
+            Path(__file__).resolve().parent.parent
+        ).read_claims()
         sources = (
             [{"source_ref": "legacy-research-context", "content": research_context}]
             if research_context
@@ -1525,7 +1525,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         )
         for stage in stages:
             context_messages = context_router.build_messages(
-                learning_claims or [],
+                committed_claims,
                 role=self._context_role(stage),
                 untrusted_sources=sources,
             )
@@ -1543,14 +1543,13 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         stages: list[str],
         research_context: str,
         llm_config: dict | None,
-        learning_claims: list[dict[str, Any]] | None = None,
     ) -> Callable:
         """Default invoker: one bounded tool-capable conversation per stage agent."""
         # Preserve per-agent model routing unless the caller explicitly asks
         # for a workflow-wide override.  The orchestrator default is for
         # manager duties, not an implicit override for every specialist.
         trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
-            stages, research_context, learning_claims
+            stages, research_context
         )
         agents = create_agents(self.config, stages, llm_config, trusted_contexts)
         id_to_name = {sid: (self.config.get_agent(sid) or {}).get("name") for sid in stages}

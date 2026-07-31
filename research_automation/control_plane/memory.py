@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
 import json
+from pathlib import Path
 
 
 _SCOPE_FIELDS = frozenset(
@@ -798,6 +799,171 @@ class LearningGate:
             "excluded_claims": excluded_claims,
             "universal_factor_rejection": universal_rejection,
         }
+
+
+class CommittedLearningLedgerReader:
+    """Read Authority-verified Learning events into the closed P5 claim schema."""
+
+    def __init__(self, repository_root: str | Path) -> None:
+        self._root = Path(repository_root).resolve()
+
+    @staticmethod
+    def _canonical_json_text(value: object, field_name: str) -> object:
+        if not isinstance(value, str):
+            raise ValueError(f"committed {field_name} must be canonical JSON text")
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as error:
+            raise ValueError(
+                f"committed {field_name} must be canonical JSON text"
+            ) from error
+        if json.dumps(
+            parsed,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ) != value:
+            raise ValueError(f"committed {field_name} must be canonical JSON text")
+        return parsed
+
+    def read_claims(self) -> list[dict[str, object]]:
+        from .evidence_learning import LearningCommitService
+
+        ledger = LearningCommitService(repository_root=self._root).rebuild_ledger()
+        if ledger.get("schema_version") != "control_plane.learning_ledger.v2":
+            raise ValueError("committed Learning ledger schema is invalid")
+        packet_hashes = ledger.get("packet_hashes")
+        if not isinstance(packet_hashes, list) or any(
+            not _is_opaque_ref(item) for item in packet_hashes
+        ):
+            raise ValueError("committed Learning ledger packet hashes are invalid")
+        packet_dir = self._root / "research_state/control_plane/learning_packets"
+        claims: list[dict[str, object]] = []
+        for packet_hash in packet_hashes:
+            packet_path = packet_dir / f"{packet_hash}.json"
+            try:
+                raw = packet_path.read_bytes()
+            except OSError as error:
+                raise ValueError("committed Learning packet is unavailable") from error
+            if sha256(raw).hexdigest() != packet_hash:
+                raise ValueError("committed Learning packet hash is invalid")
+            try:
+                packet = json.loads(raw)
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ValueError("committed Learning packet is invalid") from error
+            if (
+                not isinstance(packet, Mapping)
+                or json.dumps(
+                    packet,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                != raw
+                or set(packet)
+                != {
+                    "schema_version",
+                    "authority_task_report",
+                    "claim",
+                    "evidence_refs",
+                    "access_event_refs",
+                    "taint_refs",
+                    "audit_grade",
+                    "invalidation_codes",
+                }
+                or packet.get("schema_version") != "control_plane.learning_packet.v2"
+            ):
+                raise ValueError("committed Learning packet is invalid")
+            raw_claim = packet.get("claim")
+            if not isinstance(raw_claim, Mapping):
+                raise ValueError("committed Learning claim is invalid")
+            kind = _canonical_identifier(raw_claim.get("kind"), "claim.kind")
+            if kind not in _LEARNING_CLAIM_KINDS:
+                raise ValueError("committed Learning claim kind is invalid")
+            summary = _nonempty_string(raw_claim.get("summary"), "claim.summary")
+            if len(summary) > 4096:
+                raise ValueError("committed Learning claim summary is invalid")
+            scope_mapping = self._canonical_json_text(
+                raw_claim.get("scope"), "claim.scope"
+            )
+            normalized_scope = ClaimScope.from_mapping(scope_mapping).to_mapping()
+            guidance = self._canonical_json_text(
+                raw_claim.get("future_usage_guidance"),
+                "claim.future_usage_guidance",
+            )
+            if not isinstance(guidance, Mapping) or set(guidance) != {
+                "conclusion",
+                "directional_status",
+            }:
+                raise ValueError("committed Learning guidance is invalid")
+            reopen_predicates = self._canonical_json_text(
+                raw_claim.get("reopen_predicate"), "claim.reopen_predicate"
+            )
+            if not isinstance(reopen_predicates, list):
+                raise ValueError("committed Learning reopen predicates are invalid")
+            parent_claim_ids = list(
+                _canonical_identifiers(
+                    raw_claim.get("parent_lineage", []), "claim.parent_lineage"
+                )
+            )
+            evidence_refs = packet.get("evidence_refs")
+            if not isinstance(evidence_refs, list) or any(
+                not isinstance(reference, Mapping)
+                or set(reference) != {"ref", "sha256"}
+                for reference in evidence_refs
+            ):
+                raise ValueError("committed Learning evidence refs are invalid")
+            evidence_ids = sorted(
+                _opaque_ref(
+                    "learning_evidence_ref",
+                    json.dumps(
+                        reference,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+                for reference in evidence_refs
+            )
+            taint_refs = list(
+                _canonical_identifiers(packet.get("taint_refs"), "claim.taint_refs")
+            )
+            invalidation_codes = list(
+                _canonical_identifiers(
+                    packet.get("invalidation_codes"), "claim.invalidation_codes"
+                )
+            )
+            execution_identity = _opaque_ref(
+                "learning_execution_identity",
+                json.dumps(
+                    {"kind": kind, "summary": summary, "scope": normalized_scope},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            claims.append(
+                {
+                    "claim_id": packet_hash,
+                    "kind": kind,
+                    "execution_identity": execution_identity,
+                    "semantic_identity": _opaque_ref(
+                        "learning_semantic_identity", f"{kind}\0{summary}"
+                    ),
+                    "conclusion": guidance.get("conclusion"),
+                    "scope": normalized_scope,
+                    "audit_grade": packet.get("audit_grade"),
+                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "evidence_refs": evidence_ids,
+                    "taint_refs": taint_refs,
+                    "invalidation_codes": invalidation_codes,
+                    "reopen_predicates": reopen_predicates,
+                    "parent_claim_ids": parent_claim_ids,
+                    "directional_status": guidance.get("directional_status"),
+                    "universal_factor_rejection": False,
+                }
+            )
+        return claims
 
 
 class ConflictClassifier:
@@ -1646,6 +1812,7 @@ class LearningContextRouter:
 __all__ = [
     "AG2TokenizerAdapter",
     "ClaimScope",
+    "CommittedLearningLedgerReader",
     "ConflictClassifier",
     "ContextAssembler",
     "ContextProjection",

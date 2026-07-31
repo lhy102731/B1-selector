@@ -61,6 +61,49 @@ class AG2ModelRoutingTests(unittest.TestCase):
         )
         self.assertNotIn(injection, repr(trusted_contexts))
 
+    def test_sequential_workflow_reads_committed_learning_by_default(self):
+        committed_claim = {
+            "claim_id": "a" * 64,
+            "kind": "NEGATIVE",
+            "execution_identity": "b" * 64,
+            "semantic_identity": "c" * 64,
+            "conclusion": "AVOID",
+            "scope": {
+                "mechanisms": ["yellow_line_mean_reversion"],
+                "usage_modes": ["soft_penalty"],
+                "market_regimes": ["bull"],
+                "time_windows": [{"start": "2021-01-01", "end": "2023-12-31"}],
+                "universes": ["a_share"],
+                "liquidity_buckets": ["liquid"],
+                "label_protocol_families": ["b1_forward_v1"],
+                "generation_families": ["generation_v1"],
+            },
+            "audit_grade": "PASS",
+            "evidence_grade": "STRICT_FORWARD_VALIDATED",
+            "evidence_refs": ["d" * 64],
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": ["NEW_MARKET_REGIME"],
+            "parent_claim_ids": [],
+            "directional_status": "avoid",
+            "universal_factor_rejection": False,
+        }
+        with (
+            patch(
+                "research_automation.control_plane.memory."
+                "CommittedLearningLedgerReader.read_claims",
+                return_value=[committed_claim],
+            ) as reader,
+            patch("ag2_research.orchestrator.create_agents", return_value={}) as factory,
+        ):
+            self.orchestrator._build_sequential_invoker(
+                ["source_librarian"], "", None
+            )
+
+        reader.assert_called_once_with()
+        trusted_context = factory.call_args.args[3]["source_librarian"]
+        self.assertIn('"claims":[{', trusted_context)
+
     def test_sequential_agent_receives_untrusted_data_as_separate_history_message(self):
         seen = {}
 
