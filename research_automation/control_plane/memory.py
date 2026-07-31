@@ -1119,7 +1119,10 @@ class ContextAssembler:
             source_rows, (str, bytes)
         ):
             raise ValueError("untrusted_sources must be a sequence")
+        if len(source_rows) > 64:
+            raise ValueError("untrusted source aggregate exceeds item limit")
         untrusted_data: list[dict[str, object]] = []
+        aggregate_source_bytes = 0
         for source in source_rows:
             if not isinstance(source, Mapping) or set(source) != {
                 "source_ref",
@@ -1130,13 +1133,17 @@ class ContextAssembler:
                 source.get("source_ref"), "untrusted_source.source_ref"
             )
             content = source.get("content")
+            content_bytes = content.encode("utf-8") if isinstance(content, str) else b""
             if (
                 not isinstance(content, str)
                 or not content
                 or content != content.strip()
-                or len(content.encode("utf-8")) > 16 * 1024
+                or len(content_bytes) > 16 * 1024
             ):
                 raise ValueError("untrusted source content is invalid")
+            aggregate_source_bytes += len(content_bytes)
+            if aggregate_source_bytes > 64 * 1024:
+                raise ValueError("untrusted source aggregate exceeds byte limit")
             untrusted_data.append(
                 {
                     "source_ref": _opaque_ref("untrusted_source", source_ref),

@@ -1678,6 +1678,24 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("NONE", source["authority_effect"])
         self.assertNotIn(injection, repr(result["control_metadata"]))
 
+    def test_untrusted_source_aggregate_is_bounded_before_assembly(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        sources = [
+            {"source_ref": f"source-{index:03d}", "content": "x"}
+            for index in range(65)
+        ]
+        with self.assertRaisesRegex(ValueError, "aggregate"):
+            ContextAssembler().assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [],
+                    "excluded_claims": [],
+                },
+                role="source_librarian",
+                untrusted_sources=sources,
+            )
+
     def test_tiktoken_counts_special_token_text_as_untrusted_content(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
 
