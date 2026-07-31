@@ -44,7 +44,16 @@ def create_agents(
             else research_context
         )
         if agent_context:
-            system_message = system_message.replace("{research_context}", agent_context)
+            if "{research_context}" in system_message:
+                system_message = system_message.replace(
+                    "{research_context}", agent_context
+                )
+            else:
+                system_message = (
+                    f"{system_message.rstrip()}\n\n"
+                    "V3.4 TRUSTED LEARNING SYSTEM CONTEXT:\n"
+                    f"{agent_context}"
+                )
 
         tool_names = template.get("tools", [])
 

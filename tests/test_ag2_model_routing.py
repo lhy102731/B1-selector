@@ -2,11 +2,39 @@ import unittest
 from unittest.mock import Mock, patch
 
 from ag2_research.config import ResearchConfig
+from ag2_research.agents import create_agents
 from ag2_research.orchestrator import Orchestrator
 from research_automation.autonomous_runner import AutonomousRunnerV1
 
 
 class AG2ModelRoutingTests(unittest.TestCase):
+    def test_agent_without_context_placeholder_receives_trusted_envelope(self):
+        config = Mock()
+        config.default_profile = "default"
+        config.get_agent.return_value = {
+            "name": "Source_Librarian",
+            "system_message": "BASE SYSTEM POLICY",
+            "profile": "gpt55",
+            "tools": [],
+        }
+        config.get_agent_llm_config.return_value = {"config_list": []}
+
+        with patch(
+            "ag2_research.agents.create_profiled_assistant_agent",
+            return_value=Mock(),
+        ) as factory:
+            create_agents(
+                config,
+                ["source_librarian"],
+                research_context={
+                    "source_librarian": "TRUSTED_V342_CONTEXT_SENTINEL"
+                },
+            )
+
+        system_message = factory.call_args.kwargs["system_message"]
+        self.assertIn("BASE SYSTEM POLICY", system_message)
+        self.assertIn("TRUSTED_V342_CONTEXT_SENTINEL", system_message)
+
     def setUp(self):
         self.orchestrator = Orchestrator.__new__(Orchestrator)
         self.orchestrator.config = Mock()
