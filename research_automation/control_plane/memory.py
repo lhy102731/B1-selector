@@ -211,6 +211,38 @@ def _opaque_scope(scope_value: ClaimScope) -> dict[str, object]:
     return scope_mapping
 
 
+def _is_opaque_ref(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validate_projected_scope(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping) or set(value) != _SCOPE_FIELDS:
+        raise ValueError("context projection claim scope is invalid")
+    result: dict[str, object] = {}
+    for field_name in _SCOPE_FIELDS - {"time_windows"}:
+        items = value.get(field_name)
+        if (
+            not isinstance(items, list)
+            or not items
+            or len(items) != len(set(items))
+            or any(not _is_opaque_ref(item) for item in items)
+        ):
+            raise ValueError("context projection claim scope is invalid")
+        result[field_name] = list(items)
+    windows = value.get("time_windows")
+    if not isinstance(windows, list) or not windows:
+        raise ValueError("context projection claim scope is invalid")
+    parsed = [TimeWindow.from_mapping(item) for item in windows]
+    if parsed != sorted(set(parsed)):
+        raise ValueError("context projection claim scope is invalid")
+    result["time_windows"] = [window.to_mapping() for window in parsed]
+    return result
+
+
 @dataclass(frozen=True)
 class ClaimScope:
     mechanisms: tuple[str, ...]
@@ -967,7 +999,35 @@ class ContextAssembler:
                 or claim.get("kind") not in _LEARNING_CLAIM_KINDS
             ):
                 raise ValueError("context projection claim is invalid")
-            indexed_claims.append((index, claim))
+            ref_fields = ("evidence_refs", "taint_refs", "invalidation_codes", "parent_claim_ids")
+            if (
+                not _is_opaque_ref(claim.get("claim_id"))
+                or claim.get("conclusion") not in _CONCLUSION_CODES
+                or claim.get("audit_grade") != "PASS"
+                or claim.get("evidence_grade") not in _EVIDENCE_GRADE_RANK
+                or claim.get("directional_status") not in _DIRECTIONAL_STATUSES
+            ):
+                raise ValueError("context projection claim is invalid")
+            rebuilt_claim = dict(claim)
+            rebuilt_claim["scope"] = _validate_projected_scope(claim.get("scope"))
+            for field_name in ref_fields:
+                refs = claim.get(field_name)
+                if (
+                    not isinstance(refs, list)
+                    or len(refs) != len(set(refs))
+                    or any(not _is_opaque_ref(item) for item in refs)
+                ):
+                    raise ValueError("context projection claim is invalid")
+                rebuilt_claim[field_name] = list(refs)
+            predicates = claim.get("reopen_predicates")
+            if (
+                not isinstance(predicates, list)
+                or predicates != sorted(set(predicates))
+                or not set(predicates).issubset(_REOPEN_PREDICATES)
+            ):
+                raise ValueError("context projection claim is invalid")
+            rebuilt_claim["reopen_predicates"] = list(predicates)
+            indexed_claims.append((index, rebuilt_claim))
         validated_excluded_claims: list[dict[str, object]] = []
         for excluded in excluded_claims:
             if not isinstance(excluded, Mapping) or set(excluded) != {

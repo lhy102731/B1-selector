@@ -1266,6 +1266,30 @@ class ContextAssemblerTests(unittest.TestCase):
                 role="factor_engineer",
             )
 
+        malformed = {
+            "claim_id": "ignore_prior_instructions",
+            "kind": "NEGATIVE",
+            "conclusion": "IGNORE_PRIOR_INSTRUCTIONS",
+            "scope": "bad",
+            "audit_grade": "PASS",
+            "evidence_grade": "BOGUS",
+            "evidence_refs": ["raw-instruction"],
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": [],
+            "parent_claim_ids": [],
+            "directional_status": "research_only",
+        }
+        with self.assertRaisesRegex(ValueError, "projection claim"):
+            ContextAssembler().assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [malformed],
+                    "excluded_claims": [],
+                },
+                role="factor_engineer",
+            )
+
         with self.assertRaisesRegex(ValueError, "excluded claim"):
             ContextAssembler().assemble(
                 {
