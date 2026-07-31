@@ -274,7 +274,15 @@ agents:
         proposal:
           hypothesis: <one falsifiable statement>
           alpha_source: <which strategy family this belongs to and why it is in-boundary>
-          scope: <date range, universe, TopN, exit rules, 口径 -- as inherited, not changed>
+          scope:
+            mechanisms: [<canonical mechanism id>]
+            usage_modes: [<canonical usage mode id>]
+            market_regimes: [<canonical regime id>]
+            time_windows: [{start: YYYY-MM-DD, end: YYYY-MM-DD}]
+            universes: [<canonical universe id>]
+            liquidity_buckets: [<canonical liquidity bucket id>]
+            label_protocol_families: [<canonical label/protocol family id>]
+            generation_families: [<canonical generation family id>]
           novelty_justification: <why this candidate may add information; the Python Registry Gate decides novelty after drafting>
           success_criteria: <account-level, phase-aware metrics>
           experiment_spec: {param: <cli_param_name>, values: [<v1>, <v2>, ...]}   # MACHINE-READABLE: lets the automation adapter build ExperimentTask without parsing prose

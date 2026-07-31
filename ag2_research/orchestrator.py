@@ -1193,6 +1193,58 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 return "reject", "proposal lacks substantive experiment fields", None
             hypo = (output.get("raw_hypothesis") or output.get("hypothesis")
                     or proposal.get("hypothesis") or output.get("_raw", ""))
+            from research_automation.control_plane.memory import (
+                ClaimScope,
+                CommittedLearningLedgerReader,
+                LearningGate,
+            )
+
+            normalized_scope = ClaimScope.from_mapping(
+                proposal.get("scope")
+            ).to_mapping()
+            normalized_hypothesis = " ".join(str(hypo).split()).casefold()
+            semantic_identity = hashlib.sha256(
+                (
+                    "control_plane.learning_semantic_identity.v1\0"
+                    + normalized_hypothesis
+                ).encode("utf-8")
+            ).hexdigest()
+            execution_payload = {
+                "experiment_spec": proposal["experiment_spec"],
+                "hypothesis": normalized_hypothesis,
+                "scope": normalized_scope,
+            }
+            execution_identity = hashlib.sha256(
+                (
+                    "control_plane.learning_execution_identity.v1\0"
+                    + json.dumps(
+                        execution_payload,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                ).encode("utf-8")
+            ).hexdigest()
+            committed_claims = CommittedLearningLedgerReader(
+                Path(__file__).resolve().parent.parent
+            ).read_claims()
+            learning_verdict = LearningGate().classify(
+                {
+                    "execution_identity": execution_identity,
+                    "semantic_identity": semantic_identity,
+                    "scope": normalized_scope,
+                },
+                committed_claims,
+                universal_required_scope=normalized_scope,
+            )
+            packet["learning_verdict"] = learning_verdict
+            enforcement = learning_verdict["enforcement"]
+            if enforcement != "ALLOW":
+                return (
+                    "reject",
+                    f"learning_enforcement={enforcement}",
+                    enforcement,
+                )
             verdict = router.registry_gate.classify(hypo)
             packet["registry_status"] = verdict["registry_status"]
             packet["registry_verdict"] = verdict

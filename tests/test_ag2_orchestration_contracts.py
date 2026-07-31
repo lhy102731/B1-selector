@@ -95,7 +95,63 @@ def _compute_acceleration():
     }
 
 
+def _learning_scope():
+    return {
+        "mechanisms": ["volume_contraction_rebound"],
+        "usage_modes": ["factor_candidate"],
+        "market_regimes": ["all"],
+        "time_windows": [{"start": "2020-01-01", "end": "2026-12-31"}],
+        "universes": ["a_share"],
+        "liquidity_buckets": ["production_minimum"],
+        "label_protocol_families": ["rolling_forward_v1"],
+        "generation_families": ["b1_v342"],
+    }
+
+
 class AG2OrchestrationContractTests(unittest.TestCase):
+    def test_research_proposal_is_blocked_by_committed_learning_before_registry(self):
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        router = _Router()
+        output = {
+            "proposal": {
+                "hypothesis": "volume contraction predicts rebound",
+                "alpha_source": "B1 pullback family",
+                "scope": _learning_scope(),
+                "novelty_justification": "tests a bounded interaction",
+                "success_criteria": "improve account metrics",
+                "experiment_spec": {"param": "j_max", "values": [20, 30]},
+                "requested_next_role": "Data_Validator",
+            }
+        }
+        with (
+            patch(
+                "research_automation.control_plane.memory."
+                "CommittedLearningLedgerReader.read_claims",
+                return_value=[{"claim_id": "committed-negative"}],
+            ) as reader,
+            patch(
+                "research_automation.control_plane.memory.LearningGate.classify",
+                return_value={
+                    "enforcement": "HARD_BLOCK",
+                    "hard_block_claim_ids": ["committed-negative"],
+                    "scoped_block_claims": [],
+                    "warning_codes": [],
+                },
+            ) as learning_gate,
+        ):
+            decision, reason, _ = orchestrator._gate(
+                "research_proposer", output, router, {}
+            )
+
+        self.assertEqual("reject", decision)
+        self.assertIn("HARD_BLOCK", reason)
+        self.assertIsNone(router.registry_gate.seen)
+        reader.assert_called_once_with()
+        proposal = learning_gate.call_args.args[0]
+        self.assertEqual(_learning_scope(), proposal["scope"])
+        self.assertRegex(proposal["execution_identity"], r"^[0-9a-f]{64}$")
+        self.assertRegex(proposal["semantic_identity"], r"^[0-9a-f]{64}$")
+
     def test_custom_agent_invoker_cannot_bypass_committed_learning(self):
         orchestrator = Orchestrator.__new__(Orchestrator)
         orchestrator.config = _WorkflowConfig()
@@ -144,16 +200,30 @@ class AG2OrchestrationContractTests(unittest.TestCase):
         output = self.orchestrator._parse_stage_output(
             "research_proposer",
             "```yaml\nproposal:\n  hypothesis: volume contraction predicts rebound\n"
-            "  alpha_source: B1 pullback family\n  scope: {strategy: B1}\n"
+            "  alpha_source: B1 pullback family\n"
+            "  scope:\n"
+            "    mechanisms: [volume_contraction_rebound]\n"
+            "    usage_modes: [factor_candidate]\n"
+            "    market_regimes: [all]\n"
+            "    time_windows: [{start: '2020-01-01', end: '2026-12-31'}]\n"
+            "    universes: [a_share]\n"
+            "    liquidity_buckets: [production_minimum]\n"
+            "    label_protocol_families: [rolling_forward_v1]\n"
+            "    generation_families: [b1_v342]\n"
             "  novelty_justification: tests a new volume interaction\n"
             "  success_criteria: improve account metrics\n"
             "  experiment_spec: {param: j_max, values: [20, 30]}\n"
             "  requested_next_role: Data_Validator\n```",
         )
         router = _Router()
-        decision, _, _ = self.orchestrator._gate(
-            "research_proposer", output, router, {}
-        )
+        with patch(
+            "research_automation.control_plane.memory."
+            "CommittedLearningLedgerReader.read_claims",
+            return_value=[],
+        ):
+            decision, _, _ = self.orchestrator._gate(
+                "research_proposer", output, router, {}
+            )
         self.assertEqual("pass", decision)
         self.assertEqual("volume contraction predicts rebound", router.registry_gate.seen)
 
