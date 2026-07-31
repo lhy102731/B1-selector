@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import unittest
 from unittest.mock import patch
 from ag2_research.orchestrator import Orchestrator
@@ -109,6 +111,72 @@ def _learning_scope():
 
 
 class AG2OrchestrationContractTests(unittest.TestCase):
+    def test_proposal_identity_matches_committed_learning_identity(self):
+        orchestrator = Orchestrator.__new__(Orchestrator)
+        router = _Router()
+        hypothesis = "Volume contraction predicts rebound"
+        normalized_hypothesis = hypothesis.casefold()
+        learning_scope = _learning_scope()
+
+        def opaque(domain, value):
+            return hashlib.sha256(
+                (
+                    f"control_plane.context_projection.v1:{domain}\0" + value
+                ).encode("utf-8")
+            ).hexdigest()
+
+        execution_identity = opaque(
+            "learning_execution_identity",
+            json.dumps(
+                {"scope": learning_scope, "summary": normalized_hypothesis},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        semantic_identity = opaque(
+            "learning_semantic_identity", normalized_hypothesis
+        )
+        committed_claim = {
+            "claim_id": "committed-negative",
+            "kind": "NEGATIVE",
+            "execution_identity": execution_identity,
+            "semantic_identity": semantic_identity,
+            "conclusion": "AVOID",
+            "scope": learning_scope,
+            "audit_grade": "PASS",
+            "evidence_grade": "STRICT_FORWARD_VALIDATED",
+            "evidence_refs": ["evidence-negative"],
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": [],
+            "parent_claim_ids": [],
+            "directional_status": "avoid",
+            "universal_factor_rejection": False,
+        }
+        output = {
+            "proposal": {
+                "hypothesis": hypothesis,
+                "alpha_source": "B1 pullback family",
+                "scope": learning_scope,
+                "novelty_justification": "bounded replay check",
+                "success_criteria": "improve account metrics",
+                "experiment_spec": {"param": "j_max", "values": [20, 30]},
+                "requested_next_role": "Data_Validator",
+            }
+        }
+        with patch(
+            "research_automation.control_plane.memory."
+            "CommittedLearningLedgerReader.read_claims",
+            return_value=[committed_claim],
+        ):
+            decision, reason, _ = orchestrator._gate(
+                "research_proposer", output, router, {}
+            )
+
+        self.assertEqual("reject", decision)
+        self.assertIn("HARD_BLOCK", reason)
+        self.assertIsNone(router.registry_gate.seen)
+
     def test_research_proposal_is_blocked_by_committed_learning_before_registry(self):
         orchestrator = Orchestrator.__new__(Orchestrator)
         router = _Router()

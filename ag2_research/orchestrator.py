@@ -1257,34 +1257,21 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 ClaimScope,
                 CommittedLearningLedgerReader,
                 LearningGate,
+                learning_execution_identity,
+                learning_semantic_identity,
             )
 
             normalized_scope = ClaimScope.from_mapping(
                 proposal.get("scope")
             ).to_mapping()
             normalized_hypothesis = " ".join(str(hypo).split()).casefold()
-            semantic_identity = hashlib.sha256(
-                (
-                    "control_plane.learning_semantic_identity.v1\0"
-                    + normalized_hypothesis
-                ).encode("utf-8")
-            ).hexdigest()
-            execution_payload = {
-                "experiment_spec": proposal["experiment_spec"],
-                "hypothesis": normalized_hypothesis,
-                "scope": normalized_scope,
-            }
-            execution_identity = hashlib.sha256(
-                (
-                    "control_plane.learning_execution_identity.v1\0"
-                    + json.dumps(
-                        execution_payload,
-                        ensure_ascii=False,
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    )
-                ).encode("utf-8")
-            ).hexdigest()
+            semantic_identity = learning_semantic_identity(
+                normalized_hypothesis
+            )
+            execution_identity = learning_execution_identity(
+                normalized_hypothesis,
+                normalized_scope,
+            )
             committed_claims = CommittedLearningLedgerReader(
                 Path(__file__).resolve().parent.parent
             ).read_claims()

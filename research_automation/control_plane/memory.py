@@ -266,6 +266,36 @@ def _opaque_ref(domain: str, value: str) -> str:
     ).hexdigest()
 
 
+def learning_semantic_identity(summary: str) -> str:
+    """Return the shared semantic identity for a proposal or committed claim."""
+
+    normalized = " ".join(
+        _nonempty_string(summary, "learning summary").split()
+    ).casefold()
+    return _opaque_ref("learning_semantic_identity", normalized)
+
+
+def learning_execution_identity(
+    summary: str,
+    scope: Mapping[str, object],
+) -> str:
+    """Return the shared exact-execution identity at the closed scope boundary."""
+
+    normalized = " ".join(
+        _nonempty_string(summary, "learning summary").split()
+    ).casefold()
+    normalized_scope = ClaimScope.from_mapping(scope).to_mapping()
+    return _opaque_ref(
+        "learning_execution_identity",
+        json.dumps(
+            {"scope": normalized_scope, "summary": normalized},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    )
+
+
 def _opaque_scope(scope_value: ClaimScope) -> dict[str, object]:
     scope_mapping = scope_value.to_mapping()
     for field_name in _SCOPE_FIELDS - {"time_windows"}:
@@ -1008,23 +1038,16 @@ class CommittedLearningLedgerReader:
                     packet.get("invalidation_codes"), "claim.invalidation_codes"
                 )
             )
-            execution_identity = _opaque_ref(
-                "learning_execution_identity",
-                json.dumps(
-                    {"kind": kind, "summary": summary, "scope": normalized_scope},
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
+            execution_identity = learning_execution_identity(
+                summary,
+                normalized_scope,
             )
             claims.append(
                 {
                     "claim_id": packet_hash,
                     "kind": kind,
                     "execution_identity": execution_identity,
-                    "semantic_identity": _opaque_ref(
-                        "learning_semantic_identity", f"{kind}\0{summary}"
-                    ),
+                    "semantic_identity": learning_semantic_identity(summary),
                     "conclusion": conclusion,
                     "scope": normalized_scope,
                     "audit_grade": packet.get("audit_grade"),
@@ -1976,6 +1999,8 @@ __all__ = [
     "ContextProjection",
     "LearningGate",
     "LearningContextRouter",
+    "learning_execution_identity",
+    "learning_semantic_identity",
     "ReopenPredicateEvaluator",
     "ScopeMatch",
     "TimeWindow",

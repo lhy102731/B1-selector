@@ -2711,7 +2711,11 @@ class LearningContextRouterTests(unittest.TestCase):
         )
 
     def test_committed_ledger_reader_projects_hash_bound_learning_packet(self) -> None:
-        from research_automation.control_plane.memory import CommittedLearningLedgerReader
+        from research_automation.control_plane.memory import (
+            CommittedLearningLedgerReader,
+            learning_execution_identity,
+            learning_semantic_identity,
+        )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2762,6 +2766,17 @@ class LearningContextRouterTests(unittest.TestCase):
         self.assertEqual("avoid", claims[0]["directional_status"])
         self.assertEqual("UNSPECIFIED", claims[0]["evidence_grade"])
         self.assertEqual(scope(regime="bull"), claims[0]["scope"])
+        self.assertEqual(
+            learning_execution_identity(
+                "yellow-line factor failed",
+                scope(regime="bull"),
+            ),
+            claims[0]["execution_identity"],
+        )
+        self.assertEqual(
+            learning_semantic_identity("yellow-line factor failed"),
+            claims[0]["semantic_identity"],
+        )
 
     def test_valid_unstructured_p4_packet_is_explicitly_excluded(self) -> None:
         from research_automation.control_plane.memory import CommittedLearningLedgerReader
