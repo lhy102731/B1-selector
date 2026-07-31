@@ -48,6 +48,32 @@ _REOPEN_PREDICATES = frozenset(
         "DECLARED_RESEARCH_GAP",
     }
 )
+_CONCLUSION_CODES = frozenset(
+    {
+        "POSITIVE_DIRECTIONAL",
+        "NEGATIVE_DIRECTIONAL",
+        "HARD_GATE_FAILED",
+        "USAGE_FAILED",
+        "ANTI_FACTOR",
+        "REGIME_CONDITIONAL",
+        "NO_MATERIAL_FINDING",
+        "DO_NOT_HARD_GATE",
+    }
+)
+_DIRECTIONAL_STATUSES = frozenset(
+    {
+        "research_only",
+        "not_promoted",
+        "do_not_hard_gate",
+        "positive_directional",
+        "negative_directional",
+        "anti_factor",
+        "regime_conditional",
+    }
+)
+_IDENTIFIER_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-"
+)
 
 
 class ScopeMatch(str, Enum):
@@ -96,6 +122,8 @@ def _canonical_values(value: object, field_name: str) -> tuple[str, ...]:
             or not item
             or item != item.strip()
             or len(item) > 256
+            or not item[0].isalnum()
+            or any(character not in _IDENTIFIER_CHARS for character in item)
             for item in value
         )
         or value != sorted(set(value))
@@ -118,6 +146,26 @@ def _canonical_refs(value: object, field_name: str) -> tuple[str, ...]:
     ):
         raise ValueError(f"{field_name} must be a sorted unique string array")
     return tuple(value)
+
+
+def _canonical_identifier(value: object, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > 256
+        or not value[0].isalnum()
+        or any(character not in _IDENTIFIER_CHARS for character in value)
+    ):
+        raise ValueError(f"{field_name} must be a canonical identifier")
+    return value
+
+
+def _canonical_identifiers(value: object, field_name: str) -> tuple[str, ...]:
+    refs = _canonical_refs(value, field_name)
+    for item in refs:
+        _canonical_identifier(item, field_name)
+    return refs
 
 
 @dataclass(frozen=True)
@@ -632,7 +680,9 @@ class ContextProjection:
         projected_claims: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         for raw_claim in claim_rows:
-            claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+            claim_id = _canonical_identifier(
+                raw_claim.get("claim_id"), "claim.claim_id"
+            )
             kind = _nonempty_string(raw_claim.get("kind"), "claim.kind")
             if kind not in _LEARNING_CLAIM_KINDS:
                 raise ValueError("projection claim kind is invalid")
@@ -650,10 +700,10 @@ class ContextProjection:
             )
             if not set(reopen_predicates).issubset(_REOPEN_PREDICATES):
                 raise ValueError("claim.reopen_predicates contains an unknown predicate")
-            taint_refs = _canonical_refs(
+            taint_refs = _canonical_identifiers(
                 raw_claim.get("taint_refs"), "claim.taint_refs"
             )
-            invalidation_codes = _canonical_refs(
+            invalidation_codes = _canonical_identifiers(
                 raw_claim.get("invalidation_codes"),
                 "claim.invalidation_codes",
             )
@@ -671,18 +721,27 @@ class ContextProjection:
                     {"claim_id": claim_id, "reason_codes": exclusion_codes}
                 )
                 continue
+            conclusion = _canonical_identifier(
+                raw_claim.get("conclusion"), "claim.conclusion"
+            )
+            if conclusion not in _CONCLUSION_CODES:
+                raise ValueError("projection conclusion is invalid")
+            directional_status = _canonical_identifier(
+                raw_claim.get("directional_status"),
+                "claim.directional_status",
+            )
+            if directional_status not in _DIRECTIONAL_STATUSES:
+                raise ValueError("projection directional_status is invalid")
             projected_claims.append(
                 {
                     "claim_id": claim_id,
                     "kind": kind,
-                    "conclusion": _nonempty_string(
-                        raw_claim.get("conclusion"), "claim.conclusion"
-                    ),
+                    "conclusion": conclusion,
                     "scope": scope_value.to_mapping(),
                     "audit_grade": audit_grade,
                     "evidence_grade": evidence_grade,
                     "evidence_refs": list(
-                        _canonical_refs(
+                        _canonical_identifiers(
                             raw_claim.get("evidence_refs"), "claim.evidence_refs"
                         )
                     ),
@@ -690,15 +749,12 @@ class ContextProjection:
                     "invalidation_codes": list(invalidation_codes),
                     "reopen_predicates": list(reopen_predicates),
                     "parent_claim_ids": list(
-                        _canonical_refs(
+                        _canonical_identifiers(
                             raw_claim.get("parent_claim_ids"),
                             "claim.parent_claim_ids",
                         )
                     ),
-                    "directional_status": _nonempty_string(
-                        raw_claim.get("directional_status"),
-                        "claim.directional_status",
-                    ),
+                    "directional_status": directional_status,
                 }
             )
         return {
