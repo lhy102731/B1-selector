@@ -864,34 +864,35 @@ class ContextProjection:
 
 class _RegisteredTokenizerAdapter:
     kind = ""
-    module_prefix = ""
 
-    def __init__(self, *, name: str, encoder: object) -> None:
+    def __init__(self, *, name: str) -> None:
         self.name = _canonical_identifier(name, "tokenizer_adapter.name")
-        encoder_module = type(encoder).__module__
-        if encoder_module != self.module_prefix and not encoder_module.startswith(
-            f"{self.module_prefix}."
-        ):
-            raise ValueError("tokenizer encoder is not from a registered provider")
-        if not callable(getattr(encoder, "encode", None)):
-            raise ValueError("tokenizer encoder must expose encode")
-        self._encoder = encoder
-
-    def count_tokens(self, text: str) -> int:
-        tokens = self._encoder.encode(text)
-        if not isinstance(tokens, Sequence) or isinstance(tokens, (str, bytes)):
-            raise ValueError("tokenizer encoder returned an invalid token sequence")
-        return len(tokens)
 
 
 class AG2TokenizerAdapter(_RegisteredTokenizerAdapter):
     kind = "AG2"
-    module_prefix = "ag2"
+
+    def __init__(self, *, name: str) -> None:
+        super().__init__(name=name)
+        from autogen.token_count_utils import count_token
+
+        self._count_token = count_token
+
+    def count_tokens(self, text: str) -> int:
+        return self._count_token(text, model=self.name)
 
 
 class TiktokenTokenizerAdapter(_RegisteredTokenizerAdapter):
     kind = "TIKTOKEN"
-    module_prefix = "tiktoken"
+
+    def __init__(self, *, name: str) -> None:
+        super().__init__(name=name)
+        import tiktoken
+
+        self._encoding = tiktoken.encoding_for_model(name)
+
+    def count_tokens(self, text: str) -> int:
+        return len(self._encoding.encode(text))
 
 
 class ContextAssembler:
@@ -989,9 +990,9 @@ class ContextAssembler:
             else _claim_scope_from_projected(target_scope_mapping)
         )
 
-        def scope_relevance(claim: Mapping[str, object]) -> int:
+        def scope_relevance(claim: Mapping[str, object]) -> tuple[int, int]:
             if target_scope_mapping is None:
-                return 0
+                return (0, 0)
             claim_scope = claim.get("scope")
             if not isinstance(claim_scope, Mapping):
                 raise ValueError("context projection claim scope is invalid")
@@ -999,12 +1000,13 @@ class ContextAssembler:
             relation = target_projected_scope.classify_proposal(
                 claim_projected_scope
             )
-            relevance = {
-                ScopeMatch.EXACT: 40000,
-                ScopeMatch.SUBSET: 30000,
-                ScopeMatch.OVERLAP: 20000,
+            relation_rank = {
+                ScopeMatch.EXACT: 4,
+                ScopeMatch.SUBSET: 3,
+                ScopeMatch.OVERLAP: 2,
                 ScopeMatch.DISJOINT: 0,
             }[relation]
+            relevance = 0
             for field_name in _SCOPE_FIELDS - {"time_windows"}:
                 claim_values = claim_scope.get(field_name)
                 target_values = target_scope_mapping[field_name]
@@ -1021,7 +1023,7 @@ class ContextAssembler:
                 for right in target_windows
             ):
                 relevance += 1
-            return relevance
+            return (relation_rank, relevance)
         indexed_claims: list[tuple[int, Mapping[str, object]]] = []
         for index, claim in enumerate(claims):
             if (
@@ -1086,7 +1088,8 @@ class ContextAssembler:
             for _, claim in sorted(
                 indexed_claims,
                 key=lambda item: (
-                    -scope_relevance(item[1]),
+                    -scope_relevance(item[1])[0],
+                    -scope_relevance(item[1])[1],
                     priority.get(str(item[1]["kind"]), 99),
                     -_EVIDENCE_GRADE_RANK.get(
                         str(item[1].get("evidence_grade")), -1

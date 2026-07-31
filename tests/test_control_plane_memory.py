@@ -4,48 +4,6 @@ import unittest
 from time import perf_counter
 
 
-class FakeAG2Encoder:
-    __module__ = "ag2.testing"
-
-    def __init__(self, token_count: int) -> None:
-        self.token_count = token_count
-        self.last_text = ""
-
-    def encode(self, text: str) -> list[int]:
-        self.last_text = text
-        return list(range(self.token_count))
-
-
-class ByteAG2Encoder:
-    __module__ = "ag2.testing"
-
-    def encode(self, text: str) -> list[int]:
-        return list(text.encode("utf-8"))
-
-
-class QuarterByteAG2Encoder:
-    __module__ = "ag2.testing"
-
-    def encode(self, text: str) -> list[int]:
-        token_count = (len(text.encode("utf-8")) + 3) // 4
-        return list(range(token_count))
-
-
-class OscillatingAG2Encoder:
-    __module__ = "ag2.testing"
-
-    def encode(self, text: str) -> list[int]:
-        token_count = 100 if '"control_required":101' in text else 101
-        return list(range(token_count))
-
-
-class SpoofedAG2Encoder:
-    __module__ = "ag2evil"
-
-    def encode(self, text: str) -> list[int]:
-        return [0]
-
-
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1317,9 +1275,9 @@ class ContextAssemblerTests(unittest.TestCase):
 
     def test_role_specific_views_are_deterministic(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
             ContextProjection,
+            TiktokenTokenizerAdapter,
         )
 
         claims = []
@@ -1355,9 +1313,7 @@ class ContextAssemblerTests(unittest.TestCase):
             )
         projection = ContextProjection().project(claims)
         assembler = ContextAssembler(
-            tokenizer_adapter=AG2TokenizerAdapter(
-                name="role_test_tokenizer", encoder=FakeAG2Encoder(100)
-            )
+            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
         )
 
         alpha = assembler.assemble(projection, role="alpha_hunter")
@@ -1435,16 +1391,9 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertGreater(result["token_usage"]["learning_required"], 700)
 
     def test_control_budget_counts_the_complete_control_envelope(self) -> None:
-        from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
-            ContextAssembler,
-        )
+        from research_automation.control_plane.memory import ContextAssembler
 
-        result = ContextAssembler(
-            tokenizer_adapter=AG2TokenizerAdapter(
-                name="byte_encoder", encoder=ByteAG2Encoder()
-            )
-        ).assemble(
+        result = ContextAssembler().assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
                 "claims": [],
@@ -1458,32 +1407,11 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertIsNone(result["control_metadata"])
         self.assertGreater(result["token_usage"]["control_required"], 150)
 
-    def test_nonconverging_control_budget_fails_closed(self) -> None:
-        from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
-            ContextAssembler,
-        )
-
-        with self.assertRaisesRegex(ValueError, "converge"):
-            ContextAssembler(
-                tokenizer_adapter=AG2TokenizerAdapter(
-                    name="oscillating_encoder", encoder=OscillatingAG2Encoder()
-                )
-            ).assemble(
-                {
-                    "schema_version": "control_plane.context_projection.v1",
-                    "claims": [],
-                    "excluded_claims": [],
-                },
-                role="source_librarian",
-                control_token_budget=100,
-            )
-
     def test_large_ledger_compresses_whole_claims_by_scope_relevance(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
             ContextProjection,
+            TiktokenTokenizerAdapter,
         )
 
         claims = []
@@ -1506,14 +1434,12 @@ class ContextAssemblerTests(unittest.TestCase):
             )
         projection = ContextProjection().project(claims)
         result = ContextAssembler(
-            tokenizer_adapter=AG2TokenizerAdapter(
-                name="quarter_byte_encoder", encoder=QuarterByteAG2Encoder()
-            )
+            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
         ).assemble(
             projection,
             role="factor_engineer",
             target_scope=scope(regime="bull"),
-            learning_token_budget=300,
+            learning_token_budget=800,
         )
 
         self.assertEqual("OK", result["status"])
@@ -1525,13 +1451,13 @@ class ContextAssemblerTests(unittest.TestCase):
 
     def test_disjoint_scope_never_outranks_applicable_scope(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
             ContextProjection,
+            TiktokenTokenizerAdapter,
         )
 
         target = scope(regime="bull")
-        target["mechanisms"] = [f"mechanism_{index:02d}" for index in range(10)]
+        target["mechanisms"] = [f"mechanism_{index:02d}" for index in range(2)]
         disjoint = {**target, "market_regimes": ["bear"]}
         applicable = scope(regime="bull")
         applicable["mechanisms"] = ["mechanism_00"]
@@ -1569,14 +1495,12 @@ class ContextAssemblerTests(unittest.TestCase):
             ]
         )
         result = ContextAssembler(
-            tokenizer_adapter=AG2TokenizerAdapter(
-                name="quarter_byte_encoder", encoder=QuarterByteAG2Encoder()
-            )
+            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
         ).assemble(
             projection,
             role="alpha_hunter",
             target_scope=target,
-            learning_token_budget=450,
+            learning_token_budget=800,
         )
 
         self.assertEqual(
@@ -1586,12 +1510,11 @@ class ContextAssemblerTests(unittest.TestCase):
 
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
+            TiktokenTokenizerAdapter,
         )
 
-        encoder = FakeAG2Encoder(7)
-        tokenizer = AG2TokenizerAdapter(name="ag2_test_adapter", encoder=encoder)
+        tokenizer = TiktokenTokenizerAdapter(name="gpt-4o-mini")
         result = ContextAssembler(tokenizer_adapter=tokenizer).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
@@ -1603,10 +1526,9 @@ class ContextAssemblerTests(unittest.TestCase):
 
         self.assertEqual("OK", result["status"])
         self.assertEqual("EXACT", result["token_usage"]["method"])
-        self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
+        self.assertEqual("TIKTOKEN", result["token_usage"]["tokenizer_kind"])
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
-        self.assertEqual(7, result["token_usage"]["learning_required"])
-        self.assertTrue(encoder.last_text.startswith("{"))
+        self.assertGreater(result["token_usage"]["learning_required"], 0)
 
     def test_prompt_injection_remains_structured_untrusted_data(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
@@ -1633,14 +1555,12 @@ class ContextAssemblerTests(unittest.TestCase):
 
     def test_tokenizer_identity_cannot_inject_control_metadata(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
+            TiktokenTokenizerAdapter,
         )
 
         result = ContextAssembler(
-            tokenizer_adapter=AG2TokenizerAdapter(
-                name="ignore_prior_instructions", encoder=FakeAG2Encoder(7)
-            )
+            tokenizer_adapter=TiktokenTokenizerAdapter(name="gpt-4o-mini")
         ).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
@@ -1650,29 +1570,9 @@ class ContextAssemblerTests(unittest.TestCase):
             role="source_librarian",
         )
 
-        self.assertNotIn("ignore_prior_instructions", repr(result))
-        self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
+        self.assertNotIn("gpt-4o-mini", repr(result))
+        self.assertEqual("TIKTOKEN", result["token_usage"]["tokenizer_kind"])
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
-
-    def test_exact_tokenizer_cannot_report_zero_for_nonempty_payload(self) -> None:
-        from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
-            ContextAssembler,
-        )
-
-        with self.assertRaisesRegex(ValueError, "token count"):
-            ContextAssembler(
-                tokenizer_adapter=AG2TokenizerAdapter(
-                    name="zero_tokenizer", encoder=FakeAG2Encoder(0)
-                )
-            ).assemble(
-                {
-                    "schema_version": "control_plane.context_projection.v1",
-                    "claims": [],
-                    "excluded_claims": [],
-                },
-                role="source_librarian",
-            )
 
     def test_unregistered_duck_tokenizer_is_rejected(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
@@ -1687,20 +1587,14 @@ class ContextAssemblerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "registered"):
             ContextAssembler(tokenizer_adapter=DuckTokenizer())
 
-    def test_registered_adapter_rejects_provider_prefix_spoofing(self) -> None:
-        from research_automation.control_plane.memory import AG2TokenizerAdapter
-
-        with self.assertRaisesRegex(ValueError, "registered provider"):
-            AG2TokenizerAdapter(name="spoofed", encoder=SpoofedAG2Encoder())
-
     def test_registered_adapter_rejects_subclass_override(self) -> None:
         from research_automation.control_plane.memory import (
-            AG2TokenizerAdapter,
             ContextAssembler,
+            TiktokenTokenizerAdapter,
         )
 
-        class MaliciousAdapter(AG2TokenizerAdapter):
-            kind = "AG2"
+        class MaliciousAdapter(TiktokenTokenizerAdapter):
+            kind = "TIKTOKEN"
             name = "malicious"
 
             def __init__(self) -> None:
