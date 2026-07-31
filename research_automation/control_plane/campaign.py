@@ -18,6 +18,7 @@ class UsageStatus(str, Enum):
 class InvocationOutcome(str, Enum):
     RESPONSE_RECEIVED = "RESPONSE_RECEIVED"
     SUCCESS = "SUCCESS"
+    EMPTY_OUTPUT = "EMPTY_OUTPUT"
     INVALID_JSON = "INVALID_JSON"
 
 
@@ -27,7 +28,7 @@ class InvalidModelResponseError(ValueError):
 
 @dataclass(frozen=True)
 class ProviderResponse:
-    output_text: str
+    output_text: str | None
     request_model: str
     response_model: str
     raw_usage: Mapping[str, object]
@@ -137,6 +138,13 @@ class ModelInvocation:
                 raw_usage_sha256=_raw_usage_sha256(raw_usage),
             )
         )
+        if response.output_text is None or not response.output_text.strip():
+            self._usage_journal.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EMPTY_OUTPUT,
+            )
+            raise InvalidModelResponseError("provider response is empty")
         try:
             parsed = json.loads(response.output_text)
         except (TypeError, json.JSONDecodeError) as error:

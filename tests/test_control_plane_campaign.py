@@ -26,6 +26,26 @@ class _FakeProvider:
         )
 
 
+class _EmptyProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text="   ",
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
+class _NullOutputProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text=None,
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
 class _RecordingUsageJournal:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
@@ -72,6 +92,54 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(
             journal.events[1][1],
             ("call-001", "attempt-001", InvocationOutcome.INVALID_JSON),
+        )
+
+    def test_empty_output_keeps_unknown_usage_without_inventing_zeroes(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_EmptyProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-002",
+                attempt_id="attempt-001",
+            )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertIsNone(envelope.input_tokens)
+        self.assertIsNone(envelope.output_tokens)
+        self.assertIsNone(envelope.total_tokens)
+        self.assertEqual(
+            journal.events[1][1],
+            ("call-002", "attempt-001", InvocationOutcome.EMPTY_OUTPUT),
+        )
+
+    def test_null_output_is_accounted_as_empty_output(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_NullOutputProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-003",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events[1][1],
+            ("call-003", "attempt-001", InvocationOutcome.EMPTY_OUTPUT),
         )
 
 
