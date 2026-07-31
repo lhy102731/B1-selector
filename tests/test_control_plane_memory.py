@@ -50,6 +50,25 @@ class LearningGateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "aggregate cardinality"):
             ClaimScope.from_mapping(oversized_scope)
 
+    def test_adjacent_time_windows_are_classified_as_a_union(self) -> None:
+        from research_automation.control_plane.memory import ClaimScope, ScopeMatch
+
+        proposal = scope(regime="bull")
+        proposal["time_windows"] = [
+            {"start": "2021-01-01", "end": "2022-12-31"}
+        ]
+        learned = scope(regime="bull")
+        learned["time_windows"] = [
+            {"start": "2021-01-01", "end": "2021-12-31"},
+            {"start": "2022-01-01", "end": "2022-12-31"},
+        ]
+
+        relation = ClaimScope.from_mapping(proposal).classify_proposal(
+            ClaimScope.from_mapping(learned)
+        )
+
+        self.assertEqual(ScopeMatch.EXACT, relation)
+
     def test_universal_coverage_is_bounded_across_many_scope_dimensions(self) -> None:
         from research_automation.control_plane.memory import UniversalRejectionDeriver
 
@@ -94,6 +113,46 @@ class LearningGateTests(unittest.TestCase):
 
         self.assertTrue(derived)
         self.assertLess(perf_counter() - started, 0.25)
+
+    def test_universal_coverage_unions_adjacent_windows_across_claims(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["time_windows"] = [
+            {"start": "2021-01-01", "end": "2023-12-31"}
+        ]
+        windows = (
+            {"start": "2021-01-01", "end": "2021-12-31"},
+            {"start": "2022-01-01", "end": "2022-12-31"},
+            {"start": "2023-01-01", "end": "2023-12-31"},
+        )
+        claims = []
+        for index, window in enumerate(windows, start=1):
+            claim_scope = scope(regime="bull")
+            claim_scope["time_windows"] = [window]
+            claims.append(
+                {
+                    "claim_id": f"claim-window-union-{index}",
+                    "kind": "NEGATIVE",
+                    "execution_identity": f"execution-window-union-{index}",
+                    "semantic_identity": "factor-window-union",
+                    "scope": claim_scope,
+                    "audit_grade": "PASS",
+                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        self.assertTrue(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-window-union",
+            )
+        )
 
     def test_universal_rejection_is_derived_from_strict_scope_coverage(self) -> None:
         from research_automation.control_plane.memory import (

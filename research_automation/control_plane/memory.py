@@ -7,7 +7,7 @@ structured, already committed facts and never confers authority.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 from collections import deque
 from collections.abc import Mapping, Sequence
@@ -174,6 +174,29 @@ class TimeWindow:
         return {"start": self.start.isoformat(), "end": self.end.isoformat()}
 
 
+def _merge_time_windows(windows: Sequence[TimeWindow]) -> tuple[TimeWindow, ...]:
+    merged: list[TimeWindow] = []
+    for window in windows:
+        if not merged or window.start > merged[-1].end + timedelta(days=1):
+            merged.append(window)
+            continue
+        merged[-1] = TimeWindow(
+            start=merged[-1].start,
+            end=max(merged[-1].end, window.end),
+        )
+    return tuple(merged)
+
+
+def _time_windows_cover(
+    required: Sequence[TimeWindow], observed: Sequence[TimeWindow]
+) -> bool:
+    merged_observed = _merge_time_windows(sorted(observed))
+    return all(
+        any(required_window.is_within(observed_window) for observed_window in merged_observed)
+        for required_window in required
+    )
+
+
 def _canonical_values(value: object, field_name: str) -> tuple[str, ...]:
     if isinstance(value, list) and len(value) > _MAX_SCOPE_VALUES_PER_FIELD:
         raise ValueError(f"scope.{field_name} exceeds cardinality limit")
@@ -275,6 +298,7 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
     parsed = [TimeWindow.from_mapping(item) for item in windows]
     if parsed != sorted(set(parsed)):
         raise ValueError("context projection claim scope is invalid")
+    parsed = list(_merge_time_windows(parsed))
     result["time_windows"] = [window.to_mapping() for window in parsed]
     return result
 
@@ -315,6 +339,7 @@ class ClaimScope:
         windows = tuple(TimeWindow.from_mapping(item) for item in raw_windows)
         if windows != tuple(sorted(set(windows))):
             raise ValueError("scope.time_windows must be sorted and unique")
+        windows = _merge_time_windows(windows)
         categorical_values = {
             field_name: _canonical_values(value[field_name], field_name)
             for field_name in _SCOPE_FIELDS - {"time_windows"}
@@ -557,6 +582,25 @@ class UniversalRejectionDeriver:
                 < 3
             ):
                 continue
+            categorically_complete_scopes = [
+                observed_scope
+                for observed_scope in scopes
+                if all(
+                    set(getattr(coverage, field_name)).issubset(
+                        getattr(observed_scope, field_name)
+                    )
+                    for field_name in categorical_fields
+                )
+            ]
+            if _time_windows_cover(
+                coverage.time_windows,
+                [
+                    window
+                    for observed_scope in categorically_complete_scopes
+                    for window in observed_scope.time_windows
+                ],
+            ):
+                return True
             if all(
                 any(
                     set(getattr(coverage, partition_field)).issubset(
