@@ -1146,6 +1146,7 @@ class ContextAssembler:
             if learning_required > learning_token_budget
             else "OK"
         )
+        converged = False
         for _ in range(16):
             token_usage = {
                 "method": method,
@@ -1172,9 +1173,12 @@ class ContextAssembler:
                 else "OK"
             )
             if candidate_required == control_required and candidate_status == status:
+                converged = True
                 break
             control_required = candidate_required
             status = candidate_status
+        if not converged:
+            raise ValueError("control token accounting did not converge")
         token_usage = {
             "method": method,
             "tokenizer_kind": self._tokenizer_kind,

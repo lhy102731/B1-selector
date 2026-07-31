@@ -31,6 +31,14 @@ class QuarterByteAG2Encoder:
         return list(range(token_count))
 
 
+class OscillatingAG2Encoder:
+    __module__ = "ag2.testing"
+
+    def encode(self, text: str) -> list[int]:
+        token_count = 100 if '"control_required":101' in text else 101
+        return list(range(token_count))
+
+
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1442,6 +1450,27 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
         self.assertIsNone(result["control_metadata"])
         self.assertGreater(result["token_usage"]["control_required"], 150)
+
+    def test_nonconverging_control_budget_fails_closed(self) -> None:
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
+
+        with self.assertRaisesRegex(ValueError, "converge"):
+            ContextAssembler(
+                tokenizer_adapter=AG2TokenizerAdapter(
+                    name="oscillating_encoder", encoder=OscillatingAG2Encoder()
+                )
+            ).assemble(
+                {
+                    "schema_version": "control_plane.context_projection.v1",
+                    "claims": [],
+                    "excluded_claims": [],
+                },
+                role="source_librarian",
+                control_token_budget=100,
+            )
 
     def test_large_ledger_compresses_whole_claims_by_scope_relevance(self) -> None:
         from research_automation.control_plane.memory import (
