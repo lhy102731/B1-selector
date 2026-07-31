@@ -904,6 +904,7 @@ class ContextAssembler:
         learning_token_budget: int = 1500,
         control_token_budget: int = 500,
         untrusted_sources: Sequence[Mapping[str, object]] | None = None,
+        target_scope: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         if not isinstance(projection, Mapping) or set(projection) != {
             "schema_version",
@@ -928,6 +929,36 @@ class ContextAssembler:
         if not isinstance(claims, list) or not isinstance(excluded_claims, list):
             raise ValueError("context projection collections are invalid")
         priority = self._ROLE_PRIORITIES[role]
+        target_scope_mapping = (
+            None
+            if target_scope is None
+            else _opaque_scope(ClaimScope.from_mapping(target_scope))
+        )
+
+        def scope_relevance(claim: Mapping[str, object]) -> int:
+            if target_scope_mapping is None:
+                return 0
+            claim_scope = claim.get("scope")
+            if not isinstance(claim_scope, Mapping):
+                raise ValueError("context projection claim scope is invalid")
+            relevance = 0
+            for field_name in _SCOPE_FIELDS - {"time_windows"}:
+                claim_values = claim_scope.get(field_name)
+                target_values = target_scope_mapping[field_name]
+                if not isinstance(claim_values, list):
+                    raise ValueError("context projection claim scope is invalid")
+                relevance += len(set(claim_values) & set(target_values))
+            claim_windows = claim_scope.get("time_windows")
+            if not isinstance(claim_windows, list):
+                raise ValueError("context projection claim scope is invalid")
+            target_windows = target_scope_mapping["time_windows"]
+            if any(
+                TimeWindow.from_mapping(left).overlaps(TimeWindow.from_mapping(right))
+                for left in claim_windows
+                for right in target_windows
+            ):
+                relevance += 1
+            return relevance
         indexed_claims: list[tuple[int, Mapping[str, object]]] = []
         for index, claim in enumerate(claims):
             if (
@@ -965,6 +996,10 @@ class ContextAssembler:
                 indexed_claims,
                 key=lambda item: (
                     priority.get(str(item[1]["kind"]), 99),
+                    -scope_relevance(item[1]),
+                    -_EVIDENCE_GRADE_RANK.get(
+                        str(item[1].get("evidence_grade")), -1
+                    ),
                     item[0],
                 ),
             )
@@ -1003,16 +1038,6 @@ class ContextAssembler:
                     "authority_effect": "NONE",
                 }
             )
-        learning_memory = {
-            "schema_version": "control_plane.learning_memory.v1",
-            "claims": ordered_claims,
-            "untrusted_data": untrusted_data,
-        }
-        control_metadata = {
-            "projection_schema_version": projection["schema_version"],
-            "excluded_claims": validated_excluded_claims,
-        }
-
         def count_tokens(value: object) -> int:
             canonical = json.dumps(
                 value,
@@ -1027,6 +1052,31 @@ class ContextAssembler:
             if type(token_count) is not int or token_count < 1:
                 raise ValueError("tokenizer adapter returned an invalid token count")
             return token_count
+
+        selected_claims: list[dict[str, object]] = []
+        omitted_claim_ids: list[str] = []
+        learning_memory = {
+            "schema_version": "control_plane.learning_memory.v1",
+            "claims": selected_claims,
+            "untrusted_data": untrusted_data,
+        }
+        if count_tokens(learning_memory) <= learning_token_budget:
+            for claim in ordered_claims:
+                candidate = {
+                    **learning_memory,
+                    "claims": [*selected_claims, claim],
+                }
+                if count_tokens(candidate) <= learning_token_budget:
+                    selected_claims.append(claim)
+                else:
+                    omitted_claim_ids.append(str(claim["claim_id"]))
+        else:
+            omitted_claim_ids.extend(str(claim["claim_id"]) for claim in ordered_claims)
+        control_metadata = {
+            "projection_schema_version": projection["schema_version"],
+            "excluded_claims": validated_excluded_claims,
+            "omitted_claim_ids": omitted_claim_ids,
+        }
 
         learning_required = count_tokens(learning_memory)
         method = "ESTIMATED" if self._tokenizer_adapter is None else "EXACT"

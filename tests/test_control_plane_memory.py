@@ -23,6 +23,14 @@ class ByteAG2Encoder:
         return list(text.encode("utf-8"))
 
 
+class QuarterByteAG2Encoder:
+    __module__ = "ag2.testing"
+
+    def encode(self, text: str) -> list[int]:
+        token_count = (len(text.encode("utf-8")) + 3) // 4
+        return list(range(token_count))
+
+
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1410,6 +1418,50 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
         self.assertIsNone(result["control_metadata"])
         self.assertGreater(result["token_usage"]["control_required"], 150)
+
+    def test_large_ledger_compresses_whole_claims_by_scope_relevance(self) -> None:
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        claims = []
+        for claim_id, regime in (("claim-bear", "bear"), ("claim-bull", "bull")):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime=regime),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-{claim_id}"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            )
+        projection = ContextProjection().project(claims)
+        result = ContextAssembler(
+            tokenizer_adapter=AG2TokenizerAdapter(
+                name="quarter_byte_encoder", encoder=QuarterByteAG2Encoder()
+            )
+        ).assemble(
+            projection,
+            role="factor_engineer",
+            target_scope=scope(regime="bull"),
+            learning_token_budget=300,
+        )
+
+        self.assertEqual("OK", result["status"])
+        self.assertEqual(
+            projection["claims"][1]["claim_id"],
+            result["learning_memory"]["claims"][0]["claim_id"],
+        )
+        self.assertEqual(1, len(result["control_metadata"]["omitted_claim_ids"]))
 
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
         from research_automation.control_plane.memory import (
