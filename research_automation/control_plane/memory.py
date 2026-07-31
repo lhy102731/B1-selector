@@ -207,12 +207,53 @@ class LearningGate:
         proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
         if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
             raise ValueError("claims must be a sequence")
+        claim_rows = list(claims)
+        parents_by_claim: dict[str, tuple[str, ...]] = {}
+        invalidated_claim_ids: set[str] = set()
+        for raw_claim in claim_rows:
+            if not isinstance(raw_claim, Mapping):
+                raise ValueError("claim must be a mapping")
+            claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+            if claim_id in parents_by_claim:
+                raise ValueError("claim.claim_id must be unique")
+            parent_ids = raw_claim.get("parent_claim_ids", [])
+            if (
+                not isinstance(parent_ids, list)
+                or any(
+                    not isinstance(item, str) or not item or item != item.strip()
+                    for item in parent_ids
+                )
+                or parent_ids != sorted(set(parent_ids))
+            ):
+                raise ValueError(
+                    "claim.parent_claim_ids must be a sorted unique string array"
+                )
+            invalidation_codes = raw_claim.get("invalidation_codes")
+            if not isinstance(invalidation_codes, list) or any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in invalidation_codes
+            ):
+                raise ValueError("claim.invalidation_codes must be a string array")
+            parents_by_claim[claim_id] = tuple(parent_ids)
+            if invalidation_codes:
+                invalidated_claim_ids.add(claim_id)
+        parent_invalidated_ids: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            invalid_lineage = invalidated_claim_ids | parent_invalidated_ids
+            for claim_id, parent_ids in parents_by_claim.items():
+                if claim_id not in invalid_lineage and any(
+                    parent_id in invalid_lineage for parent_id in parent_ids
+                ):
+                    parent_invalidated_ids.add(claim_id)
+                    changed = True
         matches: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
         scoped_blocks: list[dict[str, object]] = []
         warning_codes: set[str] = set()
-        for raw_claim in claims:
+        for raw_claim in claim_rows:
             if not isinstance(raw_claim, Mapping):
                 raise ValueError("claim must be a mapping")
             universal_rejection = raw_claim.get("universal_factor_rejection")
@@ -255,6 +296,8 @@ class LearningGate:
                 exclusion_codes.append("TAINTED_CLAIM")
             if invalidation_codes:
                 exclusion_codes.append("INVALIDATED_CLAIM")
+            if claim_id in parent_invalidated_ids:
+                exclusion_codes.append("PARENT_INVALIDATED")
             if exclusion_codes:
                 excluded_claims.append(
                     {"claim_id": claim_id, "reason_codes": exclusion_codes}
