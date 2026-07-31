@@ -234,6 +234,91 @@ def _nonempty_string(value: object, field_name: str) -> str:
     return value
 
 
+def _validate_claim_lineage(
+    claims: Sequence[Mapping[str, object]],
+) -> tuple[list[Mapping[str, object]], set[str]]:
+    if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
+        raise ValueError("claims must be a sequence")
+    claim_rows = list(claims)
+    parents_by_claim: dict[str, tuple[str, ...]] = {}
+    invalidated_claim_ids: set[str] = set()
+    for raw_claim in claim_rows:
+        if not isinstance(raw_claim, Mapping):
+            raise ValueError("claim must be a mapping")
+        claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+        if claim_id in parents_by_claim:
+            raise ValueError("claim.claim_id must be unique")
+        parent_ids = raw_claim.get("parent_claim_ids", [])
+        if (
+            not isinstance(parent_ids, list)
+            or any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in parent_ids
+            )
+            or parent_ids != sorted(set(parent_ids))
+        ):
+            raise ValueError(
+                "claim.parent_claim_ids must be a sorted unique string array"
+            )
+        invalidation_codes = raw_claim.get("invalidation_codes")
+        if not isinstance(invalidation_codes, list) or any(
+            not isinstance(item, str) or not item or item != item.strip()
+            for item in invalidation_codes
+        ):
+            raise ValueError("claim.invalidation_codes must be a string array")
+        audit_grade = raw_claim.get("audit_grade")
+        if not isinstance(audit_grade, str) or not audit_grade:
+            raise ValueError("claim.audit_grade must be a non-empty string")
+        taint_refs = raw_claim.get("taint_refs")
+        if not isinstance(taint_refs, list) or any(
+            not isinstance(item, str) or not item or item != item.strip()
+            for item in taint_refs
+        ):
+            raise ValueError("claim.taint_refs must be a string array")
+        parents_by_claim[claim_id] = tuple(parent_ids)
+        if audit_grade != "PASS" or taint_refs or invalidation_codes:
+            invalidated_claim_ids.add(claim_id)
+    known_claim_ids = set(parents_by_claim)
+    for claim_id, parent_ids in parents_by_claim.items():
+        if claim_id in parent_ids:
+            raise ValueError("claim lineage cannot contain a self-parent edge")
+        if not set(parent_ids).issubset(known_claim_ids):
+            raise ValueError("claim lineage references an unknown parent")
+    children_by_parent: dict[str, list[str]] = {
+        claim_id: [] for claim_id in known_claim_ids
+    }
+    remaining_parent_count = {
+        claim_id: len(parent_ids)
+        for claim_id, parent_ids in parents_by_claim.items()
+    }
+    for claim_id, parent_ids in parents_by_claim.items():
+        for parent_id in parent_ids:
+            children_by_parent[parent_id].append(claim_id)
+    ready = deque(
+        claim_id
+        for claim_id, parent_count in remaining_parent_count.items()
+        if parent_count == 0
+    )
+    parent_invalidated_ids: set[str] = set()
+    visited_count = 0
+    while ready:
+        parent_id = ready.popleft()
+        visited_count += 1
+        parent_is_invalid = (
+            parent_id in invalidated_claim_ids
+            or parent_id in parent_invalidated_ids
+        )
+        for child_id in children_by_parent[parent_id]:
+            if parent_is_invalid:
+                parent_invalidated_ids.add(child_id)
+            remaining_parent_count[child_id] -= 1
+            if remaining_parent_count[child_id] == 0:
+                ready.append(child_id)
+    if visited_count != len(known_claim_ids):
+        raise ValueError("claim lineage cannot contain a cycle")
+    return claim_rows, parent_invalidated_ids
+
+
 class LearningGate:
     """Mechanically classify proposal scope against safe Learning claims."""
 
@@ -251,85 +336,7 @@ class LearningGate:
             proposal.get("semantic_identity"), "proposal.semantic_identity"
         )
         proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
-        if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
-            raise ValueError("claims must be a sequence")
-        claim_rows = list(claims)
-        parents_by_claim: dict[str, tuple[str, ...]] = {}
-        invalidated_claim_ids: set[str] = set()
-        for raw_claim in claim_rows:
-            if not isinstance(raw_claim, Mapping):
-                raise ValueError("claim must be a mapping")
-            claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
-            if claim_id in parents_by_claim:
-                raise ValueError("claim.claim_id must be unique")
-            parent_ids = raw_claim.get("parent_claim_ids", [])
-            if (
-                not isinstance(parent_ids, list)
-                or any(
-                    not isinstance(item, str) or not item or item != item.strip()
-                    for item in parent_ids
-                )
-                or parent_ids != sorted(set(parent_ids))
-            ):
-                raise ValueError(
-                    "claim.parent_claim_ids must be a sorted unique string array"
-                )
-            invalidation_codes = raw_claim.get("invalidation_codes")
-            if not isinstance(invalidation_codes, list) or any(
-                not isinstance(item, str) or not item or item != item.strip()
-                for item in invalidation_codes
-            ):
-                raise ValueError("claim.invalidation_codes must be a string array")
-            audit_grade = raw_claim.get("audit_grade")
-            if not isinstance(audit_grade, str) or not audit_grade:
-                raise ValueError("claim.audit_grade must be a non-empty string")
-            taint_refs = raw_claim.get("taint_refs")
-            if not isinstance(taint_refs, list) or any(
-                not isinstance(item, str) or not item or item != item.strip()
-                for item in taint_refs
-            ):
-                raise ValueError("claim.taint_refs must be a string array")
-            parents_by_claim[claim_id] = tuple(parent_ids)
-            if audit_grade != "PASS" or taint_refs or invalidation_codes:
-                invalidated_claim_ids.add(claim_id)
-        known_claim_ids = set(parents_by_claim)
-        for claim_id, parent_ids in parents_by_claim.items():
-            if claim_id in parent_ids:
-                raise ValueError("claim lineage cannot contain a self-parent edge")
-            if not set(parent_ids).issubset(known_claim_ids):
-                raise ValueError("claim lineage references an unknown parent")
-        children_by_parent: dict[str, list[str]] = {
-            claim_id: [] for claim_id in known_claim_ids
-        }
-        remaining_parent_count = {
-            claim_id: len(parent_ids)
-            for claim_id, parent_ids in parents_by_claim.items()
-        }
-        for claim_id, parent_ids in parents_by_claim.items():
-            for parent_id in parent_ids:
-                children_by_parent[parent_id].append(claim_id)
-        ready = deque(
-            claim_id
-            for claim_id, parent_count in remaining_parent_count.items()
-            if parent_count == 0
-        )
-        parent_invalidated_ids: set[str] = set()
-        visited_count = 0
-        while ready:
-            parent_id = ready.popleft()
-            visited_count += 1
-            parent_is_invalid = (
-                parent_id in invalidated_claim_ids
-                or parent_id in parent_invalidated_ids
-            )
-            for child_id in children_by_parent[parent_id]:
-                if parent_is_invalid:
-                    parent_invalidated_ids.add(child_id)
-                remaining_parent_count[child_id] -= 1
-                if remaining_parent_count[child_id] == 0:
-                    ready.append(child_id)
-        if visited_count != len(known_claim_ids):
-            raise ValueError("claim lineage cannot contain a cycle")
+        claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
         matches: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
@@ -621,18 +628,11 @@ class ContextProjection:
     def project(
         self, claims: Sequence[Mapping[str, object]]
     ) -> dict[str, object]:
-        if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
-            raise ValueError("projection claims must be a sequence")
+        claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
         projected_claims: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
-        seen_claim_ids: set[str] = set()
-        for raw_claim in claims:
-            if not isinstance(raw_claim, Mapping):
-                raise ValueError("projection claim must be a mapping")
+        for raw_claim in claim_rows:
             claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
-            if claim_id in seen_claim_ids:
-                raise ValueError("projection claim_id must be unique")
-            seen_claim_ids.add(claim_id)
             kind = _nonempty_string(raw_claim.get("kind"), "claim.kind")
             if kind not in _LEARNING_CLAIM_KINDS:
                 raise ValueError("projection claim kind is invalid")
@@ -664,6 +664,8 @@ class ContextProjection:
                 exclusion_codes.append("TAINTED_CLAIM")
             if invalidation_codes:
                 exclusion_codes.append("INVALIDATED_CLAIM")
+            if claim_id in parent_invalidated_ids:
+                exclusion_codes.append("PARENT_INVALIDATED")
             if exclusion_codes:
                 excluded_claims.append(
                     {"claim_id": claim_id, "reason_codes": exclusion_codes}

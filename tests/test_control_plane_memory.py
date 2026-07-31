@@ -1107,6 +1107,41 @@ class ContextProjectionTests(unittest.TestCase):
         )
         self.assertNotIn("unsafe conclusion", repr(projected))
 
+    def test_projection_propagates_parent_invalidation(self) -> None:
+        from research_automation.control_plane.memory import ContextProjection
+
+        common = {
+            "kind": "NEGATIVE",
+            "conclusion": "do not hard gate this factor",
+            "scope": scope(regime="bull"),
+            "audit_grade": "PASS",
+            "evidence_grade": "EXPLORATORY",
+            "evidence_refs": ["evidence-lineage"],
+            "taint_refs": [],
+            "reopen_predicates": [],
+            "directional_status": "research_only",
+        }
+        projected = ContextProjection().project(
+            [
+                {
+                    **common,
+                    "claim_id": "projection-parent",
+                    "invalidation_codes": ["REVOKED_EVIDENCE"],
+                    "parent_claim_ids": [],
+                },
+                {
+                    **common,
+                    "claim_id": "projection-child",
+                    "invalidation_codes": [],
+                    "parent_claim_ids": ["projection-parent"],
+                },
+            ]
+        )
+
+        self.assertEqual([], projected["claims"])
+        excluded = {item["claim_id"]: item for item in projected["excluded_claims"]}
+        self.assertIn("PARENT_INVALIDATED", excluded["projection-child"]["reason_codes"])
+
 
 if __name__ == "__main__":
     unittest.main()
