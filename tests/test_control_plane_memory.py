@@ -417,6 +417,35 @@ class LearningReopenTests(unittest.TestCase):
         self.assertTrue(decision["qualified"])
         self.assertEqual(["NEW_MECHANISM"], decision["reason_codes"])
 
+    def test_declared_scope_delta_predicates_reopen_claim(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        cases = (
+            ("usage_modes", ["hard_gate"], "NEW_USAGE_MODE"),
+            ("market_regimes", ["bear"], "NEW_MARKET_REGIME"),
+            (
+                "time_windows",
+                [{"start": "2024-01-01", "end": "2024-12-31"}],
+                "NEW_TIME_WINDOW",
+            ),
+            ("universes", ["csi_300"], "NEW_UNIVERSE"),
+            ("liquidity_buckets", ["illiquid"], "NEW_LIQUIDITY_BUCKET"),
+        )
+        for field_name, value, predicate in cases:
+            with self.subTest(predicate=predicate):
+                proposal_scope = scope(regime="bull")
+                proposal_scope[field_name] = value
+                decision = ReopenPredicateEvaluator().evaluate(
+                    {"scope": proposal_scope},
+                    {
+                        "claim_id": f"claim-{predicate.lower()}",
+                        "scope": scope(regime="bull"),
+                        "reopen_predicates": [predicate],
+                    },
+                )
+                self.assertTrue(decision["qualified"])
+                self.assertEqual([predicate], decision["reason_codes"])
+
 
 if __name__ == "__main__":
     unittest.main()

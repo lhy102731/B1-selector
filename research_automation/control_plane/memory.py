@@ -416,6 +416,30 @@ class ReopenPredicateEvaluator:
             proposal_scope.mechanisms
         ).issubset(learned_scope.mechanisms):
             reasons.append("NEW_MECHANISM")
+        categorical_reopen_fields = (
+            ("NEW_USAGE_MODE", proposal_scope.usage_modes, learned_scope.usage_modes),
+            (
+                "NEW_MARKET_REGIME",
+                proposal_scope.market_regimes,
+                learned_scope.market_regimes,
+            ),
+            ("NEW_UNIVERSE", proposal_scope.universes, learned_scope.universes),
+            (
+                "NEW_LIQUIDITY_BUCKET",
+                proposal_scope.liquidity_buckets,
+                learned_scope.liquidity_buckets,
+            ),
+        )
+        for predicate, proposed_values, learned_values in categorical_reopen_fields:
+            if predicate in predicates and not set(proposed_values).issubset(
+                learned_values
+            ):
+                reasons.append(predicate)
+        if "NEW_TIME_WINDOW" in predicates and any(
+            not any(window.is_within(prior) for prior in learned_scope.time_windows)
+            for window in proposal_scope.time_windows
+        ):
+            reasons.append("NEW_TIME_WINDOW")
         return {
             "schema_version": "control_plane.learning_reopen_decision.v1",
             "claim_id": claim_id,
