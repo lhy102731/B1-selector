@@ -252,6 +252,41 @@ class LearningGateTests(unittest.TestCase):
         self.assertTrue(decision["universal_factor_rejection"])
         self.assertEqual("HARD_BLOCK", decision["enforcement"])
 
+    def test_out_of_scope_negative_claims_cannot_pad_universal_evidence(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        scopes = []
+        fully_covering = scope(regime="bull")
+        fully_covering["market_regimes"] = ["bear", "bull", "sideways"]
+        scopes.append(fully_covering)
+        scopes.extend((scope(regime="crisis"), scope(regime="panic")))
+        claims = [
+            {
+                "claim_id": f"claim-padding-{index}",
+                "kind": "NEGATIVE",
+                "execution_identity": f"execution-padding-{index}",
+                "semantic_identity": "factor-padding",
+                "scope": claim_scope,
+                "audit_grade": "PASS",
+                "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": [],
+                "universal_factor_rejection": False,
+            }
+            for index, claim_scope in enumerate(scopes, start=1)
+        ]
+
+        self.assertFalse(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-padding",
+            )
+        )
+
     def test_universal_rejection_blocks_only_the_covered_intersection(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
