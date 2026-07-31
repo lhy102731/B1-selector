@@ -206,6 +206,36 @@ class LearningGateTests(unittest.TestCase):
         self.assertTrue(decision["universal_factor_rejection"])
         self.assertEqual("HARD_BLOCK", decision["enforcement"])
 
+    def test_unspecified_evidence_grade_never_derives_universal_rejection(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        claims = [
+            {
+                "claim_id": f"claim-unspecified-{index}",
+                "kind": "NEGATIVE",
+                "execution_identity": f"execution-unspecified-{index}",
+                "semantic_identity": "factor-unspecified",
+                "scope": scope(regime=regime),
+                "audit_grade": "PASS",
+                "evidence_grade": "UNSPECIFIED",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": [],
+                "universal_factor_rejection": False,
+            }
+            for index, regime in enumerate(("bear", "bull", "sideways"), start=1)
+        ]
+
+        self.assertFalse(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-unspecified",
+            )
+        )
+
     def test_unrelated_claims_do_not_disable_universal_rejection(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
@@ -2455,7 +2485,7 @@ class LearningContextRouterTests(unittest.TestCase):
         self.assertEqual("NEGATIVE", claims[0]["kind"])
         self.assertEqual("AVOID", claims[0]["conclusion"])
         self.assertEqual("avoid", claims[0]["directional_status"])
-        self.assertEqual("INDEPENDENTLY_REPRODUCED", claims[0]["evidence_grade"])
+        self.assertEqual("UNSPECIFIED", claims[0]["evidence_grade"])
         self.assertEqual(scope(regime="bull"), claims[0]["scope"])
 
     def test_prompt_injection_is_separated_from_system_and_tool_authority(self) -> None:

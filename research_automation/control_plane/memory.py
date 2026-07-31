@@ -34,6 +34,7 @@ _MAX_SCOPE_VALUES_TOTAL = 256
 _MAX_SCOPE_TIME_WINDOWS = 64
 
 _EVIDENCE_GRADE_RANK = {
+    "UNSPECIFIED": -1,
     "EXPLORATORY": 0,
     "STRICT_FORWARD_VALIDATED": 1,
     "INDEPENDENTLY_REPRODUCED": 2,
@@ -965,7 +966,7 @@ class CommittedLearningLedgerReader:
                     "conclusion": guidance.get("conclusion"),
                     "scope": normalized_scope,
                     "audit_grade": packet.get("audit_grade"),
-                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "evidence_grade": "UNSPECIFIED",
                     "evidence_refs": evidence_ids,
                     "taint_refs": taint_refs,
                     "invalidation_codes": invalidation_codes,
