@@ -45,6 +45,73 @@ class LearningGateTests(unittest.TestCase):
         self.assertEqual("HARD_BLOCK", decision["enforcement"])
         self.assertEqual(["claim-exact"], decision["hard_block_claim_ids"])
 
+    def test_exact_execution_identity_does_not_block_disjoint_scope(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-shared",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bear"),
+            },
+            [
+                {
+                    "claim_id": "claim-disjoint-exact",
+                    "kind": "FAILED_USAGE",
+                    "execution_identity": "execution-shared",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            ],
+        )
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+        self.assertEqual([], decision["hard_block_claim_ids"])
+        self.assertEqual("DISJOINT", decision["matches"][0]["scope_match"])
+
+    def test_exact_partial_identity_blocks_only_intersection(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        proposal_scope = scope(regime="bear")
+        proposal_scope["market_regimes"] = ["bear", "bull"]
+        learned_scope = scope(regime="bull")
+        learned_scope["market_regimes"] = ["bull", "sideways"]
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-partial",
+                "semantic_identity": "yellow-line",
+                "scope": proposal_scope,
+            },
+            [
+                {
+                    "claim_id": "claim-partial-exact",
+                    "kind": "PARTIAL",
+                    "execution_identity": "execution-partial",
+                    "semantic_identity": "yellow-line",
+                    "scope": learned_scope,
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            ],
+        )
+
+        self.assertEqual("SCOPED_BLOCK", decision["enforcement"])
+        self.assertEqual([], decision["hard_block_claim_ids"])
+        self.assertEqual(
+            ["bull"],
+            decision["scoped_block_claims"][0]["applicable_scope"][
+                "market_regimes"
+            ],
+        )
+
     def test_semantic_similarity_warns_only(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

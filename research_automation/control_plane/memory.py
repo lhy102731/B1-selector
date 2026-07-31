@@ -204,6 +204,7 @@ class LearningGate:
         matches: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
+        scoped_blocks: list[dict[str, object]] = []
         warning_codes: set[str] = set()
         for raw_claim in claims:
             if not isinstance(raw_claim, Mapping):
@@ -218,6 +219,15 @@ class LearningGate:
                     "universal_factor_rejection is derived, not manually supplied"
                 )
             claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
+            kind = raw_claim.get("kind")
+            if kind not in {
+                "POSITIVE",
+                "NEGATIVE",
+                "PARTIAL",
+                "ANTI_FACTOR",
+                "FAILED_USAGE",
+            }:
+                raise ValueError("claim.kind is invalid")
             audit_grade = raw_claim.get("audit_grade")
             taint_refs = raw_claim.get("taint_refs")
             invalidation_codes = raw_claim.get("invalidation_codes")
@@ -248,23 +258,42 @@ class LearningGate:
             relation = proposal_scope.classify_proposal(learned_scope)
             exact_execution = raw_claim.get("execution_identity") == proposal_execution
             semantic_match = raw_claim.get("semantic_identity") == proposal_semantic
-            if exact_execution:
-                hard_blocks.append(claim_id)
+            applicable_scope = proposal_scope.intersection(learned_scope)
+            if exact_execution and relation is not ScopeMatch.DISJOINT:
+                if kind == "PARTIAL":
+                    scoped_blocks.append(
+                        {
+                            "claim_id": claim_id,
+                            "applicable_scope": applicable_scope,
+                        }
+                    )
+                else:
+                    hard_blocks.append(claim_id)
             if semantic_match and not exact_execution:
                 warning_codes.add("SEMANTIC_SIMILARITY_ONLY")
             matches.append(
                 {
                     "claim_id": claim_id,
+                    "kind": kind,
                     "scope_match": relation.value,
-                    "applicable_scope": proposal_scope.intersection(learned_scope),
+                    "applicable_scope": applicable_scope,
                     "exact_execution_identity": exact_execution,
                     "semantic_similarity": semantic_match,
                 }
             )
         return {
             "schema_version": "control_plane.learning_gate_decision.v1",
-            "enforcement": "HARD_BLOCK" if hard_blocks else "ALLOW",
+            "enforcement": (
+                "HARD_BLOCK"
+                if hard_blocks
+                else "SCOPED_BLOCK"
+                if scoped_blocks
+                else "ALLOW"
+            ),
             "hard_block_claim_ids": sorted(hard_blocks),
+            "scoped_block_claims": sorted(
+                scoped_blocks, key=lambda item: str(item["claim_id"])
+            ),
             "warning_codes": sorted(warning_codes),
             "matches": sorted(matches, key=lambda item: str(item["claim_id"])),
             "excluded_claims": sorted(
