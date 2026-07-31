@@ -356,6 +356,81 @@ class LearningGateTests(unittest.TestCase):
             )
         )
 
+    def test_disjoint_duplicate_execution_does_not_suppress_valid_coverage(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        claims = [
+            {
+                "claim_id": f"claim-contributor-{index}",
+                "kind": "NEGATIVE",
+                "execution_identity": f"execution-contributor-{index}",
+                "semantic_identity": "factor-contributor",
+                "scope": scope(regime=regime),
+                "audit_grade": "PASS",
+                "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": [],
+                "universal_factor_rejection": False,
+            }
+            for index, regime in enumerate(("bear", "bull", "sideways"), start=1)
+        ]
+        claims.append(
+            {
+                **claims[0],
+                "claim_id": "claim-disjoint-duplicate-execution",
+                "scope": scope(regime="crisis"),
+            }
+        )
+
+        self.assertTrue(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-contributor",
+            )
+        )
+
+    def test_redundant_intersections_cannot_manufacture_three_contributors(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        claim_scopes = []
+        for extra_regime in ("crisis", "panic", "recovery"):
+            full_scope = dict(required_scope)
+            full_scope["market_regimes"] = sorted(
+                [*required_scope["market_regimes"], extra_regime]
+            )
+            claim_scopes.append(full_scope)
+        claim_scopes.extend((scope(regime="bear"), scope(regime="bull")))
+        claims = [
+            {
+                "claim_id": f"claim-redundant-{index}",
+                "kind": "NEGATIVE",
+                "execution_identity": f"execution-redundant-{index}",
+                "semantic_identity": "factor-redundant",
+                "scope": claim_scope,
+                "audit_grade": "PASS",
+                "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": [],
+                "universal_factor_rejection": False,
+            }
+            for index, claim_scope in enumerate(claim_scopes, start=1)
+        ]
+
+        self.assertFalse(
+            UniversalRejectionDeriver().derive(
+                claims,
+                required_scope=required_scope,
+                semantic_identity="factor-redundant",
+            )
+        )
+
     def test_universal_rejection_blocks_only_the_covered_intersection(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

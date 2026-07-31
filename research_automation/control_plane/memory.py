@@ -585,82 +585,98 @@ class UniversalRejectionDeriver:
             )
         categorical_fields = tuple(sorted(_SCOPE_FIELDS - {"time_windows"}))
         for rows in scopes_by_semantic.values():
-            executions = [execution for execution, _scope in rows]
-            scopes = [scope for _execution, scope in rows]
-            relevant_scope_signatures = {
-                json.dumps(intersection, sort_keys=True)
-                for scope in scopes
-                if (intersection := scope.intersection(coverage)) is not None
-            }
-            if (
-                len(rows) < 3
-                or len(executions) != len(set(executions))
-                or len(relevant_scope_signatures) < 3
-            ):
+            contributors_by_intersection: dict[
+                str, tuple[str, ClaimScope]
+            ] = {}
+            for execution, observed_scope in rows:
+                intersection = observed_scope.intersection(coverage)
+                if intersection is None:
+                    continue
+                signature = json.dumps(intersection, sort_keys=True)
+                contributors_by_intersection.setdefault(
+                    signature,
+                    (execution, ClaimScope.from_mapping(intersection)),
+                )
+            contributors = list(contributors_by_intersection.values())
+            executions = [execution for execution, _scope in contributors]
+            scopes = [scope for _execution, scope in contributors]
+            if len(scopes) < 3 or len(executions) != len(set(executions)):
                 continue
-            categorically_complete_scopes = [
-                observed_scope
-                for observed_scope in scopes
-                if all(
-                    set(getattr(coverage, field_name)).issubset(
-                        getattr(observed_scope, field_name)
-                    )
-                    for field_name in categorical_fields
-                )
-                and any(
-                    required_window.overlaps(observed_window)
-                    for required_window in coverage.time_windows
-                    for observed_window in observed_scope.time_windows
-                )
-            ]
-            if len(categorically_complete_scopes) >= 3 and _time_windows_cover(
-                coverage.time_windows,
-                [
-                    window
-                    for observed_scope in categorically_complete_scopes
-                    for window in observed_scope.time_windows
-                ],
-            ):
-                return True
 
-            def partition_covers(
-                required_window: TimeWindow, partition_field: str
-            ) -> bool:
-                required_partition = set(getattr(coverage, partition_field))
-                contributors = [
+            def scopes_cover(candidate_scopes: Sequence[ClaimScope]) -> bool:
+                categorically_complete_scopes = [
                     observed_scope
-                    for observed_scope in scopes
-                    if any(
-                        required_window.is_within(observed_window)
+                    for observed_scope in candidate_scopes
+                    if all(
+                        set(getattr(coverage, field_name)).issubset(
+                            getattr(observed_scope, field_name)
+                        )
+                        for field_name in categorical_fields
+                    )
+                    and any(
+                        required_window.overlaps(observed_window)
+                        for required_window in coverage.time_windows
                         for observed_window in observed_scope.time_windows
                     )
-                    and not required_partition.isdisjoint(
-                        getattr(observed_scope, partition_field)
-                    )
-                    and all(
-                        set(getattr(coverage, other_field)).issubset(
-                            getattr(observed_scope, other_field)
-                        )
-                        for other_field in categorical_fields
-                        if other_field != partition_field
-                    )
                 ]
-                return len(contributors) >= 3 and required_partition.issubset(
-                    set().union(
-                        *(
-                            set(getattr(observed_scope, partition_field))
-                            for observed_scope in contributors
+                if _time_windows_cover(
+                    coverage.time_windows,
+                    [
+                        window
+                        for observed_scope in categorically_complete_scopes
+                        for window in observed_scope.time_windows
+                    ],
+                ):
+                    return True
+
+                def partition_covers(
+                    required_window: TimeWindow, partition_field: str
+                ) -> bool:
+                    required_partition = set(getattr(coverage, partition_field))
+                    partition_contributors = [
+                        observed_scope
+                        for observed_scope in candidate_scopes
+                        if any(
+                            required_window.is_within(observed_window)
+                            for observed_window in observed_scope.time_windows
+                        )
+                        and not required_partition.isdisjoint(
+                            getattr(observed_scope, partition_field)
+                        )
+                        and all(
+                            set(getattr(coverage, other_field)).issubset(
+                                getattr(observed_scope, other_field)
+                            )
+                            for other_field in categorical_fields
+                            if other_field != partition_field
+                        )
+                    ]
+                    return required_partition.issubset(
+                        set().union(
+                            *(
+                                set(getattr(observed_scope, partition_field))
+                                for observed_scope in partition_contributors
+                            )
                         )
                     )
+                return all(
+                    any(
+                        partition_covers(required_window, partition_field)
+                        for partition_field in categorical_fields
+                    )
+                    for required_window in coverage.time_windows
                 )
 
-            if all(
-                any(
-                    partition_covers(required_window, partition_field)
-                    for partition_field in categorical_fields
+            if scopes_cover(scopes) and sum(
+                not scopes_cover(
+                    [
+                        candidate_scope
+                        for candidate_index, candidate_scope in enumerate(scopes)
+                        if candidate_index != removed_index
+                    ]
                 )
-                for required_window in coverage.time_windows
-            ):
+                for removed_index in range(len(scopes))
+            ) >= 3:
                 return True
         return False
 
