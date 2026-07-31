@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from enum import Enum
+from collections import deque
 from collections.abc import Mapping, Sequence
 
 
@@ -295,18 +296,15 @@ class LearningGate:
         for claim_id, parent_ids in parents_by_claim.items():
             for parent_id in parent_ids:
                 children_by_parent[parent_id].append(claim_id)
-        ready = sorted(
-            (
-                claim_id
-                for claim_id, parent_count in remaining_parent_count.items()
-                if parent_count == 0
-            ),
-            reverse=True,
+        ready = deque(
+            claim_id
+            for claim_id, parent_count in remaining_parent_count.items()
+            if parent_count == 0
         )
         parent_invalidated_ids: set[str] = set()
         visited_count = 0
         while ready:
-            parent_id = ready.pop()
+            parent_id = ready.popleft()
             visited_count += 1
             parent_is_invalid = (
                 parent_id in invalidated_claim_ids
@@ -419,15 +417,11 @@ class LearningGate:
                 if scoped_blocks
                 else "ALLOW"
             ),
-            "hard_block_claim_ids": sorted(hard_blocks),
-            "scoped_block_claims": sorted(
-                scoped_blocks, key=lambda item: str(item["claim_id"])
-            ),
+            "hard_block_claim_ids": hard_blocks,
+            "scoped_block_claims": scoped_blocks,
             "warning_codes": sorted(warning_codes),
-            "matches": sorted(matches, key=lambda item: str(item["claim_id"])),
-            "excluded_claims": sorted(
-                excluded_claims, key=lambda item: str(item["claim_id"])
-            ),
+            "matches": matches,
+            "excluded_claims": excluded_claims,
         }
 
 

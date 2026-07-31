@@ -376,8 +376,12 @@ class LearningGateTests(unittest.TestCase):
 
         claims = []
         claim_count = 5000
+        claim_ids = [
+            f"invalid-deep-{(index * 7919) % claim_count:04d}"
+            for index in range(claim_count)
+        ]
         for index in range(claim_count):
-            claim_id = f"invalid-deep-{index:04d}"
+            claim_id = claim_ids[index]
             claims.append(
                 {
                     "claim_id": claim_id,
@@ -389,7 +393,7 @@ class LearningGateTests(unittest.TestCase):
                     "taint_refs": [],
                     "invalidation_codes": [],
                     "parent_claim_ids": (
-                        [f"invalid-deep-{index + 1:04d}"]
+                        [claim_ids[index + 1]]
                         if index + 1 < claim_count
                         else []
                     ),
@@ -401,7 +405,7 @@ class LearningGateTests(unittest.TestCase):
         started = perf_counter()
         decision = LearningGate().classify(
             {
-                "execution_identity": "execution-invalid-deep-0000",
+                "execution_identity": f"execution-{claim_ids[0]}",
                 "semantic_identity": "yellow-line",
                 "scope": scope(regime="bull"),
             },
@@ -411,7 +415,46 @@ class LearningGateTests(unittest.TestCase):
 
         self.assertEqual("ALLOW", decision["enforcement"])
         self.assertEqual(claim_count, len(decision["excluded_claims"]))
+        self.assertEqual(
+            claim_ids,
+            [item["claim_id"] for item in decision["excluded_claims"]],
+        )
         self.assertLess(duration, 1.5)
+
+    def test_learning_decision_preserves_canonical_ledger_order(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claims = []
+        for claim_id in ("claim-z", "claim-a"):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "NEGATIVE",
+                    "execution_identity": f"execution-{claim_id}",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-new",
+                "semantic_identity": "unrelated-factor",
+                "scope": scope(regime="bull"),
+            },
+            claims,
+        )
+
+        self.assertEqual(
+            ["claim-z", "claim-a"],
+            [item["claim_id"] for item in decision["matches"]],
+        )
 
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
