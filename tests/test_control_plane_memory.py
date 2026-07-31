@@ -1536,11 +1536,17 @@ class ContextAssemblerTests(unittest.TestCase):
         applicable = scope(regime="bull")
         applicable["mechanisms"] = ["mechanism_00"]
 
-        def claim(claim_id: str, claim_scope: dict[str, object]) -> dict[str, object]:
+        def claim(
+            claim_id: str, kind: str, claim_scope: dict[str, object]
+        ) -> dict[str, object]:
             return {
                 "claim_id": claim_id,
-                "kind": "NEGATIVE",
-                "conclusion": "DO_NOT_HARD_GATE",
+                "kind": kind,
+                "conclusion": (
+                    "POSITIVE_DIRECTIONAL"
+                    if kind == "POSITIVE"
+                    else "DO_NOT_HARD_GATE"
+                ),
                 "scope": claim_scope,
                 "audit_grade": "PASS",
                 "evidence_grade": "EXPLORATORY",
@@ -1549,11 +1555,18 @@ class ContextAssemblerTests(unittest.TestCase):
                 "invalidation_codes": [],
                 "reopen_predicates": [],
                 "parent_claim_ids": [],
-                "directional_status": "research_only",
+                "directional_status": (
+                    "positive_directional"
+                    if kind == "POSITIVE"
+                    else "research_only"
+                ),
             }
 
         projection = ContextProjection().project(
-            [claim("claim-disjoint", disjoint), claim("claim-applicable", applicable)]
+            [
+                claim("claim-disjoint", "POSITIVE", disjoint),
+                claim("claim-applicable", "NEGATIVE", applicable),
+            ]
         )
         result = ContextAssembler(
             tokenizer_adapter=AG2TokenizerAdapter(
@@ -1561,7 +1574,7 @@ class ContextAssemblerTests(unittest.TestCase):
             )
         ).assemble(
             projection,
-            role="factor_engineer",
+            role="alpha_hunter",
             target_scope=target,
             learning_token_budget=450,
         )

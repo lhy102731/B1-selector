@@ -1085,8 +1085,8 @@ class ContextAssembler:
             for _, claim in sorted(
                 indexed_claims,
                 key=lambda item: (
-                    priority.get(str(item[1]["kind"]), 99),
                     -scope_relevance(item[1]),
+                    priority.get(str(item[1]["kind"]), 99),
                     -_EVIDENCE_GRADE_RANK.get(
                         str(item[1].get("evidence_grade")), -1
                     ),
