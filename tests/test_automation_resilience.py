@@ -15,6 +15,7 @@ from research_automation.experiment_runner import RealBacktestExecutor
 from research_automation.patch_executor import (
     ClaudePatchExecutor,
     _apply_patch_to_workspace,
+    _parse_code_review_response,
     compile_gate,
 )
 from research_automation.safety import UnsafeWriteError, assert_safe_path
@@ -42,6 +43,29 @@ class ControlPlaneSafetyTests(unittest.TestCase):
 
 
 class KnowledgeGateFailClosedTests(unittest.TestCase):
+    def test_code_review_response_requires_closed_approve_schema(self):
+        approved = """code_review:
+  implements_design: pass
+  drift_detected: none
+  side_effects: []
+  architectural_violation: none
+  test_coverage_change: increased
+  verdict: APPROVE
+  rationale: The bounded patch matches the reviewed design.
+"""
+        self.assertEqual("APPROVE", _parse_code_review_response(approved)[0])
+
+        for invalid in (None, "", "APPROVE", "code_review: {verdict: APPROVE}"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    _parse_code_review_response(invalid)
+
+        request_changes = approved.replace("verdict: APPROVE", "verdict: REQUEST_CHANGES")
+        self.assertEqual(
+            "REQUEST_CHANGES",
+            _parse_code_review_response(request_changes)[0],
+        )
+
     def test_automatic_kb_validation_error_is_rejected(self):
         from research_automation.kb_gate import gate_proposal_kb
 

@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 from .experiment import Experiment
 from .experiment_runner import CodeChangeExecutor, CodeChangeResult
 from .control_plane.contracts import SideEffect
@@ -39,6 +41,55 @@ ALLOWED_FILES = {"strategy/brick_chart_strategy.py"}
 MAX_DIFF_LINES = 100
 FORBIDDEN_IMPORTS = {"os", "subprocess", "shutil", "socket", "requests", "urllib", "http"}
 CLAUDE_BINARY = "claude"
+
+
+def _parse_code_review_response(value: object) -> tuple[str, dict[str, object]]:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("code reviewer response must be non-empty YAML")
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError as error:
+        raise ValueError("code reviewer response must be valid YAML") from error
+    if not isinstance(parsed, dict) or set(parsed) != {"code_review"}:
+        raise ValueError("code reviewer response has an invalid field contract")
+    review = parsed["code_review"]
+    required = {
+        "implements_design",
+        "drift_detected",
+        "side_effects",
+        "architectural_violation",
+        "test_coverage_change",
+        "verdict",
+        "rationale",
+    }
+    if not isinstance(review, dict) or set(review) != required:
+        raise ValueError("code reviewer response has an invalid field contract")
+    if review["implements_design"] not in {"pass", "partial", "fail"}:
+        raise ValueError("code reviewer implements_design is invalid")
+    if review["test_coverage_change"] not in {
+        "increased",
+        "unchanged",
+        "decreased",
+    }:
+        raise ValueError("code reviewer test_coverage_change is invalid")
+    verdict = review["verdict"]
+    if verdict not in {"APPROVE", "REQUEST_CHANGES", "REJECT"}:
+        raise ValueError("code reviewer verdict is invalid")
+    for field_name in ("drift_detected", "architectural_violation", "rationale"):
+        field_value = review[field_name]
+        if (
+            not isinstance(field_value, str)
+            or not field_value.strip()
+            or field_value != field_value.strip()
+        ):
+            raise ValueError(f"code reviewer {field_name} is invalid")
+    side_effects = review["side_effects"]
+    if not isinstance(side_effects, list) or any(
+        not isinstance(item, str) or not item.strip() or item != item.strip()
+        for item in side_effects
+    ):
+        raise ValueError("code reviewer side_effects is invalid")
+    return verdict, dict(review)
 
 
 # ============================================================
@@ -785,23 +836,20 @@ class ClaudePatchExecutor(CodeChangeExecutor):
                         {"role": "user", "content": review_prompt},
                     ]
                 )
-                review_text = review_out if isinstance(review_out, str) else str(review_out)
-                # Parse verdict keyword; allow APPROVE without strict YAML.
-                verdict_upper = review_text.upper()
-                if "REJECT" in verdict_upper:
+                verdict, parsed_review = _parse_code_review_response(review_out)
+                if verdict != "APPROVE":
                     return CodeChangeResult(
                         ok=False,
-                        error=f"Code_Reviewer REJECT: {review_text[:400]}",
-                        logs=["kb_ctx: structured UNTRUSTED_DATA", review_text[:1500],
-                              "discard the isolated workspace to roll back"],
+                        error=f"Code_Reviewer {verdict}: {parsed_review['rationale']}",
+                        logs=[
+                            "kb_ctx: structured UNTRUSTED_DATA",
+                            str(parsed_review)[:1500],
+                            "discard the isolated workspace to roll back",
+                        ],
                     )
-                if "REQUEST_CHANGES" in verdict_upper:
-                    # Soft gate: REQUEST_CHANGES means proceed but record the note.
-                    # Hardening to REJECT can be enabled by setting
-                    # code_reviewer_request_changes_blocks=True in config later.
-                    changes_log.append(f"CODE_REVIEWER_REQUEST_CHANGES: {review_text[:300]}")
-                else:
-                    changes_log.append(f"CODE_REVIEWER_APPROVE: {review_text[:300]}")
+                changes_log.append(
+                    f"CODE_REVIEWER_APPROVE: {parsed_review['rationale'][:300]}"
+                )
             except Exception as _cr_err:
                 return CodeChangeResult(
                     ok=False,
