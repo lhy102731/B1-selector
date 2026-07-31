@@ -371,6 +371,32 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("DATA_DRIFT_CONFLICT", conflict["classification"])
         self.assertEqual("data_steward", conflict["resolution_owner"])
 
+    def test_legacy_provenance_is_classified_before_scoped_conflict(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        conflict = ConflictClassifier().classify(
+            {
+                "claim_id": "claim-controller",
+                "kind": "POSITIVE",
+                "execution_identity": "execution-controller",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+                "trust_state": "controller_audited",
+            },
+            {
+                "claim_id": "claim-legacy",
+                "kind": "NEGATIVE",
+                "execution_identity": "execution-legacy",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+                "trust_state": "legacy_unaudited",
+            },
+            actor_event={"event_id": "event-004", "actor_id": "reviewer-004"},
+        )
+
+        self.assertEqual("LEGACY_EVIDENCE_CONFLICT", conflict["classification"])
+        self.assertEqual("legacy_evidence_owner", conflict["resolution_owner"])
+
 
 if __name__ == "__main__":
     unittest.main()

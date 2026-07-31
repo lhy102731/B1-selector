@@ -367,7 +367,13 @@ class ConflictClassifier:
                 and left_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
             )
             if left_semantic == right_semantic and positive_negative:
-                if left_scope.generation_families != right_scope.generation_families:
+                if "legacy_unaudited" in {
+                    left.get("trust_state"),
+                    right.get("trust_state"),
+                }:
+                    classification = "LEGACY_EVIDENCE_CONFLICT"
+                    resolution_owner = "legacy_evidence_owner"
+                elif left_scope.generation_families != right_scope.generation_families:
                     classification = "DATA_DRIFT_CONFLICT"
                     resolution_owner = "data_steward"
                 else:
