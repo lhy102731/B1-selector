@@ -203,6 +203,66 @@ class LearningGateTests(unittest.TestCase):
         excluded = {item["claim_id"]: item for item in decision["excluded_claims"]}
         self.assertIn("PARENT_INVALIDATED", excluded["claim-child"]["reason_codes"])
 
+    def test_untrusted_parent_invalidates_all_descendants(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        for audit_grade, taint_refs in (
+            ("INVALID", []),
+            ("PASS", ["holdout-event"]),
+        ):
+            with self.subTest(audit_grade=audit_grade, taint_refs=taint_refs):
+                common = {
+                    "kind": "FAILED_USAGE",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+                parent = {
+                    **common,
+                    "claim_id": "claim-untrusted-parent",
+                    "execution_identity": "execution-parent",
+                    "audit_grade": audit_grade,
+                    "taint_refs": taint_refs,
+                    "parent_claim_ids": [],
+                }
+                child = {
+                    **common,
+                    "claim_id": "claim-untrusted-child",
+                    "execution_identity": "execution-child",
+                    "parent_claim_ids": ["claim-untrusted-parent"],
+                }
+                grandchild = {
+                    **common,
+                    "claim_id": "claim-untrusted-grandchild",
+                    "execution_identity": "execution-grandchild",
+                    "parent_claim_ids": ["claim-untrusted-child"],
+                }
+                decision = LearningGate().classify(
+                    {
+                        "execution_identity": "execution-grandchild",
+                        "semantic_identity": "yellow-line",
+                        "scope": scope(regime="bull"),
+                    },
+                    [parent, child, grandchild],
+                )
+
+                self.assertEqual("ALLOW", decision["enforcement"])
+                excluded = {
+                    item["claim_id"]: item for item in decision["excluded_claims"]
+                }
+                self.assertIn(
+                    "PARENT_INVALIDATED",
+                    excluded["claim-untrusted-child"]["reason_codes"],
+                )
+                self.assertIn(
+                    "PARENT_INVALIDATED",
+                    excluded["claim-untrusted-grandchild"]["reason_codes"],
+                )
+
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

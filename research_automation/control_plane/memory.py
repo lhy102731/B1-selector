@@ -234,8 +234,17 @@ class LearningGate:
                 for item in invalidation_codes
             ):
                 raise ValueError("claim.invalidation_codes must be a string array")
+            audit_grade = raw_claim.get("audit_grade")
+            if not isinstance(audit_grade, str) or not audit_grade:
+                raise ValueError("claim.audit_grade must be a non-empty string")
+            taint_refs = raw_claim.get("taint_refs")
+            if not isinstance(taint_refs, list) or any(
+                not isinstance(item, str) or not item or item != item.strip()
+                for item in taint_refs
+            ):
+                raise ValueError("claim.taint_refs must be a string array")
             parents_by_claim[claim_id] = tuple(parent_ids)
-            if invalidation_codes:
+            if audit_grade != "PASS" or taint_refs or invalidation_codes:
                 invalidated_claim_ids.add(claim_id)
         parent_invalidated_ids: set[str] = set()
         changed = True
