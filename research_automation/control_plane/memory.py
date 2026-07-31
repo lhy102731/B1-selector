@@ -1208,6 +1208,11 @@ class ContextAssembler:
                 or claim.get("directional_status") not in _DIRECTIONAL_STATUSES
             ):
                 raise ValueError("context projection claim is invalid")
+            if (
+                claim.get("conclusion"),
+                claim.get("directional_status"),
+            ) not in _GUIDANCE_PAIRS_BY_KIND[claim["kind"]]:
+                raise ValueError("context projection guidance is contradictory")
             rebuilt_claim = dict(claim)
             rebuilt_claim["scope"] = _validate_projected_scope(claim.get("scope"))
             for field_name in ref_fields:
@@ -1219,6 +1224,8 @@ class ContextAssembler:
                 ):
                     raise ValueError("context projection claim is invalid")
                 rebuilt_claim[field_name] = list(refs)
+            if rebuilt_claim["taint_refs"] or rebuilt_claim["invalidation_codes"]:
+                raise ValueError("context projection contains an unsafe included claim")
             predicates = claim.get("reopen_predicates")
             if (
                 not isinstance(predicates, list)
@@ -1228,6 +1235,38 @@ class ContextAssembler:
                 raise ValueError("context projection claim is invalid")
             rebuilt_claim["reopen_predicates"] = list(predicates)
             indexed_claims.append((index, rebuilt_claim))
+        included_claim_ids = [claim["claim_id"] for _, claim in indexed_claims]
+        if len(included_claim_ids) != len(set(included_claim_ids)):
+            raise ValueError("context projection must contain unique claim ids")
+        included_claim_id_set = set(included_claim_ids)
+        if any(
+            not set(claim["parent_claim_ids"]).issubset(included_claim_id_set)
+            for _, claim in indexed_claims
+        ):
+            raise ValueError("context projection claim has an unknown parent")
+        projected_children = {claim_id: [] for claim_id in included_claim_ids}
+        projected_parent_counts: dict[str, int] = {}
+        for _, claim in indexed_claims:
+            claim_id = claim["claim_id"]
+            parents = claim["parent_claim_ids"]
+            projected_parent_counts[claim_id] = len(parents)
+            for parent_id in parents:
+                projected_children[parent_id].append(claim_id)
+        projected_ready = deque(
+            claim_id
+            for claim_id in included_claim_ids
+            if projected_parent_counts[claim_id] == 0
+        )
+        projected_visited = 0
+        while projected_ready:
+            parent_id = projected_ready.popleft()
+            projected_visited += 1
+            for child_id in projected_children[parent_id]:
+                projected_parent_counts[child_id] -= 1
+                if projected_parent_counts[child_id] == 0:
+                    projected_ready.append(child_id)
+        if projected_visited != len(included_claim_ids):
+            raise ValueError("context projection contains a lineage cycle")
         validated_excluded_claims: list[dict[str, object]] = []
         for excluded in excluded_claims:
             if not isinstance(excluded, Mapping) or set(excluded) != {
@@ -1250,6 +1289,14 @@ class ContextAssembler:
             validated_excluded_claims.append(
                 {"claim_id": claim_ref, "reason_codes": list(reason_codes)}
             )
+        excluded_claim_ids = [
+            excluded["claim_id"] for excluded in validated_excluded_claims
+        ]
+        if (
+            len(excluded_claim_ids) != len(set(excluded_claim_ids))
+            or not included_claim_id_set.isdisjoint(excluded_claim_ids)
+        ):
+            raise ValueError("context projection must contain unique claim ids")
         ordered_claims = [
             deepcopy(claim)
             for _, claim in sorted(

@@ -1525,6 +1525,189 @@ class ContextProjectionTests(unittest.TestCase):
 
 
 class ContextAssemblerTests(unittest.TestCase):
+    def test_assembler_rejects_forged_contradictory_guidance(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-guidance",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-guidance"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["directional_status"] = "positive_directional"
+
+        with self.assertRaisesRegex(ValueError, "contradictory"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_rejects_tainted_included_claim(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-taint",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-taint"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["taint_refs"] = ["a" * 64]
+
+        with self.assertRaisesRegex(ValueError, "unsafe included claim"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_rejects_duplicate_projected_claim_ids(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-unique-projection",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-unique-projection"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"].append(dict(projection["claims"][0]))
+
+        with self.assertRaisesRegex(ValueError, "unique claim ids"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_rejects_unknown_projected_parent(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-known-parent",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-known-parent"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["parent_claim_ids"] = ["b" * 64]
+
+        with self.assertRaisesRegex(ValueError, "unknown parent"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_rejects_projected_lineage_cycle(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        claims = []
+        for claim_id in ("claim-cycle-left", "claim-cycle-right"):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-{claim_id}"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            )
+        projection = ContextProjection().project(claims)
+        left_ref = projection["claims"][0]["claim_id"]
+        right_ref = projection["claims"][1]["claim_id"]
+        projection["claims"][0]["parent_claim_ids"] = [right_ref]
+        projection["claims"][1]["parent_claim_ids"] = [left_ref]
+
+        with self.assertRaisesRegex(ValueError, "lineage cycle"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+    def test_assembler_rejects_claim_present_in_included_and_excluded_sets(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-cross-set-duplicate",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-cross-set-duplicate"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["excluded_claims"].append(
+            {
+                "claim_id": projection["claims"][0]["claim_id"],
+                "reason_codes": ["TAINTED_CLAIM"],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "unique claim ids"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
     def test_assembler_rejects_mutable_tokenizer_objects(self) -> None:
         from research_automation.control_plane.memory import (
             ContextAssembler,
