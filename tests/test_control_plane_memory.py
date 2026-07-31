@@ -80,6 +80,31 @@ class LearningGateTests(unittest.TestCase):
         self.assertEqual("OVERLAP", match["scope_match"])
         self.assertEqual(["bull"], match["applicable_scope"]["market_regimes"])
 
+    def test_universal_rejection_cannot_be_set_manually(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claim = {
+            "claim_id": "claim-universal",
+            "kind": "NEGATIVE",
+            "execution_identity": "prior-universal",
+            "semantic_identity": "yellow-line",
+            "scope": scope(regime="bull"),
+            "audit_grade": "PASS",
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": [],
+            "universal_factor_rejection": True,
+        }
+        with self.assertRaisesRegex(ValueError, "derived"):
+            LearningGate().classify(
+                {
+                    "execution_identity": "proposal-003",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                },
+                [claim],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

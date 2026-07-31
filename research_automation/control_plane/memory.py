@@ -207,6 +207,15 @@ class LearningGate:
         for raw_claim in claims:
             if not isinstance(raw_claim, Mapping):
                 raise ValueError("claim must be a mapping")
+            universal_rejection = raw_claim.get("universal_factor_rejection")
+            if type(universal_rejection) is not bool:
+                raise ValueError(
+                    "claim.universal_factor_rejection must be an exact boolean"
+                )
+            if universal_rejection:
+                raise ValueError(
+                    "universal_factor_rejection is derived, not manually supplied"
+                )
             claim_id = _nonempty_string(raw_claim.get("claim_id"), "claim.claim_id")
             learned_scope = ClaimScope.from_mapping(raw_claim.get("scope"))
             relation = proposal_scope.classify_proposal(learned_scope)
