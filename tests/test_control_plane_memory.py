@@ -1523,6 +1523,54 @@ class ContextAssemblerTests(unittest.TestCase):
         )
         self.assertEqual(1, len(result["control_metadata"]["omitted_claim_ids"]))
 
+    def test_disjoint_scope_never_outranks_applicable_scope(self) -> None:
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        target = scope(regime="bull")
+        target["mechanisms"] = [f"mechanism_{index:02d}" for index in range(10)]
+        disjoint = {**target, "market_regimes": ["bear"]}
+        applicable = scope(regime="bull")
+        applicable["mechanisms"] = ["mechanism_00"]
+
+        def claim(claim_id: str, claim_scope: dict[str, object]) -> dict[str, object]:
+            return {
+                "claim_id": claim_id,
+                "kind": "NEGATIVE",
+                "conclusion": "DO_NOT_HARD_GATE",
+                "scope": claim_scope,
+                "audit_grade": "PASS",
+                "evidence_grade": "EXPLORATORY",
+                "evidence_refs": [f"evidence-{claim_id}"],
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "reopen_predicates": [],
+                "parent_claim_ids": [],
+                "directional_status": "research_only",
+            }
+
+        projection = ContextProjection().project(
+            [claim("claim-disjoint", disjoint), claim("claim-applicable", applicable)]
+        )
+        result = ContextAssembler(
+            tokenizer_adapter=AG2TokenizerAdapter(
+                name="quarter_byte_encoder", encoder=QuarterByteAG2Encoder()
+            )
+        ).assemble(
+            projection,
+            role="factor_engineer",
+            target_scope=target,
+            learning_token_budget=450,
+        )
+
+        self.assertEqual(
+            projection["claims"][1]["claim_id"],
+            result["learning_memory"]["claims"][0]["claim_id"],
+        )
+
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
         from research_automation.control_plane.memory import (
             AG2TokenizerAdapter,

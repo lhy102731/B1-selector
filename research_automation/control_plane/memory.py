@@ -243,6 +243,19 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
     return result
 
 
+def _claim_scope_from_projected(value: Mapping[str, object]) -> ClaimScope:
+    return ClaimScope(
+        mechanisms=tuple(value["mechanisms"]),
+        usage_modes=tuple(value["usage_modes"]),
+        market_regimes=tuple(value["market_regimes"]),
+        time_windows=tuple(TimeWindow.from_mapping(item) for item in value["time_windows"]),
+        universes=tuple(value["universes"]),
+        liquidity_buckets=tuple(value["liquidity_buckets"]),
+        label_protocol_families=tuple(value["label_protocol_families"]),
+        generation_families=tuple(value["generation_families"]),
+    )
+
+
 @dataclass(frozen=True)
 class ClaimScope:
     mechanisms: tuple[str, ...]
@@ -969,6 +982,11 @@ class ContextAssembler:
             if target_scope is None
             else _opaque_scope(ClaimScope.from_mapping(target_scope))
         )
+        target_projected_scope = (
+            None
+            if target_scope_mapping is None
+            else _claim_scope_from_projected(target_scope_mapping)
+        )
 
         def scope_relevance(claim: Mapping[str, object]) -> int:
             if target_scope_mapping is None:
@@ -976,7 +994,16 @@ class ContextAssembler:
             claim_scope = claim.get("scope")
             if not isinstance(claim_scope, Mapping):
                 raise ValueError("context projection claim scope is invalid")
-            relevance = 0
+            claim_projected_scope = _claim_scope_from_projected(claim_scope)
+            relation = target_projected_scope.classify_proposal(
+                claim_projected_scope
+            )
+            relevance = {
+                ScopeMatch.EXACT: 40000,
+                ScopeMatch.SUBSET: 30000,
+                ScopeMatch.OVERLAP: 20000,
+                ScopeMatch.DISJOINT: 0,
+            }[relation]
             for field_name in _SCOPE_FIELDS - {"time_windows"}:
                 claim_values = claim_scope.get(field_name)
                 target_values = target_scope_mapping[field_name]
