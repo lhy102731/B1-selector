@@ -624,6 +624,7 @@ class ContextProjection:
         if not isinstance(claims, Sequence) or isinstance(claims, (str, bytes)):
             raise ValueError("projection claims must be a sequence")
         projected_claims: list[dict[str, object]] = []
+        excluded_claims: list[dict[str, object]] = []
         seen_claim_ids: set[str] = set()
         for raw_claim in claims:
             if not isinstance(raw_claim, Mapping):
@@ -649,6 +650,25 @@ class ContextProjection:
             )
             if not set(reopen_predicates).issubset(_REOPEN_PREDICATES):
                 raise ValueError("claim.reopen_predicates contains an unknown predicate")
+            taint_refs = _canonical_refs(
+                raw_claim.get("taint_refs"), "claim.taint_refs"
+            )
+            invalidation_codes = _canonical_refs(
+                raw_claim.get("invalidation_codes"),
+                "claim.invalidation_codes",
+            )
+            exclusion_codes: list[str] = []
+            if audit_grade != "PASS":
+                exclusion_codes.append("AUDIT_GRADE_NOT_PASS")
+            if taint_refs:
+                exclusion_codes.append("TAINTED_CLAIM")
+            if invalidation_codes:
+                exclusion_codes.append("INVALIDATED_CLAIM")
+            if exclusion_codes:
+                excluded_claims.append(
+                    {"claim_id": claim_id, "reason_codes": exclusion_codes}
+                )
+                continue
             projected_claims.append(
                 {
                     "claim_id": claim_id,
@@ -664,17 +684,8 @@ class ContextProjection:
                             raw_claim.get("evidence_refs"), "claim.evidence_refs"
                         )
                     ),
-                    "taint_refs": list(
-                        _canonical_refs(
-                            raw_claim.get("taint_refs"), "claim.taint_refs"
-                        )
-                    ),
-                    "invalidation_codes": list(
-                        _canonical_refs(
-                            raw_claim.get("invalidation_codes"),
-                            "claim.invalidation_codes",
-                        )
-                    ),
+                    "taint_refs": list(taint_refs),
+                    "invalidation_codes": list(invalidation_codes),
                     "reopen_predicates": list(reopen_predicates),
                     "parent_claim_ids": list(
                         _canonical_refs(
@@ -691,6 +702,7 @@ class ContextProjection:
         return {
             "schema_version": "control_plane.context_projection.v1",
             "claims": projected_claims,
+            "excluded_claims": excluded_claims,
         }
 
 

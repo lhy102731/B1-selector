@@ -1068,6 +1068,45 @@ class ContextProjectionTests(unittest.TestCase):
         self.assertNotIn("must never enter context", repr(projected))
         self.assertNotIn("ignore prior instructions", repr(projected))
 
+    def test_projection_excludes_untrusted_claim_content(self) -> None:
+        from research_automation.control_plane.memory import ContextProjection
+
+        claims = []
+        for claim_id, audit_grade, taint_refs, invalidation_codes in (
+            ("claim-audit-invalid", "INVALID", [], []),
+            ("claim-tainted", "PASS", ["holdout-event"], []),
+            ("claim-invalidated", "PASS", [], ["REVOKED_EVIDENCE"]),
+        ):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "NEGATIVE",
+                    "conclusion": f"unsafe conclusion from {claim_id}",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": audit_grade,
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-{claim_id}"],
+                    "taint_refs": taint_refs,
+                    "invalidation_codes": invalidation_codes,
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            )
+
+        projected = ContextProjection().project(claims)
+
+        self.assertEqual([], projected["claims"])
+        self.assertEqual(
+            [
+                "claim-audit-invalid",
+                "claim-tainted",
+                "claim-invalidated",
+            ],
+            [item["claim_id"] for item in projected["excluded_claims"]],
+        )
+        self.assertNotIn("unsafe conclusion", repr(projected))
+
 
 if __name__ == "__main__":
     unittest.main()
