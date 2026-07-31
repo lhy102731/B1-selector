@@ -19,6 +19,31 @@ def scope(*, regime: str) -> dict[str, object]:
 
 
 class LearningGateTests(unittest.TestCase):
+    def test_universal_rejection_defaults_false_when_omitted(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claim = {
+            "claim_id": "claim-default-universal",
+            "kind": "NEGATIVE",
+            "execution_identity": "prior-default-universal",
+            "semantic_identity": "yellow-line",
+            "scope": scope(regime="bull"),
+            "audit_grade": "PASS",
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": [],
+        }
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "proposal-default-universal",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+            },
+            [claim],
+        )
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+
     def test_exact_execution_identity_is_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

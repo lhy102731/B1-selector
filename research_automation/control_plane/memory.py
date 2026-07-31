@@ -481,7 +481,7 @@ class LearningGate:
         for raw_claim in claim_rows:
             if not isinstance(raw_claim, Mapping):
                 raise ValueError("claim must be a mapping")
-            universal_rejection = raw_claim.get("universal_factor_rejection")
+            universal_rejection = raw_claim.get("universal_factor_rejection", False)
             if type(universal_rejection) is not bool:
                 raise ValueError(
                     "claim.universal_factor_rejection must be an exact boolean"
