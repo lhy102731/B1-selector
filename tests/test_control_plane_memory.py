@@ -742,6 +742,19 @@ class LearningReopenTests(unittest.TestCase):
                 },
             )
 
+    def test_unknown_reopen_predicate_fails_closed(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        with self.assertRaisesRegex(ValueError, "reopen_predicates"):
+            ReopenPredicateEvaluator().evaluate(
+                {"scope": scope(regime="bull")},
+                {
+                    "claim_id": "claim-unknown-predicate",
+                    "scope": scope(regime="bull"),
+                    "reopen_predicates": ["MANUAL_OVERRIDE"],
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

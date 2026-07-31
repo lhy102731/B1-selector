@@ -34,6 +34,19 @@ _LEARNING_CLAIM_KINDS = frozenset(
     {"POSITIVE", "NEGATIVE", "PARTIAL", "ANTI_FACTOR", "FAILED_USAGE"}
 )
 _NEGATIVE_CLAIM_KINDS = frozenset({"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"})
+_REOPEN_PREDICATES = frozenset(
+    {
+        "NEW_MECHANISM",
+        "NEW_USAGE_MODE",
+        "NEW_MARKET_REGIME",
+        "NEW_TIME_WINDOW",
+        "NEW_UNIVERSE",
+        "NEW_LIQUIDITY_BUCKET",
+        "DATA_DRIFT",
+        "STRONGER_EVIDENCE",
+        "DECLARED_RESEARCH_GAP",
+    }
+)
 
 
 class ScopeMatch(str, Enum):
@@ -515,6 +528,8 @@ class ReopenPredicateEvaluator:
             or predicates != sorted(set(predicates))
         ):
             raise ValueError("claim.reopen_predicates must be a sorted unique string array")
+        if not set(predicates).issubset(_REOPEN_PREDICATES):
+            raise ValueError("claim.reopen_predicates contains an unknown predicate")
         reasons: list[str] = []
         if "NEW_MECHANISM" in predicates and not set(
             proposal_scope.mechanisms
