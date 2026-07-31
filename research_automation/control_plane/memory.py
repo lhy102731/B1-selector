@@ -461,6 +461,59 @@ def _validate_claim_lineage(
     return claim_rows, parent_invalidated_ids
 
 
+class UniversalRejectionDeriver:
+    """Derive universal rejection only from strict policy-declared coverage."""
+
+    def derive(
+        self,
+        claims: Sequence[Mapping[str, object]],
+        *,
+        required_scope: Mapping[str, object],
+    ) -> bool:
+        claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
+        coverage = ClaimScope.from_mapping(required_scope)
+        if len(claim_rows) < 3 or parent_invalidated_ids:
+            return False
+        executions: set[str] = set()
+        scopes: list[ClaimScope] = []
+        for claim in claim_rows:
+            manual_value = claim.get("universal_factor_rejection", False)
+            if type(manual_value) is not bool:
+                raise ValueError(
+                    "claim.universal_factor_rejection must be an exact boolean"
+                )
+            if manual_value:
+                raise ValueError(
+                    "universal_factor_rejection is derived, not manually supplied"
+                )
+            if (
+                claim.get("kind") not in _NEGATIVE_CLAIM_KINDS
+                or claim.get("audit_grade") != "PASS"
+                or claim.get("evidence_grade") != "INDEPENDENTLY_REPRODUCED"
+                or claim.get("taint_refs")
+                or claim.get("invalidation_codes")
+            ):
+                return False
+            execution = _nonempty_string(
+                claim.get("execution_identity"), "claim.execution_identity"
+            )
+            if execution in executions:
+                return False
+            executions.add(execution)
+            scopes.append(ClaimScope.from_mapping(claim.get("scope")))
+        for field_name in _SCOPE_FIELDS - {"time_windows"}:
+            required_values = set(getattr(coverage, field_name))
+            observed_values = set().union(
+                *(set(getattr(scope, field_name)) for scope in scopes)
+            )
+            if not required_values.issubset(observed_values):
+                return False
+        return all(
+            any(required_window.is_within(observed) for scope in scopes for observed in scope.time_windows)
+            for required_window in coverage.time_windows
+        )
+
+
 class LearningGate:
     """Mechanically classify proposal scope against safe Learning claims."""
 
@@ -1315,4 +1368,5 @@ __all__ = [
     "ScopeMatch",
     "TimeWindow",
     "TiktokenTokenizerAdapter",
+    "UniversalRejectionDeriver",
 ]

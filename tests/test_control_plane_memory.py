@@ -19,6 +19,39 @@ def scope(*, regime: str) -> dict[str, object]:
 
 
 class LearningGateTests(unittest.TestCase):
+    def test_universal_rejection_is_derived_from_strict_scope_coverage(self) -> None:
+        from research_automation.control_plane.memory import UniversalRejectionDeriver
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        claims = []
+        for index, regime in enumerate(("bear", "bull", "sideways")):
+            claims.append(
+                {
+                    "claim_id": f"claim-universal-{index}",
+                    "kind": "NEGATIVE",
+                    "execution_identity": f"execution-universal-{index}",
+                    "scope": scope(regime=regime),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        self.assertTrue(
+            UniversalRejectionDeriver().derive(
+                claims, required_scope=required_scope
+            )
+        )
+        self.assertFalse(
+            UniversalRejectionDeriver().derive(
+                claims[:2], required_scope=required_scope
+            )
+        )
+
     def test_universal_rejection_defaults_false_when_omitted(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
