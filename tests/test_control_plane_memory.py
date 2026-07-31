@@ -1652,6 +1652,38 @@ class ContextAssemblerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ContextAssembler().assemble(projection, role="factor_engineer")
 
+    def test_assembler_rejects_forged_projection_scope_cardinality(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-forged-cardinality",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-forged-cardinality"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["scope"]["mechanisms"] = [
+            f"{index:064x}" for index in range(65)
+        ]
+
+        with self.assertRaisesRegex(ValueError, "cardinality"):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
+
     def test_assembler_rejects_forged_contradictory_guidance(self) -> None:
         from research_automation.control_plane.memory import (
             ContextAssembler,

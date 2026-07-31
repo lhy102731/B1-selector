@@ -283,8 +283,11 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
     if not isinstance(value, Mapping) or set(value) != _SCOPE_FIELDS:
         raise ValueError("context projection claim scope is invalid")
     result: dict[str, object] = {}
+    categorical_count = 0
     for field_name in _SCOPE_FIELDS - {"time_windows"}:
         items = value.get(field_name)
+        if isinstance(items, list) and len(items) > _MAX_SCOPE_VALUES_PER_FIELD:
+            raise ValueError("context projection claim scope exceeds cardinality limit")
         if (
             not isinstance(items, list)
             or not items
@@ -293,9 +296,16 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
         ):
             raise ValueError("context projection claim scope is invalid")
         result[field_name] = list(items)
+        categorical_count += len(items)
+    if categorical_count > _MAX_SCOPE_VALUES_TOTAL:
+        raise ValueError(
+            "context projection claim scope exceeds aggregate cardinality limit"
+        )
     windows = value.get("time_windows")
     if not isinstance(windows, list) or not windows:
         raise ValueError("context projection claim scope is invalid")
+    if len(windows) > _MAX_SCOPE_TIME_WINDOWS:
+        raise ValueError("context projection claim scope exceeds cardinality limit")
     parsed = [TimeWindow.from_mapping(item) for item in windows]
     if parsed != sorted(set(parsed)):
         raise ValueError("context projection claim scope is invalid")
