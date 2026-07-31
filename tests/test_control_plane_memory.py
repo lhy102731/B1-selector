@@ -39,6 +39,13 @@ class OscillatingAG2Encoder:
         return list(range(token_count))
 
 
+class SpoofedAG2Encoder:
+    __module__ = "ag2evil"
+
+    def encode(self, text: str) -> list[int]:
+        return [0]
+
+
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1618,6 +1625,12 @@ class ContextAssemblerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "registered"):
             ContextAssembler(tokenizer_adapter=DuckTokenizer())
+
+    def test_registered_adapter_rejects_provider_prefix_spoofing(self) -> None:
+        from research_automation.control_plane.memory import AG2TokenizerAdapter
+
+        with self.assertRaisesRegex(ValueError, "registered provider"):
+            AG2TokenizerAdapter(name="spoofed", encoder=SpoofedAG2Encoder())
 
 
 if __name__ == "__main__":

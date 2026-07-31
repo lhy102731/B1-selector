@@ -855,7 +855,10 @@ class _RegisteredTokenizerAdapter:
 
     def __init__(self, *, name: str, encoder: object) -> None:
         self.name = _canonical_identifier(name, "tokenizer_adapter.name")
-        if not type(encoder).__module__.startswith(self.module_prefix):
+        encoder_module = type(encoder).__module__
+        if encoder_module != self.module_prefix and not encoder_module.startswith(
+            f"{self.module_prefix}."
+        ):
             raise ValueError("tokenizer encoder is not from a registered provider")
         if not callable(getattr(encoder, "encode", None)):
             raise ValueError("tokenizer encoder must expose encode")
