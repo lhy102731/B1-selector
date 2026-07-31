@@ -3011,11 +3011,19 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         min_messages = self._positive_int(coverage_cfg.get("min_messages_per_participant", 1), 1)
         retry_on_coverage_failure = bool(coverage_cfg.get("retry_on_coverage_failure", False))
 
+        context_keys = [
+            f"roundtable_peer_{index}" for index in range(len(participants))
+        ]
+        trusted_contexts, untrusted_contexts = self._prepare_v342_agent_context(
+            context_keys, research_context
+        )
+
         # Create one agent per LLM, each with its own model name
         agents: dict[str, autogen.AssistantAgent] = {}
         display_labels_by_name: dict[str, str] = {}
         active_participants: list[dict] = []
         skipped_participants: list[dict] = []
+        active_context_keys: list[str] = []
         used_agent_names: set[str] = set()
         for index, p in enumerate(participants):
             label = p["label"]
@@ -3038,8 +3046,10 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 continue
 
             system_msg = system_template.format(label=label)
-            if research_context:
-                system_msg += f"\n\nResearch Context:\n{research_context}"
+            system_msg += (
+                "\n\nV3.4 TRUSTED LEARNING SYSTEM CONTEXT:\n"
+                f"{trusted_contexts[context_keys[index]]}"
+            )
 
             agent = create_profiled_assistant_agent(
                 profile_name,
@@ -3055,6 +3065,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                 agent.register_for_execution()(tool_func)
             agents[agent_name] = agent
             active_participants.append(p)
+            active_context_keys.append(context_keys[index])
 
         if skipped_participants and bool(coverage_cfg.get("fail_on_missing_participants", True)):
             return {
@@ -3080,7 +3091,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
         manager_llm = self.config.get_llm_config(coordinator_profile)
         groupchat = autogen.GroupChat(
             agents=list(agents.values()),
-            messages=[],
+            messages=list(untrusted_contexts[active_context_keys[0]]),
             max_round=max_rounds,
             speaker_selection_method="round_robin",
             allow_repeat_speaker=bool(rt.get("allow_repeat_speaker", False)),
@@ -3101,7 +3112,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
 - 最后一轮：总结共识，提出可落地的行动建议。
 
 背景资料：
-{research_context or '无额外背景资料。'}
+背景资料已作为独立 UNTRUSTED_DATA 用户消息提供。
 
 {list(agents.values())[0].name}，你先开始。"""
 
@@ -3129,7 +3140,7 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
 - 不要用小桌、单模型、缩小范围、弱化验证或人工替代来获得妥协结果，除非用户明确授权。
 
 背景资料：
-{research_context or '无额外背景资料。'}
+背景资料已作为独立 UNTRUSTED_DATA 用户消息提供。
 
 {list(agents.values())[0].name}，你先开始。"""
 
