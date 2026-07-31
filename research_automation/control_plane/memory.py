@@ -310,4 +310,61 @@ class LearningGate:
         }
 
 
-__all__ = ["ClaimScope", "LearningGate", "ScopeMatch", "TimeWindow"]
+class ConflictClassifier:
+    """Classify contradictory Learning facts without resolving them implicitly."""
+
+    def classify(
+        self,
+        left: Mapping[str, object],
+        right: Mapping[str, object],
+        *,
+        actor_event: Mapping[str, object],
+    ) -> dict[str, object]:
+        if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+            raise ValueError("conflict claims must be mappings")
+        if not isinstance(actor_event, Mapping) or set(actor_event) != {
+            "event_id",
+            "actor_id",
+        }:
+            raise ValueError("conflict actor_event has an invalid field contract")
+        event = {
+            "event_id": _nonempty_string(
+                actor_event.get("event_id"), "actor_event.event_id"
+            ),
+            "actor_id": _nonempty_string(
+                actor_event.get("actor_id"), "actor_event.actor_id"
+            ),
+        }
+        left_id = _nonempty_string(left.get("claim_id"), "left.claim_id")
+        right_id = _nonempty_string(right.get("claim_id"), "right.claim_id")
+        left_execution = _nonempty_string(
+            left.get("execution_identity"), "left.execution_identity"
+        )
+        right_execution = _nonempty_string(
+            right.get("execution_identity"), "right.execution_identity"
+        )
+        left_kind = _nonempty_string(left.get("kind"), "left.kind")
+        right_kind = _nonempty_string(right.get("kind"), "right.kind")
+        ClaimScope.from_mapping(left.get("scope"))
+        ClaimScope.from_mapping(right.get("scope"))
+        classification = "NONE"
+        resolution_owner = None
+        if left_execution == right_execution and left_kind != right_kind:
+            classification = "REPRODUCIBILITY_FAILURE"
+            resolution_owner = "reproducibility_owner"
+        return {
+            "schema_version": "control_plane.learning_conflict.v1",
+            "claim_ids": sorted([left_id, right_id]),
+            "classification": classification,
+            "resolution_owner": resolution_owner,
+            "actor_event": event,
+        }
+
+
+__all__ = [
+    "ClaimScope",
+    "ConflictClassifier",
+    "LearningGate",
+    "ScopeMatch",
+    "TimeWindow",
+]

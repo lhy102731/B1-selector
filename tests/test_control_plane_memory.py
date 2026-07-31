@@ -292,5 +292,32 @@ class LearningGateTests(unittest.TestCase):
         )
 
 
+class LearningConflictTests(unittest.TestCase):
+    def test_reproducibility_failure_is_classified_with_owner_event(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        left = {
+            "claim_id": "claim-left",
+            "kind": "POSITIVE",
+            "execution_identity": "execution-same",
+            "scope": scope(regime="bull"),
+        }
+        right = {
+            "claim_id": "claim-right",
+            "kind": "NEGATIVE",
+            "execution_identity": "execution-same",
+            "scope": scope(regime="bull"),
+        }
+        conflict = ConflictClassifier().classify(
+            left,
+            right,
+            actor_event={"event_id": "event-001", "actor_id": "reviewer-001"},
+        )
+
+        self.assertEqual("REPRODUCIBILITY_FAILURE", conflict["classification"])
+        self.assertEqual("reproducibility_owner", conflict["resolution_owner"])
+        self.assertEqual("event-001", conflict["actor_event"]["event_id"])
+
+
 if __name__ == "__main__":
     unittest.main()
