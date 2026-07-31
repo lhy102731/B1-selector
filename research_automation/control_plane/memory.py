@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
+import json
 
 
 _SCOPE_FIELDS = frozenset(
@@ -821,7 +822,12 @@ class ContextAssembler:
     }
 
     def assemble(
-        self, projection: Mapping[str, object], *, role: str
+        self,
+        projection: Mapping[str, object],
+        *,
+        role: str,
+        learning_token_budget: int = 1500,
+        control_token_budget: int = 500,
     ) -> dict[str, object]:
         if not isinstance(projection, Mapping) or set(projection) != {
             "schema_version",
@@ -833,6 +839,14 @@ class ContextAssembler:
             raise ValueError("context projection schema is invalid")
         if role not in self._ROLE_PRIORITIES:
             raise ValueError("context role is invalid")
+        for budget, maximum, field_name in (
+            (learning_token_budget, 1500, "learning_token_budget"),
+            (control_token_budget, 500, "control_token_budget"),
+        ):
+            if type(budget) is not int or budget <= 0 or budget > maximum:
+                raise ValueError(
+                    f"{field_name} must be an integer from 1 through {maximum}"
+                )
         claims = projection.get("claims")
         excluded_claims = projection.get("excluded_claims")
         if not isinstance(claims, list) or not isinstance(excluded_claims, list):
@@ -855,17 +869,46 @@ class ContextAssembler:
                 ),
             )
         ]
+        learning_memory = {
+            "schema_version": "control_plane.learning_memory.v1",
+            "claims": ordered_claims,
+        }
+        control_metadata = {
+            "projection_schema_version": projection["schema_version"],
+            "excluded_claims": deepcopy(excluded_claims),
+        }
+
+        def estimated_tokens(value: object) -> int:
+            canonical = json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            return max(1, (len(canonical) + 1) // 2)
+
+        learning_required = estimated_tokens(learning_memory)
+        control_required = estimated_tokens(control_metadata)
+        budget_exceeded = (
+            learning_required > learning_token_budget
+            or control_required > control_token_budget
+        )
         return {
             "schema_version": "control_plane.context_assembly.v1",
-            "status": "OK",
+            "status": "CONTEXT_BUDGET_EXCEEDED" if budget_exceeded else "OK",
             "role": role,
-            "learning_memory": {
-                "schema_version": "control_plane.learning_memory.v1",
-                "claims": ordered_claims,
-            },
-            "control_metadata": {
-                "projection_schema_version": projection["schema_version"],
-                "excluded_claims": deepcopy(excluded_claims),
+            "learning_memory": (
+                None if learning_required > learning_token_budget else learning_memory
+            ),
+            "control_metadata": (
+                None if control_required > control_token_budget else control_metadata
+            ),
+            "token_usage": {
+                "method": "ESTIMATED",
+                "learning_required": learning_required,
+                "learning_budget": learning_token_budget,
+                "control_required": control_required,
+                "control_budget": control_token_budget,
             },
         }
 

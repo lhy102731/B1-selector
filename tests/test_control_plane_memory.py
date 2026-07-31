@@ -1278,6 +1278,43 @@ class ContextAssemblerTests(unittest.TestCase):
             assembler.assemble(projection, role="falsification_officer"),
         )
 
+    def test_context_budget_overflow_is_explicit_and_never_truncated(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-budget",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-budget"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+
+        result = ContextAssembler().assemble(
+            projection,
+            role="factor_engineer",
+            learning_token_budget=1,
+            control_token_budget=500,
+        )
+
+        self.assertEqual("CONTEXT_BUDGET_EXCEEDED", result["status"])
+        self.assertIsNone(result["learning_memory"])
+        self.assertEqual("ESTIMATED", result["token_usage"]["method"])
+        self.assertGreater(result["token_usage"]["learning_required"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
