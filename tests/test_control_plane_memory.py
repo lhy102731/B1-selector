@@ -298,6 +298,78 @@ class LearningGateTests(unittest.TestCase):
                         claims,
                     )
 
+    def test_large_legal_lineage_does_not_depend_on_python_recursion(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claims = []
+        claim_count = 1500
+        for index in range(claim_count):
+            claim_id = f"deep-{index:04d}"
+            parent_ids = (
+                [f"deep-{index + 1:04d}"] if index + 1 < claim_count else []
+            )
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "FAILED_USAGE",
+                    "execution_identity": f"execution-{claim_id}",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": parent_ids,
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-new",
+                "semantic_identity": "unrelated-factor",
+                "scope": scope(regime="bull"),
+            },
+            claims,
+        )
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+        self.assertEqual(claim_count, len(decision["matches"]))
+
+    def test_large_lineage_cycle_fails_closed_without_recursion(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claims = []
+        claim_count = 1500
+        for index in range(claim_count):
+            claim_id = f"cycle-deep-{index:04d}"
+            parent_id = f"cycle-deep-{(index + 1) % claim_count:04d}"
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "FAILED_USAGE",
+                    "execution_identity": f"execution-{claim_id}",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "parent_claim_ids": [parent_id],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            )
+
+        with self.assertRaisesRegex(ValueError, "cycle"):
+            LearningGate().classify(
+                {
+                    "execution_identity": "execution-new",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                },
+                claims,
+            )
+
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

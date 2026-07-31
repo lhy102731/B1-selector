@@ -285,21 +285,34 @@ class LearningGate:
                 raise ValueError("claim lineage cannot contain a self-parent edge")
             if not set(parent_ids).issubset(known_claim_ids):
                 raise ValueError("claim lineage references an unknown parent")
-        visit_state: dict[str, int] = {}
-
-        def visit_lineage(claim_id: str) -> None:
-            state = visit_state.get(claim_id, 0)
-            if state == 1:
-                raise ValueError("claim lineage cannot contain a cycle")
-            if state == 2:
-                return
-            visit_state[claim_id] = 1
-            for parent_id in parents_by_claim[claim_id]:
-                visit_lineage(parent_id)
-            visit_state[claim_id] = 2
-
-        for claim_id in sorted(known_claim_ids):
-            visit_lineage(claim_id)
+        children_by_parent: dict[str, list[str]] = {
+            claim_id: [] for claim_id in known_claim_ids
+        }
+        remaining_parent_count = {
+            claim_id: len(parent_ids)
+            for claim_id, parent_ids in parents_by_claim.items()
+        }
+        for claim_id, parent_ids in parents_by_claim.items():
+            for parent_id in parent_ids:
+                children_by_parent[parent_id].append(claim_id)
+        ready = sorted(
+            (
+                claim_id
+                for claim_id, parent_count in remaining_parent_count.items()
+                if parent_count == 0
+            ),
+            reverse=True,
+        )
+        visited_count = 0
+        while ready:
+            parent_id = ready.pop()
+            visited_count += 1
+            for child_id in children_by_parent[parent_id]:
+                remaining_parent_count[child_id] -= 1
+                if remaining_parent_count[child_id] == 0:
+                    ready.append(child_id)
+        if visited_count != len(known_claim_ids):
+            raise ValueError("claim lineage cannot contain a cycle")
         parent_invalidated_ids: set[str] = set()
         changed = True
         while changed:
