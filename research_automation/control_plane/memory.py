@@ -254,10 +254,18 @@ class LearningGate:
                     {"claim_id": claim_id, "reason_codes": exclusion_codes}
                 )
                 continue
+            claim_execution = _nonempty_string(
+                raw_claim.get("execution_identity"),
+                "claim.execution_identity",
+            )
+            claim_semantic = _nonempty_string(
+                raw_claim.get("semantic_identity"),
+                "claim.semantic_identity",
+            )
             learned_scope = ClaimScope.from_mapping(raw_claim.get("scope"))
             relation = proposal_scope.classify_proposal(learned_scope)
-            exact_execution = raw_claim.get("execution_identity") == proposal_execution
-            semantic_match = raw_claim.get("semantic_identity") == proposal_semantic
+            exact_execution = claim_execution == proposal_execution
+            semantic_match = claim_semantic == proposal_semantic
             applicable_scope = proposal_scope.intersection(learned_scope)
             if exact_execution and relation is not ScopeMatch.DISJOINT:
                 if kind == "PARTIAL":

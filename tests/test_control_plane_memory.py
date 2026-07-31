@@ -140,6 +140,30 @@ class LearningGateTests(unittest.TestCase):
         self.assertEqual("ALLOW", decision["enforcement"])
         self.assertIn("SEMANTIC_SIMILARITY_ONLY", decision["warning_codes"])
 
+    def test_malformed_claim_identity_fails_closed(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        claim = {
+            "claim_id": "claim-malformed",
+            "kind": "FAILED_USAGE",
+            "semantic_identity": "yellow-line",
+            "scope": scope(regime="bull"),
+            "audit_grade": "PASS",
+            "taint_refs": [],
+            "invalidation_codes": [],
+            "reopen_predicates": [],
+            "universal_factor_rejection": False,
+        }
+        with self.assertRaisesRegex(ValueError, "execution_identity"):
+            LearningGate().classify(
+                {
+                    "execution_identity": "execution-malformed",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                },
+                [claim],
+            )
+
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
