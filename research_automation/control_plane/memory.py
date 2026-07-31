@@ -404,6 +404,8 @@ class ReopenPredicateEvaluator:
     ) -> dict[str, object]:
         if not isinstance(proposal, Mapping) or not isinstance(claim, Mapping):
             raise ValueError("reopen proposal and claim must be mappings")
+        if "manual_bypass" in proposal:
+            raise ValueError("manual bypass cannot qualify a reopen decision")
         claim_id = _nonempty_string(claim.get("claim_id"), "claim.claim_id")
         proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
         learned_scope = ClaimScope.from_mapping(claim.get("scope"))

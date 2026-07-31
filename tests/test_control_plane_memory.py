@@ -519,6 +519,22 @@ class LearningReopenTests(unittest.TestCase):
         self.assertEqual(["DECLARED_RESEARCH_GAP"], matching["reason_codes"])
         self.assertFalse(unrelated["qualified"])
 
+    def test_manual_reopen_bypass_is_rejected(self) -> None:
+        from research_automation.control_plane.memory import ReopenPredicateEvaluator
+
+        with self.assertRaisesRegex(ValueError, "manual bypass"):
+            ReopenPredicateEvaluator().evaluate(
+                {
+                    "scope": scope(regime="bull"),
+                    "manual_bypass": True,
+                },
+                {
+                    "claim_id": "claim-manual-bypass",
+                    "scope": scope(regime="bull"),
+                    "reopen_predicates": [],
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
