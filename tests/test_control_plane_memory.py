@@ -1219,5 +1219,65 @@ class ContextProjectionTests(unittest.TestCase):
         self.assertRegex(projected["claims"][0]["claim_id"], r"^[0-9a-f]{64}$")
 
 
+class ContextAssemblerTests(unittest.TestCase):
+    def test_role_specific_views_are_deterministic(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        claims = []
+        for claim_id, kind, conclusion, status in (
+            (
+                "claim-positive-view",
+                "POSITIVE",
+                "POSITIVE_DIRECTIONAL",
+                "positive_directional",
+            ),
+            (
+                "claim-negative-view",
+                "NEGATIVE",
+                "DO_NOT_HARD_GATE",
+                "do_not_hard_gate",
+            ),
+        ):
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": kind,
+                    "conclusion": conclusion,
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-{claim_id}"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": status,
+                }
+            )
+        projection = ContextProjection().project(claims)
+        assembler = ContextAssembler()
+
+        alpha = assembler.assemble(projection, role="alpha_hunter")
+        falsification = assembler.assemble(
+            projection, role="falsification_officer"
+        )
+
+        self.assertEqual(
+            ["POSITIVE", "NEGATIVE"],
+            [item["kind"] for item in alpha["learning_memory"]["claims"]],
+        )
+        self.assertEqual(
+            ["NEGATIVE", "POSITIVE"],
+            [item["kind"] for item in falsification["learning_memory"]["claims"]],
+        )
+        self.assertEqual(
+            falsification,
+            assembler.assemble(projection, role="falsification_officer"),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

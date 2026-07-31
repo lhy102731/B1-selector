@@ -11,6 +11,7 @@ from datetime import date
 from enum import Enum
 from collections import deque
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from hashlib import sha256
 
 
@@ -791,9 +792,88 @@ class ContextProjection:
         }
 
 
+class ContextAssembler:
+    """Build deterministic, role-specific views from ContextProjection only."""
+
+    _ROLE_PRIORITIES = {
+        "source_librarian": {},
+        "alpha_hunter": {
+            "POSITIVE": 0,
+            "PARTIAL": 1,
+            "NEGATIVE": 2,
+            "ANTI_FACTOR": 2,
+            "FAILED_USAGE": 2,
+        },
+        "falsification_officer": {
+            "NEGATIVE": 0,
+            "ANTI_FACTOR": 0,
+            "FAILED_USAGE": 0,
+            "PARTIAL": 1,
+            "POSITIVE": 2,
+        },
+        "factor_engineer": {
+            "PARTIAL": 0,
+            "POSITIVE": 1,
+            "NEGATIVE": 1,
+            "ANTI_FACTOR": 1,
+            "FAILED_USAGE": 1,
+        },
+    }
+
+    def assemble(
+        self, projection: Mapping[str, object], *, role: str
+    ) -> dict[str, object]:
+        if not isinstance(projection, Mapping) or set(projection) != {
+            "schema_version",
+            "claims",
+            "excluded_claims",
+        }:
+            raise ValueError("context projection has an invalid field contract")
+        if projection.get("schema_version") != "control_plane.context_projection.v1":
+            raise ValueError("context projection schema is invalid")
+        if role not in self._ROLE_PRIORITIES:
+            raise ValueError("context role is invalid")
+        claims = projection.get("claims")
+        excluded_claims = projection.get("excluded_claims")
+        if not isinstance(claims, list) or not isinstance(excluded_claims, list):
+            raise ValueError("context projection collections are invalid")
+        priority = self._ROLE_PRIORITIES[role]
+        indexed_claims: list[tuple[int, Mapping[str, object]]] = []
+        for index, claim in enumerate(claims):
+            if not isinstance(claim, Mapping) or claim.get("kind") not in (
+                _LEARNING_CLAIM_KINDS
+            ):
+                raise ValueError("context projection claim is invalid")
+            indexed_claims.append((index, claim))
+        ordered_claims = [
+            deepcopy(claim)
+            for _, claim in sorted(
+                indexed_claims,
+                key=lambda item: (
+                    priority.get(str(item[1]["kind"]), 99),
+                    item[0],
+                ),
+            )
+        ]
+        return {
+            "schema_version": "control_plane.context_assembly.v1",
+            "status": "OK",
+            "role": role,
+            "learning_memory": {
+                "schema_version": "control_plane.learning_memory.v1",
+                "claims": ordered_claims,
+            },
+            "control_metadata": {
+                "projection_schema_version": projection["schema_version"],
+                "excluded_claims": deepcopy(excluded_claims),
+            },
+        }
+
+
 __all__ = [
     "ClaimScope",
     "ConflictClassifier",
+    "ContextAssembler",
     "ContextProjection",
     "LearningGate",
     "ReopenPredicateEvaluator",
