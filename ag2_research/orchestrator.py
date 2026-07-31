@@ -1251,8 +1251,20 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
                     or not isinstance(proposal.get("experiment_spec"), dict)
                     or not proposal["experiment_spec"]):
                 return "reject", "proposal lacks substantive experiment fields", None
-            hypo = (output.get("raw_hypothesis") or output.get("hypothesis")
-                    or proposal.get("hypothesis") or output.get("_raw", ""))
+            hypo = str(proposal["hypothesis"])
+            normalized_hypothesis = " ".join(hypo.split()).casefold()
+            for alias_name in ("raw_hypothesis", "hypothesis"):
+                alias = output.get(alias_name)
+                if alias is not None and (
+                    not isinstance(alias, str)
+                    or " ".join(alias.split()).casefold()
+                    != normalized_hypothesis
+                ):
+                    return (
+                        "reject",
+                        f"conflicting hypothesis alias: {alias_name}",
+                        None,
+                    )
             from research_automation.control_plane.memory import (
                 ClaimScope,
                 CommittedLearningLedgerReader,
@@ -1264,7 +1276,6 @@ System_Orchestrator: Provide the final control_decision — APPROVE_NEXT / REJEC
             normalized_scope = ClaimScope.from_mapping(
                 proposal.get("scope")
             ).to_mapping()
-            normalized_hypothesis = " ".join(str(hypo).split()).casefold()
             semantic_identity = learning_semantic_identity(
                 normalized_hypothesis
             )

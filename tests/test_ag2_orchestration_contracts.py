@@ -154,6 +154,7 @@ class AG2OrchestrationContractTests(unittest.TestCase):
             "universal_factor_rejection": False,
         }
         output = {
+            "raw_hypothesis": "harmless alias",
             "proposal": {
                 "hypothesis": hypothesis,
                 "alpha_source": "B1 pullback family",
@@ -174,8 +175,20 @@ class AG2OrchestrationContractTests(unittest.TestCase):
             )
 
         self.assertEqual("reject", decision)
-        self.assertIn("HARD_BLOCK", reason)
+        self.assertIn("conflicting hypothesis alias", reason)
         self.assertIsNone(router.registry_gate.seen)
+
+        output.pop("raw_hypothesis")
+        with patch(
+            "research_automation.control_plane.memory."
+            "CommittedLearningLedgerReader.read_claims",
+            return_value=[committed_claim],
+        ):
+            decision, reason, _ = orchestrator._gate(
+                "research_proposer", output, router, {}
+            )
+        self.assertEqual("reject", decision)
+        self.assertIn("HARD_BLOCK", reason)
 
     def test_research_proposal_is_blocked_by_committed_learning_before_registry(self):
         orchestrator = Orchestrator.__new__(Orchestrator)
