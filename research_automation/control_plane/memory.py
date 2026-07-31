@@ -30,6 +30,10 @@ _EVIDENCE_GRADE_RANK = {
     "STRICT_FORWARD_VALIDATED": 1,
     "INDEPENDENTLY_REPRODUCED": 2,
 }
+_LEARNING_CLAIM_KINDS = frozenset(
+    {"POSITIVE", "NEGATIVE", "PARTIAL", "ANTI_FACTOR", "FAILED_USAGE"}
+)
+_NEGATIVE_CLAIM_KINDS = frozenset({"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"})
 
 
 class ScopeMatch(str, Enum):
@@ -424,11 +428,19 @@ class ConflictClassifier:
         )
         left_kind = _nonempty_string(left.get("kind"), "left.kind")
         right_kind = _nonempty_string(right.get("kind"), "right.kind")
+        if (
+            left_kind not in _LEARNING_CLAIM_KINDS
+            or right_kind not in _LEARNING_CLAIM_KINDS
+        ):
+            raise ValueError("conflict claim kind is invalid")
         left_scope = ClaimScope.from_mapping(left.get("scope"))
         right_scope = ClaimScope.from_mapping(right.get("scope"))
         classification = "NONE"
         resolution_owner = None
-        if left_execution == right_execution and left_kind != right_kind:
+        positive_negative = (
+            left_kind == "POSITIVE" and right_kind in _NEGATIVE_CLAIM_KINDS
+        ) or (right_kind == "POSITIVE" and left_kind in _NEGATIVE_CLAIM_KINDS)
+        if left_execution == right_execution and positive_negative:
             classification = "REPRODUCIBILITY_FAILURE"
             resolution_owner = "reproducibility_owner"
         elif left_execution != right_execution:
@@ -437,13 +449,6 @@ class ConflictClassifier:
             )
             right_semantic = _nonempty_string(
                 right.get("semantic_identity"), "right.semantic_identity"
-            )
-            positive_negative = (
-                left_kind == "POSITIVE"
-                and right_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
-            ) or (
-                right_kind == "POSITIVE"
-                and left_kind in {"NEGATIVE", "ANTI_FACTOR", "FAILED_USAGE"}
             )
             if left_semantic == right_semantic and positive_negative:
                 if "legacy_unaudited" in {

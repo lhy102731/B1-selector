@@ -452,6 +452,31 @@ class LearningConflictTests(unittest.TestCase):
         self.assertEqual("reproducibility_owner", conflict["resolution_owner"])
         self.assertEqual("event-001", conflict["actor_event"]["event_id"])
 
+    def test_conflict_requires_valid_opposing_polarity(self) -> None:
+        from research_automation.control_plane.memory import ConflictClassifier
+
+        base = {
+            "execution_identity": "execution-same-direction",
+            "scope": scope(regime="bull"),
+        }
+        same_direction = ConflictClassifier().classify(
+            {**base, "claim_id": "claim-negative", "kind": "NEGATIVE"},
+            {**base, "claim_id": "claim-failed", "kind": "FAILED_USAGE"},
+            actor_event={"event_id": "event-polarity", "actor_id": "reviewer"},
+        )
+        self.assertEqual("NONE", same_direction["classification"])
+        self.assertIsNone(same_direction["resolution_owner"])
+
+        with self.assertRaisesRegex(ValueError, "kind"):
+            ConflictClassifier().classify(
+                {**base, "claim_id": "claim-valid", "kind": "POSITIVE"},
+                {**base, "claim_id": "claim-unknown", "kind": "UNKNOWN"},
+                actor_event={
+                    "event_id": "event-unknown-kind",
+                    "actor_id": "reviewer",
+                },
+            )
+
     def test_opposing_specs_are_scope_or_protocol_conflict(self) -> None:
         from research_automation.control_plane.memory import ConflictClassifier
 
