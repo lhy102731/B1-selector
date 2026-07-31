@@ -65,6 +65,24 @@ class KnowledgeGateFailClosedTests(unittest.TestCase):
             "REQUEST_CHANGES",
             _parse_code_review_response(request_changes)[0],
         )
+        contradictory_approval = approved.replace(
+            "implements_design: pass",
+            "implements_design: fail",
+        ).replace(
+            "drift_detected: none",
+            "drift_detected: design drift present",
+        ).replace(
+            "side_effects: []",
+            "side_effects: [unapproved side effect]",
+        ).replace(
+            "architectural_violation: none",
+            "architectural_violation: boundary violated",
+        ).replace(
+            "test_coverage_change: increased",
+            "test_coverage_change: decreased",
+        )
+        with self.assertRaisesRegex(ValueError, "contradictory"):
+            _parse_code_review_response(contradictory_approval)
 
     def test_automatic_kb_validation_error_is_rejected(self):
         from research_automation.kb_gate import gate_proposal_kb

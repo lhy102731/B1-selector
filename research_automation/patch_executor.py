@@ -89,6 +89,14 @@ def _parse_code_review_response(value: object) -> tuple[str, dict[str, object]]:
         for item in side_effects
     ):
         raise ValueError("code reviewer side_effects is invalid")
+    if verdict == "APPROVE" and (
+        review["implements_design"] != "pass"
+        or review["drift_detected"] != "none"
+        or side_effects
+        or review["architectural_violation"] != "none"
+        or review["test_coverage_change"] == "decreased"
+    ):
+        raise ValueError("code reviewer approval is contradictory")
     return verdict, dict(review)
 
 
