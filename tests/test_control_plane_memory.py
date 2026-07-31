@@ -117,6 +117,56 @@ class LearningGateTests(unittest.TestCase):
         self.assertTrue(decision["universal_factor_rejection"])
         self.assertEqual("HARD_BLOCK", decision["enforcement"])
 
+    def test_universal_rejection_blocks_only_the_covered_intersection(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        required_scope = scope(regime="bull")
+        required_scope["market_regimes"] = ["bear", "bull", "sideways"]
+        proposal_scope = scope(regime="bull")
+        proposal_scope["market_regimes"] = ["bull", "crisis"]
+        claims = [
+            {
+                "claim_id": f"claim-intersection-{index}",
+                "kind": "NEGATIVE",
+                "execution_identity": f"execution-intersection-{index}",
+                "semantic_identity": "factor-intersection",
+                "scope": scope(regime=regime),
+                "audit_grade": "PASS",
+                "evidence_grade": "INDEPENDENTLY_REPRODUCED",
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "parent_claim_ids": [],
+                "universal_factor_rejection": False,
+            }
+            for index, regime in enumerate(("bear", "bull", "sideways"), start=1)
+        ]
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "proposal-intersection",
+                "semantic_identity": "factor-intersection",
+                "scope": proposal_scope,
+            },
+            claims,
+            universal_required_scope=required_scope,
+        )
+
+        self.assertTrue(decision["universal_factor_rejection"])
+        self.assertEqual("SCOPED_BLOCK", decision["enforcement"])
+        self.assertEqual([], decision["hard_block_claim_ids"])
+        self.assertEqual(
+            [
+                {
+                    "claim_id": "DERIVED_UNIVERSAL_REJECTION",
+                    "applicable_scope": {
+                        **required_scope,
+                        "market_regimes": ["bull"],
+                    },
+                }
+            ],
+            decision["scoped_block_claims"],
+        )
+
     def test_universal_rejection_defaults_false_when_omitted(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 

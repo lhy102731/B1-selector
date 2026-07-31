@@ -607,11 +607,16 @@ class LearningGate:
         warning_codes: set[str] = set()
         if universal_rejection:
             required_scope = ClaimScope.from_mapping(universal_required_scope)
-            if (
-                proposal_scope.classify_proposal(required_scope)
-                is not ScopeMatch.DISJOINT
-            ):
+            universal_relation = proposal_scope.classify_proposal(required_scope)
+            if universal_relation in {ScopeMatch.EXACT, ScopeMatch.SUBSET}:
                 hard_blocks.append("DERIVED_UNIVERSAL_REJECTION")
+            elif universal_relation is ScopeMatch.OVERLAP:
+                scoped_blocks.append(
+                    {
+                        "claim_id": "DERIVED_UNIVERSAL_REJECTION",
+                        "applicable_scope": proposal_scope.intersection(required_scope),
+                    }
+                )
         for raw_claim in claim_rows:
             if not isinstance(raw_claim, Mapping):
                 raise ValueError("claim must be a mapping")
