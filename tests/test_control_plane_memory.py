@@ -1584,6 +1584,35 @@ class ContextProjectionTests(unittest.TestCase):
 
 
 class ContextAssemblerTests(unittest.TestCase):
+    def test_assembler_normalizes_nested_malformed_values_to_value_error(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+        )
+
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": "claim-malformed-nested",
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-malformed-nested"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                }
+            ]
+        )
+        projection["claims"][0]["scope"]["mechanisms"] = [{}]
+
+        with self.assertRaises(ValueError):
+            ContextAssembler().assemble(projection, role="factor_engineer")
+
     def test_assembler_rejects_forged_contradictory_guidance(self) -> None:
         from research_automation.control_plane.memory import (
             ContextAssembler,
@@ -2207,6 +2236,13 @@ class ContextAssemblerTests(unittest.TestCase):
             "<|endoftext|>",
             result["learning_memory"]["untrusted_data"][0]["content"],
         )
+
+    def test_public_tiktoken_adapter_counts_special_text_as_plain_data(self) -> None:
+        from research_automation.control_plane.memory import TiktokenTokenizerAdapter
+
+        adapter = TiktokenTokenizerAdapter(name="gpt-4o-mini")
+
+        self.assertGreater(adapter.count_tokens("<|endoftext|>"), 0)
 
     def test_tokenizer_identity_cannot_inject_control_metadata(self) -> None:
         from research_automation.control_plane.memory import (

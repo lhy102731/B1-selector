@@ -287,8 +287,8 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
         if (
             not isinstance(items, list)
             or not items
-            or len(items) != len(set(items))
             or any(not _is_opaque_ref(item) for item in items)
+            or len(items) != len(set(items))
         ):
             raise ValueError("context projection claim scope is invalid")
         result[field_name] = list(items)
@@ -1095,7 +1095,7 @@ class TiktokenTokenizerAdapter(_RegisteredTokenizerAdapter):
         self._encoding = tiktoken.encoding_for_model(name)
 
     def count_tokens(self, text: str) -> int:
-        return len(self._encoding.encode(text))
+        return len(self._encoding.encode_ordinary(text))
 
 
 class ContextAssembler:
@@ -1263,8 +1263,8 @@ class ContextAssembler:
                 refs = claim.get(field_name)
                 if (
                     not isinstance(refs, list)
-                    or len(refs) != len(set(refs))
                     or any(not _is_opaque_ref(item) for item in refs)
+                    or len(refs) != len(set(refs))
                 ):
                     raise ValueError("context projection claim is invalid")
                 rebuilt_claim[field_name] = list(refs)
