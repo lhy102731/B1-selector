@@ -14,6 +14,7 @@ from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
 import json
+from itertools import product
 
 
 _SCOPE_FIELDS = frozenset(
@@ -497,9 +498,8 @@ class UniversalRejectionDeriver:
     ) -> bool:
         claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
         coverage = ClaimScope.from_mapping(required_scope)
-        if len(claim_rows) < 3 or parent_invalidated_ids:
-            return False
         executions: set[str] = set()
+        semantics: set[str] = set()
         scopes: list[ClaimScope] = []
         for claim in claim_rows:
             manual_value = claim.get("universal_factor_rejection", False)
@@ -511,6 +511,9 @@ class UniversalRejectionDeriver:
                 raise ValueError(
                     "universal_factor_rejection is derived, not manually supplied"
                 )
+        if len(claim_rows) < 3 or parent_invalidated_ids:
+            return False
+        for claim in claim_rows:
             if (
                 claim.get("kind") not in _NEGATIVE_CLAIM_KINDS
                 or claim.get("audit_grade") != "PASS"
@@ -525,16 +528,33 @@ class UniversalRejectionDeriver:
             if execution in executions:
                 return False
             executions.add(execution)
-            scopes.append(ClaimScope.from_mapping(claim.get("scope")))
-        for field_name in _SCOPE_FIELDS - {"time_windows"}:
-            required_values = set(getattr(coverage, field_name))
-            observed_values = set().union(
-                *(set(getattr(scope, field_name)) for scope in scopes)
+            semantics.add(
+                _nonempty_string(
+                    claim.get("semantic_identity"), "claim.semantic_identity"
+                )
             )
-            if not required_values.issubset(observed_values):
-                return False
+            scopes.append(ClaimScope.from_mapping(claim.get("scope")))
+        if len(semantics) != 1 or len(
+            {json.dumps(scope.to_mapping(), sort_keys=True) for scope in scopes}
+        ) < 3:
+            return False
+        categorical_fields = tuple(_SCOPE_FIELDS - {"time_windows"})
+        required_combinations = product(
+            *(getattr(coverage, field_name) for field_name in categorical_fields)
+        )
         return all(
-            any(required_window.is_within(observed) for scope in scopes for observed in scope.time_windows)
+            any(
+                all(
+                    value in getattr(observed_scope, field_name)
+                    for field_name, value in zip(categorical_fields, combination)
+                )
+                and any(
+                    required_window.is_within(observed_window)
+                    for observed_window in observed_scope.time_windows
+                )
+                for observed_scope in scopes
+            )
+            for combination in required_combinations
             for required_window in coverage.time_windows
         )
 
@@ -546,6 +566,8 @@ class LearningGate:
         self,
         proposal: Mapping[str, object],
         claims: Sequence[Mapping[str, object]],
+        *,
+        universal_required_scope: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
         if not isinstance(proposal, Mapping):
             raise ValueError("proposal must be a mapping")
@@ -557,20 +579,43 @@ class LearningGate:
         )
         proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
         claim_rows, parent_invalidated_ids = _validate_claim_lineage(claims)
+        universal_rejection = (
+            False
+            if universal_required_scope is None
+            else UniversalRejectionDeriver().derive(
+                claim_rows, required_scope=universal_required_scope
+            )
+        )
         matches: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         hard_blocks: list[str] = []
         scoped_blocks: list[dict[str, object]] = []
         warning_codes: set[str] = set()
+        if universal_rejection:
+            required_scope = ClaimScope.from_mapping(universal_required_scope)
+            semantic_identities = {
+                _nonempty_string(
+                    claim.get("semantic_identity"), "claim.semantic_identity"
+                )
+                for claim in claim_rows
+            }
+            if (
+                proposal_semantic in semantic_identities
+                and proposal_scope.classify_proposal(required_scope)
+                is not ScopeMatch.DISJOINT
+            ):
+                hard_blocks.append("DERIVED_UNIVERSAL_REJECTION")
         for raw_claim in claim_rows:
             if not isinstance(raw_claim, Mapping):
                 raise ValueError("claim must be a mapping")
-            universal_rejection = raw_claim.get("universal_factor_rejection", False)
-            if type(universal_rejection) is not bool:
+            manual_universal_rejection = raw_claim.get(
+                "universal_factor_rejection", False
+            )
+            if type(manual_universal_rejection) is not bool:
                 raise ValueError(
                     "claim.universal_factor_rejection must be an exact boolean"
                 )
-            if universal_rejection:
+            if manual_universal_rejection:
                 raise ValueError(
                     "universal_factor_rejection is derived, not manually supplied"
                 )
@@ -661,6 +706,7 @@ class LearningGate:
             "warning_codes": sorted(warning_codes),
             "matches": matches,
             "excluded_claims": excluded_claims,
+            "universal_factor_rejection": universal_rejection,
         }
 
 

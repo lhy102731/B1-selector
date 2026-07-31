@@ -20,7 +20,10 @@ def scope(*, regime: str) -> dict[str, object]:
 
 class LearningGateTests(unittest.TestCase):
     def test_universal_rejection_is_derived_from_strict_scope_coverage(self) -> None:
-        from research_automation.control_plane.memory import UniversalRejectionDeriver
+        from research_automation.control_plane.memory import (
+            LearningGate,
+            UniversalRejectionDeriver,
+        )
 
         required_scope = scope(regime="bull")
         required_scope["market_regimes"] = ["bear", "bull", "sideways"]
@@ -31,6 +34,7 @@ class LearningGateTests(unittest.TestCase):
                     "claim_id": f"claim-universal-{index}",
                     "kind": "NEGATIVE",
                     "execution_identity": f"execution-universal-{index}",
+                    "semantic_identity": "factor-universal",
                     "scope": scope(regime=regime),
                     "audit_grade": "PASS",
                     "evidence_grade": "INDEPENDENTLY_REPRODUCED",
@@ -51,6 +55,17 @@ class LearningGateTests(unittest.TestCase):
                 claims[:2], required_scope=required_scope
             )
         )
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "proposal-universal",
+                "semantic_identity": "factor-universal",
+                "scope": scope(regime="bull"),
+            },
+            claims,
+            universal_required_scope=required_scope,
+        )
+        self.assertTrue(decision["universal_factor_rejection"])
+        self.assertEqual("HARD_BLOCK", decision["enforcement"])
 
     def test_universal_rejection_defaults_false_when_omitted(self) -> None:
         from research_automation.control_plane.memory import LearningGate
