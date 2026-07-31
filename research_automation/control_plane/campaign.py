@@ -21,6 +21,7 @@ class InvocationOutcome(str, Enum):
     EMPTY_OUTPUT = "EMPTY_OUTPUT"
     INVALID_JSON = "INVALID_JSON"
     TIMEOUT = "TIMEOUT"
+    EXCEPTION = "EXCEPTION"
 
 
 class InvalidModelResponseError(ValueError):
@@ -29,6 +30,10 @@ class InvalidModelResponseError(ValueError):
 
 class ModelInvocationTimeoutError(TimeoutError):
     """Raised after a timed-out provider attempt has been accounted for."""
+
+
+class ModelInvocationProviderError(RuntimeError):
+    """Raised after a provider exception has been accounted for."""
 
 
 @dataclass(frozen=True)
@@ -127,23 +132,19 @@ class ModelInvocation:
         try:
             response = self._provider.invoke(request)
         except TimeoutError as error:
-            self._usage_journal.begin(
-                UsageEnvelope(
-                    provider=self._provider_name,
-                    profile=self._profile,
-                    request_model=self._request_model,
-                    response_model=None,
-                    call_id=call_id,
-                    attempt_id=attempt_id,
-                    usage_status=UsageStatus.UNKNOWN,
-                    input_tokens=None,
-                    output_tokens=None,
-                    total_tokens=None,
-                    outcome=InvocationOutcome.TIMEOUT,
-                    raw_usage_sha256=_raw_usage_sha256({}),
-                )
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.TIMEOUT,
             )
             raise ModelInvocationTimeoutError("provider invocation timed out") from error
+        except Exception as error:
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
         raw_usage = response.raw_usage
         values = {
             field: _reported_token(raw_usage, field)
@@ -193,11 +194,36 @@ class ModelInvocation:
         )
         return parsed
 
+    def _record_unknown_outcome(
+        self,
+        *,
+        call_id: str,
+        attempt_id: str,
+        outcome: InvocationOutcome,
+    ) -> None:
+        self._usage_journal.begin(
+            UsageEnvelope(
+                provider=self._provider_name,
+                profile=self._profile,
+                request_model=self._request_model,
+                response_model=None,
+                call_id=call_id,
+                attempt_id=attempt_id,
+                usage_status=UsageStatus.UNKNOWN,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                outcome=outcome,
+                raw_usage_sha256=_raw_usage_sha256({}),
+            )
+        )
+
 
 __all__ = [
     "InvalidModelResponseError",
     "InvocationOutcome",
     "ModelInvocation",
+    "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",
     "ProviderResponse",
     "UsageEnvelope",

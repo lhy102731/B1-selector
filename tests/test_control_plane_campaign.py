@@ -5,6 +5,7 @@ import unittest
 from research_automation.control_plane.campaign import (
     InvalidModelResponseError,
     InvocationOutcome,
+    ModelInvocationProviderError,
     ModelInvocationTimeoutError,
     ModelInvocation,
     ProviderResponse,
@@ -50,6 +51,11 @@ class _NullOutputProvider:
 class _TimeoutProvider:
     def invoke(self, request: object) -> ProviderResponse:
         raise TimeoutError("fake provider timeout")
+
+
+class _ExceptionProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        raise RuntimeError("fake provider failure")
 
 
 class _RecordingUsageJournal:
@@ -178,6 +184,32 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertIsNone(envelope.input_tokens)
         self.assertIsNone(envelope.output_tokens)
         self.assertIsNone(envelope.total_tokens)
+
+    def test_provider_exception_records_unknown_usage_before_wrapping(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ExceptionProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError) as raised:
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-005",
+                attempt_id="attempt-001",
+            )
+
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.request_model, "fake-request-model")
+        self.assertIsNone(envelope.response_model)
 
 
 if __name__ == "__main__":
