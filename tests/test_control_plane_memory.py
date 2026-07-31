@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from time import perf_counter
+from unittest.mock import patch
 
 
 def scope(*, regime: str) -> dict[str, object]:
@@ -1657,6 +1658,19 @@ class ContextAssemblerTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "configuration"):
             ContextAssembler(tokenizer_adapter=MaliciousAdapter())
+
+
+class LearningContextRouterTests(unittest.TestCase):
+    def test_new_context_hot_path_never_scans_recent_files(self) -> None:
+        from research_automation.control_plane.memory import LearningContextRouter
+
+        with patch("pathlib.Path.rglob", side_effect=AssertionError("legacy scan")):
+            result = LearningContextRouter().build_context(
+                [], role="source_librarian"
+            )
+
+        self.assertEqual("OK", result["status"])
+        self.assertEqual([], result["learning_memory"]["claims"])
 
 
 if __name__ == "__main__":

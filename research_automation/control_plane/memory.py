@@ -1244,6 +1244,42 @@ class ContextAssembler:
         }
 
 
+class LearningContextRouter:
+    """The sole V3.4 hot path from explicit committed claims to context."""
+
+    def __init__(
+        self,
+        *,
+        tokenizer_kind: str | None = None,
+        tokenizer_name: str | None = None,
+    ) -> None:
+        self._projection = ContextProjection()
+        self._assembler = ContextAssembler(
+            tokenizer_kind=tokenizer_kind,
+            tokenizer_name=tokenizer_name,
+        )
+
+    def build_context(
+        self,
+        claims: Sequence[Mapping[str, object]],
+        *,
+        role: str,
+        learning_token_budget: int = 1500,
+        control_token_budget: int = 500,
+        untrusted_sources: Sequence[Mapping[str, object]] | None = None,
+        target_scope: Mapping[str, object] | None = None,
+    ) -> dict[str, object]:
+        projection = self._projection.project(claims)
+        return self._assembler.assemble(
+            projection,
+            role=role,
+            learning_token_budget=learning_token_budget,
+            control_token_budget=control_token_budget,
+            untrusted_sources=untrusted_sources,
+            target_scope=target_scope,
+        )
+
+
 __all__ = [
     "AG2TokenizerAdapter",
     "ClaimScope",
@@ -1251,6 +1287,7 @@ __all__ = [
     "ContextAssembler",
     "ContextProjection",
     "LearningGate",
+    "LearningContextRouter",
     "ReopenPredicateEvaluator",
     "ScopeMatch",
     "TimeWindow",
