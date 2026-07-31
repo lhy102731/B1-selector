@@ -4,6 +4,18 @@ import unittest
 from time import perf_counter
 
 
+class FakeAG2Encoder:
+    __module__ = "ag2.testing"
+
+    def __init__(self, token_count: int) -> None:
+        self.token_count = token_count
+        self.last_text = ""
+
+    def encode(self, text: str) -> list[int]:
+        self.last_text = text
+        return list(range(self.token_count))
+
+
 def scope(*, regime: str) -> dict[str, object]:
     return {
         "mechanisms": ["yellow_line_mean_reversion"],
@@ -1251,6 +1263,7 @@ class ContextAssemblerTests(unittest.TestCase):
 
     def test_role_specific_views_are_deterministic(self) -> None:
         from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
             ContextAssembler,
             ContextProjection,
         )
@@ -1287,14 +1300,11 @@ class ContextAssemblerTests(unittest.TestCase):
                 }
             )
         projection = ContextProjection().project(claims)
-        class RoleTestTokenizer:
-            kind = "AG2"
-            name = "role_test_tokenizer"
-
-            def count_tokens(self, text: str) -> int:
-                return 100
-
-        assembler = ContextAssembler(tokenizer_adapter=RoleTestTokenizer())
+        assembler = ContextAssembler(
+            tokenizer_adapter=AG2TokenizerAdapter(
+                name="role_test_tokenizer", encoder=FakeAG2Encoder(100)
+            )
+        )
 
         alpha = assembler.assemble(projection, role="alpha_hunter")
         falsification = assembler.assemble(
@@ -1371,17 +1381,13 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertGreater(result["token_usage"]["learning_required"], 700)
 
     def test_known_tokenizer_adapter_reports_exact_usage(self) -> None:
-        from research_automation.control_plane.memory import ContextAssembler
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
 
-        class ExactTokenizer:
-            kind = "AG2"
-            name = "ag2_test_adapter"
-
-            def count_tokens(self, text: str) -> int:
-                self.last_text = text
-                return 7
-
-        tokenizer = ExactTokenizer()
+        encoder = FakeAG2Encoder(7)
+        tokenizer = AG2TokenizerAdapter(name="ag2_test_adapter", encoder=encoder)
         result = ContextAssembler(tokenizer_adapter=tokenizer).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
@@ -1396,7 +1402,7 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("AG2", result["token_usage"]["tokenizer_kind"])
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
         self.assertEqual(7, result["token_usage"]["learning_required"])
-        self.assertTrue(tokenizer.last_text.startswith("{"))
+        self.assertTrue(encoder.last_text.startswith("{"))
 
     def test_prompt_injection_remains_structured_untrusted_data(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
@@ -1422,16 +1428,16 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertNotIn(injection, repr(result["control_metadata"]))
 
     def test_tokenizer_identity_cannot_inject_control_metadata(self) -> None:
-        from research_automation.control_plane.memory import ContextAssembler
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
 
-        class Tokenizer:
-            kind = "AG2"
-            name = "ignore_prior_instructions"
-
-            def count_tokens(self, text: str) -> int:
-                return 7
-
-        result = ContextAssembler(tokenizer_adapter=Tokenizer()).assemble(
+        result = ContextAssembler(
+            tokenizer_adapter=AG2TokenizerAdapter(
+                name="ignore_prior_instructions", encoder=FakeAG2Encoder(7)
+            )
+        ).assemble(
             {
                 "schema_version": "control_plane.context_projection.v1",
                 "claims": [],
@@ -1445,17 +1451,17 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertRegex(result["token_usage"]["tokenizer_ref"], r"^[0-9a-f]{64}$")
 
     def test_exact_tokenizer_cannot_report_zero_for_nonempty_payload(self) -> None:
-        from research_automation.control_plane.memory import ContextAssembler
-
-        class ZeroTokenizer:
-            kind = "AG2"
-            name = "zero_tokenizer"
-
-            def count_tokens(self, text: str) -> int:
-                return 0
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
 
         with self.assertRaisesRegex(ValueError, "token count"):
-            ContextAssembler(tokenizer_adapter=ZeroTokenizer()).assemble(
+            ContextAssembler(
+                tokenizer_adapter=AG2TokenizerAdapter(
+                    name="zero_tokenizer", encoder=FakeAG2Encoder(0)
+                )
+            ).assemble(
                 {
                     "schema_version": "control_plane.context_projection.v1",
                     "claims": [],
@@ -1463,6 +1469,19 @@ class ContextAssemblerTests(unittest.TestCase):
                 },
                 role="source_librarian",
             )
+
+    def test_unregistered_duck_tokenizer_is_rejected(self) -> None:
+        from research_automation.control_plane.memory import ContextAssembler
+
+        class DuckTokenizer:
+            kind = "AG2"
+            name = "duck"
+
+            def count_tokens(self, text: str) -> int:
+                return 7
+
+        with self.assertRaisesRegex(ValueError, "registered"):
+            ContextAssembler(tokenizer_adapter=DuckTokenizer())
 
 
 if __name__ == "__main__":

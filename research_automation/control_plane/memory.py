@@ -817,6 +817,35 @@ class ContextProjection:
         }
 
 
+class _RegisteredTokenizerAdapter:
+    kind = ""
+    module_prefix = ""
+
+    def __init__(self, *, name: str, encoder: object) -> None:
+        self.name = _canonical_identifier(name, "tokenizer_adapter.name")
+        if not type(encoder).__module__.startswith(self.module_prefix):
+            raise ValueError("tokenizer encoder is not from a registered provider")
+        if not callable(getattr(encoder, "encode", None)):
+            raise ValueError("tokenizer encoder must expose encode")
+        self._encoder = encoder
+
+    def count_tokens(self, text: str) -> int:
+        tokens = self._encoder.encode(text)
+        if not isinstance(tokens, Sequence) or isinstance(tokens, (str, bytes)):
+            raise ValueError("tokenizer encoder returned an invalid token sequence")
+        return len(tokens)
+
+
+class AG2TokenizerAdapter(_RegisteredTokenizerAdapter):
+    kind = "AG2"
+    module_prefix = "ag2"
+
+
+class TiktokenTokenizerAdapter(_RegisteredTokenizerAdapter):
+    kind = "TIKTOKEN"
+    module_prefix = "tiktoken"
+
+
 class ContextAssembler:
     """Build deterministic, role-specific views from ContextProjection only."""
 
@@ -847,6 +876,10 @@ class ContextAssembler:
 
     def __init__(self, *, tokenizer_adapter: object | None = None) -> None:
         if tokenizer_adapter is not None:
+            if not isinstance(
+                tokenizer_adapter, (AG2TokenizerAdapter, TiktokenTokenizerAdapter)
+            ):
+                raise ValueError("tokenizer_adapter must be a registered adapter")
             name = _canonical_identifier(
                 getattr(tokenizer_adapter, "name", None), "tokenizer_adapter.name"
             )
@@ -1026,6 +1059,7 @@ class ContextAssembler:
 
 
 __all__ = [
+    "AG2TokenizerAdapter",
     "ClaimScope",
     "ConflictClassifier",
     "ContextAssembler",
@@ -1034,4 +1068,5 @@ __all__ = [
     "ReopenPredicateEvaluator",
     "ScopeMatch",
     "TimeWindow",
+    "TiktokenTokenizerAdapter",
 ]
