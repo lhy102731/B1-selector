@@ -841,6 +841,7 @@ class ContextAssembler:
         role: str,
         learning_token_budget: int = 1500,
         control_token_budget: int = 500,
+        untrusted_sources: Sequence[Mapping[str, object]] | None = None,
     ) -> dict[str, object]:
         if not isinstance(projection, Mapping) or set(projection) != {
             "schema_version",
@@ -882,9 +883,44 @@ class ContextAssembler:
                 ),
             )
         ]
+        source_rows: Sequence[Mapping[str, object]] = (
+            [] if untrusted_sources is None else untrusted_sources
+        )
+        if not isinstance(source_rows, Sequence) or isinstance(
+            source_rows, (str, bytes)
+        ):
+            raise ValueError("untrusted_sources must be a sequence")
+        untrusted_data: list[dict[str, object]] = []
+        for source in source_rows:
+            if not isinstance(source, Mapping) or set(source) != {
+                "source_ref",
+                "content",
+            }:
+                raise ValueError("untrusted source has an invalid field contract")
+            source_ref = _canonical_identifier(
+                source.get("source_ref"), "untrusted_source.source_ref"
+            )
+            content = source.get("content")
+            if (
+                not isinstance(content, str)
+                or not content
+                or content != content.strip()
+                or len(content.encode("utf-8")) > 16 * 1024
+            ):
+                raise ValueError("untrusted source content is invalid")
+            untrusted_data.append(
+                {
+                    "source_ref": _opaque_ref("untrusted_source", source_ref),
+                    "content": content,
+                    "trust_label": "UNTRUSTED_DATA",
+                    "capabilities": [],
+                    "authority_effect": "NONE",
+                }
+            )
         learning_memory = {
             "schema_version": "control_plane.learning_memory.v1",
             "claims": ordered_claims,
+            "untrusted_data": untrusted_data,
         }
         control_metadata = {
             "projection_schema_version": projection["schema_version"],
