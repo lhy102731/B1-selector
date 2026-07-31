@@ -17,6 +17,62 @@ def scope(*, regime: str) -> dict[str, object]:
 
 
 class LearningGateTests(unittest.TestCase):
+    def test_exact_execution_identity_is_hard_rejected(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-exact",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+            },
+            [
+                {
+                    "claim_id": "claim-exact",
+                    "kind": "FAILED_USAGE",
+                    "execution_identity": "execution-exact",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            ],
+        )
+
+        self.assertEqual("HARD_BLOCK", decision["enforcement"])
+        self.assertEqual(["claim-exact"], decision["hard_block_claim_ids"])
+
+    def test_semantic_similarity_warns_only(self) -> None:
+        from research_automation.control_plane.memory import LearningGate
+
+        decision = LearningGate().classify(
+            {
+                "execution_identity": "execution-new",
+                "semantic_identity": "yellow-line",
+                "scope": scope(regime="bull"),
+            },
+            [
+                {
+                    "claim_id": "claim-similar",
+                    "kind": "NEGATIVE",
+                    "execution_identity": "execution-old",
+                    "semantic_identity": "yellow-line",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "universal_factor_rejection": False,
+                }
+            ],
+        )
+
+        self.assertEqual("ALLOW", decision["enforcement"])
+        self.assertIn("SEMANTIC_SIMILARITY_ONLY", decision["warning_codes"])
+
     def test_disjoint_scope_is_not_hard_rejected(self) -> None:
         from research_automation.control_plane.memory import LearningGate
 
