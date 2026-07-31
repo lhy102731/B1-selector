@@ -924,9 +924,10 @@ class ContextAssembler:
 
     def __init__(self, *, tokenizer_adapter: object | None = None) -> None:
         if tokenizer_adapter is not None:
-            if not isinstance(
-                tokenizer_adapter, (AG2TokenizerAdapter, TiktokenTokenizerAdapter)
-            ):
+            if type(tokenizer_adapter) not in {
+                AG2TokenizerAdapter,
+                TiktokenTokenizerAdapter,
+            }:
                 raise ValueError("tokenizer_adapter must be a registered adapter")
             name = _canonical_identifier(
                 getattr(tokenizer_adapter, "name", None), "tokenizer_adapter.name"

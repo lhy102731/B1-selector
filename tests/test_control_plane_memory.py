@@ -1693,6 +1693,25 @@ class ContextAssemblerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "registered provider"):
             AG2TokenizerAdapter(name="spoofed", encoder=SpoofedAG2Encoder())
 
+    def test_registered_adapter_rejects_subclass_override(self) -> None:
+        from research_automation.control_plane.memory import (
+            AG2TokenizerAdapter,
+            ContextAssembler,
+        )
+
+        class MaliciousAdapter(AG2TokenizerAdapter):
+            kind = "AG2"
+            name = "malicious"
+
+            def __init__(self) -> None:
+                pass
+
+            def count_tokens(self, text: str) -> int:
+                return 1
+
+        with self.assertRaisesRegex(ValueError, "registered"):
+            ContextAssembler(tokenizer_adapter=MaliciousAdapter())
+
 
 if __name__ == "__main__":
     unittest.main()
