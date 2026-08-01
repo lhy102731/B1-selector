@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from dataclasses import dataclass
 from enum import Enum
 
@@ -37,6 +38,7 @@ class DuplicateCycleError(CampaignLifecycleError):
 class CampaignStatus(str, Enum):
     CREATED = "CREATED"
     ACTIVE = "ACTIVE"
+    BLOCKED = "BLOCKED"
     COMPLETED = "COMPLETED"
 
 
@@ -58,13 +60,17 @@ _CAMPAIGN_AGGREGATE_TYPE = "CAMPAIGN_STATE"
 _CYCLE_AGGREGATE_TYPE = "CYCLE_STATE"
 _CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 _CAMPAIGN_TRANSITIONED = "CAMPAIGN_TRANSITIONED"
+_CAMPAIGN_BLOCKED = "CAMPAIGN_BLOCKED"
 _CYCLE_OPENED = "CYCLE_OPENED"
 _CYCLE_TRANSITIONED = "CYCLE_TRANSITIONED"
 
-_CAMPAIGN_NEXT = {
-    CampaignStatus.CREATED: CampaignStatus.ACTIVE,
-    CampaignStatus.ACTIVE: CampaignStatus.COMPLETED,
-}
+_CAMPAIGN_TRANSITIONS = frozenset(
+    {
+        (CampaignStatus.CREATED, CampaignStatus.ACTIVE),
+        (CampaignStatus.ACTIVE, CampaignStatus.BLOCKED),
+        (CampaignStatus.ACTIVE, CampaignStatus.COMPLETED),
+    }
+)
 _CYCLE_NEXT = {
     CycleStatus.CREATED: CycleStatus.BUDGET_RESERVED,
     CycleStatus.BUDGET_RESERVED: CycleStatus.CONTEXT_READY,
@@ -84,6 +90,8 @@ class CampaignSnapshot:
     campaign_id: str
     status: CampaignStatus
     sequence: int
+    block_reason_code: str | None = None
+    block_source_ref: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +116,16 @@ def _state_event_id(
             (namespace, campaign_id, aggregate_type, aggregate_id, role)
         ).encode("ascii")
     ).hexdigest()
+
+
+def _stored_sha256(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{name} must be a SHA-256 digest")
+    return value
 
 
 class OperationalCampaignLifecycle:
@@ -278,6 +296,83 @@ class OperationalCampaignLifecycle:
             complete_campaign
         )
 
+    def block(self, *, reason_code: str, source_ref: str) -> CampaignSnapshot:
+        self._journal._authorize()
+        reason_code = _identifier(reason_code, "reason_code")
+        source_ref = _identifier(source_ref, "source_ref")
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._block_in_transaction(
+                connection,
+                reason_code=reason_code,
+                source_ref=source_ref,
+            )
+        )
+
+    def _block_in_transaction(
+        self,
+        connection,
+        *,
+        reason_code: str,
+        source_ref: str,
+    ) -> CampaignSnapshot:
+        snapshot = self._replay_campaign(self._campaign_events(connection))
+        if snapshot.status is CampaignStatus.BLOCKED:
+            if (
+                snapshot.block_reason_code != reason_code
+                or snapshot.block_source_ref != source_ref
+            ):
+                raise CampaignStateConflictError(
+                    "Campaign is already BLOCKED by different provenance"
+                )
+            return snapshot
+        if snapshot.status is not CampaignStatus.ACTIVE:
+            raise CampaignStateConflictError("Campaign is not ACTIVE")
+        primary_event_id = self._campaign_event_id(CampaignStatus.BLOCKED.value)
+        event_id = primary_event_id
+        occupied = self._journal._event_in_transaction(
+            connection,
+            primary_event_id,
+        )
+        payload: dict[str, object] = {
+            "from_status": CampaignStatus.ACTIVE.value,
+            "to_status": CampaignStatus.BLOCKED.value,
+            "reason_code": reason_code,
+            "source_ref": source_ref,
+        }
+        if occupied is not None:
+            while True:
+                recovery_nonce = secrets.token_hex(32)
+                event_id = self._campaign_block_recovery_event_id(
+                    reason_code=reason_code,
+                    source_ref=source_ref,
+                    recovery_nonce=recovery_nonce,
+                    collision_event_id=occupied.event_id,
+                    collision_integrity_sha256=occupied.payload_sha256,
+                )
+                if self._journal._event_in_transaction(connection, event_id) is None:
+                    break
+            payload["event_id_recovery"] = {
+                "nonce": recovery_nonce,
+                "collision_event_id": occupied.event_id,
+                "collision_integrity_sha256": occupied.payload_sha256,
+            }
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=event_id,
+            cycle_id=None,
+            aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
+            aggregate_id=self._journal._campaign_id,
+            event_type=_CAMPAIGN_BLOCKED,
+            payload=payload,
+        )
+        return CampaignSnapshot(
+            self._journal._campaign_id,
+            CampaignStatus.BLOCKED,
+            event.sequence,
+            reason_code,
+            source_ref,
+        )
+
     def advance_cycle(
         self,
         *,
@@ -389,6 +484,31 @@ class OperationalCampaignLifecycle:
             role=role,
         )
 
+    def _campaign_block_recovery_event_id(
+        self,
+        *,
+        reason_code: str,
+        source_ref: str,
+        recovery_nonce: str,
+        collision_event_id: str,
+        collision_integrity_sha256: str,
+    ) -> str:
+        recovery_binding = hashlib.sha256(
+            b"control_plane.campaign_block_recovery.v2\0"
+            + "\0".join(
+                (
+                    reason_code,
+                    source_ref,
+                    recovery_nonce,
+                    collision_event_id,
+                    collision_integrity_sha256,
+                )
+            ).encode("ascii")
+        ).hexdigest()
+        return self._campaign_event_id(
+            f"{CampaignStatus.BLOCKED.value}_RECOVERY:{recovery_binding}"
+        )
+
     def _cycle_event_id(self, cycle_id: str, role: str) -> str:
         return _state_event_id(
             namespace=self._journal._namespace,
@@ -448,6 +568,8 @@ class OperationalCampaignLifecycle:
             raise CampaignLifecycleError("Campaign CREATED event is invalid")
         status = CampaignStatus.CREATED
         sequence = created.sequence
+        block_reason_code: str | None = None
+        block_source_ref: str | None = None
         for event in events[1:]:
             self._require_event_envelope(
                 event,
@@ -456,10 +578,99 @@ class OperationalCampaignLifecycle:
                 aggregate_id=self._journal._campaign_id,
             )
             payload = _event_domain_payload(event)
+            expected_event_id: str | None = None
+            if event.event_type == _CAMPAIGN_TRANSITIONED:
+                if set(payload) != {"from_status", "to_status"}:
+                    raise CampaignLifecycleError(
+                        "Campaign transition event is invalid"
+                    )
+                allowed = {
+                    (CampaignStatus.CREATED, CampaignStatus.ACTIVE),
+                    (CampaignStatus.ACTIVE, CampaignStatus.COMPLETED),
+                }
+            elif event.event_type == _CAMPAIGN_BLOCKED:
+                block_fields = {
+                    "from_status",
+                    "to_status",
+                    "reason_code",
+                    "source_ref",
+                }
+                if frozenset(payload) not in {
+                    frozenset(block_fields),
+                    frozenset((*block_fields, "event_id_recovery")),
+                }:
+                    raise CampaignLifecycleError(
+                        "Campaign BLOCKED event is invalid"
+                    )
+                try:
+                    reason_code = _identifier(
+                        payload["reason_code"],
+                        "stored reason_code",
+                    )
+                    source_ref = _identifier(
+                        payload["source_ref"],
+                        "stored source_ref",
+                    )
+                except ValueError as error:
+                    raise CampaignLifecycleError(
+                        "Campaign BLOCKED binding is invalid"
+                    ) from error
+                expected_event_id = self._campaign_event_id(
+                    CampaignStatus.BLOCKED.value
+                )
+                if "event_id_recovery" in payload:
+                    recovery = payload["event_id_recovery"]
+                    if (
+                        not isinstance(recovery, dict)
+                        or set(recovery)
+                        != {
+                            "nonce",
+                            "collision_event_id",
+                            "collision_integrity_sha256",
+                        }
+                    ):
+                        raise CampaignLifecycleError(
+                            "Campaign BLOCKED recovery is invalid"
+                        )
+                    try:
+                        recovery_nonce = _stored_sha256(
+                            recovery["nonce"],
+                            "stored recovery nonce",
+                        )
+                        collision_event_id = _identifier(
+                            recovery["collision_event_id"],
+                            "stored collision event_id",
+                        )
+                        collision_integrity_sha256 = _stored_sha256(
+                            recovery["collision_integrity_sha256"],
+                            "stored collision integrity_sha256",
+                        )
+                    except ValueError as error:
+                        raise CampaignLifecycleError(
+                            "Campaign BLOCKED recovery binding is invalid"
+                        ) from error
+                    if collision_event_id != expected_event_id:
+                        raise CampaignLifecycleError(
+                            "Campaign BLOCKED recovery collision is invalid"
+                        )
+                    expected_event_id = self._campaign_block_recovery_event_id(
+                        reason_code=reason_code,
+                        source_ref=source_ref,
+                        recovery_nonce=recovery_nonce,
+                        collision_event_id=collision_event_id,
+                        collision_integrity_sha256=(
+                            collision_integrity_sha256
+                        ),
+                    )
+                allowed = {
+                    (CampaignStatus.ACTIVE, CampaignStatus.BLOCKED),
+                }
+                block_reason_code = reason_code
+                block_source_ref = source_ref
+            else:
+                raise CampaignLifecycleError("Campaign transition event is invalid")
             if (
-                event.event_type != _CAMPAIGN_TRANSITIONED
-                or set(payload) != {"from_status", "to_status"}
-                or type(payload["from_status"]) is not str
+                type(payload["from_status"]) is not str
                 or type(payload["to_status"]) is not str
             ):
                 raise CampaignLifecycleError("Campaign transition event is invalid")
@@ -468,15 +679,24 @@ class OperationalCampaignLifecycle:
                 to_status = CampaignStatus(str(payload["to_status"]))
             except ValueError as error:
                 raise CampaignLifecycleError("Campaign status is invalid") from error
+            if expected_event_id is None:
+                expected_event_id = self._campaign_event_id(to_status.value)
             if (
                 from_status is not status
-                or _CAMPAIGN_NEXT.get(from_status) is not to_status
-                or event.event_id != self._campaign_event_id(to_status.value)
+                or (from_status, to_status) not in _CAMPAIGN_TRANSITIONS
+                or (from_status, to_status) not in allowed
+                or event.event_id != expected_event_id
             ):
                 raise CampaignLifecycleError("Campaign transition is invalid")
             status = to_status
             sequence = event.sequence
-        return CampaignSnapshot(self._journal._campaign_id, status, sequence)
+        return CampaignSnapshot(
+            self._journal._campaign_id,
+            status,
+            sequence,
+            block_reason_code,
+            block_source_ref,
+        )
 
     def _replay_cycle(self, events: tuple[CampaignEvent, ...]) -> CycleSnapshot:
         if not events:

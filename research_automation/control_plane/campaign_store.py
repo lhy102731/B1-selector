@@ -300,12 +300,8 @@ class OperationalCampaignJournal:
         payload_json, _ = _payload(bound_payload)
         occurred_at = self._clock()
         occurred_text = _utc(occurred_at)
-        existing = connection.execute(
-            "SELECT * FROM campaign_events WHERE event_id = ?",
-            (event_id,),
-        ).fetchone()
-        if existing is not None:
-            event = _event_from_row(existing)
+        event = self._event_in_transaction(connection, event_id)
+        if event is not None:
             expected = (
                 namespace,
                 campaign_id,
@@ -379,6 +375,18 @@ class OperationalCampaignJournal:
             occurred_at=occurred_at,
             sequence=sequence,
         )
+
+    @staticmethod
+    def _event_in_transaction(
+        connection,
+        event_id: str,
+    ) -> CampaignEvent | None:
+        event_id = _identifier(event_id, "event_id")
+        row = connection.execute(
+            "SELECT * FROM campaign_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        return None if row is None else _event_from_row(row)
 
     def list_events(
         self,
@@ -930,35 +938,160 @@ class OperationalUsageJournal:
         )
 
     def read_attempt(self, *, call_id: str, attempt_id: str) -> RecordedModelAttempt:
+        self._journal._authorize()
+        _attempt_id(self._cycle_id, call_id, attempt_id)
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._read_attempt_in_transaction(
+                connection,
+                call_id=call_id,
+                attempt_id=attempt_id,
+            )
+        )
+
+    def _read_attempt_in_transaction(
+        self,
+        connection,
+        *,
+        call_id: str,
+        attempt_id: str,
+    ) -> RecordedModelAttempt:
         aggregate_id = _attempt_id(self._cycle_id, call_id, attempt_id)
-        events = self._events(aggregate_id)
-        usage_events = [
-            event for event in events if event.event_type == "MODEL_USAGE_RECORDED"
-        ]
-        finish_events = [
-            event for event in events if event.event_type == "MODEL_USAGE_FINISHED"
-        ]
-        if len(usage_events) != 1 or len(finish_events) > 1:
-            raise CampaignJournalError("model attempt journal is incomplete or ambiguous")
-        envelope = _parse_envelope(usage_events[0].payload())
+        events = self._events_in_transaction(connection, aggregate_id)
+        if len(events) not in {1, 2}:
+            raise CampaignJournalError(
+                "model attempt journal is incomplete or ambiguous"
+            )
+        usage_event = events[0]
+        expected_usage_envelope = (
+            self._journal._namespace,
+            self._journal._campaign_id,
+            self._cycle_id,
+            "MODEL_ATTEMPT",
+            aggregate_id,
+            "MODEL_USAGE_RECORDED",
+            _event_id(
+                self._journal._namespace,
+                self._journal._campaign_id,
+                self._cycle_id,
+                aggregate_id,
+                "usage",
+            ),
+        )
+        observed_usage_envelope = (
+            usage_event.namespace,
+            usage_event.campaign_id,
+            usage_event.cycle_id,
+            usage_event.aggregate_type,
+            usage_event.aggregate_id,
+            usage_event.event_type,
+            usage_event.event_id,
+        )
+        if observed_usage_envelope != expected_usage_envelope:
+            raise CampaignJournalError("model usage event envelope is invalid")
+        usage_payload = _event_domain_payload(usage_event)
+        try:
+            envelope = _parse_envelope(usage_payload)
+            observed_usage_json, _ = _payload(usage_payload)
+            expected_usage_json, _ = _payload(_envelope_payload(envelope))
+        except (KeyError, TypeError, ValueError) as error:
+            raise CampaignJournalError("model usage payload is invalid") from error
+        if observed_usage_json != expected_usage_json:
+            raise CampaignJournalError("model usage payload is not canonical")
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
-        if finish_events:
-            finish_payload = finish_events[0].payload()
-            if (
-                finish_payload.get("call_id") != call_id
-                or finish_payload.get("attempt_id") != attempt_id
+        if len(events) == 2:
+            if envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:
+                raise CampaignJournalError(
+                    "model finish cannot follow a terminal usage outcome"
+                )
+            finish_event = events[1]
+            expected_finish_envelope = (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                self._cycle_id,
+                "MODEL_ATTEMPT",
+                aggregate_id,
+                "MODEL_USAGE_FINISHED",
+                _event_id(
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    self._cycle_id,
+                    aggregate_id,
+                    "finish",
+                ),
+            )
+            observed_finish_envelope = (
+                finish_event.namespace,
+                finish_event.campaign_id,
+                finish_event.cycle_id,
+                finish_event.aggregate_type,
+                finish_event.aggregate_id,
+                finish_event.event_type,
+                finish_event.event_id,
+            )
+            if observed_finish_envelope != expected_finish_envelope:
+                raise CampaignJournalError("model finish event envelope is invalid")
+            finish_payload = _event_domain_payload(finish_event)
+            if set(finish_payload) != {"call_id", "attempt_id", "outcome"}:
+                raise CampaignJournalError("model finish payload is invalid")
+            try:
+                stored_call_id = _identifier(
+                    finish_payload["call_id"],
+                    "stored call_id",
+                )
+                stored_attempt_id = _identifier(
+                    finish_payload["attempt_id"],
+                    "stored attempt_id",
+                )
+                final_outcome = InvocationOutcome(finish_payload["outcome"])
+            except (TypeError, ValueError) as error:
+                raise CampaignJournalError("model finish payload is invalid") from error
+            if stored_call_id != call_id or stored_attempt_id != attempt_id:
+                raise CampaignJournalError(
+                    "final outcome identity does not match attempt"
+                )
+            if final_outcome is InvocationOutcome.RESPONSE_RECEIVED:
+                raise CampaignJournalError("model finish outcome is not terminal")
+            if final_outcome not in {
+                InvocationOutcome.SUCCESS,
+                InvocationOutcome.EMPTY_OUTPUT,
+                InvocationOutcome.INVALID_JSON,
+                InvocationOutcome.STREAMING_DISABLED,
+            }:
+                raise CampaignJournalError(
+                    "model finish outcome cannot follow a provider response"
+                )
+            if envelope.streamed != (
+                final_outcome is InvocationOutcome.STREAMING_DISABLED
             ):
-                raise CampaignJournalError("final outcome identity does not match attempt")
-            final_outcome = InvocationOutcome(str(finish_payload["outcome"]))
-        elif envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:
+                raise CampaignJournalError(
+                    "model streaming outcome does not match recorded usage"
+                )
+        elif envelope.outcome in {
+            InvocationOutcome.TIMEOUT,
+            InvocationOutcome.EXCEPTION,
+        }:
             final_outcome = envelope.outcome
         else:
-            raise CampaignJournalError("model attempt has no final outcome")
+            raise CampaignJournalError(
+                "model attempt does not follow the persisted invocation FSM"
+            )
         return RecordedModelAttempt(envelope, final_outcome)
 
     def _events(self, aggregate_id: str) -> tuple[CampaignEvent, ...]:
         return self._journal.list_events(
+            cycle_id=self._cycle_id,
+            aggregate_type="MODEL_ATTEMPT",
+            aggregate_id=aggregate_id,
+        )
+
+    def _events_in_transaction(
+        self,
+        connection,
+        aggregate_id: str,
+    ) -> tuple[CampaignEvent, ...]:
+        return self._journal._list_in_transaction(
+            connection,
             cycle_id=self._cycle_id,
             aggregate_type="MODEL_ATTEMPT",
             aggregate_id=aggregate_id,
