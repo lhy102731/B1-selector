@@ -22,6 +22,7 @@ from research_automation.control_plane.campaign_lease import (
     StaleFencingTokenError,
 )
 from research_automation.control_plane.campaign_lifecycle import (
+    CampaignPauseStatus,
     CampaignStateConflictError,
     CampaignStatus,
     CycleStatus,
@@ -1316,6 +1317,44 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
 
             self.assertEqual(advanced.status, CycleStatus.EXECUTING)
             self.assertEqual(lifecycle.cycle_snapshot("cycle-001"), advanced)
+
+    def test_pause_request_does_not_interrupt_the_current_execution_lease(self) -> None:
+        campaign_id = "campaign-lease-048"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            clock_values = iter((100, 200))
+            leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: next(clock_values),
+            )
+            acquired = leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+
+            requested = lifecycle.request_pause(pause_id="pause-001")
+            heartbeat = leases.heartbeat(
+                lease=acquired,
+                heartbeat_id="heartbeat-001",
+            )
+            advanced = leases.advance_cycle(
+                lease=heartbeat,
+                expected_status=CycleStatus.EXECUTING,
+                next_status=CycleStatus.EVIDENCE_READY,
+            )
+
+            self.assertEqual(requested.status, CampaignPauseStatus.PAUSE_REQUESTED)
+            self.assertEqual(advanced.status, CycleStatus.EVIDENCE_READY)
+            self.assertEqual(lifecycle.snapshot().status, CampaignStatus.ACTIVE)
 
     def test_lifecycle_cannot_bypass_an_existing_cycle_lease(self) -> None:
         campaign_id = "campaign-lease-042"

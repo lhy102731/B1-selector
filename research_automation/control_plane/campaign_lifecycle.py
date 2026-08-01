@@ -42,6 +42,12 @@ class CampaignStatus(str, Enum):
     COMPLETED = "COMPLETED"
 
 
+class CampaignPauseStatus(str, Enum):
+    RUNNING = "RUNNING"
+    PAUSE_REQUESTED = "PAUSE_REQUESTED"
+    PAUSED = "PAUSED"
+
+
 class CycleStatus(str, Enum):
     CREATED = "CREATED"
     BUDGET_RESERVED = "BUDGET_RESERVED"
@@ -57,11 +63,16 @@ class CycleStatus(str, Enum):
 
 
 _CAMPAIGN_AGGREGATE_TYPE = "CAMPAIGN_STATE"
+_CAMPAIGN_PAUSE_AGGREGATE_TYPE = "CAMPAIGN_PAUSE"
 _CYCLE_AGGREGATE_TYPE = "CYCLE_STATE"
 _CYCLE_LEASE_AGGREGATE_TYPE = "CYCLE_LEASE"
 _CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 _CAMPAIGN_TRANSITIONED = "CAMPAIGN_TRANSITIONED"
 _CAMPAIGN_BLOCKED = "CAMPAIGN_BLOCKED"
+_CAMPAIGN_PAUSE_REQUESTED = "CAMPAIGN_PAUSE_REQUESTED"
+_CAMPAIGN_PAUSED = "CAMPAIGN_PAUSED"
+_CAMPAIGN_RESUMED = "CAMPAIGN_RESUMED"
+_PRE_CYCLE_PAUSE_BOUNDARY = "PRE_CYCLE"
 _CYCLE_OPENED = "CYCLE_OPENED"
 _CYCLE_TRANSITIONED = "CYCLE_TRANSITIONED"
 
@@ -93,6 +104,16 @@ class CampaignSnapshot:
     sequence: int
     block_reason_code: str | None = None
     block_source_ref: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignPauseSnapshot:
+    status: CampaignPauseStatus
+    active_pause_id: str | None
+    boundary_cycle_id: str | None
+    sequence: int
+    last_pause_id: str | None = None
+    last_resume_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +194,221 @@ class OperationalCampaignLifecycle:
             )
         )
 
+    def pause_snapshot(self) -> CampaignPauseSnapshot:
+        self._journal._authorize()
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._replay_pause(
+                self._pause_events(connection)
+            )
+        )
+
+    def request_pause(self, *, pause_id: str) -> CampaignPauseSnapshot:
+        self._journal._authorize()
+        pause_id = _identifier(pause_id, "pause_id")
+
+        def request(connection) -> CampaignPauseSnapshot:
+            campaign = self._replay_campaign(self._campaign_events(connection))
+            if campaign.status is not CampaignStatus.ACTIVE:
+                raise CampaignStateConflictError("Campaign is not ACTIVE")
+            events = self._pause_events(connection)
+            snapshot = self._replay_pause(events)
+            if snapshot.status is not CampaignPauseStatus.RUNNING:
+                if snapshot.active_pause_id != pause_id:
+                    raise CampaignStateConflictError(
+                        "Campaign already has another pause request"
+                    )
+                return snapshot
+            if any(
+                event.event_type == _CAMPAIGN_PAUSE_REQUESTED
+                and _event_domain_payload(event)["pause_id"] == pause_id
+                for event in events
+            ):
+                raise CampaignStateConflictError(
+                    "pause_id was already used by this Campaign"
+                )
+            event = self._journal._append_in_transaction(
+                connection,
+                event_id=self._pause_event_id(
+                    f"{CampaignPauseStatus.PAUSE_REQUESTED.value}:{pause_id}"
+                ),
+                cycle_id=None,
+                aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
+                aggregate_id=self._journal._campaign_id,
+                event_type=_CAMPAIGN_PAUSE_REQUESTED,
+                payload={"pause_id": pause_id},
+            )
+            return CampaignPauseSnapshot(
+                CampaignPauseStatus.PAUSE_REQUESTED,
+                pause_id,
+                None,
+                event.sequence,
+                pause_id,
+                snapshot.last_resume_id,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(request)
+
+    def pause_at_safe_boundary(
+        self,
+        *,
+        pause_id: str,
+        boundary_cycle_id: str | None,
+    ) -> CampaignPauseSnapshot:
+        self._journal._authorize()
+        pause_id = _identifier(pause_id, "pause_id")
+        if boundary_cycle_id is not None:
+            boundary_cycle_id = _identifier(
+                boundary_cycle_id,
+                "boundary_cycle_id",
+            )
+
+        def pause(connection) -> CampaignPauseSnapshot:
+            campaign = self._replay_campaign(self._campaign_events(connection))
+            if campaign.status is not CampaignStatus.ACTIVE:
+                raise CampaignStateConflictError("Campaign is not ACTIVE")
+            snapshot = self._replay_pause(self._pause_events(connection))
+            if snapshot.status is CampaignPauseStatus.PAUSED:
+                if (
+                    snapshot.active_pause_id != pause_id
+                    or snapshot.boundary_cycle_id != boundary_cycle_id
+                ):
+                    raise CampaignStateConflictError(
+                        "Campaign is PAUSED at another boundary"
+                    )
+                return snapshot
+            if (
+                snapshot.status is not CampaignPauseStatus.PAUSE_REQUESTED
+                or snapshot.active_pause_id != pause_id
+            ):
+                raise CampaignStateConflictError(
+                    "Campaign does not have the expected pause request"
+                )
+            opened = self._opened_cycles(connection)
+            boundary: CycleSnapshot | None = None
+            if opened:
+                if boundary_cycle_id is not None:
+                    boundary = next(
+                        (
+                            cycle
+                            for cycle in opened
+                            if cycle.cycle_id == boundary_cycle_id
+                        ),
+                        None,
+                    )
+                if (
+                    boundary is None
+                    or boundary.cycle_number
+                    != max(cycle.cycle_number for cycle in opened)
+                    or any(
+                        self._replay_cycle(
+                            self._cycle_events(connection, cycle.cycle_id)
+                        ).status
+                        is not CycleStatus.COMPLETED
+                        for cycle in opened
+                    )
+                ):
+                    raise CampaignStateConflictError(
+                        "Campaign pause requires the latest completed Cycle boundary"
+                    )
+            elif boundary_cycle_id is not None:
+                raise CampaignStateConflictError(
+                    "pre-Cycle pause cannot name a Cycle boundary"
+                )
+            boundary_role = (
+                _PRE_CYCLE_PAUSE_BOUNDARY
+                if boundary_cycle_id is None
+                else boundary_cycle_id
+            )
+            event = self._journal._append_in_transaction(
+                connection,
+                event_id=self._pause_event_id(
+                    f"{CampaignPauseStatus.PAUSED.value}:{pause_id}:"
+                    f"{boundary_role}"
+                ),
+                cycle_id=None,
+                aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
+                aggregate_id=self._journal._campaign_id,
+                event_type=_CAMPAIGN_PAUSED,
+                payload={
+                    "pause_id": pause_id,
+                    "boundary_cycle_id": boundary_cycle_id,
+                    "boundary_cycle_number": (
+                        None if boundary is None else boundary.cycle_number
+                    ),
+                },
+            )
+            return CampaignPauseSnapshot(
+                CampaignPauseStatus.PAUSED,
+                pause_id,
+                boundary_cycle_id,
+                event.sequence,
+                pause_id,
+                snapshot.last_resume_id,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(pause)
+
+    def resume_pause(
+        self,
+        *,
+        pause_id: str,
+        resume_id: str,
+    ) -> CampaignPauseSnapshot:
+        self._journal._authorize()
+        pause_id = _identifier(pause_id, "pause_id")
+        resume_id = _identifier(resume_id, "resume_id")
+
+        def resume(connection) -> CampaignPauseSnapshot:
+            campaign = self._replay_campaign(self._campaign_events(connection))
+            if campaign.status is not CampaignStatus.ACTIVE:
+                raise CampaignStateConflictError("Campaign is not ACTIVE")
+            events = self._pause_events(connection)
+            snapshot = self._replay_pause(events)
+            if snapshot.status is CampaignPauseStatus.RUNNING:
+                if (
+                    snapshot.last_pause_id == pause_id
+                    and snapshot.last_resume_id == resume_id
+                ):
+                    return snapshot
+                raise CampaignStateConflictError("Campaign is not paused")
+            if snapshot.active_pause_id != pause_id:
+                raise CampaignStateConflictError(
+                    "Campaign has another active pause request"
+                )
+            if any(
+                event.event_type == _CAMPAIGN_RESUMED
+                and _event_domain_payload(event)["resume_id"] == resume_id
+                for event in events
+            ):
+                raise CampaignStateConflictError(
+                    "resume_id was already used by this Campaign"
+                )
+            event = self._journal._append_in_transaction(
+                connection,
+                event_id=self._pause_event_id(
+                    f"{CampaignPauseStatus.RUNNING.value}:{pause_id}:"
+                    f"{resume_id}"
+                ),
+                cycle_id=None,
+                aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
+                aggregate_id=self._journal._campaign_id,
+                event_type=_CAMPAIGN_RESUMED,
+                payload={
+                    "pause_id": pause_id,
+                    "resume_id": resume_id,
+                },
+            )
+            return CampaignPauseSnapshot(
+                CampaignPauseStatus.RUNNING,
+                None,
+                None,
+                event.sequence,
+                pause_id,
+                resume_id,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(resume)
+
     def activate(self) -> CampaignSnapshot:
         self._journal._authorize()
 
@@ -228,6 +464,11 @@ class OperationalCampaignLifecycle:
                     raise DuplicateCycleError("cycle_number is already assigned")
             if existing is not None:
                 return self._replay_cycle(self._cycle_events(connection, cycle_id))
+            pause = self._replay_pause(self._pause_events(connection))
+            if pause.status is not CampaignPauseStatus.RUNNING:
+                raise CampaignStateConflictError(
+                    "Campaign pause prevents opening a new Cycle"
+                )
             event = self._journal._append_in_transaction(
                 connection,
                 event_id=self._cycle_event_id(
@@ -264,6 +505,11 @@ class OperationalCampaignLifecycle:
                 return snapshot
             if snapshot.status is not CampaignStatus.ACTIVE:
                 raise CampaignStateConflictError("Campaign is not ACTIVE")
+            pause = self._replay_pause(self._pause_events(connection))
+            if pause.status is not CampaignPauseStatus.RUNNING:
+                raise CampaignStateConflictError(
+                    "Campaign must resume before completion"
+                )
             opened = self._opened_cycles(connection)
             if not opened or any(
                 self._replay_cycle(
@@ -544,6 +790,14 @@ class OperationalCampaignLifecycle:
             aggregate_id=self._journal._campaign_id,
         )
 
+    def _pause_events(self, connection) -> tuple[CampaignEvent, ...]:
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=None,
+            aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
+            aggregate_id=self._journal._campaign_id,
+        )
+
     def _cycle_events(
         self,
         connection,
@@ -581,6 +835,15 @@ class OperationalCampaignLifecycle:
             namespace=self._journal._namespace,
             campaign_id=self._journal._campaign_id,
             aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
+            aggregate_id=self._journal._campaign_id,
+            role=role,
+        )
+
+    def _pause_event_id(self, role: str) -> str:
+        return _state_event_id(
+            namespace=self._journal._namespace,
+            campaign_id=self._journal._campaign_id,
+            aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
             aggregate_id=self._journal._campaign_id,
             role=role,
         )
@@ -799,6 +1062,172 @@ class OperationalCampaignLifecycle:
             block_source_ref,
         )
 
+    def _replay_pause(
+        self,
+        events: tuple[CampaignEvent, ...],
+    ) -> CampaignPauseSnapshot:
+        if not events:
+            return CampaignPauseSnapshot(
+                CampaignPauseStatus.RUNNING,
+                None,
+                None,
+                0,
+                None,
+                None,
+            )
+        status = CampaignPauseStatus.RUNNING
+        active_pause_id: str | None = None
+        boundary_cycle_id: str | None = None
+        last_pause_id: str | None = None
+        last_resume_id: str | None = None
+        seen_pause_ids: set[str] = set()
+        seen_resume_ids: set[str] = set()
+        sequence = 0
+        for event in events:
+            self._require_event_envelope(
+                event,
+                cycle_id=None,
+                aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
+                aggregate_id=self._journal._campaign_id,
+            )
+            payload = _event_domain_payload(event)
+            if event.event_type == _CAMPAIGN_PAUSE_REQUESTED:
+                if set(payload) != {"pause_id"}:
+                    raise CampaignLifecycleError(
+                        "Campaign pause request is invalid"
+                    )
+                try:
+                    pause_id = _identifier(
+                        payload["pause_id"],
+                        "stored pause_id",
+                    )
+                except ValueError as error:
+                    raise CampaignLifecycleError(
+                        "Campaign pause binding is invalid"
+                    ) from error
+                if (
+                    status is not CampaignPauseStatus.RUNNING
+                    or pause_id in seen_pause_ids
+                    or event.event_id
+                    != self._pause_event_id(
+                        f"{CampaignPauseStatus.PAUSE_REQUESTED.value}:"
+                        f"{pause_id}"
+                    )
+                ):
+                    raise CampaignLifecycleError(
+                        "Campaign pause transition is invalid"
+                    )
+                status = CampaignPauseStatus.PAUSE_REQUESTED
+                active_pause_id = pause_id
+                boundary_cycle_id = None
+                last_pause_id = pause_id
+                seen_pause_ids.add(pause_id)
+            elif event.event_type == _CAMPAIGN_PAUSED:
+                if set(payload) != {
+                    "pause_id",
+                    "boundary_cycle_id",
+                    "boundary_cycle_number",
+                }:
+                    raise CampaignLifecycleError(
+                        "Campaign PAUSED event is invalid"
+                    )
+                try:
+                    pause_id = _identifier(
+                        payload["pause_id"],
+                        "stored pause_id",
+                    )
+                    stored_boundary_cycle_id = payload["boundary_cycle_id"]
+                    if stored_boundary_cycle_id is not None:
+                        stored_boundary_cycle_id = _identifier(
+                            stored_boundary_cycle_id,
+                            "stored boundary_cycle_id",
+                        )
+                except ValueError as error:
+                    raise CampaignLifecycleError(
+                        "Campaign PAUSED binding is invalid"
+                    ) from error
+                boundary_cycle_number = payload["boundary_cycle_number"]
+                boundary_binding_valid = (
+                    stored_boundary_cycle_id is None
+                    and boundary_cycle_number is None
+                ) or (
+                    stored_boundary_cycle_id is not None
+                    and type(boundary_cycle_number) is int
+                    and 1 <= boundary_cycle_number <= 1_000_000
+                )
+                boundary_role = (
+                    _PRE_CYCLE_PAUSE_BOUNDARY
+                    if stored_boundary_cycle_id is None
+                    else stored_boundary_cycle_id
+                )
+                if (
+                    not boundary_binding_valid
+                    or status is not CampaignPauseStatus.PAUSE_REQUESTED
+                    or active_pause_id != pause_id
+                    or event.event_id
+                    != self._pause_event_id(
+                        f"{CampaignPauseStatus.PAUSED.value}:{pause_id}:"
+                        f"{boundary_role}"
+                    )
+                ):
+                    raise CampaignLifecycleError(
+                        "Campaign PAUSED transition is invalid"
+                    )
+                status = CampaignPauseStatus.PAUSED
+                boundary_cycle_id = stored_boundary_cycle_id
+            elif event.event_type == _CAMPAIGN_RESUMED:
+                if set(payload) != {"pause_id", "resume_id"}:
+                    raise CampaignLifecycleError(
+                        "Campaign RESUMED event is invalid"
+                    )
+                try:
+                    pause_id = _identifier(
+                        payload["pause_id"],
+                        "stored pause_id",
+                    )
+                    resume_id = _identifier(
+                        payload["resume_id"],
+                        "stored resume_id",
+                    )
+                except ValueError as error:
+                    raise CampaignLifecycleError(
+                        "Campaign RESUMED binding is invalid"
+                    ) from error
+                if (
+                    status
+                    not in {
+                        CampaignPauseStatus.PAUSE_REQUESTED,
+                        CampaignPauseStatus.PAUSED,
+                    }
+                    or active_pause_id != pause_id
+                    or resume_id in seen_resume_ids
+                    or event.event_id
+                    != self._pause_event_id(
+                        f"{CampaignPauseStatus.RUNNING.value}:{pause_id}:"
+                        f"{resume_id}"
+                    )
+                ):
+                    raise CampaignLifecycleError(
+                        "Campaign RESUMED transition is invalid"
+                    )
+                status = CampaignPauseStatus.RUNNING
+                active_pause_id = None
+                boundary_cycle_id = None
+                last_pause_id = pause_id
+                last_resume_id = resume_id
+                seen_resume_ids.add(resume_id)
+            else:
+                raise CampaignLifecycleError("Campaign pause event is invalid")
+            sequence = event.sequence
+        return CampaignPauseSnapshot(
+            status,
+            active_pause_id,
+            boundary_cycle_id,
+            sequence,
+            last_pause_id,
+            last_resume_id,
+        )
+
     def _replay_cycle(self, events: tuple[CampaignEvent, ...]) -> CycleSnapshot:
         if not events:
             raise CampaignLifecycleError("Cycle lifecycle has not been created")
@@ -865,6 +1294,8 @@ class OperationalCampaignLifecycle:
 
 __all__ = [
     "CampaignLifecycleError",
+    "CampaignPauseSnapshot",
+    "CampaignPauseStatus",
     "CampaignSnapshot",
     "CampaignStateConflictError",
     "CampaignStatus",
