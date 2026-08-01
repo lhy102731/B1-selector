@@ -674,11 +674,9 @@ class OperationalBudgetJournal:
         self._journal._authorize()
         reservation_id = _identifier(reservation_id, "reservation_id")
         call_id = _identifier(call_id, "call_id")
-
-        def reserve_budget(connection) -> BudgetReservation:
-            events = self._events_in_transaction(connection)
-            ledger = self._replay(events)
-            reservation = ledger.reserve(
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._reserve_in_transaction(
+                connection,
                 reservation_id=reservation_id,
                 call_id=call_id,
                 max_input_tokens=max_input_tokens,
@@ -689,34 +687,61 @@ class OperationalBudgetJournal:
                 max_data_exposures=max_data_exposures,
                 max_disk_growth_bytes=max_disk_growth_bytes,
             )
-            event_id = self._event_id(
-                "reserve",
-                reservation_id=reservation_id,
-            )
-            if any(event.event_id == event_id for event in events):
-                return reservation
-            self._journal._append_in_transaction(
-                connection,
-                event_id=event_id,
-                cycle_id=None,
-                aggregate_type=_BUDGET_AGGREGATE_TYPE,
-                aggregate_id=self._budget_id,
-                event_type=_BUDGET_RESERVED,
-                payload={
-                    "reservation_id": reservation.reservation_id,
-                    "call_id": reservation.call_id,
-                    "max_input_tokens": reservation.max_input_tokens,
-                    "max_output_tokens": reservation.max_output_tokens,
-                    "max_cost": reservation.max_cost,
-                    "max_wall_time_ms": reservation.max_wall_time_ms,
-                    "max_tool_attempts": reservation.max_tool_attempts,
-                    "max_data_exposures": reservation.max_data_exposures,
-                    "max_disk_growth_bytes": reservation.max_disk_growth_bytes,
-                },
-            )
-            return reservation
+        )
 
-        return _SqliteUnitOfWork(stores._operational_spec())._write(reserve_budget)
+    def _reserve_in_transaction(
+        self,
+        connection,
+        *,
+        reservation_id: str,
+        call_id: str,
+        max_input_tokens: int,
+        max_output_tokens: int,
+        max_cost: str | int | Decimal,
+        max_wall_time_ms: int = 0,
+        max_tool_attempts: int = 0,
+        max_data_exposures: int = 0,
+        max_disk_growth_bytes: int = 0,
+    ) -> BudgetReservation:
+        events = self._events_in_transaction(connection)
+        ledger = self._replay(events)
+        reservation = ledger.reserve(
+            reservation_id=reservation_id,
+            call_id=call_id,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            max_cost=max_cost,
+            max_wall_time_ms=max_wall_time_ms,
+            max_tool_attempts=max_tool_attempts,
+            max_data_exposures=max_data_exposures,
+            max_disk_growth_bytes=max_disk_growth_bytes,
+        )
+        event_id = self._event_id(
+            "reserve",
+            reservation_id=reservation_id,
+        )
+        if any(event.event_id == event_id for event in events):
+            return reservation
+        self._journal._append_in_transaction(
+            connection,
+            event_id=event_id,
+            cycle_id=None,
+            aggregate_type=_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+            event_type=_BUDGET_RESERVED,
+            payload={
+                "reservation_id": reservation.reservation_id,
+                "call_id": reservation.call_id,
+                "max_input_tokens": reservation.max_input_tokens,
+                "max_output_tokens": reservation.max_output_tokens,
+                "max_cost": reservation.max_cost,
+                "max_wall_time_ms": reservation.max_wall_time_ms,
+                "max_tool_attempts": reservation.max_tool_attempts,
+                "max_data_exposures": reservation.max_data_exposures,
+                "max_disk_growth_bytes": reservation.max_disk_growth_bytes,
+            },
+        )
+        return reservation
 
     def settle(
         self,
