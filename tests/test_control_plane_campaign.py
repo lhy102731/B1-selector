@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from collections.abc import Iterator, Mapping
+from decimal import Decimal
 
 from research_automation.control_plane.campaign import (
     InvalidModelResponseError,
@@ -9,6 +11,7 @@ from research_automation.control_plane.campaign import (
     ModelInvocationTimeoutError,
     ModelInvocation,
     ProviderResponse,
+    StreamingDisabledError,
     UsageEnvelope,
     UsageStatus,
 )
@@ -56,6 +59,196 @@ class _TimeoutProvider:
 class _ExceptionProvider:
     def invoke(self, request: object) -> ProviderResponse:
         raise RuntimeError("fake provider failure")
+
+
+class _FallbackProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="provider-misattributed-model",
+            response_model="fake-fallback-model",
+            raw_usage={
+                "input_tokens": 20,
+                "output_tokens": 8,
+                "total_tokens": 28,
+                "cache_read_tokens": 6,
+                "cache_write_tokens": 2,
+                "reasoning_tokens": 3,
+                "reported_cost": 0.00125,
+                "currency": "USD" * 1000,
+            },
+            fallback=True,
+            streamed=False,
+        )
+
+
+class _StreamingProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"partial"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+            streamed=True,
+        )
+
+
+class _MalformedUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={
+                "input_tokens": 10**5000,
+                "output_tokens": "five",
+                "total_tokens": True,
+            },
+        )
+
+
+class _NonFiniteCostProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"reported_cost": float("nan")},
+        )
+
+
+class _StringNonFiniteCostProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"reported_cost": "NaN"},
+        )
+
+
+class _CyclicUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        raw_usage: dict[str, object] = {}
+        raw_usage["cycle"] = raw_usage
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=raw_usage,
+        )
+
+
+class _NonMappingUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=b"provider-usage",
+        )
+
+
+class _RaisingGetMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise RuntimeError("provider mapping lookup failed")
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(("input_tokens",))
+
+    def __len__(self) -> int:
+        return 1
+
+
+class _RaisingGetUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=_RaisingGetMapping(),
+        )
+
+
+class _OversizedBytesUsageProvider:
+    def __init__(self, tail: bytes) -> None:
+        self._tail = tail
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=(b"x" * 5000) + self._tail,
+        )
+
+
+class _OversizedCostProvider:
+    def __init__(self, value: object) -> None:
+        self._value = value
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"reported_cost": self._value},
+        )
+
+
+class _RaisingSequence(list[object]):
+    def __getitem__(self, key: object) -> object:
+        if isinstance(key, slice):
+            raise RuntimeError("sequence slicing failed")
+        return super().__getitem__(key)  # type: ignore[index]
+
+
+class _RaisingSequenceUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=_RaisingSequence(["input_tokens", 1]),
+        )
+
+
+class _OversizedDecimalUsageProvider:
+    def __init__(self, tail: str) -> None:
+        self._tail = tail
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=Decimal(("1" * 1000) + self._tail),
+        )
+
+
+class _MalformedUnicodeUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"currency": "\ud800"},
+        )
+
+
+class _RaisingString(str):
+    def __len__(self) -> int:
+        raise RuntimeError("string length failed")
+
+
+class _RaisingStringUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage=_RaisingString("provider-usage"),
+        )
 
 
 class _RecordingUsageJournal:
@@ -210,6 +403,318 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(envelope.request_model, "fake-request-model")
         self.assertIsNone(envelope.response_model)
+
+    def test_fallback_response_preserves_extended_usage_and_model_identity(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_FallbackProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-006",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.request_model, "fake-primary-model")
+        self.assertEqual(envelope.response_model, "fake-fallback-model")
+        self.assertTrue(envelope.fallback)
+        self.assertFalse(envelope.streamed)
+        self.assertEqual(envelope.cache_read_tokens, 6)
+        self.assertEqual(envelope.cache_write_tokens, 2)
+        self.assertEqual(envelope.reasoning_tokens, 3)
+        self.assertEqual(envelope.reported_cost, "0.00125")
+        self.assertIsNone(envelope.currency)
+
+    def test_streamed_response_is_accounted_then_blocked(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_StreamingProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        with self.assertRaises(StreamingDisabledError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-007",
+                attempt_id="attempt-001",
+            )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertTrue(envelope.streamed)
+        self.assertEqual(
+            journal.events[1][1],
+            ("call-007", "attempt-001", InvocationOutcome.STREAMING_DISABLED),
+        )
+
+    def test_malformed_token_usage_is_recorded_as_unknown(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-008",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertIsNone(envelope.input_tokens)
+        self.assertIsNone(envelope.output_tokens)
+        self.assertIsNone(envelope.total_tokens)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_nonfinite_cost_cannot_bypass_unknown_usage_accounting(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_NonFiniteCostProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-009",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertIsNone(envelope.reported_cost)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_string_nonfinite_cost_is_not_reported(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_StringNonFiniteCostProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-010",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertIsNone(envelope.reported_cost)
+
+    def test_cyclic_raw_usage_is_safely_hashed_and_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_CyclicUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-011",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_nonmapping_raw_usage_is_hashed_without_bypassing_accounting(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_NonMappingUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-012",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_mapping_lookup_failure_is_recorded_as_unknown_usage(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_RaisingGetUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-013",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_oversized_bytes_hash_reads_only_a_bounded_prefix(self) -> None:
+        hashes: list[str] = []
+        for call_id, tail in (("call-014", b"a"), ("call-015", b"b")):
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=_OversizedBytesUsageProvider(tail),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            )
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id=call_id,
+                attempt_id="attempt-001",
+            )
+            envelope = journal.events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            hashes.append(envelope.raw_usage_sha256)
+
+        self.assertEqual(hashes[0], hashes[1])
+
+    def test_oversized_cost_values_cannot_bypass_accounting(self) -> None:
+        for index, value in enumerate(("1" * 5000, 10**5000), start=16):
+            with self.subTest(value_type=type(value).__name__):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OversizedCostProvider(value),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id=f"call-{index:03d}",
+                    attempt_id="attempt-001",
+                )
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertIsNone(envelope.reported_cost)
+
+    def test_sequence_normalization_failure_still_records_unknown_usage(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_RaisingSequenceUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-018",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_decimal_usage_hash_does_not_materialize_the_coefficient(self) -> None:
+        hashes: list[str] = []
+        for call_id, tail in (("call-019", "2"), ("call-020", "3")):
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=_OversizedDecimalUsageProvider(tail),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            )
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id=call_id,
+                attempt_id="attempt-001",
+            )
+            envelope = journal.events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            hashes.append(envelope.raw_usage_sha256)
+
+        self.assertEqual(hashes[0], hashes[1])
+
+    def test_malformed_unicode_usage_is_still_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedUnicodeUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-021",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_normalization_exception_uses_a_nonthrowing_hash_marker(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_RaisingStringUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-022",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(len(envelope.raw_usage_sha256), 64)
 
 
 if __name__ == "__main__":

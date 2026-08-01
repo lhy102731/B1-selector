@@ -4,9 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import Enum
-from typing import Mapping, Protocol
+from typing import Protocol
+
+
+_MAX_RAW_USAGE_DEPTH = 16
+_MAX_RAW_USAGE_NODES = 1024
+_MAX_RAW_USAGE_COLLECTION_ITEMS = 256
+_MAX_RAW_USAGE_PREFIX_UNITS = 4096
+_MAX_RAW_USAGE_INT_BITS = 512
+_MAX_REPORTED_COST_CHARS = 128
+_MAX_REPORTED_TEXT_CHARS = 128
 
 
 class UsageStatus(str, Enum):
@@ -22,6 +34,7 @@ class InvocationOutcome(str, Enum):
     INVALID_JSON = "INVALID_JSON"
     TIMEOUT = "TIMEOUT"
     EXCEPTION = "EXCEPTION"
+    STREAMING_DISABLED = "STREAMING_DISABLED"
 
 
 class InvalidModelResponseError(ValueError):
@@ -36,12 +49,18 @@ class ModelInvocationProviderError(RuntimeError):
     """Raised after a provider exception has been accounted for."""
 
 
+class StreamingDisabledError(RuntimeError):
+    """Raised when a provider returns an unsupported streamed response."""
+
+
 @dataclass(frozen=True)
 class ProviderResponse:
     output_text: str | None
     request_model: str
     response_model: str
-    raw_usage: Mapping[str, object]
+    raw_usage: object
+    fallback: bool = False
+    streamed: bool = False
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,13 @@ class UsageEnvelope:
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    reasoning_tokens: int | None
+    reported_cost: str | None
+    currency: str | None
+    fallback: bool
+    streamed: bool
     outcome: InvocationOutcome
     raw_usage_sha256: str
 
@@ -76,24 +102,249 @@ class UsageJournal(Protocol):
     ) -> None: ...
 
 
+def _usage_get(raw_usage: Mapping[str, object], field: str) -> object:
+    try:
+        return raw_usage.get(field)
+    except Exception:
+        return None
+
+
 def _reported_token(raw_usage: Mapping[str, object], field: str) -> int | None:
-    value = raw_usage.get(field)
+    value = _usage_get(raw_usage, field)
     if value is None:
         return None
-    if type(value) is not int or value < 0:
-        raise ValueError(f"raw usage {field} must be a non-negative integer or null")
+    if (
+        type(value) is not int
+        or value < 0
+        or value.bit_length() > _MAX_RAW_USAGE_INT_BITS
+    ):
+        return None
     return value
 
 
-def _raw_usage_sha256(raw_usage: Mapping[str, object]) -> str:
-    payload = json.dumps(
-        dict(raw_usage),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
+def _type_name(value: object) -> str:
+    value_type = type(value)
+    return f"{value_type.__module__}.{value_type.__qualname__}"
+
+
+def _safe_raw_usage_value(
+    value: object,
+    *,
+    seen: set[int],
+    remaining_nodes: list[int],
+    depth: int,
+) -> object:
+    if remaining_nodes[0] <= 0:
+        return {"$usage_marker": "node_limit"}
+    remaining_nodes[0] -= 1
+    if depth > _MAX_RAW_USAGE_DEPTH:
+        return {"$usage_marker": "depth_limit"}
+    if value is None or type(value) is bool:
+        return value
+    if type(value) is int:
+        if value.bit_length() <= _MAX_RAW_USAGE_INT_BITS:
+            return value
+        return {
+            "$usage_marker": "oversized_int",
+            "bits": value.bit_length(),
+            "negative": value < 0,
+        }
+    if isinstance(value, str):
+        if len(value) <= _MAX_RAW_USAGE_PREFIX_UNITS:
+            return value
+        prefix = value[:_MAX_RAW_USAGE_PREFIX_UNITS].encode(
+            "utf-8",
+            errors="replace",
+        )
+        return {
+            "$usage_marker": "oversized_text",
+            "characters": len(value),
+            "prefix_characters": _MAX_RAW_USAGE_PREFIX_UNITS,
+            "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+        }
+    if isinstance(value, float):
+        if math.isfinite(value):
+            return value
+        return {"$usage_marker": "nonfinite_float", "value": str(value)}
+    if isinstance(value, Decimal):
+        try:
+            finite = value.is_finite()
+            adjusted = value.adjusted() if finite else None
+            signed = value.is_signed()
+        except Exception as error:
+            return {
+                "$usage_marker": "decimal_error",
+                "error_type": _type_name(error),
+            }
+        return {
+            "$usage_marker": "decimal",
+            "finite": finite,
+            "adjusted": adjusted,
+            "signed": signed,
+        }
+    if isinstance(value, bytes):
+        prefix = value[:_MAX_RAW_USAGE_PREFIX_UNITS]
+        return {
+            "$usage_marker": "bytes",
+            "bytes": len(value),
+            "prefix_bytes": len(prefix),
+            "prefix_sha256": hashlib.sha256(prefix).hexdigest(),
+        }
+    if isinstance(value, Mapping):
+        identity = id(value)
+        if identity in seen:
+            return {"$usage_marker": "cycle", "type": _type_name(value)}
+        seen.add(identity)
+        pairs: list[list[object]] = []
+        truncated = False
+        error_type: str | None = None
+        try:
+            for index, (key, item) in enumerate(value.items()):
+                if index >= _MAX_RAW_USAGE_COLLECTION_ITEMS:
+                    truncated = True
+                    break
+                pairs.append(
+                    [
+                        _safe_raw_usage_value(
+                            key,
+                            seen=seen,
+                            remaining_nodes=remaining_nodes,
+                            depth=depth + 1,
+                        ),
+                        _safe_raw_usage_value(
+                            item,
+                            seen=seen,
+                            remaining_nodes=remaining_nodes,
+                            depth=depth + 1,
+                        ),
+                    ]
+                )
+        except Exception as error:
+            error_type = _type_name(error)
+        finally:
+            seen.remove(identity)
+        pairs.sort(
+            key=lambda pair: json.dumps(
+                pair[0],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        normalized: dict[str, object] = {
+            "$usage_marker": "mapping",
+            "items": pairs,
+        }
+        if truncated:
+            normalized["truncated"] = True
+        if error_type is not None:
+            normalized["iteration_error_type"] = error_type
+        return normalized
+    if isinstance(value, (list, tuple)):
+        identity = id(value)
+        if identity in seen:
+            return {"$usage_marker": "cycle", "type": _type_name(value)}
+        seen.add(identity)
+        items: list[object] = []
+        truncated = False
+        error_type: str | None = None
+        try:
+            for index, item in enumerate(value):
+                if index >= _MAX_RAW_USAGE_COLLECTION_ITEMS:
+                    truncated = True
+                    break
+                items.append(
+                    _safe_raw_usage_value(
+                        item,
+                        seen=seen,
+                        remaining_nodes=remaining_nodes,
+                        depth=depth + 1,
+                    )
+                )
+        except Exception as error:
+            error_type = _type_name(error)
+        finally:
+            seen.remove(identity)
+        normalized_sequence: dict[str, object] = {
+            "$usage_marker": "sequence",
+            "type": _type_name(value),
+            "items": items,
+            "truncated": truncated,
+        }
+        if error_type is not None:
+            normalized_sequence["iteration_error_type"] = error_type
+        return normalized_sequence
+    return {"$usage_marker": "unsupported_type", "type": _type_name(value)}
+
+
+def _raw_usage_sha256(raw_usage: object) -> str:
+    try:
+        normalized = _safe_raw_usage_value(
+            raw_usage,
+            seen=set(),
+            remaining_nodes=[_MAX_RAW_USAGE_NODES],
+            depth=0,
+        )
+        payload = json.dumps(
+            normalized,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except Exception as error:
+        payload = json.dumps(
+            {
+                "$usage_marker": "normalization_error",
+                "raw_type": _type_name(raw_usage),
+                "error_type": _type_name(error),
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _reported_text(raw_usage: Mapping[str, object], field: str) -> str | None:
+    value = _usage_get(raw_usage, field)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_REPORTED_TEXT_CHARS
+        or not value.strip()
+    ):
+        return None
+    return value.strip()
+
+
+def _reported_cost(raw_usage: Mapping[str, object]) -> str | None:
+    value = _usage_get(raw_usage, "reported_cost")
+    if isinstance(value, str):
+        if len(value) > _MAX_REPORTED_COST_CHARS:
+            return None
+        candidate = value.strip()
+    elif type(value) is int:
+        if value.bit_length() > _MAX_RAW_USAGE_INT_BITS:
+            return None
+        try:
+            candidate = str(value)
+        except (OverflowError, ValueError):
+            return None
+    elif type(value) is float:
+        candidate = str(value)
+    else:
+        return None
+    if not candidate:
+        return None
+    try:
+        amount = Decimal(candidate)
+    except InvalidOperation:
+        return None
+    if not amount.is_finite() or amount < 0:
+        return None
+    return candidate
 
 
 class ModelInvocation:
@@ -145,10 +396,18 @@ class ModelInvocation:
                 outcome=InvocationOutcome.EXCEPTION,
             )
             raise ModelInvocationProviderError("provider invocation failed") from error
-        raw_usage = response.raw_usage
+        raw_usage_source = response.raw_usage
+        raw_usage = raw_usage_source if isinstance(raw_usage_source, Mapping) else {}
         values = {
             field: _reported_token(raw_usage, field)
-            for field in ("input_tokens", "output_tokens", "total_tokens")
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "total_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+                "reasoning_tokens",
+            )
         }
         status = (
             UsageStatus.UNKNOWN
@@ -167,10 +426,24 @@ class ModelInvocation:
                 input_tokens=values["input_tokens"],
                 output_tokens=values["output_tokens"],
                 total_tokens=values["total_tokens"],
+                cache_read_tokens=values["cache_read_tokens"],
+                cache_write_tokens=values["cache_write_tokens"],
+                reasoning_tokens=values["reasoning_tokens"],
+                reported_cost=_reported_cost(raw_usage),
+                currency=_reported_text(raw_usage, "currency"),
+                fallback=response.fallback,
+                streamed=response.streamed,
                 outcome=InvocationOutcome.RESPONSE_RECEIVED,
-                raw_usage_sha256=_raw_usage_sha256(raw_usage),
+                raw_usage_sha256=_raw_usage_sha256(raw_usage_source),
             )
         )
+        if response.streamed:
+            self._usage_journal.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.STREAMING_DISABLED,
+            )
+            raise StreamingDisabledError("streaming usage accounting is not enabled")
         if response.output_text is None or not response.output_text.strip():
             self._usage_journal.finish(
                 call_id=call_id,
@@ -213,6 +486,13 @@ class ModelInvocation:
                 input_tokens=None,
                 output_tokens=None,
                 total_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                reasoning_tokens=None,
+                reported_cost=None,
+                currency=None,
+                fallback=False,
+                streamed=False,
                 outcome=outcome,
                 raw_usage_sha256=_raw_usage_sha256({}),
             )
@@ -226,6 +506,7 @@ __all__ = [
     "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",
     "ProviderResponse",
+    "StreamingDisabledError",
     "UsageEnvelope",
     "UsageJournal",
     "UsageStatus",
