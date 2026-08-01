@@ -349,6 +349,159 @@ def _validate_projected_scope(value: object) -> dict[str, object]:
     return result
 
 
+def validate_projected_context_claim(value: object) -> dict[str, object]:
+    """Replay one claim against the closed, safe P5 projection contract."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _PROJECTED_CLAIM_FIELDS
+        or value.get("kind") not in _LEARNING_CLAIM_KINDS
+    ):
+        raise ValueError("context projection claim is invalid")
+    if (
+        not _is_opaque_ref(value.get("claim_id"))
+        or value.get("conclusion") not in _CONCLUSION_CODES
+        or value.get("audit_grade") != "PASS"
+        or value.get("evidence_grade") not in _EVIDENCE_GRADE_RANK
+        or value.get("directional_status") not in _DIRECTIONAL_STATUSES
+    ):
+        raise ValueError("context projection claim is invalid")
+    if (
+        value.get("conclusion"),
+        value.get("directional_status"),
+    ) not in _GUIDANCE_PAIRS_BY_KIND[value["kind"]]:
+        raise ValueError("context projection guidance is contradictory")
+    rebuilt = dict(value)
+    rebuilt["scope"] = _validate_projected_scope(value.get("scope"))
+    for field_name in (
+        "evidence_refs",
+        "taint_refs",
+        "invalidation_codes",
+        "parent_claim_ids",
+    ):
+        refs = value.get(field_name)
+        if isinstance(refs, list) and len(refs) > _MAX_CLAIM_REFS:
+            raise ValueError(
+                "context projection claim reference cardinality exceeds limit"
+            )
+        if (
+            not isinstance(refs, list)
+            or any(not _is_opaque_ref(item) for item in refs)
+            or len(refs) != len(set(refs))
+        ):
+            raise ValueError("context projection claim is invalid")
+        rebuilt[field_name] = list(refs)
+    if rebuilt["taint_refs"] or rebuilt["invalidation_codes"]:
+        raise ValueError("context projection contains an unsafe included claim")
+    predicates = value.get("reopen_predicates")
+    if isinstance(predicates, list) and len(predicates) > _MAX_CLAIM_REFS:
+        raise ValueError(
+            "context projection claim reopen predicate cardinality exceeds limit"
+        )
+    if (
+        not isinstance(predicates, list)
+        or predicates != sorted(set(predicates))
+        or not set(predicates).issubset(_REOPEN_PREDICATES)
+    ):
+        raise ValueError("context projection claim is invalid")
+    rebuilt["reopen_predicates"] = list(predicates)
+    return rebuilt
+
+
+def validate_projected_context_claims(value: object) -> list[dict[str, object]]:
+    """Replay collection-level uniqueness and lineage for projected claims."""
+
+    if not isinstance(value, list) or len(value) > _MAX_CONTEXT_CLAIMS:
+        raise ValueError("context projection claim collection is invalid")
+    claims = [validate_projected_context_claim(claim) for claim in value]
+    claim_ids = [claim["claim_id"] for claim in claims]
+    if len(claim_ids) != len(set(claim_ids)):
+        raise ValueError("context projection must contain unique claim ids")
+    claim_id_set = set(claim_ids)
+    if any(
+        not set(claim["parent_claim_ids"]).issubset(claim_id_set)
+        for claim in claims
+    ):
+        raise ValueError("context projection claim has an unknown parent")
+    children = {claim_id: [] for claim_id in claim_ids}
+    parent_counts: dict[str, int] = {}
+    for claim in claims:
+        claim_id = claim["claim_id"]
+        parents = claim["parent_claim_ids"]
+        parent_counts[claim_id] = len(parents)
+        for parent_id in parents:
+            children[parent_id].append(claim_id)
+    ready = deque(
+        claim_id for claim_id in claim_ids if parent_counts[claim_id] == 0
+    )
+    visited = 0
+    while ready:
+        parent_id = ready.popleft()
+        visited += 1
+        for child_id in children[parent_id]:
+            parent_counts[child_id] -= 1
+            if parent_counts[child_id] == 0:
+                ready.append(child_id)
+    if visited != len(claim_ids):
+        raise ValueError("context projection contains a lineage cycle")
+    return claims
+
+
+def validate_context_control_metadata(value: object) -> dict[str, object]:
+    """Replay the non-authoritative metadata emitted beside safe P5 claims."""
+
+    if not isinstance(value, Mapping) or set(value) != {
+        "projection_schema_version",
+        "excluded_claims",
+        "omitted_claim_count",
+        "omitted_claims_digest",
+    }:
+        raise ValueError("context control metadata is invalid")
+    if value.get("projection_schema_version") != "control_plane.context_projection.v1":
+        raise ValueError("context control metadata is invalid")
+    excluded = value.get("excluded_claims")
+    if not isinstance(excluded, list) or len(excluded) > _MAX_CONTEXT_CLAIMS:
+        raise ValueError("context control metadata is invalid")
+    rebuilt_excluded: list[dict[str, object]] = []
+    for item in excluded:
+        if not isinstance(item, Mapping) or set(item) != {
+            "claim_id",
+            "reason_codes",
+        }:
+            raise ValueError("context control metadata is invalid")
+        claim_id = item.get("claim_id")
+        reason_codes = item.get("reason_codes")
+        if (
+            not _is_opaque_ref(claim_id)
+            or not isinstance(reason_codes, list)
+            or not reason_codes
+            or len(reason_codes) != len(set(reason_codes))
+            or not set(reason_codes).issubset(_EXCLUSION_CODES)
+        ):
+            raise ValueError("context control metadata is invalid")
+        rebuilt_excluded.append(
+            {"claim_id": claim_id, "reason_codes": list(reason_codes)}
+        )
+    excluded_ids = [item["claim_id"] for item in rebuilt_excluded]
+    if len(excluded_ids) != len(set(excluded_ids)):
+        raise ValueError("context control metadata is invalid")
+    omitted_count = value.get("omitted_claim_count")
+    omitted_digest = value.get("omitted_claims_digest")
+    if (
+        type(omitted_count) is not int
+        or not 0 <= omitted_count <= _MAX_CONTEXT_CLAIMS
+        or (omitted_count == 0 and omitted_digest is not None)
+        or (omitted_count > 0 and not _is_opaque_ref(omitted_digest))
+    ):
+        raise ValueError("context control metadata is invalid")
+    return {
+        "projection_schema_version": "control_plane.context_projection.v1",
+        "excluded_claims": rebuilt_excluded,
+        "omitted_claim_count": omitted_count,
+        "omitted_claims_digest": omitted_digest,
+    }
+
+
 def _claim_scope_from_projected(value: Mapping[str, object]) -> ClaimScope:
     return ClaimScope(
         mechanisms=tuple(value["mechanisms"]),
@@ -1572,90 +1725,11 @@ class ContextAssembler:
             ):
                 relevance += 1
             return (relation_rank, relevance)
-        indexed_claims: list[tuple[int, Mapping[str, object]]] = []
-        for index, claim in enumerate(claims):
-            if (
-                not isinstance(claim, Mapping)
-                or set(claim) != _PROJECTED_CLAIM_FIELDS
-                or claim.get("kind") not in _LEARNING_CLAIM_KINDS
-            ):
-                raise ValueError("context projection claim is invalid")
-            ref_fields = ("evidence_refs", "taint_refs", "invalidation_codes", "parent_claim_ids")
-            if (
-                not _is_opaque_ref(claim.get("claim_id"))
-                or claim.get("conclusion") not in _CONCLUSION_CODES
-                or claim.get("audit_grade") != "PASS"
-                or claim.get("evidence_grade") not in _EVIDENCE_GRADE_RANK
-                or claim.get("directional_status") not in _DIRECTIONAL_STATUSES
-            ):
-                raise ValueError("context projection claim is invalid")
-            if (
-                claim.get("conclusion"),
-                claim.get("directional_status"),
-            ) not in _GUIDANCE_PAIRS_BY_KIND[claim["kind"]]:
-                raise ValueError("context projection guidance is contradictory")
-            rebuilt_claim = dict(claim)
-            rebuilt_claim["scope"] = _validate_projected_scope(claim.get("scope"))
-            for field_name in ref_fields:
-                refs = claim.get(field_name)
-                if isinstance(refs, list) and len(refs) > _MAX_CLAIM_REFS:
-                    raise ValueError(
-                        "context projection claim reference cardinality exceeds limit"
-                    )
-                if (
-                    not isinstance(refs, list)
-                    or any(not _is_opaque_ref(item) for item in refs)
-                    or len(refs) != len(set(refs))
-                ):
-                    raise ValueError("context projection claim is invalid")
-                rebuilt_claim[field_name] = list(refs)
-            if rebuilt_claim["taint_refs"] or rebuilt_claim["invalidation_codes"]:
-                raise ValueError("context projection contains an unsafe included claim")
-            predicates = claim.get("reopen_predicates")
-            if isinstance(predicates, list) and len(predicates) > _MAX_CLAIM_REFS:
-                raise ValueError(
-                    "context projection claim reopen predicate cardinality exceeds limit"
-                )
-            if (
-                not isinstance(predicates, list)
-                or predicates != sorted(set(predicates))
-                or not set(predicates).issubset(_REOPEN_PREDICATES)
-            ):
-                raise ValueError("context projection claim is invalid")
-            rebuilt_claim["reopen_predicates"] = list(predicates)
-            indexed_claims.append((index, rebuilt_claim))
-        included_claim_ids = [claim["claim_id"] for _, claim in indexed_claims]
-        if len(included_claim_ids) != len(set(included_claim_ids)):
-            raise ValueError("context projection must contain unique claim ids")
-        included_claim_id_set = set(included_claim_ids)
-        if any(
-            not set(claim["parent_claim_ids"]).issubset(included_claim_id_set)
-            for _, claim in indexed_claims
-        ):
-            raise ValueError("context projection claim has an unknown parent")
-        projected_children = {claim_id: [] for claim_id in included_claim_ids}
-        projected_parent_counts: dict[str, int] = {}
-        for _, claim in indexed_claims:
-            claim_id = claim["claim_id"]
-            parents = claim["parent_claim_ids"]
-            projected_parent_counts[claim_id] = len(parents)
-            for parent_id in parents:
-                projected_children[parent_id].append(claim_id)
-        projected_ready = deque(
-            claim_id
-            for claim_id in included_claim_ids
-            if projected_parent_counts[claim_id] == 0
+        indexed_claims: list[tuple[int, Mapping[str, object]]] = list(
+            enumerate(validate_projected_context_claims(claims))
         )
-        projected_visited = 0
-        while projected_ready:
-            parent_id = projected_ready.popleft()
-            projected_visited += 1
-            for child_id in projected_children[parent_id]:
-                projected_parent_counts[child_id] -= 1
-                if projected_parent_counts[child_id] == 0:
-                    projected_ready.append(child_id)
-        if projected_visited != len(included_claim_ids):
-            raise ValueError("context projection contains a lineage cycle")
+        included_claim_ids = [claim["claim_id"] for _, claim in indexed_claims]
+        included_claim_id_set = set(included_claim_ids)
         validated_excluded_claims: list[dict[str, object]] = []
         for excluded in excluded_claims:
             if not isinstance(excluded, Mapping) or set(excluded) != {
@@ -2014,4 +2088,7 @@ __all__ = [
     "TimeWindow",
     "TiktokenTokenizerAdapter",
     "UniversalRejectionDeriver",
+    "validate_context_control_metadata",
+    "validate_projected_context_claim",
+    "validate_projected_context_claims",
 ]

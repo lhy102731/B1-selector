@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -12,6 +12,12 @@ import re
 from research_automation.foundations.protocols import ExecutionSpec
 
 from . import stores
+from .campaign_context import (
+    CycleContextError,
+    CycleContextIntegrityError,
+    OperationalCycleContextJournal,
+    campaign_target_scope_sha256,
+)
 from .campaign_lifecycle import (
     CampaignLifecycleError,
     CampaignStatus,
@@ -119,6 +125,7 @@ class FrozenCycleInputs:
     generation_id: str
     generation_manifest_artifact_id: str
     roster_manifest_sha256: str
+    context_manifest_sha256: str
     preflight_sha256: str
     manifest_sha256: str
     event_id: str
@@ -135,6 +142,7 @@ class FrozenCycleInputs:
                 self.generation_manifest_artifact_id
             ),
             "roster_manifest_sha256": self.roster_manifest_sha256,
+            "context_manifest_sha256": self.context_manifest_sha256,
             "preflight_sha256": self.preflight_sha256,
             "manifest_sha256": self.manifest_sha256,
         }
@@ -143,7 +151,7 @@ class FrozenCycleInputs:
 class OperationalCycleFreezeJournal:
     """Freeze all execution identities before one Cycle becomes FROZEN."""
 
-    __slots__ = ("_journal", "_lifecycle", "_roster")
+    __slots__ = ("_journal", "_lifecycle", "_roster", "_context")
 
     def __init__(
         self,
@@ -151,6 +159,7 @@ class OperationalCycleFreezeJournal:
         journal: OperationalCampaignJournal,
         lifecycle: OperationalCampaignLifecycle,
         roster: OperationalRosterJournal,
+        context: OperationalCycleContextJournal,
     ) -> None:
         if not isinstance(journal, OperationalCampaignJournal) or not isinstance(
             lifecycle,
@@ -159,14 +168,21 @@ class OperationalCycleFreezeJournal:
             raise TypeError("journal and lifecycle must be operational P6 objects")
         if not isinstance(roster, OperationalRosterJournal):
             raise TypeError("roster must be an OperationalRosterJournal")
+        if not isinstance(context, OperationalCycleContextJournal):
+            raise TypeError("context must be an OperationalCycleContextJournal")
         journal._authorize()
-        if lifecycle._journal is not journal or roster._journal is not journal:
+        if (
+            lifecycle._journal is not journal
+            or roster._journal is not journal
+            or context._journal is not journal
+        ):
             raise ValueError("freeze components must use the same Campaign journal")
-        if roster._lifecycle is not lifecycle:
+        if roster._lifecycle is not lifecycle or context._lifecycle is not lifecycle:
             raise ValueError("freeze components must use the same lifecycle")
         self._journal = journal
         self._lifecycle = lifecycle
         self._roster = roster
+        self._context = context
 
         def configure(connection) -> None:
             events = self._policy_events(connection)
@@ -210,7 +226,6 @@ class OperationalCycleFreezeJournal:
         cycle_id: str,
         proposal: Mapping[str, object],
         execution_spec: ExecutionSpec,
-        committed_claims: Sequence[Mapping[str, object]],
         expected_roster: RosterManifest,
     ) -> FrozenCycleInputs:
         self._journal._authorize()
@@ -225,15 +240,26 @@ class OperationalCycleFreezeJournal:
             raise ValueError("proposal must be a mapping")
         proposal_bytes = _canonical_bytes(dict(proposal), "proposal")
         frozen_proposal = json.loads(proposal_bytes)
-        claims_bytes = _canonical_bytes(
-            list(committed_claims),
-            "committed claims",
-        )
-        frozen_claims = json.loads(claims_bytes)
+        try:
+            context_receipt = self._context.snapshot(cycle_id=cycle_id)
+            projection_input, projection_input_sha256 = (
+                self._context._verified_projection_input()
+            )
+        except (CycleContextError, TypeError, ValueError) as error:
+            raise CycleFreezeConflictError(
+                "Cycle safe context is unavailable or invalid"
+            ) from error
+        if (
+            projection_input_sha256
+            != context_receipt.projection_input_sha256
+        ):
+            raise CycleFreezeConflictError(
+                "committed Learning changed after safe context preparation"
+            )
         preflight = run_campaign_preflight(
             execution_spec=execution_spec,
             proposal=frozen_proposal,
-            committed_claims=frozen_claims,
+            committed_claims=projection_input["claims"],
         )
         if preflight["verdict"] != "WOULD_ACCEPT":
             raise CycleFreezeConflictError("Campaign preflight rejected frozen inputs")
@@ -248,6 +274,20 @@ class OperationalCycleFreezeJournal:
             "preflight",
         )
         protocol = execution_spec.protocol
+        context_roles = tuple(
+            sorted({member.role for member in expected_roster.members})
+        )
+        if context_receipt.roles != context_roles:
+            raise CycleFreezeConflictError(
+                "safe context roles conflict with the frozen roster"
+            )
+        target_scope_sha256 = campaign_target_scope_sha256(
+            frozen_proposal.get("scope")
+        )
+        if context_receipt.target_scope_sha256 != target_scope_sha256:
+            raise CycleFreezeConflictError(
+                "safe context target scope conflicts with the proposal"
+            )
         identity = {
             "cycle_id": cycle_id,
             "proposal_sha256": proposal_sha256,
@@ -258,6 +298,7 @@ class OperationalCycleFreezeJournal:
                 protocol.generation_manifest_artifact_id
             ),
             "roster_manifest_sha256": expected_roster.manifest_sha256,
+            "context_manifest_sha256": context_receipt.manifest_sha256,
             "preflight_sha256": preflight_sha256,
         }
         manifest_sha256 = _content_sha256(
@@ -321,6 +362,20 @@ class OperationalCycleFreezeJournal:
             if cycle.status is not CycleStatus.CONTEXT_READY:
                 raise CycleFreezeConflictError(
                     "Cycle inputs may freeze only after safe context is ready"
+                )
+            persisted_context = self._context._replay_context(
+                self._context._context_events(connection, cycle_id)
+            )
+            self._context._require_complete_context_order(
+                connection,
+                self._context._replay_policy(
+                    self._context._policy_events(connection)
+                ),
+                persisted_context,
+            )
+            if persisted_context != context_receipt:
+                raise CycleFreezeConflictError(
+                    "safe context changed before the Cycle freeze"
                 )
             freeze_event_id = self._freeze_event_id(cycle_id)
             try:
@@ -451,6 +506,7 @@ class OperationalCycleFreezeJournal:
             "generation_id",
             "generation_manifest_artifact_id",
             "roster_manifest_sha256",
+            "context_manifest_sha256",
             "preflight_sha256",
             "manifest_sha256",
         }
@@ -542,6 +598,29 @@ class OperationalCycleFreezeJournal:
         ):
             raise CycleFreezeIntegrityError(
                 "Cycle freeze roster ordering is invalid"
+            )
+        try:
+            context = self._context._replay_context(
+                self._context._context_events(connection, frozen.cycle_id)
+            )
+            context_policy = self._context._replay_policy(
+                self._context._policy_events(connection)
+            )
+            self._context._require_complete_context_order(
+                connection,
+                context_policy,
+                context,
+            )
+        except CycleContextIntegrityError as error:
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze context binding is invalid"
+            ) from error
+        if (
+            context.manifest_sha256 != frozen.context_manifest_sha256
+            or context.sequence >= frozen.sequence
+        ):
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze context ordering is invalid"
             )
         cycle_events = self._lifecycle._cycle_events(
             connection,

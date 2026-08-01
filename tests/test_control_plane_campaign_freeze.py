@@ -3,12 +3,16 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import unittest
+from dataclasses import replace
 
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.campaign_freeze import (
     CycleFreezeConflictError,
     CycleFreezeIntegrityError,
     OperationalCycleFreezeJournal,
+)
+from research_automation.control_plane.campaign_context import (
+    OperationalCycleContextJournal,
 )
 from research_automation.control_plane.campaign_lifecycle import (
     CampaignStateConflictError,
@@ -24,7 +28,6 @@ from research_automation.foundations.protocols import compile_execution_spec
 from tests.test_control_plane_campaign_preflight import _scope
 from tests.test_control_plane_campaign_roster import (
     _authorized_campaign,
-    _member,
 )
 from tests.test_foundations_protocols import _approval, _protocol
 
@@ -54,6 +57,7 @@ def _prepare_context_ready_cycle(
     journal,
     *,
     cycle_id: str,
+    proposal: dict[str, object],
     members: tuple[RosterMember, ...] | None = None,
 ):
     lifecycle = OperationalCampaignLifecycle(journal=journal)
@@ -64,10 +68,18 @@ def _prepare_context_ready_cycle(
         expected_status=CycleStatus.CREATED,
         next_status=CycleStatus.BUDGET_RESERVED,
     )
-    lifecycle.advance_cycle(
+    selected_members = (
+        (_protocol_member(),) if members is None else members
+    )
+    context = OperationalCycleContextJournal(
+        journal=journal,
+        lifecycle=lifecycle,
+        repository_root=stores_module._OPERATIONAL_STORE_PATH.parent,
+    )
+    context.prepare(
         cycle_id=cycle_id,
-        expected_status=CycleStatus.BUDGET_RESERVED,
-        next_status=CycleStatus.CONTEXT_READY,
+        proposal=proposal,
+        roles=tuple(sorted({member.role for member in selected_members})),
     )
     roster = OperationalRosterJournal(
         journal=journal,
@@ -75,9 +87,9 @@ def _prepare_context_ready_cycle(
     )
     roster_manifest = roster.freeze(
         cycle_id=cycle_id,
-        members=(_protocol_member(),) if members is None else members,
+        members=selected_members,
     )
-    return lifecycle, roster, roster_manifest
+    return lifecycle, context, roster, roster_manifest
 
 
 class OperationalCycleFreezeJournalTests(unittest.TestCase):
@@ -96,14 +108,16 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             "scope": _scope(generation="generation-1"),
         }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, roster_manifest = _prepare_context_ready_cycle(
+            lifecycle, context, roster, roster_manifest = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
+                proposal=proposal,
             )
             freeze = OperationalCycleFreezeJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 roster=roster,
+                context=context,
             )
 
             with self.assertRaises(CampaignStateConflictError):
@@ -117,14 +131,12 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
                 cycle_id=cycle_id,
                 proposal=proposal,
                 execution_spec=execution_spec,
-                committed_claims=(),
                 expected_roster=roster_manifest,
             )
             replay = freeze.freeze(
                 cycle_id=cycle_id,
                 proposal=proposal,
                 execution_spec=execution_spec,
-                committed_claims=(),
                 expected_roster=roster_manifest,
             )
 
@@ -151,7 +163,6 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
                     cycle_id=cycle_id,
                     proposal=changed,
                     execution_spec=execution_spec,
-                    committed_claims=(),
                     expected_roster=roster_manifest,
                 )
 
@@ -189,26 +200,28 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             approval=None,
             amendment=None,
         )
+        proposal = {
+            "hypothesis": "An unapproved protocol cannot run",
+            "scope": _scope(generation="generation-1"),
+        }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, roster_manifest = _prepare_context_ready_cycle(
+            lifecycle, context, roster, roster_manifest = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
+                proposal=proposal,
             )
             freeze = OperationalCycleFreezeJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 roster=roster,
+                context=context,
             )
 
             with self.assertRaises(CycleFreezeConflictError):
                 freeze.freeze(
                     cycle_id=cycle_id,
-                    proposal={
-                        "hypothesis": "An unapproved protocol cannot run",
-                        "scope": _scope(generation="generation-1"),
-                    },
+                    proposal=proposal,
                     execution_spec=unapproved,
-                    committed_claims=(),
                     expected_roster=roster_manifest,
                 )
 
@@ -230,10 +243,15 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
     ) -> None:
         campaign_id = "campaign-freeze-003"
         cycle_id = "cycle-001"
+        proposal = {
+            "hypothesis": "Legacy freeze history cannot be adopted",
+            "scope": _scope(generation="generation-1"),
+        }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, _ = _prepare_context_ready_cycle(
+            lifecycle, context, roster, _ = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
+                proposal=proposal,
             )
             lifecycle.advance_cycle(
                 cycle_id=cycle_id,
@@ -246,6 +264,7 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
                     journal=journal,
                     lifecycle=lifecycle,
                     roster=roster,
+                    context=context,
                 )
 
     def test_protocol_and_operational_roster_drift_cannot_freeze(self) -> None:
@@ -258,27 +277,29 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             approval=_approval(protocol),
             amendment=None,
         )
+        proposal = {
+            "hypothesis": "Roster drift must fail closed",
+            "scope": _scope(generation="generation-1"),
+        }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, roster_manifest = _prepare_context_ready_cycle(
+            lifecycle, context, roster, roster_manifest = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
-                members=(_member("alpha", model="wrong-model"),),
+                proposal=proposal,
+                members=(replace(_protocol_member(), model="wrong-model"),),
             )
             freeze = OperationalCycleFreezeJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 roster=roster,
+                context=context,
             )
 
             with self.assertRaises(CycleFreezeConflictError):
                 freeze.freeze(
                     cycle_id=cycle_id,
-                    proposal={
-                        "hypothesis": "Roster drift must fail closed",
-                        "scope": _scope(generation="generation-1"),
-                    },
+                    proposal=proposal,
                     execution_spec=execution_spec,
-                    committed_claims=(),
                     expected_roster=roster_manifest,
                 )
 
@@ -310,28 +331,28 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             "scope": _scope(generation="generation-1"),
         }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, roster_manifest = _prepare_context_ready_cycle(
+            lifecycle, context, roster, roster_manifest = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
+                proposal=original,
             )
             freeze = OperationalCycleFreezeJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 roster=roster,
+                context=context,
             )
 
             frozen = freeze.freeze(
                 cycle_id=cycle_id,
                 proposal=_MutatingProposal(original),
                 execution_spec=execution_spec,
-                committed_claims=(),
                 expected_roster=roster_manifest,
             )
             replay = freeze.freeze(
                 cycle_id=cycle_id,
                 proposal=original,
                 execution_spec=execution_spec,
-                committed_claims=(),
                 expected_roster=roster_manifest,
             )
 
@@ -347,15 +368,21 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             approval=_approval(protocol),
             amendment=None,
         )
+        proposal = {
+            "hypothesis": "Collision must fail closed",
+            "scope": _scope(generation="generation-1"),
+        }
         with _authorized_campaign(campaign_id) as (_, journal):
-            lifecycle, roster, roster_manifest = _prepare_context_ready_cycle(
+            lifecycle, context, roster, roster_manifest = _prepare_context_ready_cycle(
                 journal,
                 cycle_id=cycle_id,
+                proposal=proposal,
             )
             freeze = OperationalCycleFreezeJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 roster=roster,
+                context=context,
             )
             freeze_event_id = hashlib.sha256(
                 b"control_plane.campaign_cycle_freeze_event.v1\0"
@@ -376,12 +403,8 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
             with self.assertRaises(CycleFreezeConflictError):
                 freeze.freeze(
                     cycle_id=cycle_id,
-                    proposal={
-                        "hypothesis": "Collision must fail closed",
-                        "scope": _scope(generation="generation-1"),
-                    },
+                    proposal=proposal,
                     execution_spec=execution_spec,
-                    committed_claims=(),
                     expected_roster=roster_manifest,
                 )
 

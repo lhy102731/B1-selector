@@ -67,6 +67,7 @@ _CAMPAIGN_AGGREGATE_TYPE = "CAMPAIGN_STATE"
 _CAMPAIGN_PAUSE_AGGREGATE_TYPE = "CAMPAIGN_PAUSE"
 _CYCLE_AGGREGATE_TYPE = "CYCLE_STATE"
 _CYCLE_LEASE_AGGREGATE_TYPE = "CYCLE_LEASE"
+_CYCLE_CONTEXT_POLICY_AGGREGATE_TYPE = "CAMPAIGN_CYCLE_CONTEXT_POLICY"
 _CYCLE_FREEZE_POLICY_AGGREGATE_TYPE = "CAMPAIGN_CYCLE_FREEZE_POLICY"
 _CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 _CAMPAIGN_TRANSITIONED = "CAMPAIGN_TRANSITIONED"
@@ -724,6 +725,13 @@ class OperationalCampaignLifecycle:
 
         def advance_unleased(connection) -> CycleSnapshot:
             if (
+                next_status is CycleStatus.CONTEXT_READY
+                and self._cycle_context_policy_configured(connection)
+            ):
+                raise CampaignStateConflictError(
+                    "configured Cycle context policy requires a safe context receipt"
+                )
+            if (
                 next_status is CycleStatus.FROZEN
                 and self._cycle_freeze_policy_configured(connection)
             ):
@@ -759,6 +767,18 @@ class OperationalCampaignLifecycle:
         return _SqliteUnitOfWork(stores._operational_spec())._write(
             advance_unleased
         )
+
+    def _cycle_context_policy_configured(self, connection) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? LIMIT 1",
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                _CYCLE_CONTEXT_POLICY_AGGREGATE_TYPE,
+            ),
+        ).fetchone() is not None
 
     def _cycle_freeze_policy_configured(self, connection) -> bool:
         return connection.execute(
