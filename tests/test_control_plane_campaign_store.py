@@ -30,6 +30,15 @@ from research_automation.control_plane.budget import (
     BudgetExceededError,
 )
 from research_automation.control_plane.contracts import Actor, Phase, SideEffect
+from research_automation.control_plane.campaign_lifecycle import (
+    CampaignLifecycleError,
+    CampaignStateConflictError,
+    CampaignStatus,
+    CycleStatus,
+    DuplicateCycleError,
+    IllegalCycleTransitionError,
+    OperationalCampaignLifecycle,
+)
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
@@ -498,6 +507,196 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_output_tokens=1,
                     max_cost="0.1",
                 )
+
+
+class OperationalCampaignLifecycleTests(unittest.TestCase):
+    def test_cycle_cannot_skip_required_protocol_states(self) -> None:
+        with _authorized_campaign("campaign-lifecycle-001") as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            self.assertEqual(lifecycle.snapshot().status, CampaignStatus.CREATED)
+            lifecycle.activate()
+            opened = lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            self.assertEqual(opened.status, CycleStatus.CREATED)
+
+            with self.assertRaises(IllegalCycleTransitionError):
+                lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=CycleStatus.CREATED,
+                    next_status=CycleStatus.EXECUTING,
+                )
+
+            unchanged = lifecycle.cycle_snapshot("cycle-001")
+            self.assertEqual(unchanged.status, CycleStatus.CREATED)
+            events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-001",
+            )
+            self.assertEqual(len(events), 1)
+
+    def test_cycle_id_replay_is_idempotent_but_cycle_number_is_unique(self) -> None:
+        with _authorized_campaign("campaign-lifecycle-002") as (_, grant, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            reopened = OperationalCampaignLifecycle(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id="campaign-lifecycle-002",
+                    clock=lambda: NOW,
+                )
+            )
+
+            replay = reopened.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            self.assertEqual(replay.status, CycleStatus.CREATED)
+            with self.assertRaises(DuplicateCycleError):
+                reopened.open_cycle(cycle_id="cycle-002", cycle_number=1)
+
+            first_events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-001",
+            )
+            duplicate_events = journal.list_events(
+                cycle_id="cycle-002",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-002",
+            )
+            self.assertEqual(len(first_events), 1)
+            self.assertEqual(duplicate_events, ())
+
+    def test_complete_cycle_protocol_survives_reopen(self) -> None:
+        with _authorized_campaign("campaign-lifecycle-003") as (_, grant, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            transitions = (
+                (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
+                (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
+                (CycleStatus.CONTEXT_READY, CycleStatus.FROZEN),
+                (CycleStatus.FROZEN, CycleStatus.EXECUTING),
+                (CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY),
+                (CycleStatus.EVIDENCE_READY, CycleStatus.LEARNING_COMMITTED),
+                (CycleStatus.LEARNING_COMMITTED, CycleStatus.SETTLED),
+                (
+                    CycleStatus.SETTLED,
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                ),
+                (
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                    CycleStatus.NEXT_CYCLE_DECIDED,
+                ),
+                (CycleStatus.NEXT_CYCLE_DECIDED, CycleStatus.COMPLETED),
+            )
+            for expected, next_status in transitions:
+                advanced = lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=expected,
+                    next_status=next_status,
+                )
+                self.assertEqual(advanced.status, next_status)
+
+            reopened = OperationalCampaignLifecycle(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id="campaign-lifecycle-003",
+                    clock=lambda: NOW,
+                )
+            )
+            completed = reopened.cycle_snapshot("cycle-001")
+            replay = reopened.advance_cycle(
+                cycle_id="cycle-001",
+                expected_status=CycleStatus.NEXT_CYCLE_DECIDED,
+                next_status=CycleStatus.COMPLETED,
+            )
+
+            self.assertEqual(completed.status, CycleStatus.COMPLETED)
+            self.assertEqual(replay, completed)
+            events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-001",
+            )
+            self.assertEqual(len(events), 11)
+
+    def test_campaign_completion_requires_every_cycle_completed(self) -> None:
+        with _authorized_campaign("campaign-lifecycle-004") as (_, grant, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+
+            with self.assertRaises(CampaignStateConflictError):
+                lifecycle.complete()
+            transitions = (
+                (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
+                (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
+                (CycleStatus.CONTEXT_READY, CycleStatus.FROZEN),
+                (CycleStatus.FROZEN, CycleStatus.EXECUTING),
+                (CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY),
+                (CycleStatus.EVIDENCE_READY, CycleStatus.LEARNING_COMMITTED),
+                (CycleStatus.LEARNING_COMMITTED, CycleStatus.SETTLED),
+                (
+                    CycleStatus.SETTLED,
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                ),
+                (
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                    CycleStatus.NEXT_CYCLE_DECIDED,
+                ),
+                (CycleStatus.NEXT_CYCLE_DECIDED, CycleStatus.COMPLETED),
+            )
+            for expected, next_status in transitions:
+                lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=expected,
+                    next_status=next_status,
+                )
+
+            completed = lifecycle.complete()
+            reopened = OperationalCampaignLifecycle(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id="campaign-lifecycle-004",
+                    clock=lambda: NOW,
+                )
+            )
+            self.assertEqual(completed.status, CampaignStatus.COMPLETED)
+            self.assertEqual(reopened.snapshot().status, CampaignStatus.COMPLETED)
+            with self.assertRaises(CampaignStateConflictError):
+                reopened.open_cycle(cycle_id="cycle-002", cycle_number=2)
+
+    def test_cycle_replay_rejects_alias_event_envelope(self) -> None:
+        campaign_id = "campaign-lifecycle-005"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            event_id = hashlib.sha256(
+                b"control_plane.campaign_lifecycle_event.v1\0"
+                + (
+                    f"formal\0{campaign_id}\0CYCLE_STATE\0cycle-001\0CREATED"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=event_id,
+                cycle_id="cycle-alias",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-alias",
+                event_type="CYCLE_OPENED",
+                payload={
+                    "cycle_id": "cycle-001",
+                    "cycle_number": 1,
+                    "status": "CREATED",
+                },
+            )
+
+            with self.assertRaisesRegex(CampaignLifecycleError, "envelope"):
+                lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
