@@ -20,11 +20,20 @@ from research_automation.control_plane.campaign import (
     UsageStatus,
 )
 from research_automation.control_plane.campaign_store import (
+    CampaignExecutionMode,
+    CampaignLearningCommitSink,
+    DryRunIsolationError,
     CampaignJournalError,
     OperationalBudgetJournal,
     OperationalCampaignJournal,
     OperationalUsageJournal,
+    campaign_execution_mode,
     campaign_scope_sha256,
+    dry_run_namespace,
+)
+from research_automation.control_plane.evidence_learning import (
+    EvidenceAdapter,
+    LearningCommitService,
 )
 from research_automation.control_plane.budget import (
     BudgetConflictError,
@@ -41,6 +50,7 @@ from research_automation.control_plane.campaign_lifecycle import (
     IllegalCycleTransitionError,
     OperationalCampaignLifecycle,
 )
+from research_automation.control_plane.runner_control import P4RunController
 
 
 ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
@@ -72,8 +82,51 @@ class _InvalidJsonProvider:
         )
 
 
+def _claim_campaign_grant(
+    *,
+    campaign_id: str,
+    namespace: str,
+    actor_id: str,
+    invocation_id: str,
+    attempt_id: str,
+    plan_sha256: str,
+    instruction_sha256: str,
+) -> stores_module.AuthorityGrant:
+    actor = Actor(actor_id, "automation", invocation_id)
+    identity = stores_module.AuthorityIdentity(
+        plan_sha256,
+        campaign_scope_sha256(
+            namespace=namespace,
+            campaign_id=campaign_id,
+        ),
+        instruction_sha256,
+    )
+    authority = stores_module._AuthorityStore(
+        root_secret=ROOT_SECRET,
+        clock=lambda: NOW,
+    )
+    authorization = authority._provision_authorization(
+        phase=Phase.P6,
+        attempt_id=attempt_id,
+        actor=actor,
+        identity=identity,
+        expires_at=NOW.replace(year=2027),
+        allowed_side_effects=(
+            SideEffect.READ,
+            SideEffect.WRITE_CONTROL_PLANE,
+        ),
+    )
+    return authority.claim_authorization(
+        authorization,
+        expected_phase=Phase.P6,
+        expected_attempt_id=attempt_id,
+        actor=actor,
+        identity=identity,
+    )
+
+
 @contextmanager
-def _authorized_campaign(campaign_id: str):
+def _authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
         with patch.multiple(
@@ -83,42 +136,20 @@ def _authorized_campaign(campaign_id: str):
         ):
             stores_module._expected_schema_sha256.cache_clear()
             stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
-            actor = Actor("p6-runner", "automation", f"{campaign_id}-test")
-            identity = stores_module.AuthorityIdentity(
-                "a" * 64,
-                campaign_scope_sha256(
-                    namespace="formal",
-                    campaign_id=campaign_id,
-                ),
-                "c" * 64,
-            )
-            authority = stores_module._AuthorityStore(
-                root_secret=ROOT_SECRET,
-                clock=lambda: NOW,
-            )
-            authorization = authority._provision_authorization(
-                phase=Phase.P6,
+            grant = _claim_campaign_grant(
+                campaign_id=campaign_id,
+                namespace=namespace,
+                actor_id="p6-runner",
+                invocation_id=f"{campaign_id}-test",
                 attempt_id=f"{campaign_id}-attempt",
-                actor=actor,
-                identity=identity,
-                expires_at=NOW.replace(year=2027),
-                allowed_side_effects=(
-                    SideEffect.READ,
-                    SideEffect.WRITE_CONTROL_PLANE,
-                ),
-            )
-            grant = authority.claim_authorization(
-                authorization,
-                expected_phase=Phase.P6,
-                expected_attempt_id=f"{campaign_id}-attempt",
-                actor=actor,
-                identity=identity,
+                plan_sha256="a" * 64,
+                instruction_sha256="c" * 64,
             )
             try:
                 yield root, grant, OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
-                    namespace="formal",
+                    namespace=namespace,
                     campaign_id=campaign_id,
                     clock=lambda: NOW,
                 )
@@ -137,6 +168,25 @@ def _complete_cycle(
             expected_status=expected,
             next_status=next_status,
         )
+
+
+class CampaignNamespaceTests(unittest.TestCase):
+    def test_campaign_namespace_contract_is_closed_and_bounded(self) -> None:
+        longest_dry_run_id = "x" * 120
+
+        self.assertEqual(
+            campaign_execution_mode("formal"),
+            CampaignExecutionMode.FORMAL,
+        )
+        self.assertEqual(
+            campaign_execution_mode(dry_run_namespace("preview:colon")),
+            CampaignExecutionMode.DRY_RUN,
+        )
+        self.assertEqual(len(dry_run_namespace(longest_dry_run_id)), 128)
+        with self.assertRaises(ValueError):
+            dry_run_namespace(longest_dry_run_id + "x")
+        with self.assertRaises(ValueError):
+            campaign_execution_mode("preview")
 
 
 class OperationalCampaignMigrationTests(unittest.TestCase):
@@ -244,6 +294,155 @@ class OperationalCampaignMigrationTests(unittest.TestCase):
 
 
 class OperationalBudgetJournalTests(unittest.TestCase):
+    def test_dry_run_budget_cannot_reach_the_formal_learning_sink(self) -> None:
+        namespace = dry_run_namespace("preview-001")
+        with _authorized_campaign(
+            "campaign-dry-run-001",
+            namespace=namespace,
+        ) as (root, grant, journal):
+            packet_directory = (
+                root / "research_state/control_plane/learning_packets"
+            )
+            packet_directory.mkdir(parents=True)
+            formal_packet = packet_directory / f"{'a' * 64}.json"
+            formal_ledger = (
+                root / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            formal_packet.write_bytes(b"formal-packet-sentinel")
+            formal_ledger.write_bytes(b"formal-ledger-sentinel")
+            formal_root = root / "research_state/control_plane"
+            formal_before = {
+                path.relative_to(formal_root).as_posix(): path.read_bytes()
+                for path in formal_root.rglob("*")
+                if path.is_file()
+            }
+            budget = OperationalBudgetJournal(
+                journal=journal,
+                budget_id="dry-run-budget",
+                max_input_tokens=100,
+                max_output_tokens=50,
+                max_cost="1.00",
+            )
+            budget.reserve(
+                reservation_id="preview-reservation-001",
+                call_id="preview-call-001",
+                max_input_tokens=10,
+                max_output_tokens=5,
+                max_cost="0.10",
+            )
+
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=LearningCommitService(repository_root=root),
+            )
+            with self.assertRaises(DryRunIsolationError):
+                sink.commit({})
+
+            self.assertEqual(budget.snapshot().reserved_input_tokens, 10)
+            self.assertEqual(
+                {
+                    path.relative_to(formal_root).as_posix(): path.read_bytes()
+                    for path in formal_root.rglob("*")
+                    if path.is_file()
+                },
+                formal_before,
+            )
+            connection = sqlite3.connect(root / "authority.sqlite3")
+            try:
+                connection.execute(
+                    "UPDATE phase_grants_v2 SET state = 'REVOKED' "
+                    "WHERE grant_id = ?",
+                    (grant.grant_id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            with self.assertRaises(PermissionError):
+                sink.commit({})
+
+    def test_formal_and_dry_run_budgets_do_not_alias_with_identical_ids(self) -> None:
+        campaign_id = "campaign-budget-namespace-isolation"
+        with _authorized_campaign(campaign_id) as (
+            root,
+            formal_grant,
+            formal_journal,
+        ):
+            dry_namespace = dry_run_namespace("preview:colon")
+            dry_grant = _claim_campaign_grant(
+                campaign_id=campaign_id,
+                namespace=dry_namespace,
+                actor_id="p6-dry-runner",
+                invocation_id="campaign-budget-namespace-isolation-dry-test",
+                attempt_id="campaign-budget-namespace-isolation-dry-attempt",
+                plan_sha256="d" * 64,
+                instruction_sha256="e" * 64,
+            )
+            dry_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=dry_grant,
+                namespace=dry_namespace,
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+            formal_budget = OperationalBudgetJournal(
+                journal=formal_journal,
+                budget_id="shared-budget-id",
+                max_input_tokens=100,
+                max_output_tokens=100,
+                max_cost="1.00",
+            )
+            dry_budget = OperationalBudgetJournal(
+                journal=dry_journal,
+                budget_id="shared-budget-id",
+                max_input_tokens=20,
+                max_output_tokens=20,
+                max_cost="0.20",
+            )
+
+            formal_budget.reserve(
+                reservation_id="shared-reservation-id",
+                call_id="shared-call-id",
+                max_input_tokens=11,
+                max_output_tokens=5,
+                max_cost="0.11",
+            )
+            dry_budget.reserve(
+                reservation_id="shared-reservation-id",
+                call_id="shared-call-id",
+                max_input_tokens=7,
+                max_output_tokens=3,
+                max_cost="0.07",
+            )
+
+            reopened_formal = OperationalBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=formal_grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="shared-budget-id",
+                max_input_tokens=100,
+                max_output_tokens=100,
+                max_cost="1.00",
+            )
+            reopened_dry = OperationalBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=dry_grant,
+                    namespace=dry_namespace,
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="shared-budget-id",
+                max_input_tokens=20,
+                max_output_tokens=20,
+                max_cost="0.20",
+            )
+            self.assertEqual(reopened_formal.snapshot().reserved_input_tokens, 11)
+            self.assertEqual(reopened_dry.snapshot().reserved_input_tokens, 7)
+
     def test_concurrent_reservation_is_atomic_and_survives_reopen(self) -> None:
         with _authorized_campaign("campaign-budget-001") as (_, grant, journal):
             budgets = (
@@ -537,6 +736,49 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_output_tokens=1,
                     max_cost="0.1",
                 )
+
+
+class CampaignLearningCommitSinkTests(unittest.TestCase):
+    def test_valid_p4_evidence_is_blocked_by_a_dry_run_sink_before_write(self) -> None:
+        claim = {"kind": "NEGATIVE", "summary": "Preview-only finding."}
+        protocol = {"label": "signal-day", "embargo_days": 5}
+        artifact = {
+            "schema_version": "runner.artifact.v1",
+            "runner": "fake-preview-runner",
+            "runner_version": "1.0.0",
+            "status": "COMPLETED",
+            "claim": claim,
+            "protocol_conformance": "CONFORMING",
+            "executed_protocol": protocol,
+            "artifact_refs": [
+                {"ref": "preview/result.json", "sha256": "b" * 64}
+            ],
+            "access_event_ids": ["preview-access-001"],
+            "taint_refs": [],
+        }
+        with _authorized_campaign(
+            "campaign-dry-run-p4-controller",
+            namespace=dry_run_namespace("preview-p4-controller"),
+        ) as (root, _, journal):
+            controller = P4RunController(
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fake-preview-runner": "1.0.0"},
+                    approved_protocol=protocol,
+                    approved_claim=claim,
+                ),
+                learning_commit_service=CampaignLearningCommitSink(
+                    journal=journal,
+                    service=LearningCommitService(repository_root=root),
+                ),
+            )
+
+            with self.assertRaises(DryRunIsolationError):
+                controller.finalize(
+                    artifact=artifact,
+                    authority_task_report={"would_be": "formal-authority"},
+                )
+
+            self.assertFalse((root / "research_state").exists())
 
 
 class OperationalCampaignLifecycleTests(unittest.TestCase):

@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Protocol, runtime_checkable
 
 from .evidence_learning import (
     EvidenceAdapter,
     EvidenceResult,
     LearningCommitAuthorizationError,
-    LearningCommitService,
 )
 
 
 class RunAuthorizationError(RuntimeError):
     """Raised before an evidence-driven durable commit without live authority."""
+
+
+@runtime_checkable
+class LearningCommitSink(Protocol):
+    """Minimal Learning projection boundary consumed by P4 finalization."""
+
+    def commit(
+        self,
+        task_report: Mapping[str, object],
+        *,
+        expected_artifact: Mapping[str, object] | None = None,
+        expected_evidence: EvidenceResult | None = None,
+    ) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,14 +42,12 @@ class P4RunController:
         self,
         *,
         evidence_adapter: EvidenceAdapter,
-        learning_commit_service: LearningCommitService,
+        learning_commit_service: LearningCommitSink,
     ) -> None:
         if not isinstance(evidence_adapter, EvidenceAdapter):
             raise TypeError("evidence_adapter must be an EvidenceAdapter")
-        if not isinstance(learning_commit_service, LearningCommitService):
-            raise TypeError(
-                "learning_commit_service must be a LearningCommitService"
-            )
+        if not isinstance(learning_commit_service, LearningCommitSink):
+            raise TypeError("learning_commit_service must be a LearningCommitSink")
         self._evidence_adapter = evidence_adapter
         self._learning_commit_service = learning_commit_service
 
@@ -61,4 +71,9 @@ class P4RunController:
         return RunFinalization(evidence=evidence, packet_hash=packet_hash)
 
 
-__all__ = ["P4RunController", "RunAuthorizationError", "RunFinalization"]
+__all__ = [
+    "LearningCommitSink",
+    "P4RunController",
+    "RunAuthorizationError",
+    "RunFinalization",
+]

@@ -10,7 +10,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Callable
+from enum import Enum
+from typing import TYPE_CHECKING, Callable
 
 from . import stores
 from .budget import (
@@ -27,6 +28,9 @@ from .campaign import InvocationOutcome, UsageEnvelope, UsageStatus
 from .contracts import Phase, SideEffect
 from .sqlite_uow import _SqliteUnitOfWork
 
+if TYPE_CHECKING:
+    from .evidence_learning import EvidenceResult, LearningCommitService
+
 
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_EVENT_PAYLOAD_BYTES = 64 * 1024
@@ -38,6 +42,15 @@ class CampaignJournalError(RuntimeError):
 
 class CampaignEventConflictError(CampaignJournalError):
     """Raised when an event ID is replayed with different content."""
+
+
+class DryRunIsolationError(CampaignJournalError):
+    """Raised before a dry-run context can reach a formal state sink."""
+
+
+class CampaignExecutionMode(str, Enum):
+    FORMAL = "FORMAL"
+    DRY_RUN = "DRY_RUN"
 
 
 @dataclass(frozen=True)
@@ -71,6 +84,22 @@ def _identifier(value: str, name: str) -> str:
     if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
         raise ValueError(f"{name} must be a bounded control-plane identifier")
     return value
+
+
+def dry_run_namespace(dry_run_id: str) -> str:
+    """Return the durable OperationalJournal namespace for one preview run."""
+    identifier = _identifier(dry_run_id, "dry_run_id")
+    return _identifier(f"dry-run:{identifier}", "namespace")
+
+
+def campaign_execution_mode(namespace: str) -> CampaignExecutionMode:
+    """Classify the closed P6 namespace contract without consulting filenames."""
+    namespace = _identifier(namespace, "namespace")
+    if namespace == "formal":
+        return CampaignExecutionMode.FORMAL
+    if namespace.startswith("dry-run:") and namespace != "dry-run:":
+        return CampaignExecutionMode.DRY_RUN
+    raise ValueError("namespace is outside the formal/dry-run campaign contract")
 
 
 def _utc(value: datetime) -> str:
@@ -240,9 +269,30 @@ class OperationalCampaignJournal:
             namespace=self._namespace,
             campaign_id=self._campaign_id,
         )
+        campaign_execution_mode(self._namespace)
         stores._migrate_operational_journal_v3(root_secret=root_secret)
         stores._require_store_root(stores._operational_spec(), root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    @property
+    def execution_mode(self) -> CampaignExecutionMode:
+        return campaign_execution_mode(self._namespace)
+
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def campaign_id(self) -> str:
+        return self._campaign_id
+
+    def require_formal_learning_sink(self) -> None:
+        """Authorize this journal and fail before a preview reaches Learning."""
+        self._authorize()
+        if self.execution_mode is not CampaignExecutionMode.FORMAL:
+            raise DryRunIsolationError(
+                "dry-run Campaigns cannot write formal Learning state"
+            )
 
     def append(
         self,
@@ -441,6 +491,42 @@ class OperationalCampaignJournal:
             query_values = values
         rows = connection.execute(query, query_values).fetchall()
         return tuple(_event_from_row(row) for row in rows)
+
+
+class CampaignLearningCommitSink:
+    """Bind the formal P4 Learning service to one P6 Campaign namespace."""
+
+    __slots__ = ("_journal", "_service")
+
+    def __init__(
+        self,
+        *,
+        journal: OperationalCampaignJournal,
+        service: LearningCommitService,
+    ) -> None:
+        from .evidence_learning import LearningCommitService
+
+        if not isinstance(journal, OperationalCampaignJournal):
+            raise TypeError("journal must be an OperationalCampaignJournal")
+        if not isinstance(service, LearningCommitService):
+            raise TypeError("service must be a LearningCommitService")
+        journal._authorize()
+        self._journal = journal
+        self._service = service
+
+    def commit(
+        self,
+        task_report: Mapping[str, object],
+        *,
+        expected_artifact: Mapping[str, object] | None = None,
+        expected_evidence: EvidenceResult | None = None,
+    ) -> str:
+        self._journal.require_formal_learning_sink()
+        return self._service.commit(
+            task_report,
+            expected_artifact=expected_artifact,
+            expected_evidence=expected_evidence,
+        )
 
 
 _BUDGET_AGGREGATE_TYPE = "CAMPAIGN_BUDGET"
@@ -1099,12 +1185,17 @@ class OperationalUsageJournal:
 
 
 __all__ = [
+    "CampaignLearningCommitSink",
+    "CampaignExecutionMode",
     "CampaignEvent",
     "CampaignEventConflictError",
     "CampaignJournalError",
+    "DryRunIsolationError",
     "OperationalBudgetJournal",
     "OperationalCampaignJournal",
     "OperationalUsageJournal",
     "RecordedModelAttempt",
+    "campaign_execution_mode",
     "campaign_scope_sha256",
+    "dry_run_namespace",
 ]
