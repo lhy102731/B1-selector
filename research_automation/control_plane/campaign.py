@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import Enum
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
 from typing import Protocol
 
 
@@ -499,6 +500,43 @@ class ModelInvocation:
         )
 
 
+class RetryingModelInvocation:
+    """Run bounded logical attempts; provider adapters remain single-call only."""
+
+    __slots__ = ("_attempt", "_max_attempts")
+
+    def __init__(self, *, attempt: ModelInvocation, max_attempts: int) -> None:
+        if not isinstance(attempt, ModelInvocation):
+            raise TypeError("attempt must be a ModelInvocation")
+        if type(max_attempts) is not int or not 1 <= max_attempts <= 100:
+            raise ValueError("max_attempts must be an integer from 1 through 100")
+        self._attempt = attempt
+        self._max_attempts = max_attempts
+
+    def invoke_json(self, request: object, *, call_id: str) -> object:
+        retrying = Retrying(
+            stop=stop_after_attempt(self._max_attempts),
+            wait=wait_none(),
+            retry=retry_if_exception_type(
+                (
+                    InvalidModelResponseError,
+                    ModelInvocationProviderError,
+                    ModelInvocationTimeoutError,
+                )
+            ),
+            reraise=True,
+        )
+        for logical_attempt in retrying:
+            with logical_attempt:
+                attempt_number = logical_attempt.retry_state.attempt_number
+                return self._attempt.invoke_json(
+                    request,
+                    call_id=call_id,
+                    attempt_id=f"{call_id}-attempt-{attempt_number:03d}",
+                )
+        raise RuntimeError("logical retry loop terminated without an outcome")
+
+
 __all__ = [
     "InvalidModelResponseError",
     "InvocationOutcome",
@@ -506,6 +544,7 @@ __all__ = [
     "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",
     "ProviderResponse",
+    "RetryingModelInvocation",
     "StreamingDisabledError",
     "UsageEnvelope",
     "UsageJournal",

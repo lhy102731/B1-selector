@@ -11,6 +11,7 @@ from research_automation.control_plane.campaign import (
     ModelInvocationTimeoutError,
     ModelInvocation,
     ProviderResponse,
+    RetryingModelInvocation,
     StreamingDisabledError,
     UsageEnvelope,
     UsageStatus,
@@ -248,6 +249,44 @@ class _RaisingStringUsageProvider:
             request_model="fake-primary-model",
             response_model="fake-primary-model",
             raw_usage=_RaisingString("provider-usage"),
+        )
+
+
+class _TimeoutThenSuccessProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        if self.call_count == 1:
+            raise TimeoutError("first fake attempt timed out")
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        )
+
+
+class _StreamingThenSuccessProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        if self.call_count == 1:
+            return ProviderResponse(
+                output_text='{"status":"partial"}',
+                request_model="fake-primary-model",
+                response_model="fake-primary-model",
+                raw_usage={"input_tokens": 2, "output_tokens": 1},
+                streamed=True,
+            )
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"input_tokens": 2, "output_tokens": 1},
         )
 
 
@@ -715,6 +754,62 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_tenacity_owns_two_accounted_logical_attempts(self) -> None:
+        provider = _TimeoutThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-023",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(provider.call_count, 2)
+        self.assertEqual(
+            [
+                event[1].attempt_id
+                for event in journal.events
+                if event[0] == "begin"
+            ],
+            ["call-023-attempt-001", "call-023-attempt-002"],
+        )
+        self.assertEqual(
+            journal.events[0][1].outcome,
+            InvocationOutcome.TIMEOUT,
+        )
+
+    def test_nonretryable_streaming_failure_is_not_double_invoked(self) -> None:
+        provider = _StreamingThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+        )
+
+        with self.assertRaises(StreamingDisabledError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-024",
+            )
+
+        self.assertEqual(provider.call_count, 1)
 
 
 if __name__ == "__main__":
