@@ -759,6 +759,25 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
                     resume_id="resume-001",
                 )
 
+    def test_pause_event_identity_is_unambiguous_for_colon_identifiers(self) -> None:
+        campaign_id = "campaign-lifecycle-pause-colon-ids"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+
+            lifecycle.request_pause(pause_id="a:b")
+            lifecycle.resume_pause(pause_id="a:b", resume_id="c")
+            lifecycle.request_pause(pause_id="a")
+            resumed = lifecycle.resume_pause(pause_id="a", resume_id="b:c")
+
+            self.assertEqual(resumed.status, CampaignPauseStatus.RUNNING)
+            self.assertEqual(resumed.last_pause_id, "a")
+            self.assertEqual(resumed.last_resume_id, "b:c")
+            self.assertEqual(
+                OperationalCampaignLifecycle(journal=journal).pause_snapshot(),
+                resumed,
+            )
+
     def test_pause_replay_rejects_an_alias_event_identity(self) -> None:
         campaign_id = "campaign-lifecycle-pause-008"
         with _authorized_campaign(campaign_id) as (_, _, journal):

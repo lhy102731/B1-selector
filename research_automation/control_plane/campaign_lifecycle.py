@@ -229,7 +229,8 @@ class OperationalCampaignLifecycle:
             event = self._journal._append_in_transaction(
                 connection,
                 event_id=self._pause_event_id(
-                    f"{CampaignPauseStatus.PAUSE_REQUESTED.value}:{pause_id}"
+                    CampaignPauseStatus.PAUSE_REQUESTED.value,
+                    pause_id,
                 ),
                 cycle_id=None,
                 aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
@@ -322,8 +323,9 @@ class OperationalCampaignLifecycle:
             event = self._journal._append_in_transaction(
                 connection,
                 event_id=self._pause_event_id(
-                    f"{CampaignPauseStatus.PAUSED.value}:{pause_id}:"
-                    f"{boundary_role}"
+                    CampaignPauseStatus.PAUSED.value,
+                    pause_id,
+                    boundary_role,
                 ),
                 cycle_id=None,
                 aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
@@ -386,8 +388,9 @@ class OperationalCampaignLifecycle:
             event = self._journal._append_in_transaction(
                 connection,
                 event_id=self._pause_event_id(
-                    f"{CampaignPauseStatus.RUNNING.value}:{pause_id}:"
-                    f"{resume_id}"
+                    CampaignPauseStatus.RUNNING.value,
+                    pause_id,
+                    resume_id,
                 ),
                 cycle_id=None,
                 aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
@@ -839,14 +842,23 @@ class OperationalCampaignLifecycle:
             role=role,
         )
 
-    def _pause_event_id(self, role: str) -> str:
-        return _state_event_id(
-            namespace=self._journal._namespace,
-            campaign_id=self._journal._campaign_id,
-            aggregate_type=_CAMPAIGN_PAUSE_AGGREGATE_TYPE,
-            aggregate_id=self._journal._campaign_id,
-            role=role,
+    def _pause_event_id(self, *role_parts: str) -> str:
+        if not role_parts:
+            raise ValueError("pause event identity requires role components")
+        components = tuple(
+            _identifier(value, "pause event role component")
+            for value in role_parts
         )
+        return hashlib.sha256(
+            b"control_plane.campaign_pause_event.v2\0"
+            + "\0".join(
+                (
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    *components,
+                )
+            ).encode("ascii")
+        ).hexdigest()
 
     def _campaign_block_recovery_event_id(
         self,
@@ -1110,8 +1122,8 @@ class OperationalCampaignLifecycle:
                     or pause_id in seen_pause_ids
                     or event.event_id
                     != self._pause_event_id(
-                        f"{CampaignPauseStatus.PAUSE_REQUESTED.value}:"
-                        f"{pause_id}"
+                        CampaignPauseStatus.PAUSE_REQUESTED.value,
+                        pause_id,
                     )
                 ):
                     raise CampaignLifecycleError(
@@ -1166,8 +1178,9 @@ class OperationalCampaignLifecycle:
                     or active_pause_id != pause_id
                     or event.event_id
                     != self._pause_event_id(
-                        f"{CampaignPauseStatus.PAUSED.value}:{pause_id}:"
-                        f"{boundary_role}"
+                        CampaignPauseStatus.PAUSED.value,
+                        pause_id,
+                        boundary_role,
                     )
                 ):
                     raise CampaignLifecycleError(
@@ -1203,8 +1216,9 @@ class OperationalCampaignLifecycle:
                     or resume_id in seen_resume_ids
                     or event.event_id
                     != self._pause_event_id(
-                        f"{CampaignPauseStatus.RUNNING.value}:{pause_id}:"
-                        f"{resume_id}"
+                        CampaignPauseStatus.RUNNING.value,
+                        pause_id,
+                        resume_id,
                     )
                 ):
                     raise CampaignLifecycleError(
