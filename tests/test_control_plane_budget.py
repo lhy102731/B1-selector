@@ -11,6 +11,179 @@ from research_automation.control_plane.budget import (
 
 
 class BudgetLedgerTests(unittest.TestCase):
+    def test_each_resource_dimension_blocks_cumulative_overreservation(self) -> None:
+        resource_fields = (
+            ("wall_time_ms", "reserved_wall_time_ms"),
+            ("tool_attempts", "reserved_tool_attempts"),
+            ("data_exposures", "reserved_data_exposures"),
+            ("disk_growth_bytes", "reserved_disk_growth_bytes"),
+        )
+        for requested_field, snapshot_field in resource_fields:
+            with self.subTest(resource=requested_field):
+                ledger = BudgetLedger(
+                    max_input_tokens=10,
+                    max_output_tokens=10,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=100,
+                    max_data_exposures=100,
+                    max_disk_growth_bytes=100,
+                )
+                first_resources = {
+                    "max_wall_time_ms": 0,
+                    "max_tool_attempts": 0,
+                    "max_data_exposures": 0,
+                    "max_disk_growth_bytes": 0,
+                }
+                first_resources[f"max_{requested_field}"] = 60
+                ledger.reserve(
+                    reservation_id="reservation-first",
+                    call_id="call-first",
+                    max_input_tokens=0,
+                    max_output_tokens=0,
+                    max_cost="0",
+                    **first_resources,
+                )
+                second_resources = dict(first_resources)
+                second_resources[f"max_{requested_field}"] = 50
+
+                with self.assertRaises(BudgetExceededError):
+                    ledger.reserve(
+                        reservation_id="reservation-second",
+                        call_id="call-second",
+                        max_input_tokens=0,
+                        max_output_tokens=0,
+                        max_cost="0",
+                        **second_resources,
+                    )
+
+                self.assertEqual(
+                    getattr(ledger.snapshot(), snapshot_field),
+                    60,
+                )
+
+    def test_concurrent_wall_time_reservations_are_atomic(self) -> None:
+        ledger = BudgetLedger(
+            max_input_tokens=0,
+            max_output_tokens=0,
+            max_cost="0",
+            max_wall_time_ms=100,
+        )
+
+        def reserve(index: int) -> bool:
+            try:
+                ledger.reserve(
+                    reservation_id=f"resource-reservation-{index}",
+                    call_id=f"resource-call-{index}",
+                    max_input_tokens=0,
+                    max_output_tokens=0,
+                    max_cost="0",
+                    max_wall_time_ms=60,
+                )
+            except BudgetExceededError:
+                return False
+            return True
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(reserve, range(8)))
+
+        self.assertEqual(sum(results), 1)
+        self.assertEqual(ledger.snapshot().reserved_wall_time_ms, 60)
+
+    def test_known_resource_settlement_releases_bounds_and_records_usage(self) -> None:
+        ledger = BudgetLedger(
+            max_input_tokens=10,
+            max_output_tokens=10,
+            max_cost="1",
+            max_wall_time_ms=1_000,
+            max_tool_attempts=10,
+            max_data_exposures=10,
+            max_disk_growth_bytes=1_000,
+        )
+        ledger.reserve(
+            reservation_id="reservation-resource-known",
+            call_id="call-resource-known",
+            max_input_tokens=0,
+            max_output_tokens=0,
+            max_cost="0",
+            max_wall_time_ms=600,
+            max_tool_attempts=6,
+            max_data_exposures=5,
+            max_disk_growth_bytes=700,
+        )
+
+        settlement = ledger.settle(
+            "reservation-resource-known",
+            input_tokens=0,
+            output_tokens=0,
+            cost="0",
+            wall_time_ms=400,
+            tool_attempts=4,
+            data_exposures=3,
+            disk_growth_bytes=500,
+        )
+        replay = ledger.settle(
+            "reservation-resource-known",
+            input_tokens=0,
+            output_tokens=0,
+            cost="0",
+            wall_time_ms=400,
+            tool_attempts=4,
+            data_exposures=3,
+            disk_growth_bytes=500,
+        )
+
+        self.assertEqual(settlement.state, "SETTLED")
+        self.assertEqual(replay.state, "SETTLED")
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot.reserved_wall_time_ms, 0)
+        self.assertEqual(snapshot.reserved_tool_attempts, 0)
+        self.assertEqual(snapshot.reserved_data_exposures, 0)
+        self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
+        self.assertEqual(snapshot.spent_wall_time_ms, 400)
+        self.assertEqual(snapshot.spent_tool_attempts, 4)
+        self.assertEqual(snapshot.spent_data_exposures, 3)
+        self.assertEqual(snapshot.spent_disk_growth_bytes, 500)
+
+    def test_missing_resource_usage_keeps_the_full_reservation(self) -> None:
+        ledger = BudgetLedger(
+            max_input_tokens=10,
+            max_output_tokens=10,
+            max_cost="1",
+            max_wall_time_ms=1_000,
+            max_tool_attempts=10,
+            max_data_exposures=10,
+            max_disk_growth_bytes=1_000,
+        )
+        ledger.reserve(
+            reservation_id="reservation-resource-unknown",
+            call_id="call-resource-unknown",
+            max_input_tokens=5,
+            max_output_tokens=5,
+            max_cost="0.5",
+            max_wall_time_ms=600,
+            max_tool_attempts=6,
+            max_data_exposures=5,
+            max_disk_growth_bytes=700,
+        )
+
+        settlement = ledger.settle(
+            "reservation-resource-unknown",
+            input_tokens=1,
+            output_tokens=1,
+            cost="0.1",
+        )
+
+        self.assertEqual(settlement.state, "SETTLED_UNKNOWN")
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot.reserved_input_tokens, 5)
+        self.assertEqual(snapshot.reserved_cost, "0.5")
+        self.assertEqual(snapshot.reserved_wall_time_ms, 600)
+        self.assertEqual(snapshot.reserved_tool_attempts, 6)
+        self.assertEqual(snapshot.reserved_data_exposures, 5)
+        self.assertEqual(snapshot.reserved_disk_growth_bytes, 700)
+        self.assertEqual(snapshot.spent_wall_time_ms, 0)
+
     def test_concurrent_reservations_are_atomic(self) -> None:
         ledger = BudgetLedger(
             max_input_tokens=100,
