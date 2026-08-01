@@ -733,7 +733,7 @@ class OperationalMigrationTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     stores_module.OperationalReader().read_identity().schema_version,
-                    2,
+                    3,
                 )
                 self.assertEqual(stores_module.OperationalReader().event_count(), 1)
 

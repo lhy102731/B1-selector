@@ -65,7 +65,7 @@ _TASK_SPEC_FIELDS = frozenset(
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _AUTHORITY_SCHEMA_VERSION = 1
-_OPERATIONAL_SCHEMA_VERSION = 2
+_OPERATIONAL_SCHEMA_VERSION = 3
 MAX_REVIEWED_POLICY_BYTES = 4 * 1024 * 1024
 _POLICY_NAMESPACE = ("research_state", "control_plane", "policies")
 _POLICY_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
@@ -227,7 +227,7 @@ _OPERATIONAL_SCHEMA_V1 = (
     )
     """,
 )
-_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V1 + (
+_OPERATIONAL_SCHEMA_V2 = _OPERATIONAL_SCHEMA_V1 + (
     """
     CREATE TABLE access_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -280,6 +280,27 @@ _OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V1 + (
         consumed_at TEXT NOT NULL,
         PRIMARY KEY(candidate_id, protocol_id, fold_id)
     ) WITHOUT ROWID
+    """,
+)
+_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V2 + (
+    """
+    CREATE TABLE campaign_events (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id TEXT NOT NULL UNIQUE,
+        namespace TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        cycle_id TEXT,
+        aggregate_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX campaign_events_aggregate_idx
+    ON campaign_events(namespace, aggregate_type, aggregate_id, sequence)
     """,
 )
 
@@ -1560,8 +1581,21 @@ def _operational_v1_spec() -> _StoreSpec:
     )
 
 
-def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
-    """Atomically migrate only the fixed OperationalJournal from v1 to v2."""
+def _operational_v2_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_OPERATIONAL_STORE_PATH,
+        store_kind="OPERATIONAL_JOURNAL",
+        metadata_table="operational_meta",
+        schema_version=2,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("operational_meta"),)
+            + _OPERATIONAL_SCHEMA_V2
+        ),
+    )
+
+
+def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
+    """Atomically migrate the fixed OperationalJournal from v1/v2 to v3."""
 
     supplied_sha256 = _root_secret_sha256(root_secret)
     path = Path(_OPERATIONAL_STORE_PATH).resolve(strict=False)
@@ -1631,16 +1665,25 @@ def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
             connection.rollback()
             transaction_started = False
             return False
+        prior_specs = {
+            1: (_operational_v1_spec(), len(_OPERATIONAL_SCHEMA_V1)),
+            2: (_operational_v2_spec(), len(_OPERATIONAL_SCHEMA_V2)),
+        }
+        prior = prior_specs.get(user_version)
+        if prior is None:
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        prior_spec, migration_offset = prior
         if (
-            user_version != 1
-            or metadata.get("schema_version") != "1"
+            metadata.get("schema_version") != str(user_version)
             or _schema_sha256(connection)
-            != _operational_v1_spec().expected_schema_sha256
+            != prior_spec.expected_schema_sha256
         ):
             raise SqliteSchemaError(
                 "control-plane store schema structure mismatch"
             )
-        for statement in _OPERATIONAL_SCHEMA[len(_OPERATIONAL_SCHEMA_V1) :]:
+        for statement in _OPERATIONAL_SCHEMA[migration_offset:]:
             connection.execute(statement)
         connection.execute(
             "UPDATE operational_meta SET value = ? WHERE key = 'schema_version'",
@@ -1664,6 +1707,12 @@ def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
         raise
     finally:
         connection.close()
+
+
+def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
+    """Compatibility name that migrates the journal to the current schema."""
+
+    return _migrate_operational_journal_v3(root_secret=root_secret)
 
 
 def _canonical_payload(payload: dict[str, object]) -> tuple[str, str]:
