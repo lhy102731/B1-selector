@@ -600,6 +600,10 @@ class OperationalBudgetJournal:
         "_max_input_tokens",
         "_max_output_tokens",
         "_max_cost",
+        "_max_wall_time_ms",
+        "_max_tool_attempts",
+        "_max_data_exposures",
+        "_max_disk_growth_bytes",
     )
 
     def __init__(
@@ -610,6 +614,10 @@ class OperationalBudgetJournal:
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
+        max_wall_time_ms: int = 0,
+        max_tool_attempts: int = 0,
+        max_data_exposures: int = 0,
+        max_disk_growth_bytes: int = 0,
     ) -> None:
         if not isinstance(journal, OperationalCampaignJournal):
             raise TypeError("journal must be an OperationalCampaignJournal")
@@ -620,10 +628,18 @@ class OperationalBudgetJournal:
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
             max_cost=max_cost,
+            max_wall_time_ms=max_wall_time_ms,
+            max_tool_attempts=max_tool_attempts,
+            max_data_exposures=max_data_exposures,
+            max_disk_growth_bytes=max_disk_growth_bytes,
         )
         self._max_input_tokens = max_input_tokens
         self._max_output_tokens = max_output_tokens
         self._max_cost = _cost_text(_cost(max_cost))
+        self._max_wall_time_ms = max_wall_time_ms
+        self._max_tool_attempts = max_tool_attempts
+        self._max_data_exposures = max_data_exposures
+        self._max_disk_growth_bytes = max_disk_growth_bytes
 
         def open_budget(connection) -> None:
             events = self._events_in_transaction(connection)
@@ -650,6 +666,10 @@ class OperationalBudgetJournal:
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
+        max_wall_time_ms: int = 0,
+        max_tool_attempts: int = 0,
+        max_data_exposures: int = 0,
+        max_disk_growth_bytes: int = 0,
     ) -> BudgetReservation:
         self._journal._authorize()
         reservation_id = _identifier(reservation_id, "reservation_id")
@@ -664,6 +684,10 @@ class OperationalBudgetJournal:
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
                 max_cost=max_cost,
+                max_wall_time_ms=max_wall_time_ms,
+                max_tool_attempts=max_tool_attempts,
+                max_data_exposures=max_data_exposures,
+                max_disk_growth_bytes=max_disk_growth_bytes,
             )
             event_id = self._event_id(
                 "reserve",
@@ -684,6 +708,10 @@ class OperationalBudgetJournal:
                     "max_input_tokens": reservation.max_input_tokens,
                     "max_output_tokens": reservation.max_output_tokens,
                     "max_cost": reservation.max_cost,
+                    "max_wall_time_ms": reservation.max_wall_time_ms,
+                    "max_tool_attempts": reservation.max_tool_attempts,
+                    "max_data_exposures": reservation.max_data_exposures,
+                    "max_disk_growth_bytes": reservation.max_disk_growth_bytes,
                 },
             )
             return reservation
@@ -697,6 +725,10 @@ class OperationalBudgetJournal:
         input_tokens: int | None,
         output_tokens: int | None,
         cost: str | int | Decimal | None,
+        wall_time_ms: int | None = None,
+        tool_attempts: int | None = None,
+        data_exposures: int | None = None,
+        disk_growth_bytes: int | None = None,
     ) -> BudgetSettlement:
         self._journal._authorize()
         reservation_id = _identifier(reservation_id, "reservation_id")
@@ -709,6 +741,10 @@ class OperationalBudgetJournal:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost=cost,
+                wall_time_ms=wall_time_ms,
+                tool_attempts=tool_attempts,
+                data_exposures=data_exposures,
+                disk_growth_bytes=disk_growth_bytes,
             )
             event_id = self._event_id(
                 "settle",
@@ -728,6 +764,10 @@ class OperationalBudgetJournal:
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "cost": None if cost is None else _cost_text(_cost(cost)),
+                    "wall_time_ms": wall_time_ms,
+                    "tool_attempts": tool_attempts,
+                    "data_exposures": data_exposures,
+                    "disk_growth_bytes": disk_growth_bytes,
                     "state": settlement.state,
                 },
             )
@@ -749,6 +789,10 @@ class OperationalBudgetJournal:
             "max_input_tokens": self._max_input_tokens,
             "max_output_tokens": self._max_output_tokens,
             "max_cost": self._max_cost,
+            "max_wall_time_ms": self._max_wall_time_ms,
+            "max_tool_attempts": self._max_tool_attempts,
+            "max_data_exposures": self._max_data_exposures,
+            "max_disk_growth_bytes": self._max_disk_growth_bytes,
         }
 
     def _event_id(
@@ -794,6 +838,10 @@ class OperationalBudgetJournal:
                 "max_input_tokens",
                 "max_output_tokens",
                 "max_cost",
+                "max_wall_time_ms",
+                "max_tool_attempts",
+                "max_data_exposures",
+                "max_disk_growth_bytes",
             }
             or opened_payload["budget_id"] != self._budget_id
             or type(opened_payload["max_input_tokens"]) is not int
@@ -802,12 +850,25 @@ class OperationalBudgetJournal:
             or opened_payload["max_output_tokens"] != self._max_output_tokens
             or type(opened_payload["max_cost"]) is not str
             or opened_payload["max_cost"] != self._max_cost
+            or type(opened_payload["max_wall_time_ms"]) is not int
+            or opened_payload["max_wall_time_ms"] != self._max_wall_time_ms
+            or type(opened_payload["max_tool_attempts"]) is not int
+            or opened_payload["max_tool_attempts"] != self._max_tool_attempts
+            or type(opened_payload["max_data_exposures"]) is not int
+            or opened_payload["max_data_exposures"] != self._max_data_exposures
+            or type(opened_payload["max_disk_growth_bytes"]) is not int
+            or opened_payload["max_disk_growth_bytes"]
+            != self._max_disk_growth_bytes
         ):
             raise BudgetConflictError("campaign budget configuration conflicts")
         ledger = BudgetLedger(
             max_input_tokens=self._max_input_tokens,
             max_output_tokens=self._max_output_tokens,
             max_cost=self._max_cost,
+            max_wall_time_ms=self._max_wall_time_ms,
+            max_tool_attempts=self._max_tool_attempts,
+            max_data_exposures=self._max_data_exposures,
+            max_disk_growth_bytes=self._max_disk_growth_bytes,
         )
         for event in events[1:]:
             payload = _event_domain_payload(event)
@@ -818,6 +879,10 @@ class OperationalBudgetJournal:
                     "max_input_tokens",
                     "max_output_tokens",
                     "max_cost",
+                    "max_wall_time_ms",
+                    "max_tool_attempts",
+                    "max_data_exposures",
+                    "max_disk_growth_bytes",
                 }
                 if set(payload) != expected_fields:
                     raise CampaignJournalError(
@@ -847,6 +912,10 @@ class OperationalBudgetJournal:
                         max_input_tokens=payload["max_input_tokens"],
                         max_output_tokens=payload["max_output_tokens"],
                         max_cost=payload["max_cost"],
+                        max_wall_time_ms=payload["max_wall_time_ms"],
+                        max_tool_attempts=payload["max_tool_attempts"],
+                        max_data_exposures=payload["max_data_exposures"],
+                        max_disk_growth_bytes=payload["max_disk_growth_bytes"],
                     )
                     canonical_payload = {
                         "reservation_id": reservation.reservation_id,
@@ -854,6 +923,10 @@ class OperationalBudgetJournal:
                         "max_input_tokens": reservation.max_input_tokens,
                         "max_output_tokens": reservation.max_output_tokens,
                         "max_cost": reservation.max_cost,
+                        "max_wall_time_ms": reservation.max_wall_time_ms,
+                        "max_tool_attempts": reservation.max_tool_attempts,
+                        "max_data_exposures": reservation.max_data_exposures,
+                        "max_disk_growth_bytes": reservation.max_disk_growth_bytes,
                     }
                 except (BudgetError, TypeError, ValueError, UnicodeError) as error:
                     raise CampaignJournalError(
@@ -867,6 +940,10 @@ class OperationalBudgetJournal:
                     "input_tokens",
                     "output_tokens",
                     "cost",
+                    "wall_time_ms",
+                    "tool_attempts",
+                    "data_exposures",
+                    "disk_growth_bytes",
                     "state",
                 }
                 if set(payload) != expected_fields:
@@ -895,6 +972,10 @@ class OperationalBudgetJournal:
                         input_tokens=payload["input_tokens"],
                         output_tokens=payload["output_tokens"],
                         cost=payload["cost"],
+                        wall_time_ms=payload["wall_time_ms"],
+                        tool_attempts=payload["tool_attempts"],
+                        data_exposures=payload["data_exposures"],
+                        disk_growth_bytes=payload["disk_growth_bytes"],
                     )
                     canonical_payload = {
                         "reservation_id": reservation_id,
@@ -905,6 +986,10 @@ class OperationalBudgetJournal:
                             if payload["cost"] is None
                             else _cost_text(_cost(payload["cost"]))
                         ),
+                        "wall_time_ms": payload["wall_time_ms"],
+                        "tool_attempts": payload["tool_attempts"],
+                        "data_exposures": payload["data_exposures"],
+                        "disk_growth_bytes": payload["disk_growth_bytes"],
                         "state": settlement.state,
                     }
                 except (BudgetError, TypeError, ValueError, UnicodeError) as error:

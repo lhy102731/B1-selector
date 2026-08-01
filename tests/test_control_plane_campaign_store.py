@@ -295,6 +295,177 @@ class OperationalCampaignMigrationTests(unittest.TestCase):
 
 
 class OperationalBudgetJournalTests(unittest.TestCase):
+    def test_resource_budget_settlement_survives_reopen(self) -> None:
+        campaign_id = "campaign-resource-budget-001"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            budget = OperationalBudgetJournal(
+                journal=journal,
+                budget_id="campaign-budget",
+                max_input_tokens=10,
+                max_output_tokens=10,
+                max_cost="1",
+                max_wall_time_ms=1_000,
+                max_tool_attempts=10,
+                max_data_exposures=10,
+                max_disk_growth_bytes=1_000,
+            )
+            budget.reserve(
+                reservation_id="resource-reservation",
+                call_id="resource-call",
+                max_input_tokens=0,
+                max_output_tokens=0,
+                max_cost="0",
+                max_wall_time_ms=600,
+                max_tool_attempts=6,
+                max_data_exposures=5,
+                max_disk_growth_bytes=700,
+            )
+            budget.settle(
+                "resource-reservation",
+                input_tokens=0,
+                output_tokens=0,
+                cost="0",
+                wall_time_ms=400,
+                tool_attempts=4,
+                data_exposures=3,
+                disk_growth_bytes=500,
+            )
+
+            reopened = OperationalBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="campaign-budget",
+                max_input_tokens=10,
+                max_output_tokens=10,
+                max_cost="1",
+                max_wall_time_ms=1_000,
+                max_tool_attempts=10,
+                max_data_exposures=10,
+                max_disk_growth_bytes=1_000,
+            )
+            snapshot = reopened.snapshot()
+            self.assertEqual(snapshot.reserved_wall_time_ms, 0)
+            self.assertEqual(snapshot.reserved_tool_attempts, 0)
+            self.assertEqual(snapshot.reserved_data_exposures, 0)
+            self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
+            self.assertEqual(snapshot.spent_wall_time_ms, 400)
+            self.assertEqual(snapshot.spent_tool_attempts, 4)
+            self.assertEqual(snapshot.spent_data_exposures, 3)
+            self.assertEqual(snapshot.spent_disk_growth_bytes, 500)
+
+    def test_unknown_resource_usage_keeps_persistent_reservations(self) -> None:
+        campaign_id = "campaign-resource-budget-002"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            budget = OperationalBudgetJournal(
+                journal=journal,
+                budget_id="campaign-budget",
+                max_input_tokens=0,
+                max_output_tokens=0,
+                max_cost="0",
+                max_wall_time_ms=1_000,
+                max_tool_attempts=10,
+                max_data_exposures=10,
+                max_disk_growth_bytes=1_000,
+            )
+            budget.reserve(
+                reservation_id="resource-reservation-unknown",
+                call_id="resource-call-unknown",
+                max_input_tokens=0,
+                max_output_tokens=0,
+                max_cost="0",
+                max_wall_time_ms=600,
+                max_tool_attempts=6,
+                max_data_exposures=5,
+                max_disk_growth_bytes=700,
+            )
+
+            settlement = budget.settle(
+                "resource-reservation-unknown",
+                input_tokens=0,
+                output_tokens=0,
+                cost="0",
+            )
+            reopened = OperationalBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="campaign-budget",
+                max_input_tokens=0,
+                max_output_tokens=0,
+                max_cost="0",
+                max_wall_time_ms=1_000,
+                max_tool_attempts=10,
+                max_data_exposures=10,
+                max_disk_growth_bytes=1_000,
+            )
+
+            self.assertEqual(settlement.state, "SETTLED_UNKNOWN")
+            snapshot = reopened.snapshot()
+            self.assertEqual(snapshot.reserved_wall_time_ms, 600)
+            self.assertEqual(snapshot.reserved_tool_attempts, 6)
+            self.assertEqual(snapshot.reserved_data_exposures, 5)
+            self.assertEqual(snapshot.reserved_disk_growth_bytes, 700)
+
+    def test_concurrent_resource_reservations_are_atomic(self) -> None:
+        campaign_id = "campaign-resource-budget-003"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            budgets = (
+                OperationalBudgetJournal(
+                    journal=journal,
+                    budget_id="campaign-budget",
+                    max_input_tokens=0,
+                    max_output_tokens=0,
+                    max_cost="0",
+                    max_wall_time_ms=100,
+                ),
+                OperationalBudgetJournal(
+                    journal=OperationalCampaignJournal(
+                        root_secret=ROOT_SECRET,
+                        grant=grant,
+                        namespace="formal",
+                        campaign_id=campaign_id,
+                        clock=lambda: NOW,
+                    ),
+                    budget_id="campaign-budget",
+                    max_input_tokens=0,
+                    max_output_tokens=0,
+                    max_cost="0",
+                    max_wall_time_ms=100,
+                ),
+            )
+
+            def reserve(index: int) -> bool:
+                try:
+                    budgets[index].reserve(
+                        reservation_id=f"resource-reservation-{index}",
+                        call_id=f"resource-call-{index}",
+                        max_input_tokens=0,
+                        max_output_tokens=0,
+                        max_cost="0",
+                        max_wall_time_ms=60,
+                    )
+                except BudgetExceededError:
+                    return False
+                return True
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                outcomes = tuple(executor.map(reserve, range(2)))
+
+            self.assertEqual(sum(outcomes), 1)
+            self.assertEqual(
+                budgets[0].snapshot().reserved_wall_time_ms,
+                60,
+            )
+
     def test_dry_run_budget_cannot_reach_the_formal_learning_sink(self) -> None:
         namespace = dry_run_namespace("preview-001")
         with _authorized_campaign(
@@ -632,6 +803,21 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_output_tokens=100,
                     max_cost="1.00",
                 )
+            with self.assertRaises(BudgetConflictError):
+                OperationalBudgetJournal(
+                    journal=OperationalCampaignJournal(
+                        root_secret=ROOT_SECRET,
+                        grant=grant,
+                        namespace="formal",
+                        campaign_id="campaign-budget-004",
+                        clock=lambda: NOW,
+                    ),
+                    budget_id="campaign-budget",
+                    max_input_tokens=100,
+                    max_output_tokens=100,
+                    max_cost="1.00",
+                    max_wall_time_ms=1,
+                )
             events = journal.list_events(
                 cycle_id=None,
                 aggregate_type="CAMPAIGN_BUDGET",
@@ -666,6 +852,10 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                             "max_input_tokens": stored_input,
                             "max_output_tokens": stored_output,
                             "max_cost": "1",
+                            "max_wall_time_ms": 0,
+                            "max_tool_attempts": 0,
+                            "max_data_exposures": 0,
+                            "max_disk_growth_bytes": 0,
                         },
                     )
 
@@ -699,6 +889,10 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     "max_input_tokens": 1,
                     "max_output_tokens": 1,
                     "max_cost": "0.1",
+                    "max_wall_time_ms": 0,
+                    "max_tool_attempts": 0,
+                    "max_data_exposures": 0,
+                    "max_disk_growth_bytes": 0,
                 },
             )
 
@@ -741,6 +935,10 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     "input_tokens": 20,
                     "output_tokens": 10,
                     "cost": "0.20",
+                    "wall_time_ms": None,
+                    "tool_attempts": None,
+                    "data_exposures": None,
+                    "disk_growth_bytes": None,
                     "state": "SETTLED",
                 },
             )
