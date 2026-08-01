@@ -13,6 +13,7 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
+import heapq
 import json
 from pathlib import Path
 
@@ -1832,7 +1833,14 @@ class ContextAssembler:
             return token_count
 
         selected_claims: list[dict[str, object]] = []
-        omitted_claim_ids: list[str] = []
+        selected_claim_ids: set[str] = set()
+        claim_by_id = {
+            str(claim["claim_id"]): claim for claim in ordered_claims
+        }
+        claim_order = {
+            str(claim["claim_id"]): index
+            for index, claim in enumerate(ordered_claims)
+        }
         learning_memory = {
             "schema_version": "control_plane.learning_memory.v1",
             "claims": selected_claims,
@@ -1840,16 +1848,67 @@ class ContextAssembler:
         }
         if count_tokens(learning_memory) <= learning_token_budget:
             for claim in ordered_claims:
+                claim_id = str(claim["claim_id"])
+                if claim_id in selected_claim_ids:
+                    continue
+                required_ids: set[str] = set()
+                pending = [claim_id]
+                while pending:
+                    required_claim_id = pending.pop()
+                    if (
+                        required_claim_id in selected_claim_ids
+                        or required_claim_id in required_ids
+                    ):
+                        continue
+                    required_ids.add(required_claim_id)
+                    pending.extend(
+                        str(parent_id)
+                        for parent_id in claim_by_id[required_claim_id][
+                            "parent_claim_ids"
+                        ]
+                    )
+                parent_counts = {required_id: 0 for required_id in required_ids}
+                children = {required_id: [] for required_id in required_ids}
+                for required_id in required_ids:
+                    for parent_id in claim_by_id[required_id]["parent_claim_ids"]:
+                        parent_ref = str(parent_id)
+                        if parent_ref in required_ids:
+                            parent_counts[required_id] += 1
+                            children[parent_ref].append(required_id)
+                ready = [
+                    (claim_order[required_id], required_id)
+                    for required_id, parent_count in parent_counts.items()
+                    if parent_count == 0
+                ]
+                heapq.heapify(ready)
+                required: list[dict[str, object]] = []
+                while ready:
+                    _, required_id = heapq.heappop(ready)
+                    required.append(claim_by_id[required_id])
+                    for child_id in children[required_id]:
+                        parent_counts[child_id] -= 1
+                        if parent_counts[child_id] == 0:
+                            heapq.heappush(
+                                ready,
+                                (claim_order[child_id], child_id),
+                            )
+                if len(required) != len(required_ids):
+                    raise ValueError(
+                        "context projection contains a lineage cycle"
+                    )
                 candidate = {
                     **learning_memory,
-                    "claims": [*selected_claims, claim],
+                    "claims": [*selected_claims, *required],
                 }
                 if count_tokens(candidate) <= learning_token_budget:
-                    selected_claims.append(claim)
-                else:
-                    omitted_claim_ids.append(str(claim["claim_id"]))
-        else:
-            omitted_claim_ids.extend(str(claim["claim_id"]) for claim in ordered_claims)
+                    selected_claims.extend(required)
+                    selected_claim_ids.update(required_ids)
+        selected_claims[:] = validate_projected_context_claims(selected_claims)
+        omitted_claim_ids = [
+            str(claim["claim_id"])
+            for claim in ordered_claims
+            if str(claim["claim_id"]) not in selected_claim_ids
+        ]
         control_metadata = {
             "projection_schema_version": projection["schema_version"],
             "excluded_claims": validated_excluded_claims,

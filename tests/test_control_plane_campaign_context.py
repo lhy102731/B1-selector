@@ -1121,6 +1121,88 @@ class OperationalCycleContextJournalTests(unittest.TestCase):
                 1,
             )
 
+    def test_budgeted_lineage_prepares_a_replayable_context_receipt(self) -> None:
+        campaign_id = "campaign-context-019"
+        cycle_id = "cycle-001"
+        parent_id = "claim-context-budget-parent"
+        projected = ContextProjection().project(
+            [
+                {
+                    "claim_id": parent_id,
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-context-budget-parent"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                },
+                {
+                    "claim_id": "claim-context-budget-child",
+                    "kind": "POSITIVE",
+                    "conclusion": "POSITIVE_DIRECTIONAL",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-context-budget-child"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [parent_id],
+                    "directional_status": "positive_directional",
+                },
+            ]
+        )
+        projection_input = {
+            **projected,
+            "schema_version": "control_plane.committed_learning_input.v1",
+        }
+        proposal = {
+            "hypothesis": "Budgeted lineage remains replayable",
+            "scope": scope(regime="bull"),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal), patch(
+            "research_automation.control_plane.campaign_context."
+            "CommittedLearningLedgerReader.read_projection_input",
+            return_value=projection_input,
+        ):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+
+            prepared = contexts.prepare(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                roles=("alpha_hunter",),
+                learning_token_budget=1300,
+            )
+
+            self.assertEqual(contexts.snapshot(cycle_id=cycle_id), prepared)
+            messages = prepared.messages_for("alpha_hunter")
+            trusted = json.loads(messages["system_message"]["content"])
+            selected = trusted["learning_memory"]["claims"]
+            selected_ids = {claim["claim_id"] for claim in selected}
+            self.assertTrue(
+                all(
+                    set(claim["parent_claim_ids"]).issubset(selected_ids)
+                    for claim in selected
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

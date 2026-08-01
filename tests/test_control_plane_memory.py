@@ -2295,6 +2295,110 @@ class ContextAssemblerTests(unittest.TestCase):
         self.assertEqual("ESTIMATED", result["token_usage"]["method"])
         self.assertGreater(result["token_usage"]["learning_required"], 1)
 
+    def test_context_budget_selection_preserves_ancestor_closure(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+            validate_projected_context_claims,
+        )
+
+        parent_id = "claim-budget-parent"
+        projection = ContextProjection().project(
+            [
+                {
+                    "claim_id": parent_id,
+                    "kind": "NEGATIVE",
+                    "conclusion": "DO_NOT_HARD_GATE",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-budget-parent"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [],
+                    "directional_status": "research_only",
+                },
+                {
+                    "claim_id": "claim-budget-child",
+                    "kind": "POSITIVE",
+                    "conclusion": "POSITIVE_DIRECTIONAL",
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": ["evidence-budget-child"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": [parent_id],
+                    "directional_status": "positive_directional",
+                },
+            ]
+        )
+
+        result = ContextAssembler().assemble(
+            projection,
+            role="alpha_hunter",
+            learning_token_budget=1300,
+        )
+
+        self.assertEqual("OK", result["status"])
+        selected = result["learning_memory"]["claims"]
+        self.assertEqual(validate_projected_context_claims(selected), selected)
+        selected_ids = {claim["claim_id"] for claim in selected}
+        for claim in selected:
+            self.assertTrue(
+                set(claim["parent_claim_ids"]).issubset(selected_ids)
+            )
+
+    def test_deep_context_lineage_selection_does_not_use_recursion(self) -> None:
+        from research_automation.control_plane.memory import (
+            ContextAssembler,
+            ContextProjection,
+            validate_projected_context_claims,
+        )
+
+        claims = []
+        for index in range(1_100):
+            claim_id = f"claim-deep-context-{index:04d}"
+            is_leaf = index == 1_099
+            claims.append(
+                {
+                    "claim_id": claim_id,
+                    "kind": "POSITIVE" if is_leaf else "NEGATIVE",
+                    "conclusion": (
+                        "POSITIVE_DIRECTIONAL"
+                        if is_leaf
+                        else "DO_NOT_HARD_GATE"
+                    ),
+                    "scope": scope(regime="bull"),
+                    "audit_grade": "PASS",
+                    "evidence_grade": "EXPLORATORY",
+                    "evidence_refs": [f"evidence-deep-context-{index:04d}"],
+                    "taint_refs": [],
+                    "invalidation_codes": [],
+                    "reopen_predicates": [],
+                    "parent_claim_ids": (
+                        []
+                        if index == 0
+                        else [f"claim-deep-context-{index - 1:04d}"]
+                    ),
+                    "directional_status": (
+                        "positive_directional" if is_leaf else "research_only"
+                    ),
+                }
+            )
+
+        result = ContextAssembler().assemble(
+            ContextProjection().project(claims),
+            role="alpha_hunter",
+            learning_token_budget=1500,
+        )
+
+        self.assertEqual("OK", result["status"])
+        selected = result["learning_memory"]["claims"]
+        self.assertEqual(validate_projected_context_claims(selected), selected)
+
     def test_unknown_tokenizer_uses_utf8_byte_upper_bound(self) -> None:
         from research_automation.control_plane.memory import ContextAssembler
 

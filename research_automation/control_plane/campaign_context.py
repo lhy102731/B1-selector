@@ -145,6 +145,31 @@ def campaign_target_scope_sha256(value: object) -> str:
     return _target_scope_snapshot(value)[0]
 
 
+def canonical_campaign_proposal(
+    proposal: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate and snapshot the proposal contract before durable side effects."""
+
+    if not isinstance(proposal, Mapping):
+        raise ValueError("proposal must be a mapping")
+    _, frozen_proposal = _canonical_snapshot(
+        proposal,
+        "proposal",
+        maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+    )
+    if not isinstance(frozen_proposal, dict):
+        raise ValueError("proposal must be a mapping")
+    hypothesis = frozen_proposal.get("hypothesis")
+    if (
+        not isinstance(hypothesis, str)
+        or not hypothesis.strip()
+        or hypothesis != hypothesis.strip()
+    ):
+        raise ValueError("proposal.hypothesis must be canonical")
+    _target_scope_snapshot(frozen_proposal.get("scope"))
+    return frozen_proposal
+
+
 def _sha256(value: object, name: str) -> str:
     if (
         type(value) is not str
@@ -532,22 +557,7 @@ class OperationalCycleContextJournal:
     ) -> CycleContextReceipt:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
-        if not isinstance(proposal, Mapping):
-            raise ValueError("proposal must be a mapping")
-        _, frozen_proposal = _canonical_snapshot(
-            proposal,
-            "proposal",
-            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
-        )
-        if not isinstance(frozen_proposal, dict):
-            raise ValueError("proposal must be a mapping")
-        hypothesis = frozen_proposal.get("hypothesis")
-        if (
-            not isinstance(hypothesis, str)
-            or not hypothesis.strip()
-            or hypothesis != hypothesis.strip()
-        ):
-            raise ValueError("proposal.hypothesis must be canonical")
+        frozen_proposal = canonical_campaign_proposal(proposal)
         target_scope_sha256, frozen_target_scope = _target_scope_snapshot(
             frozen_proposal.get("scope")
         )
@@ -601,6 +611,13 @@ class OperationalCycleContextJournal:
                 raise CycleContextConflictError(
                     f"safe context is not ready for role {role}"
                 )
+            _validate_safe_messages(
+                messages,
+                learning_token_budget=learning_token_budget,
+                control_token_budget=control_token_budget,
+                tokenizer_kind=self._policy_payload["tokenizer_kind"],
+                tokenizer_ref=self._policy_payload["tokenizer_ref"],
+            )
             messages_by_role.append({"role": role, "messages": messages})
         bundle_text, bundle = _canonical_snapshot(
             {
@@ -1121,6 +1138,7 @@ class OperationalCycleContextJournal:
 
 
 __all__ = [
+    "canonical_campaign_proposal",
     "campaign_target_scope_sha256",
     "CycleContextConflictError",
     "CycleContextError",
