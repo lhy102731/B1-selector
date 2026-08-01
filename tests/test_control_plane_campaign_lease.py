@@ -22,6 +22,7 @@ from research_automation.control_plane.campaign_lease import (
     StaleFencingTokenError,
 )
 from research_automation.control_plane.campaign_lifecycle import (
+    CampaignStateConflictError,
     CampaignStatus,
     CycleStatus,
     OperationalCampaignLifecycle,
@@ -180,6 +181,24 @@ def _freeze_cycle(
             expected_status=expected,
             next_status=next_status,
         )
+
+
+def _start_executing_cycle(
+    *,
+    journal: OperationalCampaignJournal,
+    lifecycle: OperationalCampaignLifecycle,
+    lease,
+):
+    return OperationalCycleLeaseJournal(
+        journal=journal,
+        lifecycle=lifecycle,
+        owner=lease.owner,
+        monotonic_ns=lambda: lease.heartbeat_monotonic_ns,
+    ).advance_cycle(
+        lease=lease,
+        expected_status=CycleStatus.FROZEN,
+        next_status=CycleStatus.EXECUTING,
+    )
 
 
 def _cycle_lease_event_id(
@@ -402,10 +421,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             provider.set_current(
                 ProcessIdentity(
@@ -444,14 +463,14 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 ),
                 monotonic_ns=lambda: 100,
             )
-            old_leases.acquire(
+            acquired = old_leases.acquire(
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             provider = _FakeProcessIdentityProvider(
                 ProcessIdentity(
@@ -587,7 +606,7 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
             _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
-            OperationalCycleLeaseJournal(
+            acquired = OperationalCycleLeaseJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 owner=ProcessIdentity(
@@ -600,10 +619,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             contenders = tuple(
                 OperationalCycleLeaseJournal(
@@ -686,10 +705,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                         acquisition_id=f"acquire-{cycle_id}",
                     )
                 )
-                lifecycle.advance_cycle(
-                    cycle_id=cycle_id,
-                    expected_status=CycleStatus.FROZEN,
-                    next_status=CycleStatus.EXECUTING,
+                _start_executing_cycle(
+                    journal=journal,
+                    lifecycle=lifecycle,
+                    lease=leases[-1],
                 )
             probe_entered = Event()
             release_probe = Event()
@@ -771,10 +790,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                         acquisition_id=f"acquire-{cycle_id}",
                     )
                 )
-                lifecycle.advance_cycle(
-                    cycle_id=cycle_id,
-                    expected_status=CycleStatus.FROZEN,
-                    next_status=CycleStatus.EXECUTING,
+                _start_executing_cycle(
+                    journal=journal,
+                    lifecycle=lifecycle,
+                    lease=leases[-1],
                 )
             heartbeat_journals = tuple(
                 OperationalCycleLeaseJournal(
@@ -843,10 +862,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             heartbeats = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -893,10 +912,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             heartbeats = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -954,10 +973,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             probe_entered = Event()
             release_probe = Event()
@@ -1077,10 +1096,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             first_nonce = "a" * 64
             poisoned_event_id = _cycle_lease_event_id(
@@ -1141,10 +1160,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             first_new_lease_id = f"cyclelease_{'a' * 32}"
             first_nonce = "b" * 64
@@ -1272,6 +1291,319 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
             self.assertEqual(unrelated.fencing_token, 1)
             self.assertEqual(unrelated.owner, owner_b)
 
+    def test_current_lease_advances_the_cycle_in_one_fenced_write(self) -> None:
+        campaign_id = "campaign-lease-041"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: 100,
+            )
+            acquired = leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+
+            advanced = leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+
+            self.assertEqual(advanced.status, CycleStatus.EXECUTING)
+            self.assertEqual(lifecycle.cycle_snapshot("cycle-001"), advanced)
+
+    def test_lifecycle_cannot_bypass_an_existing_cycle_lease(self) -> None:
+        campaign_id = "campaign-lease-042"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: 100,
+            )
+            acquired = leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+
+            with self.assertRaises(CampaignStateConflictError):
+                lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=CycleStatus.FROZEN,
+                    next_status=CycleStatus.EXECUTING,
+                )
+
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.FROZEN,
+            )
+            advanced = leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            self.assertEqual(advanced.status, CycleStatus.EXECUTING)
+
+    def test_recovered_lease_fences_cycle_state_mutation(self) -> None:
+        campaign_id = "campaign-lease-043"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            old_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: 100,
+            )
+            acquired = old_leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            old_leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            replacement_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 2_000),
+                monotonic_ns=lambda: 200,
+            )
+            recovered = replacement_leases.recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-cycle-001",
+                stale_after_ns=50,
+            )
+
+            with self.assertRaises(StaleFencingTokenError):
+                old_leases.advance_cycle(
+                    lease=acquired,
+                    expected_status=CycleStatus.EXECUTING,
+                    next_status=CycleStatus.EVIDENCE_READY,
+                )
+
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+            advanced = replacement_leases.advance_cycle(
+                lease=recovered,
+                expected_status=CycleStatus.EXECUTING,
+                next_status=CycleStatus.EVIDENCE_READY,
+            )
+            self.assertEqual(advanced.status, CycleStatus.EVIDENCE_READY)
+
+    def test_cycle_mutation_rejects_provider_identity_drift(self) -> None:
+        campaign_id = "campaign-lease-044"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            provider = _FakeProcessIdentityProvider(
+                ProcessIdentity("host-a", 101, 1_000)
+            )
+            leases = _OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                identity_provider=provider,
+                monotonic_ns=lambda: 100,
+            )
+            acquired = leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            provider.set_current(ProcessIdentity("host-a", 202, 2_000))
+
+            with self.assertRaises(CycleLeaseConflictError):
+                leases.advance_cycle(
+                    lease=acquired,
+                    expected_status=CycleStatus.FROZEN,
+                    next_status=CycleStatus.EXECUTING,
+                )
+
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.FROZEN,
+            )
+
+    def test_recovery_fences_a_mutation_after_its_identity_preflight(self) -> None:
+        campaign_id = "campaign-lease-045"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            old_owner = ProcessIdentity("host-a", 101, 1_000)
+            pause_probe = [False]
+            mutation_verified = Event()
+            release_mutation = Event()
+
+            def old_owner_probe(host_id: str, pid: int) -> int:
+                self.assertEqual((host_id, pid), ("host-a", 101))
+                if pause_probe[0]:
+                    mutation_verified.set()
+                    if not release_mutation.wait(timeout=5):
+                        raise AssertionError("mutation identity preflight timed out")
+                return old_owner.process_started_at_ns
+
+            old_leases = _OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                identity_provider=_FakeProcessIdentityProvider(
+                    old_owner,
+                    probe=old_owner_probe,
+                ),
+                monotonic_ns=lambda: 100,
+            )
+            acquired = old_leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            old_leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            replacement_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 2_000),
+                monotonic_ns=lambda: 200,
+            )
+            pause_probe[0] = True
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                stale_mutation = pool.submit(
+                    old_leases.advance_cycle,
+                    lease=acquired,
+                    expected_status=CycleStatus.EXECUTING,
+                    next_status=CycleStatus.EVIDENCE_READY,
+                )
+                self.assertTrue(mutation_verified.wait(timeout=5))
+                try:
+                    recovered = replacement_leases.recover(
+                        cycle_id="cycle-001",
+                        acquisition_id="recover-cycle-001",
+                        stale_after_ns=50,
+                    )
+                finally:
+                    release_mutation.set()
+                with self.assertRaises(StaleFencingTokenError):
+                    stale_mutation.result(timeout=5)
+
+            self.assertEqual(recovered.fencing_token, 2)
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+            advanced = replacement_leases.advance_cycle(
+                lease=recovered,
+                expected_status=CycleStatus.EXECUTING,
+                next_status=CycleStatus.EVIDENCE_READY,
+            )
+            self.assertEqual(advanced.status, CycleStatus.EVIDENCE_READY)
+
+    def test_frozen_cycle_can_recover_before_its_first_leased_mutation(self) -> None:
+        campaign_id = "campaign-lease-046"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            old_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: 100,
+            )
+            old_leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            replacement_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 2_000),
+                monotonic_ns=lambda: 200,
+            )
+
+            recovered = replacement_leases.recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-cycle-001",
+                stale_after_ns=50,
+            )
+
+            self.assertEqual(recovered.fencing_token, 2)
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.FROZEN,
+            )
+            advanced = replacement_leases.advance_cycle(
+                lease=recovered,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            self.assertEqual(advanced.status, CycleStatus.EXECUTING)
+
+    def test_evidence_ready_cycle_can_recover_and_continue(self) -> None:
+        campaign_id = "campaign-lease-047"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            old_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 1_000),
+                monotonic_ns=lambda: 100,
+            )
+            acquired = old_leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            old_leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            old_leases.advance_cycle(
+                lease=acquired,
+                expected_status=CycleStatus.EXECUTING,
+                next_status=CycleStatus.EVIDENCE_READY,
+            )
+            replacement_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity("host-a", 101, 2_000),
+                monotonic_ns=lambda: 200,
+            )
+
+            recovered = replacement_leases.recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-cycle-001",
+                stale_after_ns=50,
+            )
+
+            self.assertEqual(recovered.fencing_token, 2)
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            advanced = replacement_leases.advance_cycle(
+                lease=recovered,
+                expected_status=CycleStatus.EVIDENCE_READY,
+                next_status=CycleStatus.LEARNING_COMMITTED,
+            )
+            self.assertEqual(advanced.status, CycleStatus.LEARNING_COMMITTED)
+
     def test_heartbeat_is_monotonic_idempotent_and_fences_stale_snapshot(self) -> None:
         campaign_id = "campaign-lease-002"
         with _authorized_campaign(campaign_id) as (grant, journal):
@@ -1294,10 +1626,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
 
             heartbeat = leases.heartbeat(
@@ -1374,10 +1706,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
 
             with self.assertRaises(ValueError):
@@ -1418,10 +1750,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             replacement_owner = ProcessIdentity(
                 host_id="host-a",
@@ -1479,7 +1811,7 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
             _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
-            OperationalCycleLeaseJournal(
+            original = OperationalCycleLeaseJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 owner=ProcessIdentity(
@@ -1492,10 +1824,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             clock_values = iter((1_000, 10_000))
             recovery = OperationalCycleLeaseJournal(
@@ -1534,7 +1866,7 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
             _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
-            OperationalCycleLeaseJournal(
+            original = OperationalCycleLeaseJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 owner=ProcessIdentity(
@@ -1547,10 +1879,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             replacement_owner = ProcessIdentity(
                 host_id="host-a",
@@ -1616,10 +1948,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             replacement = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -1952,10 +2284,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             poisoned_event_id = "poisoned-heartbeat-lease-tail"
             journal.append(
@@ -2005,10 +2337,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             provider.current_calls = 0
             provider.probe_calls.clear()
@@ -2038,7 +2370,7 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
             _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
-            OperationalCycleLeaseJournal(
+            original = OperationalCycleLeaseJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 owner=ProcessIdentity(
@@ -2051,10 +2383,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             lifecycle.block(
                 reason_code="TEST_BLOCK",
@@ -2141,7 +2473,7 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 pid=101,
                 process_started_at_ns=1_000,
             )
-            OperationalCycleLeaseJournal(
+            original = OperationalCycleLeaseJournal(
                 journal=journal,
                 lifecycle=lifecycle,
                 owner=owner,
@@ -2150,10 +2482,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             poisoned_event_id = "poisoned-recovery-lease-tail"
             journal.append(
@@ -2213,10 +2545,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             recovery = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -2288,10 +2620,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             recovery = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -2338,10 +2670,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
             recovery = OperationalCycleLeaseJournal(
                 journal=journal,
@@ -2393,10 +2725,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
             )
 
             def process_probe(host_id: str, pid: int) -> None:
@@ -2445,10 +2777,10 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 cycle_id="cycle-001",
                 acquisition_id="acquire-cycle-001",
             )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=acquired,
             )
             recovery = OperationalCycleLeaseJournal(
                 journal=journal,

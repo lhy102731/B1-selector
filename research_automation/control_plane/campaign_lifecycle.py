@@ -58,6 +58,7 @@ class CycleStatus(str, Enum):
 
 _CAMPAIGN_AGGREGATE_TYPE = "CAMPAIGN_STATE"
 _CYCLE_AGGREGATE_TYPE = "CYCLE_STATE"
+_CYCLE_LEASE_AGGREGATE_TYPE = "CYCLE_LEASE"
 _CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 _CAMPAIGN_TRANSITIONED = "CAMPAIGN_TRANSITIONED"
 _CAMPAIGN_BLOCKED = "CAMPAIGN_BLOCKED"
@@ -439,6 +440,44 @@ class OperationalCampaignLifecycle:
     ) -> CycleSnapshot:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
+        self._validate_cycle_transition(expected_status, next_status)
+
+        def advance_unleased(connection) -> CycleSnapshot:
+            occupied = connection.execute(
+                """
+                SELECT 1 FROM campaign_events
+                WHERE namespace = ? AND campaign_id = ? AND cycle_id = ?
+                  AND aggregate_type = ? AND aggregate_id = ?
+                LIMIT 1
+                """,
+                (
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    cycle_id,
+                    _CYCLE_LEASE_AGGREGATE_TYPE,
+                    cycle_id,
+                ),
+            ).fetchone()
+            if occupied is not None:
+                raise CampaignStateConflictError(
+                    "Cycle has an execution lease and requires fenced mutation"
+                )
+            return self._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=expected_status,
+                next_status=next_status,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            advance_unleased
+        )
+
+    @staticmethod
+    def _validate_cycle_transition(
+        expected_status: CycleStatus,
+        next_status: CycleStatus,
+    ) -> None:
         if not isinstance(expected_status, CycleStatus) or not isinstance(
             next_status,
             CycleStatus,
@@ -449,39 +488,44 @@ class OperationalCampaignLifecycle:
                 "Cycle transition skips a required protocol state"
             )
 
-        def advance(connection) -> CycleSnapshot:
-            campaign = self._replay_campaign(self._campaign_events(connection))
-            if campaign.status is not CampaignStatus.ACTIVE:
-                raise CampaignStateConflictError("Campaign is not ACTIVE")
-            snapshot = self._replay_cycle(self._cycle_events(connection, cycle_id))
-            if snapshot.status is next_status:
-                return snapshot
-            if snapshot.status is not expected_status:
-                raise CampaignStateConflictError(
-                    "Cycle is not in the expected state"
-                )
-            event = self._journal._append_in_transaction(
-                connection,
-                event_id=self._cycle_event_id(cycle_id, next_status.value),
-                cycle_id=cycle_id,
-                aggregate_type=_CYCLE_AGGREGATE_TYPE,
-                aggregate_id=cycle_id,
-                event_type=_CYCLE_TRANSITIONED,
-                payload={
-                    "cycle_id": cycle_id,
-                    "cycle_number": snapshot.cycle_number,
-                    "from_status": expected_status.value,
-                    "to_status": next_status.value,
-                },
+    def _advance_cycle_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        expected_status: CycleStatus,
+        next_status: CycleStatus,
+    ) -> CycleSnapshot:
+        campaign = self._replay_campaign(self._campaign_events(connection))
+        if campaign.status is not CampaignStatus.ACTIVE:
+            raise CampaignStateConflictError("Campaign is not ACTIVE")
+        snapshot = self._replay_cycle(self._cycle_events(connection, cycle_id))
+        if snapshot.status is next_status:
+            return snapshot
+        if snapshot.status is not expected_status:
+            raise CampaignStateConflictError(
+                "Cycle is not in the expected state"
             )
-            return CycleSnapshot(
-                cycle_id,
-                snapshot.cycle_number,
-                next_status,
-                event.sequence,
-            )
-
-        return _SqliteUnitOfWork(stores._operational_spec())._write(advance)
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=self._cycle_event_id(cycle_id, next_status.value),
+            cycle_id=cycle_id,
+            aggregate_type=_CYCLE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+            event_type=_CYCLE_TRANSITIONED,
+            payload={
+                "cycle_id": cycle_id,
+                "cycle_number": snapshot.cycle_number,
+                "from_status": expected_status.value,
+                "to_status": next_status.value,
+            },
+        )
+        return CycleSnapshot(
+            cycle_id,
+            snapshot.cycle_number,
+            next_status,
+            event.sequence,
+        )
 
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         self._journal._authorize()

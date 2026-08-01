@@ -15,6 +15,7 @@ import psutil
 from . import stores
 from .campaign_lifecycle import (
     CampaignStatus,
+    CycleSnapshot,
     CycleStatus,
     OperationalCampaignLifecycle,
 )
@@ -34,6 +35,17 @@ _LEASE_HEARTBEAT = "CYCLE_LEASE_HEARTBEAT"
 _LEASE_REPLACED = "CYCLE_LEASE_REPLACED"
 _MAX_PID = (1 << 31) - 1
 _MAX_CLOCK_VALUE = (1 << 63) - 1
+_LEASE_OWNED_CYCLE_STATUSES = frozenset(
+    {
+        CycleStatus.FROZEN,
+        CycleStatus.EXECUTING,
+        CycleStatus.EVIDENCE_READY,
+        CycleStatus.LEARNING_COMMITTED,
+        CycleStatus.SETTLED,
+        CycleStatus.INFORMATION_GAIN_RECORDED,
+        CycleStatus.NEXT_CYCLE_DECIDED,
+    }
+)
 
 
 class CycleLeaseError(RuntimeError):
@@ -391,6 +403,57 @@ class OperationalCycleLeaseJournal:
             )
         return lease
 
+    def advance_cycle(
+        self,
+        *,
+        lease: CycleLease,
+        expected_status: CycleStatus,
+        next_status: CycleStatus,
+    ) -> CycleSnapshot:
+        self._journal._authorize()
+        if not isinstance(lease, CycleLease):
+            raise TypeError("lease must be a CycleLease")
+        cycle_id = _identifier(lease.cycle_id, "cycle_id")
+        self._lifecycle._validate_cycle_transition(expected_status, next_status)
+        self._require_active_campaign()
+        if _verified_current_owner(self._identity_provider) != self._owner:
+            raise CycleLeaseConflictError(
+                "current process identity changed after journal construction"
+            )
+
+        def advance(connection) -> CycleSnapshot | None:
+            campaign = self._lifecycle._replay_campaign(
+                self._lifecycle._campaign_events(connection)
+            )
+            if campaign.status is not CampaignStatus.ACTIVE:
+                raise CycleLeaseConflictError("Campaign is not ACTIVE")
+            events = self._events_or_block(connection, cycle_id)
+            if events is None:
+                return None
+            history = self._replay_or_block(connection, events)
+            if history is None:
+                return None
+            active = history.active
+            if active != lease or active.owner != self._owner:
+                raise StaleFencingTokenError(
+                    "Cycle lease snapshot is stale or owned by another process"
+                )
+            return self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=expected_status,
+                next_status=next_status,
+            )
+
+        snapshot = _SqliteUnitOfWork(stores._operational_spec())._write(
+            advance
+        )
+        if snapshot is None:
+            raise CycleLeaseIntegrityError(
+                "invalid Cycle lease journal blocked Campaign"
+            )
+        return snapshot
+
     def heartbeat(
         self,
         *,
@@ -583,9 +646,9 @@ class OperationalCycleLeaseJournal:
             cycle = self._lifecycle._replay_cycle(
                 self._lifecycle._cycle_events(connection, cycle_id)
             )
-            if cycle.status is not CycleStatus.EXECUTING:
+            if cycle.status not in _LEASE_OWNED_CYCLE_STATUSES:
                 raise CycleLeaseConflictError(
-                    "Cycle recovery requires the EXECUTING state"
+                    "Cycle recovery requires an incomplete leased state"
                 )
             events = self._events_or_block(connection, cycle_id)
             if events is None:
@@ -683,9 +746,9 @@ class OperationalCycleLeaseJournal:
             cycle = self._lifecycle._replay_cycle(
                 self._lifecycle._cycle_events(connection, cycle_id)
             )
-            if cycle.status is not CycleStatus.EXECUTING:
+            if cycle.status not in _LEASE_OWNED_CYCLE_STATUSES:
                 raise CycleLeaseConflictError(
-                    "Cycle recovery requires the EXECUTING state"
+                    "Cycle recovery requires an incomplete leased state"
                 )
             events = self._events_or_block(connection, cycle_id)
             if events is None:
