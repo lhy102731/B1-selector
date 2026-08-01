@@ -26,6 +26,7 @@ from research_automation.control_plane.campaign_store import (
     CampaignJournalError,
     OperationalBudgetJournal,
     OperationalCampaignJournal,
+    OperationalCycleBudgetJournal,
     OperationalUsageJournal,
     campaign_execution_mode,
     campaign_scope_sha256,
@@ -736,6 +737,262 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_output_tokens=1,
                     max_cost="0.1",
                 )
+
+
+class OperationalCycleBudgetJournalTests(unittest.TestCase):
+    def test_concurrent_cycle_reservation_is_atomic_and_survives_reopen(self) -> None:
+        campaign_id = "campaign-cycle-budget-001"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            budgets = (
+                OperationalCycleBudgetJournal(
+                    journal=journal,
+                    budget_id="cycle-budget",
+                    max_cycles=1,
+                ),
+                OperationalCycleBudgetJournal(
+                    journal=OperationalCampaignJournal(
+                        root_secret=ROOT_SECRET,
+                        grant=grant,
+                        namespace="formal",
+                        campaign_id=campaign_id,
+                        clock=lambda: NOW,
+                    ),
+                    budget_id="cycle-budget",
+                    max_cycles=1,
+                ),
+            )
+
+            def reserve(index: int) -> str | None:
+                cycle_id = f"cycle-{index + 1:03d}"
+                try:
+                    budgets[index].reserve(cycle_id=cycle_id)
+                except BudgetExceededError:
+                    return None
+                return cycle_id
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                winners = tuple(executor.map(reserve, range(2)))
+
+            reserved_cycle_ids = tuple(
+                cycle_id for cycle_id in winners if cycle_id is not None
+            )
+            self.assertEqual(len(reserved_cycle_ids), 1)
+            reopened = OperationalCycleBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="cycle-budget",
+                max_cycles=1,
+            )
+            self.assertEqual(
+                reopened.snapshot().reserved_cycle_ids,
+                reserved_cycle_ids,
+            )
+
+    def test_cycle_reservation_replay_is_idempotent_and_config_is_immutable(self) -> None:
+        campaign_id = "campaign-cycle-budget-002"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            budget = OperationalCycleBudgetJournal(
+                journal=journal,
+                budget_id="cycle-budget",
+                max_cycles=2,
+            )
+
+            first = budget.reserve(cycle_id="cycle-001")
+            replay = budget.reserve(cycle_id="cycle-001")
+
+            self.assertEqual(replay, first)
+            events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_CYCLE_BUDGET",
+                aggregate_id="cycle-budget",
+            )
+            self.assertEqual(len(events), 2)
+            with self.assertRaises(BudgetConflictError):
+                OperationalCycleBudgetJournal(
+                    journal=journal,
+                    budget_id="cycle-budget",
+                    max_cycles=3,
+                )
+
+    def test_configured_cycle_budget_is_the_only_cycle_open_path(self) -> None:
+        campaign_id = "campaign-cycle-budget-003"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            budget = OperationalCycleBudgetJournal(
+                journal=journal,
+                budget_id="cycle-budget",
+                max_cycles=1,
+            )
+
+            with self.assertRaises(CampaignStateConflictError):
+                lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+
+            opened = budget.open_cycle(
+                lifecycle=lifecycle,
+                cycle_id="cycle-001",
+                cycle_number=1,
+            )
+            self.assertEqual(opened.status, CycleStatus.CREATED)
+            self.assertEqual(
+                budget.snapshot().reserved_cycle_ids,
+                ("cycle-001",),
+            )
+            with self.assertRaises(BudgetExceededError):
+                budget.open_cycle(
+                    lifecycle=lifecycle,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                )
+            with self.assertRaises(CampaignLifecycleError):
+                lifecycle.cycle_snapshot("cycle-002")
+
+    def test_cycle_budget_cannot_be_added_after_an_unbudgeted_cycle(self) -> None:
+        campaign_id = "campaign-cycle-budget-004"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+
+            with self.assertRaises(BudgetConflictError):
+                OperationalCycleBudgetJournal(
+                    journal=journal,
+                    budget_id="late-cycle-budget",
+                    max_cycles=2,
+                )
+
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=None,
+                    aggregate_type="CAMPAIGN_CYCLE_BUDGET",
+                    aggregate_id="late-cycle-budget",
+                ),
+                (),
+            )
+
+    def test_campaign_cannot_split_cycle_slots_across_budget_ids(self) -> None:
+        campaign_id = "campaign-cycle-budget-005"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            OperationalCycleBudgetJournal(
+                journal=journal,
+                budget_id="primary-cycle-budget",
+                max_cycles=1,
+            )
+
+            with self.assertRaises(BudgetConflictError):
+                OperationalCycleBudgetJournal(
+                    journal=journal,
+                    budget_id="second-cycle-budget",
+                    max_cycles=1,
+                )
+
+    def test_campaign_rejects_a_preexisting_second_cycle_budget_stream(self) -> None:
+        campaign_id = "campaign-cycle-budget-006"
+        second_budget_id = "second-cycle-budget"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            primary = OperationalCycleBudgetJournal(
+                journal=journal,
+                budget_id="primary-cycle-budget",
+                max_cycles=1,
+            )
+            second_event_id = hashlib.sha256(
+                b"control_plane.campaign_cycle_budget_event.v1\0"
+                + (
+                    f"formal\0{campaign_id}\0{second_budget_id}\0open"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=second_event_id,
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_CYCLE_BUDGET",
+                aggregate_id=second_budget_id,
+                event_type="CYCLE_BUDGET_OPENED",
+                payload={"budget_id": second_budget_id, "max_cycles": 1},
+            )
+
+            with self.assertRaises(BudgetConflictError):
+                OperationalCycleBudgetJournal(
+                    journal=journal,
+                    budget_id=second_budget_id,
+                    max_cycles=1,
+                )
+            with self.assertRaises(BudgetConflictError):
+                primary.snapshot()
+
+    def test_cycle_budget_cannot_retroactively_adopt_an_open_cycle(self) -> None:
+        campaign_id = "campaign-cycle-budget-007"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            budget = OperationalCycleBudgetJournal(
+                journal=journal,
+                budget_id="cycle-budget",
+                max_cycles=1,
+            )
+            cycle_event_id = hashlib.sha256(
+                b"control_plane.campaign_lifecycle_event.v1\0"
+                + (
+                    f"formal\0{campaign_id}\0CYCLE_STATE\0{cycle_id}\0CREATED"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=cycle_event_id,
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_STATE",
+                aggregate_id=cycle_id,
+                event_type="CYCLE_OPENED",
+                payload={
+                    "cycle_id": cycle_id,
+                    "cycle_number": 1,
+                    "status": CycleStatus.CREATED.value,
+                },
+            )
+
+            with self.assertRaises(BudgetConflictError):
+                budget.open_cycle(
+                    lifecycle=lifecycle,
+                    cycle_id=cycle_id,
+                    cycle_number=1,
+                )
+            with self.assertRaises(BudgetConflictError):
+                budget.snapshot()
+
+    def test_cycle_budget_replay_rejects_non_integer_cycle_limits(self) -> None:
+        for label, stored_limit in (("bool", True), ("float", 1.0)):
+            with self.subTest(stored_limit=stored_limit):
+                campaign_id = f"campaign-cycle-budget-008-{label}"
+                budget_id = "cycle-budget"
+                with _authorized_campaign(campaign_id) as (_, _, journal):
+                    event_id = hashlib.sha256(
+                        b"control_plane.campaign_cycle_budget_event.v1\0"
+                        + (
+                            f"formal\0{campaign_id}\0{budget_id}\0open"
+                        ).encode("ascii")
+                    ).hexdigest()
+                    journal.append(
+                        event_id=event_id,
+                        cycle_id=None,
+                        aggregate_type="CAMPAIGN_CYCLE_BUDGET",
+                        aggregate_id=budget_id,
+                        event_type="CYCLE_BUDGET_OPENED",
+                        payload={
+                            "budget_id": budget_id,
+                            "max_cycles": stored_limit,
+                        },
+                    )
+
+                    with self.assertRaises(BudgetConflictError):
+                        OperationalCycleBudgetJournal(
+                            journal=journal,
+                            budget_id=budget_id,
+                            max_cycles=1,
+                        )
 
 
 class CampaignLearningCommitSinkTests(unittest.TestCase):

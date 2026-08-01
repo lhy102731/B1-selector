@@ -12,6 +12,7 @@ from .campaign_store import (
     CampaignEvent,
     CampaignJournalError,
     OperationalCampaignJournal,
+    _CYCLE_BUDGET_AGGREGATE_TYPE,
     _event_domain_payload,
     _event_from_row,
     _identifier,
@@ -447,57 +448,86 @@ class OperationalCampaignLifecycle:
 
     def open_cycle(self, *, cycle_id: str, cycle_number: int) -> CycleSnapshot:
         self._journal._authorize()
-        cycle_id = _identifier(cycle_id, "cycle_id")
-        if type(cycle_number) is not int or not 1 <= cycle_number <= 1_000_000:
-            raise ValueError("cycle_number must be from 1 through 1000000")
 
         def open_cycle_state(connection) -> CycleSnapshot:
-            campaign = self._replay_campaign(self._campaign_events(connection))
-            if campaign.status is not CampaignStatus.ACTIVE:
-                raise CampaignStateConflictError("Campaign is not ACTIVE")
-            existing: CycleSnapshot | None = None
-            for opened in self._opened_cycles(connection):
-                if opened.cycle_id == cycle_id:
-                    if opened.cycle_number != cycle_number:
-                        raise DuplicateCycleError(
-                            "cycle_id has a different cycle_number"
-                        )
-                    existing = opened
-                elif opened.cycle_number == cycle_number:
-                    raise DuplicateCycleError("cycle_number is already assigned")
-            if existing is not None:
-                return self._replay_cycle(self._cycle_events(connection, cycle_id))
-            pause = self._replay_pause(self._pause_events(connection))
-            if pause.status is not CampaignPauseStatus.RUNNING:
+            if self._cycle_budget_configured(connection):
                 raise CampaignStateConflictError(
-                    "Campaign pause prevents opening a new Cycle"
+                    "configured Cycle budget requires budgeted Cycle open"
                 )
-            event = self._journal._append_in_transaction(
+            return self._open_cycle_in_transaction(
                 connection,
-                event_id=self._cycle_event_id(
-                    cycle_id,
-                    CycleStatus.CREATED.value,
-                ),
                 cycle_id=cycle_id,
-                aggregate_type=_CYCLE_AGGREGATE_TYPE,
-                aggregate_id=cycle_id,
-                event_type=_CYCLE_OPENED,
-                payload={
-                    "cycle_id": cycle_id,
-                    "cycle_number": cycle_number,
-                    "status": CycleStatus.CREATED.value,
-                },
-            )
-            return CycleSnapshot(
-                cycle_id,
-                cycle_number,
-                CycleStatus.CREATED,
-                event.sequence,
+                cycle_number=cycle_number,
             )
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(
             open_cycle_state
         )
+
+    def _open_cycle_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        cycle_number: int,
+    ) -> CycleSnapshot:
+        cycle_id = _identifier(cycle_id, "cycle_id")
+        if type(cycle_number) is not int or not 1 <= cycle_number <= 1_000_000:
+            raise ValueError("cycle_number must be from 1 through 1000000")
+        campaign = self._replay_campaign(self._campaign_events(connection))
+        if campaign.status is not CampaignStatus.ACTIVE:
+            raise CampaignStateConflictError("Campaign is not ACTIVE")
+        existing: CycleSnapshot | None = None
+        for opened in self._opened_cycles(connection):
+            if opened.cycle_id == cycle_id:
+                if opened.cycle_number != cycle_number:
+                    raise DuplicateCycleError(
+                        "cycle_id has a different cycle_number"
+                    )
+                existing = opened
+            elif opened.cycle_number == cycle_number:
+                raise DuplicateCycleError("cycle_number is already assigned")
+        if existing is not None:
+            return self._replay_cycle(self._cycle_events(connection, cycle_id))
+        pause = self._replay_pause(self._pause_events(connection))
+        if pause.status is not CampaignPauseStatus.RUNNING:
+            raise CampaignStateConflictError(
+                "Campaign pause prevents opening a new Cycle"
+            )
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=self._cycle_event_id(
+                cycle_id,
+                CycleStatus.CREATED.value,
+            ),
+            cycle_id=cycle_id,
+            aggregate_type=_CYCLE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+            event_type=_CYCLE_OPENED,
+            payload={
+                "cycle_id": cycle_id,
+                "cycle_number": cycle_number,
+                "status": CycleStatus.CREATED.value,
+            },
+        )
+        return CycleSnapshot(
+            cycle_id,
+            cycle_number,
+            CycleStatus.CREATED,
+            event.sequence,
+        )
+
+    def _cycle_budget_configured(self, connection) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? LIMIT 1",
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                _CYCLE_BUDGET_AGGREGATE_TYPE,
+            ),
+        ).fetchone() is not None
 
     def complete(self) -> CampaignSnapshot:
         self._journal._authorize()

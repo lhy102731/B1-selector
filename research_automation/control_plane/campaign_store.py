@@ -17,6 +17,7 @@ from . import stores
 from .budget import (
     BudgetConflictError,
     BudgetError,
+    BudgetExceededError,
     BudgetLedger,
     BudgetReservation,
     BudgetSettlement,
@@ -29,6 +30,7 @@ from .contracts import Phase, SideEffect
 from .sqlite_uow import _SqliteUnitOfWork
 
 if TYPE_CHECKING:
+    from .campaign_lifecycle import CycleSnapshot, OperationalCampaignLifecycle
     from .evidence_learning import EvidenceResult, LearningCommitService
 
 
@@ -870,6 +872,345 @@ class OperationalBudgetJournal:
         return ledger
 
 
+_CYCLE_BUDGET_AGGREGATE_TYPE = "CAMPAIGN_CYCLE_BUDGET"
+_CYCLE_BUDGET_OPENED = "CYCLE_BUDGET_OPENED"
+_CYCLE_SLOT_RESERVED = "CYCLE_SLOT_RESERVED"
+
+
+@dataclass(frozen=True, slots=True)
+class CycleBudgetSnapshot:
+    budget_id: str
+    max_cycles: int
+    reserved_cycle_ids: tuple[str, ...]
+
+
+def _cycle_budget_event_id(
+    *,
+    namespace: str,
+    campaign_id: str,
+    budget_id: str,
+    role: str,
+    cycle_id: str | None = None,
+) -> str:
+    components = [namespace, campaign_id, budget_id, role]
+    if cycle_id is not None:
+        components.append(cycle_id)
+    return hashlib.sha256(
+        b"control_plane.campaign_cycle_budget_event.v1\0"
+        + "\0".join(components).encode("ascii")
+    ).hexdigest()
+
+
+class OperationalCycleBudgetJournal:
+    """Persist the cumulative Cycle-count budget for one Campaign."""
+
+    __slots__ = ("_journal", "_budget_id", "_max_cycles")
+
+    def __init__(
+        self,
+        *,
+        journal: OperationalCampaignJournal,
+        budget_id: str,
+        max_cycles: int,
+    ) -> None:
+        if not isinstance(journal, OperationalCampaignJournal):
+            raise TypeError("journal must be an OperationalCampaignJournal")
+        journal._authorize()
+        self._journal = journal
+        self._budget_id = _identifier(budget_id, "budget_id")
+        if type(max_cycles) is not int or max_cycles < 0:
+            raise ValueError("max_cycles must be a non-negative integer")
+        self._max_cycles = max_cycles
+
+        def open_budget(connection) -> None:
+            from .campaign_lifecycle import (
+                _CYCLE_AGGREGATE_TYPE,
+                _CYCLE_OPENED,
+            )
+
+            events = self._events_in_transaction(connection)
+            if events:
+                self._snapshot_in_transaction(connection, events=events)
+                return
+            existing_budget = connection.execute(
+                "SELECT aggregate_id FROM campaign_events "
+                "WHERE namespace = ? AND campaign_id = ? "
+                "AND aggregate_type = ? LIMIT 1",
+                (
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    _CYCLE_BUDGET_AGGREGATE_TYPE,
+                ),
+            ).fetchone()
+            if existing_budget is not None:
+                raise BudgetConflictError(
+                    "Campaign already has another Cycle budget"
+                )
+            existing_cycle = connection.execute(
+                "SELECT 1 FROM campaign_events "
+                "WHERE namespace = ? AND campaign_id = ? "
+                "AND aggregate_type = ? AND event_type = ? LIMIT 1",
+                (
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    _CYCLE_AGGREGATE_TYPE,
+                    _CYCLE_OPENED,
+                ),
+            ).fetchone()
+            if existing_cycle is not None:
+                raise BudgetConflictError(
+                    "Cycle budget cannot adopt unbudgeted Cycle history"
+                )
+            self._journal._append_in_transaction(
+                connection,
+                event_id=self._event_id("open"),
+                cycle_id=None,
+                aggregate_type=_CYCLE_BUDGET_AGGREGATE_TYPE,
+                aggregate_id=self._budget_id,
+                event_type=_CYCLE_BUDGET_OPENED,
+                payload={
+                    "budget_id": self._budget_id,
+                    "max_cycles": self._max_cycles,
+                },
+            )
+
+        _SqliteUnitOfWork(stores._operational_spec())._write(open_budget)
+
+    def reserve(self, *, cycle_id: str) -> CycleBudgetSnapshot:
+        self._journal._authorize()
+        cycle_id = _identifier(cycle_id, "cycle_id")
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._reserve_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+        )
+
+    def open_cycle(
+        self,
+        *,
+        lifecycle: OperationalCampaignLifecycle,
+        cycle_id: str,
+        cycle_number: int,
+    ) -> CycleSnapshot:
+        from .campaign_lifecycle import OperationalCampaignLifecycle
+
+        self._journal._authorize()
+        if not isinstance(lifecycle, OperationalCampaignLifecycle):
+            raise TypeError("lifecycle must be an OperationalCampaignLifecycle")
+        if lifecycle._journal is not self._journal:
+            raise ValueError("lifecycle must use the same Campaign journal")
+        cycle_id = _identifier(cycle_id, "cycle_id")
+
+        def reserve_and_open(connection):
+            self._reserve_in_transaction(connection, cycle_id=cycle_id)
+            return lifecycle._open_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            reserve_and_open
+        )
+
+    def _reserve_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> CycleBudgetSnapshot:
+        events = self._events_in_transaction(connection)
+        snapshot = self._snapshot_in_transaction(connection, events=events)
+        if cycle_id in snapshot.reserved_cycle_ids:
+            return snapshot
+        if len(snapshot.reserved_cycle_ids) >= self._max_cycles:
+            raise BudgetExceededError(
+                "cycle reservation exceeds configured limit"
+            )
+        self._journal._append_in_transaction(
+            connection,
+            event_id=self._event_id("reserve", cycle_id=cycle_id),
+            cycle_id=None,
+            aggregate_type=_CYCLE_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+            event_type=_CYCLE_SLOT_RESERVED,
+            payload={"budget_id": self._budget_id, "cycle_id": cycle_id},
+        )
+        return CycleBudgetSnapshot(
+            self._budget_id,
+            self._max_cycles,
+            (*snapshot.reserved_cycle_ids, cycle_id),
+        )
+
+    def snapshot(self) -> CycleBudgetSnapshot:
+        self._journal._authorize()
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            self._snapshot_in_transaction
+        )
+
+    def _event_id(self, role: str, *, cycle_id: str | None = None) -> str:
+        return _cycle_budget_event_id(
+            namespace=self._journal._namespace,
+            campaign_id=self._journal._campaign_id,
+            budget_id=self._budget_id,
+            role=role,
+            cycle_id=cycle_id,
+        )
+
+    def _events_in_transaction(self, connection) -> tuple[CampaignEvent, ...]:
+        budget_ids = {
+            str(row["aggregate_id"])
+            for row in connection.execute(
+                "SELECT DISTINCT aggregate_id FROM campaign_events "
+                "WHERE namespace = ? AND campaign_id = ? "
+                "AND aggregate_type = ?",
+                (
+                    self._journal._namespace,
+                    self._journal._campaign_id,
+                    _CYCLE_BUDGET_AGGREGATE_TYPE,
+                ),
+            )
+        }
+        if any(budget_id != self._budget_id for budget_id in budget_ids):
+            raise BudgetConflictError(
+                "Campaign has more than one Cycle budget"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=None,
+            aggregate_type=_CYCLE_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+        )
+
+    def _snapshot_in_transaction(
+        self,
+        connection,
+        *,
+        events: tuple[CampaignEvent, ...] | None = None,
+    ) -> CycleBudgetSnapshot:
+        budget_events = (
+            self._events_in_transaction(connection)
+            if events is None
+            else events
+        )
+        snapshot = self._replay(budget_events)
+        self._require_prior_cycle_reservations(connection, budget_events)
+        return snapshot
+
+    def _require_prior_cycle_reservations(
+        self,
+        connection,
+        budget_events: tuple[CampaignEvent, ...],
+    ) -> None:
+        from .campaign_lifecycle import (
+            CycleStatus,
+            _CYCLE_AGGREGATE_TYPE,
+            _CYCLE_OPENED,
+            _state_event_id,
+        )
+
+        reserved_at = {
+            str(_event_domain_payload(event)["cycle_id"]): event.sequence
+            for event in budget_events
+            if event.event_type == _CYCLE_SLOT_RESERVED
+        }
+        rows = connection.execute(
+            "SELECT * FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND cycle_id IS NOT NULL AND aggregate_type = ? "
+            "AND event_type = ? ORDER BY sequence",
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                _CYCLE_AGGREGATE_TYPE,
+                _CYCLE_OPENED,
+            ),
+        ).fetchall()
+        for row in rows:
+            event = _event_from_row(row)
+            payload = _event_domain_payload(event)
+            try:
+                cycle_id = _identifier(payload.get("cycle_id"), "stored cycle_id")
+            except (TypeError, ValueError) as error:
+                raise CampaignJournalError(
+                    "Cycle open event identity is invalid"
+                ) from error
+            if (
+                set(payload) != {"cycle_id", "cycle_number", "status"}
+                or type(payload["cycle_number"]) is not int
+                or not 1 <= payload["cycle_number"] <= 1_000_000
+                or payload["status"] != CycleStatus.CREATED.value
+                or event.cycle_id != cycle_id
+                or event.aggregate_id != cycle_id
+                or event.event_id
+                != _state_event_id(
+                    namespace=self._journal._namespace,
+                    campaign_id=self._journal._campaign_id,
+                    aggregate_type=_CYCLE_AGGREGATE_TYPE,
+                    aggregate_id=cycle_id,
+                    role=CycleStatus.CREATED.value,
+                )
+            ):
+                raise CampaignJournalError("Cycle open event is invalid")
+            reservation_sequence = reserved_at.get(cycle_id)
+            if (
+                reservation_sequence is None
+                or reservation_sequence >= event.sequence
+            ):
+                raise BudgetConflictError(
+                    "Cycle was opened before its budget reservation"
+                )
+
+    def _replay(self, events: tuple[CampaignEvent, ...]) -> CycleBudgetSnapshot:
+        if not events:
+            raise CampaignJournalError("cycle budget has not been opened")
+        opened = events[0]
+        opened_payload = _event_domain_payload(opened)
+        if (
+            opened.event_id != self._event_id("open")
+            or opened.event_type != _CYCLE_BUDGET_OPENED
+            or set(opened_payload) != {"budget_id", "max_cycles"}
+            or opened_payload["budget_id"] != self._budget_id
+            or type(opened_payload["max_cycles"]) is not int
+            or opened_payload["max_cycles"] != self._max_cycles
+        ):
+            raise BudgetConflictError("cycle budget configuration conflicts")
+        reserved: list[str] = []
+        for event in events[1:]:
+            payload = _event_domain_payload(event)
+            if (
+                event.event_type != _CYCLE_SLOT_RESERVED
+                or set(payload) != {"budget_id", "cycle_id"}
+                or payload["budget_id"] != self._budget_id
+            ):
+                raise CampaignJournalError("cycle budget event is invalid")
+            try:
+                cycle_id = _identifier(
+                    payload["cycle_id"],
+                    "stored cycle_id",
+                )
+            except (TypeError, ValueError) as error:
+                raise CampaignJournalError(
+                    "cycle budget event identity is invalid"
+                ) from error
+            if (
+                event.cycle_id is not None
+                or event.event_id
+                != self._event_id("reserve", cycle_id=cycle_id)
+                or cycle_id in reserved
+            ):
+                raise CampaignJournalError("cycle budget event identity is invalid")
+            reserved.append(cycle_id)
+        if len(reserved) > self._max_cycles:
+            raise CampaignJournalError("cycle budget exceeds configured limit")
+        return CycleBudgetSnapshot(
+            self._budget_id,
+            self._max_cycles,
+            tuple(reserved),
+        )
+
+
 def _attempt_id(cycle_id: str, call_id: str, attempt_id: str) -> str:
     cycle_id = _identifier(cycle_id, "cycle_id")
     call_id = _identifier(call_id, "call_id")
@@ -1191,8 +1532,10 @@ __all__ = [
     "CampaignEventConflictError",
     "CampaignJournalError",
     "DryRunIsolationError",
+    "CycleBudgetSnapshot",
     "OperationalBudgetJournal",
     "OperationalCampaignJournal",
+    "OperationalCycleBudgetJournal",
     "OperationalUsageJournal",
     "RecordedModelAttempt",
     "campaign_execution_mode",
