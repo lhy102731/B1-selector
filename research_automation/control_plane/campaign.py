@@ -7,10 +7,12 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import Enum
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
 from typing import Protocol
+
+from .budget import _cost as _bounded_cost
 
 
 _MAX_RAW_USAGE_DEPTH = 16
@@ -18,7 +20,6 @@ _MAX_RAW_USAGE_NODES = 1024
 _MAX_RAW_USAGE_COLLECTION_ITEMS = 256
 _MAX_RAW_USAGE_PREFIX_UNITS = 4096
 _MAX_RAW_USAGE_INT_BITS = 512
-_MAX_REPORTED_COST_CHARS = 128
 _MAX_REPORTED_TEXT_CHARS = 128
 
 
@@ -312,7 +313,7 @@ def _reported_text(raw_usage: Mapping[str, object], field: str) -> str | None:
     if value is None:
         return None
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or len(value) > _MAX_REPORTED_TEXT_CHARS
         or not value.strip()
     ):
@@ -321,9 +322,17 @@ def _reported_text(raw_usage: Mapping[str, object], field: str) -> str | None:
 
 
 def _reported_cost(raw_usage: Mapping[str, object]) -> str | None:
+    """Normalize provider cost scalars before applying the ledger bound.
+
+    Provider SDKs commonly expose cost as a native float or Decimal; both are
+    converted to decimal text, then validated by the same bounded parser used
+    by BudgetLedger. The stored envelope always carries text, never a float.
+    """
     value = _usage_get(raw_usage, "reported_cost")
-    if isinstance(value, str):
-        if len(value) > _MAX_REPORTED_COST_CHARS:
+    if type(value) is str:
+        try:
+            _bounded_cost(value)
+        except ValueError:
             return None
         candidate = value.strip()
     elif type(value) is int:
@@ -335,15 +344,15 @@ def _reported_cost(raw_usage: Mapping[str, object]) -> str | None:
             return None
     elif type(value) is float:
         candidate = str(value)
+    elif type(value) is Decimal:
+        candidate = str(value)
     else:
         return None
     if not candidate:
         return None
     try:
-        amount = Decimal(candidate)
-    except InvalidOperation:
-        return None
-    if not amount.is_finite() or amount < 0:
+        _bounded_cost(candidate)
+    except ValueError:
         return None
     return candidate
 

@@ -197,6 +197,16 @@ class _OversizedCostProvider:
         )
 
 
+class _RaisingCurrencyProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"currency": _RaisingString("USD")},
+        )
+
+
 class _RaisingSequence(list[object]):
     def __getitem__(self, key: object) -> object:
         if isinstance(key, slice):
@@ -669,6 +679,155 @@ class ModelInvocationTests(unittest.TestCase):
                 envelope = journal.events[0][1]
                 self.assertIsInstance(envelope, UsageEnvelope)
                 self.assertIsNone(envelope.reported_cost)
+
+    def test_raising_reported_cost_text_cannot_bypass_accounting(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OversizedCostProvider(_RaisingString("0.01")),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-025",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertIsNone(envelope.reported_cost)
+
+    def test_raising_currency_text_cannot_bypass_accounting(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_RaisingCurrencyProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-026",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertIsNone(envelope.currency)
+
+    def test_cost_outside_budget_decimal_boundary_is_unknown(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OversizedCostProvider("1e999"),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-027",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertIsNone(envelope.reported_cost)
+
+    def test_cost_at_budget_decimal_boundary_remains_reported(self) -> None:
+        accepted_cost = ("1" * 128) + "e0"
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OversizedCostProvider(accepted_cost),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-028",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.reported_cost, accepted_cost)
+
+    def test_cost_text_and_exponent_boundaries_match_budget_validator(self) -> None:
+        cases = (
+            ("1e128", "1e128"),
+            ("1e-128", "1e-128"),
+            ((" " * 16) + ("1" * 128) + (" " * 16), "1" * 128),
+        )
+        rejected = ("1e129", "1e-129", (" " * 16) + ("1" * 128) + (" " * 17))
+
+        for index, (raw_cost, expected_cost) in enumerate(cases, start=29):
+            with self.subTest(raw_cost=raw_cost):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OversizedCostProvider(raw_cost),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id=f"call-{index:03d}",
+                    attempt_id="attempt-001",
+                )
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.reported_cost, expected_cost)
+
+        for index, raw_cost in enumerate(rejected, start=32):
+            with self.subTest(raw_cost=raw_cost):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OversizedCostProvider(raw_cost),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id=f"call-{index:03d}",
+                    attempt_id="attempt-001",
+                )
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertIsNone(envelope.reported_cost)
+
+    def test_decimal_provider_cost_is_normalized_before_budget_validation(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OversizedCostProvider(Decimal("0.00125")),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-035",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.reported_cost, "0.00125")
 
     def test_sequence_normalization_failure_still_records_unknown_usage(self) -> None:
         journal = _RecordingUsageJournal()
