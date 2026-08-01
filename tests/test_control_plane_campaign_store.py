@@ -639,6 +639,45 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
             self.assertEqual(len(events), 1)
 
+    def test_budget_replay_rejects_non_integer_token_limits(self) -> None:
+        stored_limits = (
+            ("input-bool", True, 1),
+            ("output-float", 1, 1.0),
+        )
+        for label, stored_input, stored_output in stored_limits:
+            with self.subTest(label=label):
+                campaign_id = f"campaign-budget-config-{label}"
+                budget_id = "campaign-budget"
+                with _authorized_campaign(campaign_id) as (_, _, journal):
+                    event_id = hashlib.sha256(
+                        b"control_plane.campaign_budget_event.v1\0"
+                        + (
+                            f"formal\0{campaign_id}\0{budget_id}\0open"
+                        ).encode("ascii")
+                    ).hexdigest()
+                    journal.append(
+                        event_id=event_id,
+                        cycle_id=None,
+                        aggregate_type="CAMPAIGN_BUDGET",
+                        aggregate_id=budget_id,
+                        event_type="BUDGET_OPENED",
+                        payload={
+                            "budget_id": budget_id,
+                            "max_input_tokens": stored_input,
+                            "max_output_tokens": stored_output,
+                            "max_cost": "1",
+                        },
+                    )
+
+                    with self.assertRaises(BudgetConflictError):
+                        OperationalBudgetJournal(
+                            journal=journal,
+                            budget_id=budget_id,
+                            max_input_tokens=1,
+                            max_output_tokens=1,
+                            max_cost="1",
+                        )
+
     def test_replay_rejects_malformed_budget_identifiers_fail_closed(self) -> None:
         with _authorized_campaign("campaign-budget-005") as (_, _, journal):
             budget = OperationalBudgetJournal(
@@ -736,6 +775,25 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_input_tokens=1,
                     max_output_tokens=1,
                     max_cost="0.1",
+                )
+
+    def test_campaign_cannot_split_usage_across_budget_ids(self) -> None:
+        with _authorized_campaign("campaign-budget-008") as (_, _, journal):
+            OperationalBudgetJournal(
+                journal=journal,
+                budget_id="primary-budget",
+                max_input_tokens=100,
+                max_output_tokens=100,
+                max_cost="1.00",
+            )
+
+            with self.assertRaises(BudgetConflictError):
+                OperationalBudgetJournal(
+                    journal=journal,
+                    budget_id="second-budget",
+                    max_input_tokens=100,
+                    max_output_tokens=100,
+                    max_cost="1.00",
                 )
 
 

@@ -537,6 +537,31 @@ _BUDGET_RESERVED = "BUDGET_RESERVED"
 _BUDGET_SETTLED = "BUDGET_SETTLED"
 
 
+def _require_single_campaign_aggregate_id(
+    connection,
+    *,
+    journal: OperationalCampaignJournal,
+    aggregate_type: str,
+    aggregate_id: str,
+    conflict_message: str,
+) -> None:
+    aggregate_ids = {
+        str(row["aggregate_id"])
+        for row in connection.execute(
+            "SELECT DISTINCT aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ?",
+            (
+                journal._namespace,
+                journal._campaign_id,
+                aggregate_type,
+            ),
+        )
+    }
+    if any(observed != aggregate_id for observed in aggregate_ids):
+        raise BudgetConflictError(conflict_message)
+
+
 def _budget_event_id(
     *,
     namespace: str,
@@ -741,6 +766,13 @@ class OperationalBudgetJournal:
         )
 
     def _events_in_transaction(self, connection) -> tuple[CampaignEvent, ...]:
+        _require_single_campaign_aggregate_id(
+            connection,
+            journal=self._journal,
+            aggregate_type=_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+            conflict_message="Campaign has more than one usage budget",
+        )
         return self._journal._list_in_transaction(
             connection,
             cycle_id=None,
@@ -752,10 +784,24 @@ class OperationalBudgetJournal:
         if not events:
             raise CampaignJournalError("campaign budget has not been opened")
         opened = events[0]
+        opened_payload = _event_domain_payload(opened)
         if (
             opened.event_id != self._event_id("open")
             or opened.event_type != _BUDGET_OPENED
-            or _event_domain_payload(opened) != self._limits_payload()
+            or set(opened_payload)
+            != {
+                "budget_id",
+                "max_input_tokens",
+                "max_output_tokens",
+                "max_cost",
+            }
+            or opened_payload["budget_id"] != self._budget_id
+            or type(opened_payload["max_input_tokens"]) is not int
+            or opened_payload["max_input_tokens"] != self._max_input_tokens
+            or type(opened_payload["max_output_tokens"]) is not int
+            or opened_payload["max_output_tokens"] != self._max_output_tokens
+            or type(opened_payload["max_cost"]) is not str
+            or opened_payload["max_cost"] != self._max_cost
         ):
             raise BudgetConflictError("campaign budget configuration conflicts")
         ledger = BudgetLedger(
@@ -1059,23 +1105,13 @@ class OperationalCycleBudgetJournal:
         )
 
     def _events_in_transaction(self, connection) -> tuple[CampaignEvent, ...]:
-        budget_ids = {
-            str(row["aggregate_id"])
-            for row in connection.execute(
-                "SELECT DISTINCT aggregate_id FROM campaign_events "
-                "WHERE namespace = ? AND campaign_id = ? "
-                "AND aggregate_type = ?",
-                (
-                    self._journal._namespace,
-                    self._journal._campaign_id,
-                    _CYCLE_BUDGET_AGGREGATE_TYPE,
-                ),
-            )
-        }
-        if any(budget_id != self._budget_id for budget_id in budget_ids):
-            raise BudgetConflictError(
-                "Campaign has more than one Cycle budget"
-            )
+        _require_single_campaign_aggregate_id(
+            connection,
+            journal=self._journal,
+            aggregate_type=_CYCLE_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+            conflict_message="Campaign has more than one Cycle budget",
+        )
         return self._journal._list_in_transaction(
             connection,
             cycle_id=None,
