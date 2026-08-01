@@ -67,6 +67,7 @@ _CAMPAIGN_AGGREGATE_TYPE = "CAMPAIGN_STATE"
 _CAMPAIGN_PAUSE_AGGREGATE_TYPE = "CAMPAIGN_PAUSE"
 _CYCLE_AGGREGATE_TYPE = "CYCLE_STATE"
 _CYCLE_LEASE_AGGREGATE_TYPE = "CYCLE_LEASE"
+_CYCLE_FREEZE_POLICY_AGGREGATE_TYPE = "CAMPAIGN_CYCLE_FREEZE_POLICY"
 _CAMPAIGN_CREATED = "CAMPAIGN_CREATED"
 _CAMPAIGN_TRANSITIONED = "CAMPAIGN_TRANSITIONED"
 _CAMPAIGN_BLOCKED = "CAMPAIGN_BLOCKED"
@@ -722,6 +723,13 @@ class OperationalCampaignLifecycle:
         self._validate_cycle_transition(expected_status, next_status)
 
         def advance_unleased(connection) -> CycleSnapshot:
+            if (
+                next_status is CycleStatus.FROZEN
+                and self._cycle_freeze_policy_configured(connection)
+            ):
+                raise CampaignStateConflictError(
+                    "configured Cycle freeze policy requires a frozen input manifest"
+                )
             occupied = connection.execute(
                 """
                 SELECT 1 FROM campaign_events
@@ -751,6 +759,18 @@ class OperationalCampaignLifecycle:
         return _SqliteUnitOfWork(stores._operational_spec())._write(
             advance_unleased
         )
+
+    def _cycle_freeze_policy_configured(self, connection) -> bool:
+        return connection.execute(
+            "SELECT 1 FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? LIMIT 1",
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                _CYCLE_FREEZE_POLICY_AGGREGATE_TYPE,
+            ),
+        ).fetchone() is not None
 
     @staticmethod
     def _validate_cycle_transition(
