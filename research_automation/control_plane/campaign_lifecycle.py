@@ -329,7 +329,7 @@ class OperationalCampaignLifecycle:
             raise CampaignStateConflictError("Campaign is not ACTIVE")
         primary_event_id = self._campaign_event_id(CampaignStatus.BLOCKED.value)
         event_id = primary_event_id
-        occupied = self._journal._event_in_transaction(
+        occupied = self._event_collision_binding_in_transaction(
             connection,
             primary_event_id,
         )
@@ -340,21 +340,28 @@ class OperationalCampaignLifecycle:
             "source_ref": source_ref,
         }
         if occupied is not None:
+            collision_event_id, collision_integrity_sha256 = occupied
             while True:
                 recovery_nonce = secrets.token_hex(32)
                 event_id = self._campaign_block_recovery_event_id(
                     reason_code=reason_code,
                     source_ref=source_ref,
                     recovery_nonce=recovery_nonce,
-                    collision_event_id=occupied.event_id,
-                    collision_integrity_sha256=occupied.payload_sha256,
+                    collision_event_id=collision_event_id,
+                    collision_integrity_sha256=collision_integrity_sha256,
                 )
-                if self._journal._event_in_transaction(connection, event_id) is None:
+                if (
+                    self._event_collision_binding_in_transaction(
+                        connection,
+                        event_id,
+                    )
+                    is None
+                ):
                     break
             payload["event_id_recovery"] = {
                 "nonce": recovery_nonce,
-                "collision_event_id": occupied.event_id,
-                "collision_integrity_sha256": occupied.payload_sha256,
+                "collision_event_id": collision_event_id,
+                "collision_integrity_sha256": collision_integrity_sha256,
             }
         event = self._journal._append_in_transaction(
             connection,
@@ -372,6 +379,56 @@ class OperationalCampaignLifecycle:
             reason_code,
             source_ref,
         )
+
+    @staticmethod
+    def _event_collision_binding_in_transaction(
+        connection,
+        event_id: str,
+    ) -> tuple[str, str] | None:
+        try:
+            event = OperationalCampaignJournal._event_in_transaction(
+                connection,
+                event_id,
+            )
+        except (CampaignJournalError, KeyError, TypeError, ValueError):
+            row = connection.execute(
+                "SELECT * FROM campaign_events WHERE event_id = ?",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            digest = hashlib.sha256(
+                b"control_plane.corrupt_campaign_event_collision.v1\0"
+            )
+            for field in (
+                "sequence",
+                "event_id",
+                "namespace",
+                "campaign_id",
+                "cycle_id",
+                "aggregate_type",
+                "aggregate_id",
+                "event_type",
+                "payload_json",
+                "payload_sha256",
+                "occurred_at",
+            ):
+                value = row[field]
+                if value is None:
+                    encoded = b"none:"
+                elif isinstance(value, bytes):
+                    encoded = b"bytes:" + value
+                else:
+                    encoded = (
+                        f"{type(value).__name__}:{value}"
+                    ).encode("utf-8", errors="surrogatepass")
+                digest.update(field.encode("ascii"))
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+            return event_id, digest.hexdigest()
+        if event is None:
+            return None
+        return event.event_id, event.payload_sha256
 
     def advance_cycle(
         self,
