@@ -9,9 +9,20 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Callable
 
 from . import stores
+from .budget import (
+    BudgetConflictError,
+    BudgetError,
+    BudgetLedger,
+    BudgetReservation,
+    BudgetSettlement,
+    BudgetSnapshot,
+    _cost,
+    _cost_text,
+)
 from .campaign import InvocationOutcome, UsageEnvelope, UsageStatus
 from .contracts import Phase, SideEffect
 from .sqlite_uow import _SqliteUnitOfWork
@@ -243,11 +254,37 @@ class OperationalCampaignJournal:
         event_type: str,
         payload: Mapping[str, object],
     ) -> CampaignEvent:
+        self._authorize()
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._append_in_transaction(
+                connection,
+                event_id=event_id,
+                cycle_id=cycle_id,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+                event_type=event_type,
+                payload=payload,
+            )
+        )
+
+    def _authorize(self) -> None:
         _require_p6_grant(
             self._grant,
             namespace=self._namespace,
             campaign_id=self._campaign_id,
         )
+
+    def _append_in_transaction(
+        self,
+        connection,
+        *,
+        event_id: str,
+        cycle_id: str | None,
+        aggregate_type: str,
+        aggregate_id: str,
+        event_type: str,
+        payload: Mapping[str, object],
+    ) -> CampaignEvent:
         event_id = _identifier(event_id, "event_id")
         namespace = self._namespace
         campaign_id = self._campaign_id
@@ -263,91 +300,85 @@ class OperationalCampaignJournal:
         payload_json, _ = _payload(bound_payload)
         occurred_at = self._clock()
         occurred_text = _utc(occurred_at)
-
-        def write(connection) -> CampaignEvent:
-            existing = connection.execute(
-                "SELECT * FROM campaign_events WHERE event_id = ?",
-                (event_id,),
-            ).fetchone()
-            if existing is not None:
-                event = _event_from_row(existing)
-                expected = (
-                    namespace,
-                    campaign_id,
-                    cycle_id,
-                    aggregate_type,
-                    aggregate_id,
-                    event_type,
-                    payload_json,
+        existing = connection.execute(
+            "SELECT * FROM campaign_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if existing is not None:
+            event = _event_from_row(existing)
+            expected = (
+                namespace,
+                campaign_id,
+                cycle_id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                payload_json,
+            )
+            observed = (
+                event.namespace,
+                event.campaign_id,
+                event.cycle_id,
+                event.aggregate_type,
+                event.aggregate_id,
+                event.event_type,
+                event.payload_json,
+            )
+            if observed != expected:
+                raise CampaignEventConflictError(
+                    "event_id was replayed with different content"
                 )
-                observed = (
-                    event.namespace,
-                    event.campaign_id,
-                    event.cycle_id,
-                    event.aggregate_type,
-                    event.aggregate_id,
-                    event.event_type,
-                    event.payload_json,
-                )
-                if observed != expected:
-                    raise CampaignEventConflictError(
-                        "event_id was replayed with different content"
-                    )
-                return event
-            connection.execute(
-                """
-                INSERT INTO campaign_events
-                (event_id, namespace, campaign_id, cycle_id, aggregate_type,
-                 aggregate_id, event_type, payload_json, payload_sha256, occurred_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    namespace,
-                    campaign_id,
-                    cycle_id,
-                    aggregate_type,
-                    aggregate_id,
-                    event_type,
-                    payload_json,
-                    "0" * 64,
-                    occurred_text,
-                ),
-            )
-            sequence = int(
-                connection.execute("SELECT last_insert_rowid()").fetchone()[0]
-            )
-            integrity_sha256 = _event_integrity_sha256(
-                event_id=event_id,
-                namespace=namespace,
-                campaign_id=campaign_id,
-                cycle_id=cycle_id,
-                aggregate_type=aggregate_type,
-                aggregate_id=aggregate_id,
-                event_type=event_type,
-                payload_json=payload_json,
-                occurred_at=occurred_text,
-                sequence=sequence,
-            )
-            connection.execute(
-                "UPDATE campaign_events SET payload_sha256 = ? WHERE sequence = ?",
-                (integrity_sha256, sequence),
-            )
-            return CampaignEvent(
-                event_id=event_id,
-                namespace=namespace,
-                campaign_id=campaign_id,
-                cycle_id=cycle_id,
-                aggregate_type=aggregate_type,
-                aggregate_id=aggregate_id,
-                event_type=event_type,
-                payload_json=payload_json,
-                payload_sha256=integrity_sha256,
-                occurred_at=occurred_at,
-                sequence=sequence,
-            )
-
-        return _SqliteUnitOfWork(stores._operational_spec())._write(write)
+            return event
+        connection.execute(
+            """
+            INSERT INTO campaign_events
+            (event_id, namespace, campaign_id, cycle_id, aggregate_type,
+             aggregate_id, event_type, payload_json, payload_sha256, occurred_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                namespace,
+                campaign_id,
+                cycle_id,
+                aggregate_type,
+                aggregate_id,
+                event_type,
+                payload_json,
+                "0" * 64,
+                occurred_text,
+            ),
+        )
+        sequence = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        integrity_sha256 = _event_integrity_sha256(
+            event_id=event_id,
+            namespace=namespace,
+            campaign_id=campaign_id,
+            cycle_id=cycle_id,
+            aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id,
+            event_type=event_type,
+            payload_json=payload_json,
+            occurred_at=occurred_text,
+            sequence=sequence,
+        )
+        connection.execute(
+            "UPDATE campaign_events SET payload_sha256 = ? WHERE sequence = ?",
+            (integrity_sha256, sequence),
+        )
+        return CampaignEvent(
+            event_id=event_id,
+            namespace=namespace,
+            campaign_id=campaign_id,
+            cycle_id=cycle_id,
+            aggregate_type=aggregate_type,
+            aggregate_id=aggregate_id,
+            event_type=event_type,
+            payload_json=payload_json,
+            payload_sha256=integrity_sha256,
+            occurred_at=occurred_at,
+            sequence=sequence,
+        )
 
     def list_events(
         self,
@@ -356,11 +387,24 @@ class OperationalCampaignJournal:
         aggregate_type: str,
         aggregate_id: str,
     ) -> tuple[CampaignEvent, ...]:
-        _require_p6_grant(
-            self._grant,
-            namespace=self._namespace,
-            campaign_id=self._campaign_id,
+        self._authorize()
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._list_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                aggregate_type=aggregate_type,
+                aggregate_id=aggregate_id,
+            )
         )
+
+    def _list_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str | None,
+        aggregate_type: str,
+        aggregate_id: str,
+    ) -> tuple[CampaignEvent, ...]:
         values = tuple(
             _identifier(value, name)
             for value, name in (
@@ -387,10 +431,349 @@ class OperationalCampaignJournal:
                 ORDER BY sequence
             """
             query_values = values
-        rows = _SqliteUnitOfWork(stores._operational_spec())._read(
-            lambda connection: connection.execute(query, query_values).fetchall()
-        )
+        rows = connection.execute(query, query_values).fetchall()
         return tuple(_event_from_row(row) for row in rows)
+
+
+_BUDGET_AGGREGATE_TYPE = "CAMPAIGN_BUDGET"
+_BUDGET_OPENED = "BUDGET_OPENED"
+_BUDGET_RESERVED = "BUDGET_RESERVED"
+_BUDGET_SETTLED = "BUDGET_SETTLED"
+
+
+def _budget_event_id(
+    *,
+    namespace: str,
+    campaign_id: str,
+    budget_id: str,
+    role: str,
+    reservation_id: str | None = None,
+) -> str:
+    parts = [namespace, campaign_id, budget_id, role]
+    if reservation_id is not None:
+        parts.append(reservation_id)
+    return hashlib.sha256(
+        b"control_plane.campaign_budget_event.v1\0"
+        + "\0".join(parts).encode("ascii")
+    ).hexdigest()
+
+
+def _event_domain_payload(event: CampaignEvent) -> dict[str, object]:
+    payload = event.payload()
+    grant_id = payload.pop("_authority_grant_id", None)
+    try:
+        _identifier(grant_id, "stored AuthorityGrant id")
+    except (TypeError, ValueError) as error:
+        raise CampaignJournalError(
+            "campaign event is missing its AuthorityGrant binding"
+        ) from error
+    return payload
+
+
+class OperationalBudgetJournal:
+    """Persistent Campaign budget with cross-process atomic reservations."""
+
+    __slots__ = (
+        "_journal",
+        "_budget_id",
+        "_max_input_tokens",
+        "_max_output_tokens",
+        "_max_cost",
+    )
+
+    def __init__(
+        self,
+        *,
+        journal: OperationalCampaignJournal,
+        budget_id: str,
+        max_input_tokens: int,
+        max_output_tokens: int,
+        max_cost: str | int | Decimal,
+    ) -> None:
+        if not isinstance(journal, OperationalCampaignJournal):
+            raise TypeError("journal must be an OperationalCampaignJournal")
+        journal._authorize()
+        self._journal = journal
+        self._budget_id = _identifier(budget_id, "budget_id")
+        BudgetLedger(
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
+            max_cost=max_cost,
+        )
+        self._max_input_tokens = max_input_tokens
+        self._max_output_tokens = max_output_tokens
+        self._max_cost = _cost_text(_cost(max_cost))
+
+        def open_budget(connection) -> None:
+            events = self._events_in_transaction(connection)
+            if events:
+                self._replay(events)
+                return
+            self._journal._append_in_transaction(
+                connection,
+                event_id=self._event_id("open"),
+                cycle_id=None,
+                aggregate_type=_BUDGET_AGGREGATE_TYPE,
+                aggregate_id=self._budget_id,
+                event_type=_BUDGET_OPENED,
+                payload=self._limits_payload(),
+            )
+
+        _SqliteUnitOfWork(stores._operational_spec())._write(open_budget)
+
+    def reserve(
+        self,
+        *,
+        reservation_id: str,
+        call_id: str,
+        max_input_tokens: int,
+        max_output_tokens: int,
+        max_cost: str | int | Decimal,
+    ) -> BudgetReservation:
+        self._journal._authorize()
+        reservation_id = _identifier(reservation_id, "reservation_id")
+        call_id = _identifier(call_id, "call_id")
+
+        def reserve_budget(connection) -> BudgetReservation:
+            events = self._events_in_transaction(connection)
+            ledger = self._replay(events)
+            reservation = ledger.reserve(
+                reservation_id=reservation_id,
+                call_id=call_id,
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                max_cost=max_cost,
+            )
+            event_id = self._event_id(
+                "reserve",
+                reservation_id=reservation_id,
+            )
+            if any(event.event_id == event_id for event in events):
+                return reservation
+            self._journal._append_in_transaction(
+                connection,
+                event_id=event_id,
+                cycle_id=None,
+                aggregate_type=_BUDGET_AGGREGATE_TYPE,
+                aggregate_id=self._budget_id,
+                event_type=_BUDGET_RESERVED,
+                payload={
+                    "reservation_id": reservation.reservation_id,
+                    "call_id": reservation.call_id,
+                    "max_input_tokens": reservation.max_input_tokens,
+                    "max_output_tokens": reservation.max_output_tokens,
+                    "max_cost": reservation.max_cost,
+                },
+            )
+            return reservation
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(reserve_budget)
+
+    def settle(
+        self,
+        reservation_id: str,
+        *,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost: str | int | Decimal | None,
+    ) -> BudgetSettlement:
+        self._journal._authorize()
+        reservation_id = _identifier(reservation_id, "reservation_id")
+
+        def settle_budget(connection) -> BudgetSettlement:
+            events = self._events_in_transaction(connection)
+            ledger = self._replay(events)
+            settlement = ledger.settle(
+                reservation_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+            )
+            event_id = self._event_id(
+                "settle",
+                reservation_id=reservation_id,
+            )
+            if any(event.event_id == event_id for event in events):
+                return settlement
+            self._journal._append_in_transaction(
+                connection,
+                event_id=event_id,
+                cycle_id=None,
+                aggregate_type=_BUDGET_AGGREGATE_TYPE,
+                aggregate_id=self._budget_id,
+                event_type=_BUDGET_SETTLED,
+                payload={
+                    "reservation_id": reservation_id,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "cost": None if cost is None else _cost_text(_cost(cost)),
+                    "state": settlement.state,
+                },
+            )
+            return settlement
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(settle_budget)
+
+    def snapshot(self) -> BudgetSnapshot:
+        self._journal._authorize()
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._replay(
+                self._events_in_transaction(connection)
+            ).snapshot()
+        )
+
+    def _limits_payload(self) -> dict[str, object]:
+        return {
+            "budget_id": self._budget_id,
+            "max_input_tokens": self._max_input_tokens,
+            "max_output_tokens": self._max_output_tokens,
+            "max_cost": self._max_cost,
+        }
+
+    def _event_id(
+        self,
+        role: str,
+        *,
+        reservation_id: str | None = None,
+    ) -> str:
+        return _budget_event_id(
+            namespace=self._journal._namespace,
+            campaign_id=self._journal._campaign_id,
+            budget_id=self._budget_id,
+            role=role,
+            reservation_id=reservation_id,
+        )
+
+    def _events_in_transaction(self, connection) -> tuple[CampaignEvent, ...]:
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=None,
+            aggregate_type=_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+        )
+
+    def _replay(self, events: tuple[CampaignEvent, ...]) -> BudgetLedger:
+        if not events:
+            raise CampaignJournalError("campaign budget has not been opened")
+        opened = events[0]
+        if (
+            opened.event_id != self._event_id("open")
+            or opened.event_type != _BUDGET_OPENED
+            or _event_domain_payload(opened) != self._limits_payload()
+        ):
+            raise BudgetConflictError("campaign budget configuration conflicts")
+        ledger = BudgetLedger(
+            max_input_tokens=self._max_input_tokens,
+            max_output_tokens=self._max_output_tokens,
+            max_cost=self._max_cost,
+        )
+        for event in events[1:]:
+            payload = _event_domain_payload(event)
+            if event.event_type == _BUDGET_RESERVED:
+                expected_fields = {
+                    "reservation_id",
+                    "call_id",
+                    "max_input_tokens",
+                    "max_output_tokens",
+                    "max_cost",
+                }
+                if set(payload) != expected_fields:
+                    raise CampaignJournalError(
+                        "campaign budget reservation is invalid"
+                    )
+                try:
+                    reservation_id = _identifier(
+                        payload["reservation_id"],
+                        "stored reservation_id",
+                    )
+                    call_id = _identifier(payload["call_id"], "stored call_id")
+                except ValueError as error:
+                    raise CampaignJournalError(
+                        "campaign budget identifiers are invalid"
+                    ) from error
+                if event.event_id != self._event_id(
+                    "reserve",
+                    reservation_id=reservation_id,
+                ):
+                    raise CampaignJournalError(
+                        "campaign budget event identity is invalid"
+                    )
+                try:
+                    reservation = ledger.reserve(
+                        reservation_id=reservation_id,
+                        call_id=call_id,
+                        max_input_tokens=payload["max_input_tokens"],
+                        max_output_tokens=payload["max_output_tokens"],
+                        max_cost=payload["max_cost"],
+                    )
+                    canonical_payload = {
+                        "reservation_id": reservation.reservation_id,
+                        "call_id": reservation.call_id,
+                        "max_input_tokens": reservation.max_input_tokens,
+                        "max_output_tokens": reservation.max_output_tokens,
+                        "max_cost": reservation.max_cost,
+                    }
+                except (BudgetError, TypeError, ValueError, UnicodeError) as error:
+                    raise CampaignJournalError(
+                        "campaign budget reservation replay failed"
+                    ) from error
+                if canonical_payload != payload:
+                    raise CampaignJournalError("campaign budget reservation is not canonical")
+            elif event.event_type == _BUDGET_SETTLED:
+                expected_fields = {
+                    "reservation_id",
+                    "input_tokens",
+                    "output_tokens",
+                    "cost",
+                    "state",
+                }
+                if set(payload) != expected_fields:
+                    raise CampaignJournalError(
+                        "campaign budget settlement is invalid"
+                    )
+                try:
+                    reservation_id = _identifier(
+                        payload["reservation_id"],
+                        "stored reservation_id",
+                    )
+                except ValueError as error:
+                    raise CampaignJournalError(
+                        "campaign budget identifiers are invalid"
+                    ) from error
+                if event.event_id != self._event_id(
+                    "settle",
+                    reservation_id=reservation_id,
+                ):
+                    raise CampaignJournalError(
+                        "campaign budget event identity is invalid"
+                    )
+                try:
+                    settlement = ledger.settle(
+                        reservation_id,
+                        input_tokens=payload["input_tokens"],
+                        output_tokens=payload["output_tokens"],
+                        cost=payload["cost"],
+                    )
+                    canonical_payload = {
+                        "reservation_id": reservation_id,
+                        "input_tokens": payload["input_tokens"],
+                        "output_tokens": payload["output_tokens"],
+                        "cost": (
+                            None
+                            if payload["cost"] is None
+                            else _cost_text(_cost(payload["cost"]))
+                        ),
+                        "state": settlement.state,
+                    }
+                except (BudgetError, TypeError, ValueError, UnicodeError) as error:
+                    raise CampaignJournalError(
+                        "campaign budget settlement replay failed"
+                    ) from error
+                if canonical_payload != payload:
+                    raise CampaignJournalError("campaign budget settlement is not canonical")
+            else:
+                raise CampaignJournalError("campaign budget event type is invalid")
+        return ledger
 
 
 def _attempt_id(cycle_id: str, call_id: str, attempt_id: str) -> str:
@@ -586,6 +969,7 @@ __all__ = [
     "CampaignEvent",
     "CampaignEventConflictError",
     "CampaignJournalError",
+    "OperationalBudgetJournal",
     "OperationalCampaignJournal",
     "OperationalUsageJournal",
     "RecordedModelAttempt",
