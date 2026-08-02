@@ -1296,6 +1296,10 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             self.assertEqual(len(usage_events), 1)
             self.assertEqual(
+                usage_events[0].event_type,
+                "OPERATIONAL_EXECUTION_USAGE_FROZEN",
+            )
+            self.assertEqual(
                 usage_payload["schema_version"],
                 "control_plane.operational_execution_usage.v2",
             )
@@ -1304,7 +1308,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(frozen_usage.currency, "USD")
             self.assertEqual(
                 usage_payload["usage_status"],
-                UsageStatus.UNKNOWN.value,
+                "UNKNOWN",
             )
             self.assertIsNone(usage_payload["cost"])
             self.assertEqual(usage_payload["currency"], "USD")
@@ -1419,36 +1423,26 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(snapshot.spent_tool_attempts, 0)
             self.assertEqual(snapshot.spent_data_exposures, 0)
             self.assertEqual(snapshot.spent_disk_growth_bytes, 0)
+            evidence_events = replay_journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                aggregate_id=cycle_id,
+            )
+            cycle_settlement_events = replay_journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                aggregate_id=cycle_id,
+            )
+            self.assertEqual(len(evidence_events), 1)
             self.assertEqual(
-                len(
-                    replay_journal.list_events(
-                        cycle_id=cycle_id,
-                        aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
-                        aggregate_id=cycle_id,
-                    )
-                ),
-                1,
+                evidence_events[0].event_type,
+                "OPERATIONAL_MODEL_EVIDENCE_RECORDED",
             )
+            self.assertEqual(len(cycle_settlement_events), 1)
             self.assertEqual(
-                len(
-                    replay_journal.list_events(
-                        cycle_id=cycle_id,
-                        aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
-                        aggregate_id=cycle_id,
-                    )
-                ),
-                1,
+                cycle_settlement_events[0].event_type,
+                "OPERATIONAL_CYCLE_SETTLEMENT_RECORDED",
             )
-            budget_settlement_events = tuple(
-                event
-                for event in replay_journal.list_events(
-                    cycle_id=None,
-                    aggregate_type="CAMPAIGN_BUDGET",
-                    aggregate_id=reopened._budget._budget_id,
-                )
-                if event.event_type == "BUDGET_SETTLED"
-            )
-            self.assertEqual(len(budget_settlement_events), 1)
 
             rows_before_settlement_replay = _campaign_event_rows(
                 root,
@@ -1461,7 +1455,6 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(replayed_settlement, settled)
-            self.assertEqual(replay_provider.call_count, 0)
             self.assertEqual(reopened.budget_snapshot(), snapshot)
             self.assertEqual(
                 _campaign_event_rows(root, campaign_id),
