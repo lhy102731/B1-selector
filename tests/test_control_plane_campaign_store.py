@@ -565,6 +565,138 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             self.assertEqual(rows_after, rows_before)
             self.assertEqual(reopened.snapshot().currency, "USD")
 
+    def test_currencyless_budget_events_fail_closed_on_reopen_without_writes(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "BUDGET_OPENED",
+                "opened",
+                BudgetConflictError,
+                "campaign budget configuration conflicts",
+            ),
+            (
+                "BUDGET_RESERVED",
+                "reserved",
+                CampaignJournalError,
+                "campaign budget reservation is invalid",
+            ),
+            (
+                "BUDGET_SETTLED",
+                "settled",
+                CampaignJournalError,
+                "campaign budget settlement is invalid",
+            ),
+        )
+        for event_type, campaign_suffix, error_type, message in cases:
+            with self.subTest(event_type=event_type):
+                campaign_id = f"campaign-budget-currencyless-{campaign_suffix}"
+                with _authorized_campaign(campaign_id) as (root, grant, journal):
+                    budget = OperationalBudgetJournal(
+                        journal=journal,
+                        budget_id="campaign-budget",
+                        currency="USD",
+                        max_input_tokens=100,
+                        max_output_tokens=50,
+                        max_cost="1",
+                    )
+                    reservation = budget.reserve(
+                        reservation_id="reservation-currencyless",
+                        call_id="call-currencyless",
+                        currency="USD",
+                        max_input_tokens=20,
+                        max_output_tokens=10,
+                        max_cost="0.2",
+                    )
+                    budget.settle(
+                        reservation.reservation_id,
+                        currency="USD",
+                        input_tokens=7,
+                        output_tokens=3,
+                        cost="0.1",
+                    )
+
+                    target_event = next(
+                        event
+                        for event in journal.list_events(
+                            cycle_id=None,
+                            aggregate_type="CAMPAIGN_BUDGET",
+                            aggregate_id="campaign-budget",
+                        )
+                        if event.event_type == event_type
+                    )
+                    payload = target_event.payload()
+                    authority_grant_id = payload["_authority_grant_id"]
+                    self.assertEqual(payload.pop("currency"), "USD")
+                    self.assertEqual(
+                        payload["_authority_grant_id"],
+                        authority_grant_id,
+                    )
+                    _rewrite_campaign_event_payload(
+                        root,
+                        event_id=target_event.event_id,
+                        payload=payload,
+                    )
+
+                    rows_before = _campaign_full_rows(
+                        root,
+                        campaign_id=campaign_id,
+                    )
+                    count_before = len(rows_before)
+                    hashes_before = tuple(
+                        (row[0], row[8]) for row in rows_before
+                    )
+                    self.assertEqual(count_before, 3)
+                    rewritten_target_row = next(
+                        row for row in rows_before if row[6] == event_type
+                    )
+                    self.assertEqual(
+                        rewritten_target_row[8],
+                        _event_integrity_sha256(
+                            event_id=rewritten_target_row[0],
+                            namespace=rewritten_target_row[1],
+                            campaign_id=rewritten_target_row[2],
+                            cycle_id=rewritten_target_row[3],
+                            aggregate_type=rewritten_target_row[4],
+                            aggregate_id=rewritten_target_row[5],
+                            event_type=rewritten_target_row[6],
+                            payload_json=rewritten_target_row[7],
+                            occurred_at=rewritten_target_row[9],
+                            sequence=rewritten_target_row[10],
+                        ),
+                    )
+
+                    replay_journal = OperationalCampaignJournal(
+                        root_secret=ROOT_SECRET,
+                        grant=grant,
+                        namespace="formal",
+                        campaign_id=campaign_id,
+                        clock=lambda: NOW,
+                    )
+                    with self.assertRaisesRegex(
+                        error_type,
+                        f"^{message}$",
+                    ):
+                        OperationalBudgetJournal(
+                            journal=replay_journal,
+                            budget_id="campaign-budget",
+                            currency="USD",
+                            max_input_tokens=100,
+                            max_output_tokens=50,
+                            max_cost="1",
+                        )
+
+                    rows_after = _campaign_full_rows(
+                        root,
+                        campaign_id=campaign_id,
+                    )
+                    self.assertEqual(rows_after, rows_before)
+                    self.assertEqual(len(rows_after), count_before)
+                    self.assertEqual(
+                        tuple((row[0], row[8]) for row in rows_after),
+                        hashes_before,
+                    )
+
     def test_resource_budget_settlement_survives_reopen(self) -> None:
         campaign_id = "campaign-resource-budget-001"
         with _authorized_campaign(campaign_id) as (_, grant, journal):
@@ -2429,6 +2561,109 @@ class OperationalUsageJournalTests(unittest.TestCase):
             self.assertNotIn(
                 "MODEL_USAGE_FINISHED",
                 {row[6] for row in rows_after},
+            )
+
+    def test_currencyless_model_usage_replay_fails_closed_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-usage-currencyless-replay"
+        cycle_id = "cycle-001"
+        call_id = "call-currencyless-replay"
+        attempt_id = "call-currencyless-replay-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            )
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=7,
+                    output_tokens=2,
+                    total_tokens=9,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            payload = json.loads(usage_row[7])
+            authority_grant_id = payload["_authority_grant_id"]
+            self.assertEqual(payload.pop("currency"), "USD")
+            self.assertNotIn("currency", payload)
+            self.assertEqual(
+                payload["_authority_grant_id"],
+                authority_grant_id,
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                event_id=usage_row[0],
+                payload=payload,
+            )
+
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+            count_before = len(rows_before)
+            hashes_before = tuple((row[0], row[8]) for row in rows_before)
+            self.assertEqual(count_before, 1)
+            rewritten_usage_row = next(
+                row
+                for row in rows_before
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            self.assertEqual(
+                rewritten_usage_row[8],
+                _event_integrity_sha256(
+                    event_id=rewritten_usage_row[0],
+                    namespace=rewritten_usage_row[1],
+                    campaign_id=rewritten_usage_row[2],
+                    cycle_id=rewritten_usage_row[3],
+                    aggregate_type=rewritten_usage_row[4],
+                    aggregate_id=rewritten_usage_row[5],
+                    event_type=rewritten_usage_row[6],
+                    payload_json=rewritten_usage_row[7],
+                    occurred_at=rewritten_usage_row[9],
+                    sequence=rewritten_usage_row[10],
+                ),
+            )
+
+            replay_usage = OperationalUsageJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                cycle_id=cycle_id,
+            )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage payload is invalid$",
+            ):
+                replay_usage.list_attempts(call_id=call_id)
+
+            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
+            self.assertEqual(rows_after, rows_before)
+            self.assertEqual(len(rows_after), count_before)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after),
+                hashes_before,
             )
 
     def test_call_attempts_replay_in_persisted_order(self) -> None:
