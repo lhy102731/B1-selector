@@ -120,6 +120,14 @@ class _InvalidJsonBoundFakeProvider(_BoundFakeProvider):
         return replace(super().invoke(request), output_text=self._output_text)
 
 
+class _RequestModelDriftBoundFakeProvider(_BoundFakeProvider):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(
+            super().invoke(request),
+            request_model="provider-attributed-drift-model",
+        )
+
+
 class _LeaseSwapBoundFakeProvider(_BoundFakeProvider):
     def __init__(self, barrier: Barrier) -> None:
         super().__init__()
@@ -2263,6 +2271,114 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 "SUCCESS",
             )
             self.assertTrue(executed.verified_response.event_id)
+
+    def test_provider_request_model_drift_persists_and_atomically_blocks(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-request-model-drift"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one bounded synthetic result"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Provider request identity drift blocks closed",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 119, 19_001)
+        provider = _RequestModelDriftBoundFakeProvider()
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=_FakeMonotonicClock(100, 1_000_000),
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=10,
+                    max_tool_attempts=2,
+                ),
+            )
+            executing = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-request-model-drift",
+            )
+
+            with self.assertRaises(RosterDriftError):
+                controller.invoke_member_json(
+                    execution=executing,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=task.task_id,
+            ).list_attempts()
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(
+                attempts[0].envelope.request_model,
+                "provider-attributed-drift-model",
+            )
+            self.assertEqual(attempts[0].final_outcome.value, "SUCCESS")
+            blocked = controller.campaign_snapshot()
+            self.assertEqual(blocked.status, CampaignStatus.BLOCKED)
+            self.assertEqual(blocked.block_reason_code, "ROSTER_IDENTITY_DRIFT")
+            call_id = controller._member_call_id(task.task_id, member.member_id)
+            self.assertEqual(
+                tuple(
+                    event.event_type
+                    for event in journal.list_events(
+                        cycle_id=task.task_id,
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=call_id,
+                    )
+                ),
+                ("OPERATIONAL_MODEL_CALL_STARTED",),
+            )
+            replay_provider = _BoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.invoke_member_json(
+                    execution=executing,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+            self.assertEqual(replay_provider.call_count, 0)
 
     def test_exhausted_fake_member_blocks_without_retrying_after_failure(
         self,

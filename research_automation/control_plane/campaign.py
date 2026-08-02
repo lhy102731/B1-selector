@@ -530,6 +530,18 @@ class ModelInvocation:
                 outcome=InvocationOutcome.EXCEPTION,
             )
             raise ModelInvocationProviderError("provider invocation failed") from error
+        if (
+            type(response.request_model) is not str
+            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.request_model)
+            is None
+        ):
+            error = TypeError("provider request model is invalid")
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
         if response.output_text is not None and type(response.output_text) is not str:
             error = TypeError("provider response output is invalid")
             self._record_unknown_outcome(
@@ -583,7 +595,7 @@ class ModelInvocation:
             UsageEnvelope(
                 provider=self._provider_name,
                 profile=self._profile,
-                request_model=self._request_model,
+                request_model=response.request_model,
                 response_model=response.response_model,
                 call_id=call_id,
                 attempt_id=attempt_id,

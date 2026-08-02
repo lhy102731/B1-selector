@@ -41,13 +41,14 @@ NOW = datetime(2026, 8, 1, 2, 3, 4, tzinfo=timezone.utc)
 
 
 class _FakeProvider:
-    def __init__(self, response_model: str) -> None:
+    def __init__(self, *, request_model: str, response_model: str) -> None:
+        self._request_model = request_model
         self._response_model = response_model
 
     def invoke(self, request: object) -> ProviderResponse:
         return ProviderResponse(
             output_text='{"status":"ok"}',
-            request_model="ignored-provider-attribution",
+            request_model=self._request_model,
             response_model=self._response_model,
             raw_usage={
                 "input_tokens": 3,
@@ -132,10 +133,14 @@ def _record_response(
     member: RosterMember,
     response_model: str,
     call_id: str,
+    request_model: str | None = None,
 ) -> OperationalUsageJournal:
     usage = OperationalUsageJournal(journal=journal, cycle_id="cycle-001")
     invocation = ModelInvocation(
-        provider=_FakeProvider(response_model),
+        provider=_FakeProvider(
+            request_model=(member.model if request_model is None else request_model),
+            response_model=response_model,
+        ),
         usage_journal=usage,
         provider_name=member.provider,
         profile=member.profile,

@@ -1093,6 +1093,31 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
         self.assertIsNone(envelope.response_model)
 
+    def test_malformed_request_model_is_accounted_before_rejection(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(request_model=""),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-request-model",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.request_model, "fake-request-model")
+        self.assertIsNone(envelope.response_model)
+
     def test_malformed_streamed_flag_is_accounted_before_rejection(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
@@ -1139,7 +1164,7 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
 
-    def test_fallback_response_preserves_extended_usage_and_model_identity(self) -> None:
+    def test_fallback_response_preserves_provider_attributed_model_identity(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
             provider=_FallbackProvider(),
@@ -1158,7 +1183,7 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(result, {"status": "ok"})
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
-        self.assertEqual(envelope.request_model, "fake-primary-model")
+        self.assertEqual(envelope.request_model, "provider-misattributed-model")
         self.assertEqual(envelope.response_model, "fake-fallback-model")
         self.assertTrue(envelope.fallback)
         self.assertFalse(envelope.streamed)
