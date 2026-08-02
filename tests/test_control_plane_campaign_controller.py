@@ -238,6 +238,36 @@ class _MixedCurrencyRetryEvidenceArtifactBoundFakeProvider(
         )
 
 
+class _CanonicalCurrencyRetryEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def __init__(
+        self,
+        *,
+        first_reported_cost: str,
+        success_reported_cost: str,
+    ) -> None:
+        super().__init__()
+        self._first_reported_cost = first_reported_cost
+        self._success_reported_cost = success_reported_cost
+
+    def invoke(self, request: object) -> ProviderResponse:
+        response = super().invoke(request)
+        return replace(
+            response,
+            output_text="{" if self.call_count == 1 else response.output_text,
+            raw_usage={
+                **response.raw_usage,
+                "reported_cost": (
+                    self._first_reported_cost
+                    if self.call_count == 1
+                    else self._success_reported_cost
+                ),
+                "currency": "USD",
+            },
+        )
+
+
 class _InvalidEvidenceArtifactBoundFakeProvider(
     _EvidenceArtifactBoundFakeProvider
 ):
@@ -443,6 +473,9 @@ def _completed_evidence_model_call(
     campaign_id: str,
     provider=None,
     max_cycles: int = 1,
+    campaign_max_cost: str = "1",
+    reservation_max_cost: str = "0.1",
+    call_max_cost: str = "0.1",
 ):
     protocol = _protocol()
     execution_spec = compile_execution_spec(
@@ -474,7 +507,7 @@ def _completed_evidence_model_call(
             max_cycles=max_cycles,
             max_input_tokens=100,
             max_output_tokens=50,
-            max_cost="1",
+            max_cost=campaign_max_cost,
             max_wall_time_ms=100,
             max_tool_attempts=2,
         ),
@@ -494,7 +527,7 @@ def _completed_evidence_model_call(
             currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
-            max_cost="0.1",
+            max_cost=reservation_max_cost,
             max_wall_time_ms=10,
             max_tool_attempts=2,
         ),
@@ -508,7 +541,7 @@ def _completed_evidence_model_call(
         member_id=member.member_id,
         provider=provider or _EvidenceArtifactBoundFakeProvider(),
         prompt=prompt,
-        limits=_FAKE_CALL_LIMITS,
+        limits=replace(_FAKE_CALL_LIMITS, max_cost=call_max_cost),
     )
     usage = controller.complete_model_execution(execution=execution)
     return controller, execution, member, usage
@@ -1082,6 +1115,122 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     aggregate_id="cycle-001",
                 ),
                 (),
+            )
+
+    def test_same_currency_retry_exact_cost_overrun_blocks_atomically(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-cost-exact-overrun-001"
+        reported_costs = (
+            "0.99999999999999999999999999995",
+            "0.00000000000000000000000000006",
+        )
+        provider = _CanonicalCurrencyRetryEvidenceArtifactBoundFakeProvider(
+            first_reported_cost=reported_costs[0],
+            success_reported_cost=reported_costs[1],
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            with self.assertRaisesRegex(
+                BudgetExceededError,
+                "known usage exceeds its call limits",
+            ):
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=provider,
+                    campaign_max_cost="1",
+                    reservation_max_cost="1",
+                    call_max_cost="1",
+                )
+
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts()
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual(
+                tuple(attempt.envelope.reported_cost for attempt in attempts),
+                reported_costs,
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.currency for attempt in attempts),
+                ("USD", "USD"),
+            )
+            self.assertEqual(
+                tuple(attempt.final_outcome for attempt in attempts),
+                (InvocationOutcome.INVALID_JSON, InvocationOutcome.SUCCESS),
+            )
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=replace(_FAKE_CAMPAIGN_LIMITS, max_cost="1"),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+            self.assertEqual(
+                reopened.campaign_snapshot().status,
+                CampaignStatus.BLOCKED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+
+    def test_execution_usage_preserves_exact_same_currency_retry_cost(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-cost-exact-freeze-001"
+        expected_cost = "1.00000000000000000000000000001"
+        provider = _CanonicalCurrencyRetryEvidenceArtifactBoundFakeProvider(
+            first_reported_cost="0.99999999999999999999999999995",
+            success_reported_cost="0.00000000000000000000000000006",
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, _, _, usage = _completed_evidence_model_call(
+                root,
+                journal,
+                campaign_id=campaign_id,
+                provider=provider,
+                campaign_max_cost="2",
+                reservation_max_cost="2",
+                call_max_cost="2",
+            )
+
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual(usage.usage_status, UsageStatus.REPORTED)
+            self.assertEqual(usage.cost, expected_cost)
+            self.assertEqual(usage.currency, "USD")
+            usage_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id="cycle-001",
+            )[0]
+            payload = usage_event.payload()
+            payload.pop("_authority_grant_id")
+            identity = {
+                key: value
+                for key, value in payload.items()
+                if key != "manifest_sha256"
+            }
+            self.assertEqual(payload["cost"], expected_cost)
+            self.assertEqual(
+                payload["manifest_sha256"],
+                _controller_sha256(
+                    b"control_plane.operational_execution_usage.v2",
+                    identity,
+                    "expected exact operational execution usage",
+                ),
+            )
+            self.assertEqual(
+                usage.manifest_sha256,
+                payload["manifest_sha256"],
             )
 
     def test_controller_reopen_currency_mismatch_fails_before_any_event_write(

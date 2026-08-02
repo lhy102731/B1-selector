@@ -22,6 +22,7 @@ from .budget import (
     BudgetExceededError,
     BudgetReservation,
     BudgetSnapshot,
+    _add_cost,
     _cost as _bounded_cost,
     _cost_text,
 )
@@ -469,13 +470,6 @@ def operational_prompt_sha256(prompt: object) -> str:
         b"control_plane.operational_role_prompt.v1\0"
         + prompt_text.encode("utf-8")
     ).hexdigest()
-
-
-def _decimal_text(value: Decimal) -> str:
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text or "0"
 
 
 def _stored_sha256(value: object, name: str) -> str:
@@ -3039,13 +3033,12 @@ class OperationalCampaignController:
             cost = None
         else:
             try:
-                cost = _decimal_text(
-                    sum(
-                        (
+                cost = _cost_text(
+                    _add_cost(
+                        *(
                             _bounded_cost(reported_cost)
                             for reported_cost in reported_costs
-                        ),
-                        Decimal("0"),
+                        )
                     )
                 )
             except ValueError:
@@ -3181,12 +3174,11 @@ class OperationalCampaignController:
                 and attempt.envelope.currency == limits.currency
             )
         )
-        known_cost_lower_bound = sum(
-            (
+        known_cost_lower_bound = _add_cost(
+            *(
                 _bounded_cost(reported_cost)
                 for reported_cost in comparable_reported_costs
-            ),
-            Decimal("0"),
+            )
         )
         known_input_tokens = known_token_lower_bound("input_tokens")
         known_output_tokens = known_token_lower_bound("output_tokens")
