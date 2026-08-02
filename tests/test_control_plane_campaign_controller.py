@@ -1662,6 +1662,211 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 CycleStatus.EXECUTING,
             )
 
+    def _rewrite_model_call_event_as_authentic_currencyless_v1(
+        self,
+        *,
+        root,
+        journal,
+        cycle_id: str,
+        call_id: str,
+        legacy_event_type: str,
+    ) -> None:
+        event_types = (
+            "OPERATIONAL_MODEL_CALL_STARTED",
+            "OPERATIONAL_MODEL_CALL_COMPLETED",
+        )
+        manifest_domains = {
+            "OPERATIONAL_MODEL_CALL_STARTED": (
+                b"control_plane.operational_model_call_start.v1"
+            ),
+            "OPERATIONAL_MODEL_CALL_COMPLETED": (
+                b"control_plane.operational_model_call_receipt.v1"
+            ),
+        }
+        call_events = journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="OPERATIONAL_MODEL_CALL",
+            aggregate_id=call_id,
+        )
+        self.assertEqual(
+            tuple(event.event_type for event in call_events),
+            event_types,
+        )
+        legacy_event_index = event_types.index(legacy_event_type)
+        untouched_event_index = 1 - legacy_event_index
+        legacy_event = call_events[legacy_event_index]
+        untouched_event = call_events[untouched_event_index]
+        legacy_metadata = (
+            legacy_event.event_id,
+            legacy_event.namespace,
+            legacy_event.campaign_id,
+            legacy_event.cycle_id,
+            legacy_event.aggregate_type,
+            legacy_event.aggregate_id,
+            legacy_event.event_type,
+            legacy_event.occurred_at,
+            legacy_event.sequence,
+        )
+        legacy_payload = legacy_event.payload()
+        authority_grant_id = legacy_payload.pop("_authority_grant_id")
+        self.assertEqual(
+            legacy_payload["schema_version"],
+            "control_plane.operational_model_call.v2",
+        )
+        legacy_payload["schema_version"] = (
+            "control_plane.operational_model_call.v1"
+        )
+        legacy_call_limits = dict(legacy_payload["call_limits"])
+        self.assertEqual(legacy_call_limits.pop("currency"), "USD")
+        legacy_payload["call_limits"] = legacy_call_limits
+        legacy_identity = {
+            key: value
+            for key, value in legacy_payload.items()
+            if key != "manifest_sha256"
+        }
+        legacy_payload["manifest_sha256"] = _controller_sha256(
+            manifest_domains[legacy_event_type],
+            legacy_identity,
+            "legacy operational model call",
+        )
+        legacy_payload["_authority_grant_id"] = authority_grant_id
+        _rewrite_campaign_event_payload(root, legacy_event, legacy_payload)
+
+        rewritten_events = journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="OPERATIONAL_MODEL_CALL",
+            aggregate_id=call_id,
+        )
+        rewritten_event = rewritten_events[legacy_event_index]
+        rewritten_payload = rewritten_event.payload()
+        rewritten_identity = {
+            key: value
+            for key, value in rewritten_payload.items()
+            if key not in {"manifest_sha256", "_authority_grant_id"}
+        }
+        self.assertEqual(
+            rewritten_payload["schema_version"],
+            "control_plane.operational_model_call.v1",
+        )
+        self.assertNotIn("currency", rewritten_payload["call_limits"])
+        self.assertEqual(
+            rewritten_payload["manifest_sha256"],
+            _controller_sha256(
+                manifest_domains[legacy_event_type],
+                rewritten_identity,
+                "stored legacy operational model call",
+            ),
+        )
+        self.assertEqual(
+            rewritten_payload["_authority_grant_id"],
+            authority_grant_id,
+        )
+        self.assertEqual(
+            (
+                rewritten_event.event_id,
+                rewritten_event.namespace,
+                rewritten_event.campaign_id,
+                rewritten_event.cycle_id,
+                rewritten_event.aggregate_type,
+                rewritten_event.aggregate_id,
+                rewritten_event.event_type,
+                rewritten_event.occurred_at,
+                rewritten_event.sequence,
+            ),
+            legacy_metadata,
+        )
+        self.assertEqual(
+            rewritten_event.payload_sha256,
+            _event_integrity_sha256(
+                event_id=rewritten_event.event_id,
+                namespace=rewritten_event.namespace,
+                campaign_id=rewritten_event.campaign_id,
+                cycle_id=rewritten_event.cycle_id,
+                aggregate_type=rewritten_event.aggregate_type,
+                aggregate_id=rewritten_event.aggregate_id,
+                event_type=rewritten_event.event_type,
+                payload_json=rewritten_event.payload_json,
+                occurred_at=rewritten_event.occurred_at.isoformat(),
+                sequence=rewritten_event.sequence,
+            ),
+        )
+        untouched_rewritten_event = rewritten_events[untouched_event_index]
+        self.assertEqual(untouched_rewritten_event, untouched_event)
+        self.assertEqual(
+            untouched_rewritten_event.payload()["schema_version"],
+            "control_plane.operational_model_call.v2",
+        )
+        self.assertEqual(
+            untouched_rewritten_event.payload()["call_limits"]["currency"],
+            "USD",
+        )
+
+    def _assert_currencyless_model_call_public_replay_fails_closed(
+        self,
+        *,
+        root,
+        grant,
+        campaign_id: str,
+        cycle_id: str,
+        member_id: str,
+        prompt: dict[str, str],
+        error_pattern: str,
+    ) -> None:
+        replay_journal = OperationalCampaignJournal(
+            root_secret=ROOT_SECRET,
+            grant=grant,
+            namespace="formal",
+            campaign_id=campaign_id,
+            clock=lambda: NOW,
+        )
+        reopened = OperationalCampaignController(
+            journal=replay_journal,
+            repository_root=root,
+            budget_limits=_FAKE_CAMPAIGN_LIMITS,
+            identity_provider=_FakeProcessIdentityProvider(
+                ProcessIdentity("host-controller", 144, 44_000)
+            ),
+            monotonic_ns=lambda: 3_000_000,
+        )
+        replay_execution = reopened.start_execution(
+            cycle_id=cycle_id,
+            acquisition_id=f"execute-{campaign_id}",
+        )
+        campaign_status_before = reopened.campaign_snapshot().status
+        cycle_status_before = reopened.cycle_snapshot(cycle_id).status
+        rows_before = _campaign_event_rows(root, campaign_id)
+        count_before = len(rows_before)
+        hashes_before = tuple((row[0], row[8]) for row in rows_before)
+        provider = _EvidenceArtifactBoundFakeProvider()
+
+        with self.assertRaisesRegex(CampaignJournalError, error_pattern):
+            reopened.invoke_member_json(
+                execution=replay_execution,
+                member_id=member_id,
+                provider=provider,
+                prompt=prompt,
+                limits=_FAKE_CALL_LIMITS,
+            )
+
+        rows_after = _campaign_event_rows(root, campaign_id)
+        self.assertEqual(provider.call_count, 0)
+        self.assertEqual(rows_after, rows_before)
+        self.assertEqual(len(rows_after), count_before)
+        self.assertEqual(
+            tuple((row[0], row[8]) for row in rows_after),
+            hashes_before,
+        )
+        self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
+        self.assertEqual(cycle_status_before, CycleStatus.EXECUTING)
+        self.assertEqual(
+            reopened.campaign_snapshot().status,
+            campaign_status_before,
+        )
+        self.assertEqual(
+            reopened.cycle_snapshot(cycle_id).status,
+            cycle_status_before,
+        )
+
     def test_legacy_currencyless_model_call_start_replay_fails_closed_before_provider_without_writes(
         self,
     ) -> None:
@@ -1676,183 +1881,22 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 campaign_id=campaign_id,
             )
             call_id = usage.model_calls[0].call_id
-            call_events = journal.list_events(
+            self._rewrite_model_call_event_as_authentic_currencyless_v1(
+                root=root,
+                journal=journal,
                 cycle_id=cycle_id,
-                aggregate_type="OPERATIONAL_MODEL_CALL",
-                aggregate_id=call_id,
+                call_id=call_id,
+                legacy_event_type="OPERATIONAL_MODEL_CALL_STARTED",
             )
-            self.assertEqual(
-                tuple(event.event_type for event in call_events),
-                (
-                    "OPERATIONAL_MODEL_CALL_STARTED",
-                    "OPERATIONAL_MODEL_CALL_COMPLETED",
-                ),
-            )
-            start_event, completion_event = call_events
-            start_metadata = (
-                start_event.event_id,
-                start_event.namespace,
-                start_event.campaign_id,
-                start_event.cycle_id,
-                start_event.aggregate_type,
-                start_event.aggregate_id,
-                start_event.event_type,
-                start_event.occurred_at,
-                start_event.sequence,
-            )
-            start_payload = start_event.payload()
-            authority_grant_id = start_payload.pop("_authority_grant_id")
-            self.assertEqual(
-                start_payload["schema_version"],
-                "control_plane.operational_model_call.v2",
-            )
-            start_payload["schema_version"] = (
-                "control_plane.operational_model_call.v1"
-            )
-            legacy_call_limits = dict(start_payload["call_limits"])
-            self.assertEqual(legacy_call_limits.pop("currency"), "USD")
-            start_payload["call_limits"] = legacy_call_limits
-            legacy_start_identity = {
-                key: value
-                for key, value in start_payload.items()
-                if key != "manifest_sha256"
-            }
-            start_payload["manifest_sha256"] = _controller_sha256(
-                b"control_plane.operational_model_call_start.v1",
-                legacy_start_identity,
-                "legacy operational model call start",
-            )
-            start_payload["_authority_grant_id"] = authority_grant_id
-            _rewrite_campaign_event_payload(root, start_event, start_payload)
-
-            rewritten_events = journal.list_events(
-                cycle_id=cycle_id,
-                aggregate_type="OPERATIONAL_MODEL_CALL",
-                aggregate_id=call_id,
-            )
-            rewritten_start, untouched_completion = rewritten_events
-            rewritten_start_payload = rewritten_start.payload()
-            rewritten_start_identity = {
-                key: value
-                for key, value in rewritten_start_payload.items()
-                if key not in {"manifest_sha256", "_authority_grant_id"}
-            }
-            self.assertEqual(
-                rewritten_start_payload["schema_version"],
-                "control_plane.operational_model_call.v1",
-            )
-            self.assertNotIn(
-                "currency",
-                rewritten_start_payload["call_limits"],
-            )
-            self.assertEqual(
-                rewritten_start_payload["manifest_sha256"],
-                _controller_sha256(
-                    b"control_plane.operational_model_call_start.v1",
-                    rewritten_start_identity,
-                    "stored legacy operational model call start",
-                ),
-            )
-            self.assertEqual(
-                rewritten_start_payload["_authority_grant_id"],
-                authority_grant_id,
-            )
-            self.assertEqual(
-                (
-                    rewritten_start.event_id,
-                    rewritten_start.namespace,
-                    rewritten_start.campaign_id,
-                    rewritten_start.cycle_id,
-                    rewritten_start.aggregate_type,
-                    rewritten_start.aggregate_id,
-                    rewritten_start.event_type,
-                    rewritten_start.occurred_at,
-                    rewritten_start.sequence,
-                ),
-                start_metadata,
-            )
-            self.assertEqual(
-                rewritten_start.payload_sha256,
-                _event_integrity_sha256(
-                    event_id=rewritten_start.event_id,
-                    namespace=rewritten_start.namespace,
-                    campaign_id=rewritten_start.campaign_id,
-                    cycle_id=rewritten_start.cycle_id,
-                    aggregate_type=rewritten_start.aggregate_type,
-                    aggregate_id=rewritten_start.aggregate_id,
-                    event_type=rewritten_start.event_type,
-                    payload_json=rewritten_start.payload_json,
-                    occurred_at=rewritten_start.occurred_at.isoformat(),
-                    sequence=rewritten_start.sequence,
-                ),
-            )
-            self.assertEqual(untouched_completion, completion_event)
-            self.assertEqual(
-                untouched_completion.payload()["schema_version"],
-                "control_plane.operational_model_call.v2",
-            )
-            self.assertEqual(
-                untouched_completion.payload()["call_limits"]["currency"],
-                "USD",
-            )
-
             del controller
-            replay_journal = OperationalCampaignJournal(
-                root_secret=ROOT_SECRET,
+            self._assert_currencyless_model_call_public_replay_fails_closed(
+                root=root,
                 grant=grant,
-                namespace="formal",
                 campaign_id=campaign_id,
-                clock=lambda: NOW,
-            )
-            reopened = OperationalCampaignController(
-                journal=replay_journal,
-                repository_root=root,
-                budget_limits=_FAKE_CAMPAIGN_LIMITS,
-                identity_provider=_FakeProcessIdentityProvider(
-                    ProcessIdentity("host-controller", 144, 44_000)
-                ),
-                monotonic_ns=lambda: 3_000_000,
-            )
-            replay_execution = reopened.start_execution(
                 cycle_id=cycle_id,
-                acquisition_id=f"execute-{campaign_id}",
-            )
-            campaign_status_before = reopened.campaign_snapshot().status
-            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
-            rows_before = _campaign_event_rows(root, campaign_id)
-            count_before = len(rows_before)
-            hashes_before = tuple((row[0], row[8]) for row in rows_before)
-            provider = _EvidenceArtifactBoundFakeProvider()
-
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "^model call limits are invalid$",
-            ):
-                reopened.invoke_member_json(
-                    execution=replay_execution,
-                    member_id=member.member_id,
-                    provider=provider,
-                    prompt=prompt,
-                    limits=_FAKE_CALL_LIMITS,
-                )
-
-            rows_after = _campaign_event_rows(root, campaign_id)
-            self.assertEqual(provider.call_count, 0)
-            self.assertEqual(rows_after, rows_before)
-            self.assertEqual(len(rows_after), count_before)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after),
-                hashes_before,
-            )
-            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
-            self.assertEqual(cycle_status_before, CycleStatus.EXECUTING)
-            self.assertEqual(
-                reopened.campaign_snapshot().status,
-                campaign_status_before,
-            )
-            self.assertEqual(
-                reopened.cycle_snapshot(cycle_id).status,
-                cycle_status_before,
+                member_id=member.member_id,
+                prompt=prompt,
+                error_pattern="^model call limits are invalid$",
             )
 
     def test_legacy_currencyless_model_call_completion_replay_fails_closed_before_provider_without_writes(
@@ -1869,191 +1913,22 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 campaign_id=campaign_id,
             )
             call_id = usage.model_calls[0].call_id
-            call_events = journal.list_events(
+            self._rewrite_model_call_event_as_authentic_currencyless_v1(
+                root=root,
+                journal=journal,
                 cycle_id=cycle_id,
-                aggregate_type="OPERATIONAL_MODEL_CALL",
-                aggregate_id=call_id,
+                call_id=call_id,
+                legacy_event_type="OPERATIONAL_MODEL_CALL_COMPLETED",
             )
-            self.assertEqual(
-                tuple(event.event_type for event in call_events),
-                (
-                    "OPERATIONAL_MODEL_CALL_STARTED",
-                    "OPERATIONAL_MODEL_CALL_COMPLETED",
-                ),
-            )
-            start_event, completion_event = call_events
-            completion_metadata = (
-                completion_event.event_id,
-                completion_event.namespace,
-                completion_event.campaign_id,
-                completion_event.cycle_id,
-                completion_event.aggregate_type,
-                completion_event.aggregate_id,
-                completion_event.event_type,
-                completion_event.occurred_at,
-                completion_event.sequence,
-            )
-            completion_payload = completion_event.payload()
-            authority_grant_id = completion_payload.pop(
-                "_authority_grant_id"
-            )
-            self.assertEqual(
-                completion_payload["schema_version"],
-                "control_plane.operational_model_call.v2",
-            )
-            completion_payload["schema_version"] = (
-                "control_plane.operational_model_call.v1"
-            )
-            legacy_call_limits = dict(completion_payload["call_limits"])
-            self.assertEqual(legacy_call_limits.pop("currency"), "USD")
-            completion_payload["call_limits"] = legacy_call_limits
-            legacy_receipt_identity = {
-                key: value
-                for key, value in completion_payload.items()
-                if key != "manifest_sha256"
-            }
-            completion_payload["manifest_sha256"] = _controller_sha256(
-                b"control_plane.operational_model_call_receipt.v1",
-                legacy_receipt_identity,
-                "legacy operational model call receipt",
-            )
-            completion_payload["_authority_grant_id"] = authority_grant_id
-            _rewrite_campaign_event_payload(
-                root,
-                completion_event,
-                completion_payload,
-            )
-
-            rewritten_events = journal.list_events(
-                cycle_id=cycle_id,
-                aggregate_type="OPERATIONAL_MODEL_CALL",
-                aggregate_id=call_id,
-            )
-            untouched_start, rewritten_completion = rewritten_events
-            rewritten_completion_payload = rewritten_completion.payload()
-            rewritten_receipt_identity = {
-                key: value
-                for key, value in rewritten_completion_payload.items()
-                if key not in {"manifest_sha256", "_authority_grant_id"}
-            }
-            self.assertEqual(
-                rewritten_completion_payload["schema_version"],
-                "control_plane.operational_model_call.v1",
-            )
-            self.assertNotIn(
-                "currency",
-                rewritten_completion_payload["call_limits"],
-            )
-            self.assertEqual(
-                rewritten_completion_payload["manifest_sha256"],
-                _controller_sha256(
-                    b"control_plane.operational_model_call_receipt.v1",
-                    rewritten_receipt_identity,
-                    "stored legacy operational model call receipt",
-                ),
-            )
-            self.assertEqual(
-                rewritten_completion_payload["_authority_grant_id"],
-                authority_grant_id,
-            )
-            self.assertEqual(
-                (
-                    rewritten_completion.event_id,
-                    rewritten_completion.namespace,
-                    rewritten_completion.campaign_id,
-                    rewritten_completion.cycle_id,
-                    rewritten_completion.aggregate_type,
-                    rewritten_completion.aggregate_id,
-                    rewritten_completion.event_type,
-                    rewritten_completion.occurred_at,
-                    rewritten_completion.sequence,
-                ),
-                completion_metadata,
-            )
-            self.assertEqual(
-                rewritten_completion.payload_sha256,
-                _event_integrity_sha256(
-                    event_id=rewritten_completion.event_id,
-                    namespace=rewritten_completion.namespace,
-                    campaign_id=rewritten_completion.campaign_id,
-                    cycle_id=rewritten_completion.cycle_id,
-                    aggregate_type=rewritten_completion.aggregate_type,
-                    aggregate_id=rewritten_completion.aggregate_id,
-                    event_type=rewritten_completion.event_type,
-                    payload_json=rewritten_completion.payload_json,
-                    occurred_at=(
-                        rewritten_completion.occurred_at.isoformat()
-                    ),
-                    sequence=rewritten_completion.sequence,
-                ),
-            )
-            self.assertEqual(untouched_start, start_event)
-            self.assertEqual(
-                untouched_start.payload()["schema_version"],
-                "control_plane.operational_model_call.v2",
-            )
-            self.assertEqual(
-                untouched_start.payload()["call_limits"]["currency"],
-                "USD",
-            )
-
             del controller
-            replay_journal = OperationalCampaignJournal(
-                root_secret=ROOT_SECRET,
+            self._assert_currencyless_model_call_public_replay_fails_closed(
+                root=root,
                 grant=grant,
-                namespace="formal",
                 campaign_id=campaign_id,
-                clock=lambda: NOW,
-            )
-            reopened = OperationalCampaignController(
-                journal=replay_journal,
-                repository_root=root,
-                budget_limits=_FAKE_CAMPAIGN_LIMITS,
-                identity_provider=_FakeProcessIdentityProvider(
-                    ProcessIdentity("host-controller", 144, 44_000)
-                ),
-                monotonic_ns=lambda: 3_000_000,
-            )
-            replay_execution = reopened.start_execution(
                 cycle_id=cycle_id,
-                acquisition_id=f"execute-{campaign_id}",
-            )
-            campaign_status_before = reopened.campaign_snapshot().status
-            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
-            rows_before = _campaign_event_rows(root, campaign_id)
-            count_before = len(rows_before)
-            hashes_before = tuple((row[0], row[8]) for row in rows_before)
-            provider = _EvidenceArtifactBoundFakeProvider()
-
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "^operational model call identity conflicts$",
-            ):
-                reopened.invoke_member_json(
-                    execution=replay_execution,
-                    member_id=member.member_id,
-                    provider=provider,
-                    prompt=prompt,
-                    limits=_FAKE_CALL_LIMITS,
-                )
-
-            rows_after = _campaign_event_rows(root, campaign_id)
-            self.assertEqual(provider.call_count, 0)
-            self.assertEqual(rows_after, rows_before)
-            self.assertEqual(len(rows_after), count_before)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after),
-                hashes_before,
-            )
-            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
-            self.assertEqual(cycle_status_before, CycleStatus.EXECUTING)
-            self.assertEqual(
-                reopened.campaign_snapshot().status,
-                campaign_status_before,
-            )
-            self.assertEqual(
-                reopened.cycle_snapshot(cycle_id).status,
-                cycle_status_before,
+                member_id=member.member_id,
+                prompt=prompt,
+                error_pattern="^operational model call identity conflicts$",
             )
 
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
