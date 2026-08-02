@@ -1351,10 +1351,25 @@ class OperationalRosterJournalTests(unittest.TestCase):
                     raw_usage_sha256="4" * 64,
                 )
             )
-            usage.finish(
-                call_id="call-alpha",
-                attempt_id="call-alpha-attempt-001",
-                outcome=InvocationOutcome.SUCCESS,
+            aggregate_id = hashlib.sha256(
+                b"cycle-001\0call-alpha\0call-alpha-attempt-001"
+            ).hexdigest()
+            finish_event_id = hashlib.sha256(
+                (
+                    f"formal\0{campaign_id}\0cycle-001\0{aggregate_id}\0finish"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=finish_event_id,
+                cycle_id="cycle-001",
+                aggregate_type="MODEL_ATTEMPT",
+                aggregate_id=aggregate_id,
+                event_type="MODEL_USAGE_FINISHED",
+                payload={
+                    "call_id": "call-alpha",
+                    "attempt_id": "call-alpha-attempt-001",
+                    "outcome": InvocationOutcome.SUCCESS.value,
+                },
             )
 
             with self.assertRaises(RosterDriftError):

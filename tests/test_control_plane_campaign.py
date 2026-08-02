@@ -62,6 +62,11 @@ class _ExceptionProvider:
         raise RuntimeError("fake provider failure")
 
 
+class _MalformedResponseProvider:
+    def invoke(self, request: object) -> object:
+        return {"output_text": '{"status":"not-a-response"}'}
+
+
 class _FallbackProvider:
     def invoke(self, request: object) -> ProviderResponse:
         return ProviderResponse(
@@ -80,6 +85,23 @@ class _FallbackProvider:
             },
             fallback=True,
             streamed=False,
+        )
+
+
+class _EstimatedUsageProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-estimated-model",
+            response_model="fake-estimated-model",
+            raw_usage={
+                "input_tokens": 12,
+                "output_tokens": 4,
+                "total_tokens": 16,
+                "reported_cost": "0.01",
+                "currency": "USD",
+            },
+            usage_status=UsageStatus.ESTIMATED,
         )
 
 
@@ -453,6 +475,29 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.request_model, "fake-request-model")
         self.assertIsNone(envelope.response_model)
 
+    def test_malformed_provider_response_is_accounted_as_an_exception(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedResponseProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-response",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+
     def test_fallback_response_preserves_extended_usage_and_model_identity(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
@@ -481,6 +526,28 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.reasoning_tokens, 3)
         self.assertEqual(envelope.reported_cost, "0.00125")
         self.assertIsNone(envelope.currency)
+
+    def test_estimated_provider_usage_preserves_its_status(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_EstimatedUsageProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-estimated-model",
+        )
+
+        invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-estimated",
+            attempt_id="attempt-001",
+        )
+
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.ESTIMATED)
+        self.assertEqual(envelope.total_tokens, 16)
+        self.assertEqual(envelope.currency, "USD")
 
     def test_streamed_response_is_accounted_then_blocked(self) -> None:
         journal = _RecordingUsageJournal()
@@ -947,6 +1014,29 @@ class ModelInvocationTests(unittest.TestCase):
             journal.events[0][1].outcome,
             InvocationOutcome.TIMEOUT,
         )
+
+    def test_retry_receipt_identifies_the_successful_attempt(self) -> None:
+        provider = _TimeoutThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+        )
+
+        receipt = invocation.invoke_json_with_receipt(
+            {"prompt": "offline-only"},
+            call_id="call-025",
+        )
+
+        self.assertEqual(receipt.output, {"status": "ok"})
+        self.assertEqual(receipt.attempt_id, "call-025-attempt-002")
+        self.assertEqual(receipt.attempt_count, 2)
 
     def test_nonretryable_streaming_failure_is_not_double_invoked(self) -> None:
         provider = _StreamingThenSuccessProvider()

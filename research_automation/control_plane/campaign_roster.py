@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from . import stores
@@ -273,6 +274,7 @@ class OperationalRosterJournal:
         usage_journal: OperationalUsageJournal,
         call_id: str,
         attempt_id: str,
+        _transaction_guard: Callable[[object], None] | None = None,
     ) -> VerifiedRosterResponse:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
@@ -289,8 +291,12 @@ class OperationalRosterJournal:
             raise RosterConflictError(
                 "usage attempt does not belong to this Campaign Cycle"
             )
+        if _transaction_guard is not None and not callable(_transaction_guard):
+            raise TypeError("_transaction_guard must be callable")
 
         def verify(connection):
+            if _transaction_guard is not None:
+                _transaction_guard(connection)
             campaign = self._lifecycle._replay_campaign(
                 self._lifecycle._campaign_events(connection)
             )
@@ -413,11 +419,20 @@ class OperationalRosterJournal:
             raise RosterIntegrityError("verified roster response is missing")
         return response
 
-    def complete_responses(self, *, cycle_id: str) -> RosterCompletion:
+    def complete_responses(
+        self,
+        *,
+        cycle_id: str,
+        _transaction_guard: Callable[[object], None] | None = None,
+    ) -> RosterCompletion:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
+        if _transaction_guard is not None and not callable(_transaction_guard):
+            raise TypeError("_transaction_guard must be callable")
 
         def complete(connection):
+            if _transaction_guard is not None:
+                _transaction_guard(connection)
             campaign = self._lifecycle._replay_campaign(
                 self._lifecycle._campaign_events(connection)
             )

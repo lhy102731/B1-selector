@@ -61,6 +61,7 @@ class ProviderResponse:
     request_model: str
     response_model: str
     raw_usage: object
+    usage_status: UsageStatus | None = None
     fallback: bool = False
     streamed: bool = False
 
@@ -86,6 +87,14 @@ class UsageEnvelope:
     streamed: bool
     outcome: InvocationOutcome
     raw_usage_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class LogicalInvocationResult:
+    output: object
+    call_id: str
+    attempt_id: str
+    attempt_count: int
 
 
 class ModelProvider(Protocol):
@@ -406,6 +415,14 @@ class ModelInvocation:
                 outcome=InvocationOutcome.EXCEPTION,
             )
             raise ModelInvocationProviderError("provider invocation failed") from error
+        if not isinstance(response, ProviderResponse):
+            error = TypeError("provider returned an invalid response object")
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
         raw_usage_source = response.raw_usage
         raw_usage = raw_usage_source if isinstance(raw_usage_source, Mapping) else {}
         values = {
@@ -419,11 +436,24 @@ class ModelInvocation:
                 "reasoning_tokens",
             )
         }
-        status = (
-            UsageStatus.UNKNOWN
-            if all(value is None for value in values.values())
-            else UsageStatus.REPORTED
-        )
+        reported_cost = _reported_cost(raw_usage)
+        currency = _reported_text(raw_usage, "currency")
+        status_hint = response.usage_status
+        if status_hint is not None and not isinstance(status_hint, UsageStatus):
+            status_hint = UsageStatus.UNKNOWN
+        if (
+            status_hint is UsageStatus.UNKNOWN
+            or (
+                all(value is None for value in values.values())
+                and reported_cost is None
+            )
+        ):
+            status = UsageStatus.UNKNOWN
+            values = {field: None for field in values}
+            reported_cost = None
+            currency = None
+        else:
+            status = status_hint or UsageStatus.REPORTED
         self._usage_journal.begin(
             UsageEnvelope(
                 provider=self._provider_name,
@@ -439,8 +469,8 @@ class ModelInvocation:
                 cache_read_tokens=values["cache_read_tokens"],
                 cache_write_tokens=values["cache_write_tokens"],
                 reasoning_tokens=values["reasoning_tokens"],
-                reported_cost=_reported_cost(raw_usage),
-                currency=_reported_text(raw_usage, "currency"),
+                reported_cost=reported_cost,
+                currency=currency,
                 fallback=response.fallback,
                 streamed=response.streamed,
                 outcome=InvocationOutcome.RESPONSE_RECEIVED,
@@ -523,6 +553,17 @@ class RetryingModelInvocation:
         self._max_attempts = max_attempts
 
     def invoke_json(self, request: object, *, call_id: str) -> object:
+        return self.invoke_json_with_receipt(
+            request,
+            call_id=call_id,
+        ).output
+
+    def invoke_json_with_receipt(
+        self,
+        request: object,
+        *,
+        call_id: str,
+    ) -> LogicalInvocationResult:
         retrying = Retrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_none(),
@@ -538,10 +579,17 @@ class RetryingModelInvocation:
         for logical_attempt in retrying:
             with logical_attempt:
                 attempt_number = logical_attempt.retry_state.attempt_number
-                return self._attempt.invoke_json(
+                attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
+                output = self._attempt.invoke_json(
                     request,
                     call_id=call_id,
-                    attempt_id=f"{call_id}-attempt-{attempt_number:03d}",
+                    attempt_id=attempt_id,
+                )
+                return LogicalInvocationResult(
+                    output=output,
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    attempt_count=attempt_number,
                 )
         raise RuntimeError("logical retry loop terminated without an outcome")
 
@@ -549,6 +597,7 @@ class RetryingModelInvocation:
 __all__ = [
     "InvalidModelResponseError",
     "InvocationOutcome",
+    "LogicalInvocationResult",
     "ModelInvocation",
     "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",

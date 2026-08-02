@@ -17,6 +17,8 @@ from research_automation.control_plane.campaign import (
     InvocationOutcome,
     ModelInvocation,
     ProviderResponse,
+    RetryingModelInvocation,
+    UsageEnvelope,
     UsageStatus,
 )
 from research_automation.control_plane.campaign_store import (
@@ -80,6 +82,27 @@ class _InvalidJsonProvider:
             request_model="fake-model",
             response_model="fake-model",
             raw_usage={"input_tokens": 7, "output_tokens": 2, "total_tokens": 9},
+        )
+
+
+class _TimeoutThenSuccessProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        if self.call_count == 1:
+            raise TimeoutError("synthetic first-attempt timeout")
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-model",
+            response_model="fake-model",
+            raw_usage={
+                "input_tokens": 3,
+                "output_tokens": 2,
+                "total_tokens": 5,
+                "reported_cost": "0.01",
+            },
         )
 
 
@@ -1768,6 +1791,193 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    def test_call_attempts_replay_in_persisted_order(self) -> None:
+        with _authorized_campaign("campaign-usage-list-001") as (_, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            invocation = RetryingModelInvocation(
+                attempt=ModelInvocation(
+                    provider=_TimeoutThenSuccessProvider(),
+                    usage_journal=usage,
+                    provider_name="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                ),
+                max_attempts=2,
+            )
+
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-persisted-order",
+            )
+
+            attempts = usage.list_attempts(call_id="call-persisted-order")
+            self.assertEqual(
+                tuple(attempt.envelope.attempt_id for attempt in attempts),
+                (
+                    "call-persisted-order-attempt-001",
+                    "call-persisted-order-attempt-002",
+                ),
+            )
+            self.assertEqual(
+                tuple(attempt.final_outcome for attempt in attempts),
+                (InvocationOutcome.TIMEOUT, InvocationOutcome.SUCCESS),
+            )
+
+    def test_usage_replay_rejects_bool_token_counters(self) -> None:
+        campaign_id = "campaign-usage-bool-counter"
+        cycle_id = "cycle-001"
+        call_id = "call-bool-counter"
+        attempt_id = "call-bool-counter-attempt-001"
+        aggregate_id = hashlib.sha256(
+            f"{cycle_id}\0{call_id}\0{attempt_id}".encode("ascii")
+        ).hexdigest()
+        event_id = hashlib.sha256(
+            (
+                f"formal\0{campaign_id}\0{cycle_id}\0{aggregate_id}\0usage"
+            ).encode("ascii")
+        ).hexdigest()
+
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            )
+            journal.append(
+                event_id=event_id,
+                cycle_id=cycle_id,
+                aggregate_type="MODEL_ATTEMPT",
+                aggregate_id=aggregate_id,
+                event_type="MODEL_USAGE_RECORDED",
+                payload={
+                    "provider": "fake-provider",
+                    "profile": "offline",
+                    "request_model": "fake-model",
+                    "response_model": None,
+                    "call_id": call_id,
+                    "attempt_id": attempt_id,
+                    "usage_status": UsageStatus.UNKNOWN.value,
+                    "input_tokens": True,
+                    "output_tokens": None,
+                    "total_tokens": None,
+                    "cache_read_tokens": None,
+                    "cache_write_tokens": None,
+                    "reasoning_tokens": None,
+                    "reported_cost": None,
+                    "currency": None,
+                    "fallback": False,
+                    "streamed": False,
+                    "outcome": InvocationOutcome.TIMEOUT.value,
+                    "raw_usage_sha256": "4" * 64,
+                },
+            )
+
+            with self.assertRaisesRegex(CampaignJournalError, "payload"):
+                usage.list_attempts()
+
+    def test_usage_writer_rejects_bool_token_counters_before_persistence(
+        self,
+    ) -> None:
+        campaign_id = "campaign-usage-writer-bool-counter"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            envelope = UsageEnvelope(
+                provider="fake-provider",
+                profile="offline",
+                request_model="fake-model",
+                response_model=None,
+                call_id="call-bool-counter",
+                attempt_id="call-bool-counter-attempt-001",
+                usage_status=UsageStatus.UNKNOWN,
+                input_tokens=True,
+                output_tokens=None,
+                total_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                reasoning_tokens=None,
+                reported_cost=None,
+                currency=None,
+                fallback=False,
+                streamed=False,
+                outcome=InvocationOutcome.TIMEOUT,
+                raw_usage_sha256="4" * 64,
+            )
+
+            with self.assertRaisesRegex(ValueError, "envelope"):
+                usage.begin(envelope)
+
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="MODEL_ATTEMPT",
+                    aggregate_id=hashlib.sha256(
+                        b"cycle-001\0call-bool-counter\0"
+                        b"call-bool-counter-attempt-001"
+                    ).hexdigest(),
+                ),
+                (),
+            )
+
+    def test_terminal_usage_cannot_accept_a_later_finish_event(self) -> None:
+        with _authorized_campaign("campaign-terminal-usage-finish") as (
+            _,
+            _,
+            journal,
+        ):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            call_id = "call-terminal-timeout"
+            attempt_id = "call-terminal-timeout-attempt-001"
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model=None,
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.UNKNOWN,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost=None,
+                    currency=None,
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.TIMEOUT,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "terminal usage",
+            ):
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                )
+
+            recorded = usage.read_attempt(
+                call_id=call_id,
+                attempt_id=attempt_id,
+            )
+            self.assertEqual(
+                recorded.final_outcome,
+                InvocationOutcome.TIMEOUT,
+            )
+
     def test_response_received_cannot_be_recorded_as_final_outcome(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)

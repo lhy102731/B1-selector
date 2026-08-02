@@ -16,7 +16,25 @@ from research_automation.foundations.protocols import (
 from research_automation.task_queue import ExperimentTask
 
 from . import stores
-from .budget import BudgetLedger, BudgetReservation, BudgetSnapshot
+from .budget import (
+    BudgetLedger,
+    BudgetExceededError,
+    BudgetReservation,
+    BudgetSnapshot,
+    _cost as _bounded_cost,
+    _cost_text,
+)
+from .campaign import (
+    InvalidModelResponseError,
+    InvocationOutcome,
+    ModelInvocation,
+    ModelInvocationProviderError,
+    ModelInvocationTimeoutError,
+    RetryingModelInvocation,
+    StreamingDisabledError,
+    UsageEnvelope,
+    UsageStatus,
+)
 from .campaign_context import (
     CycleContextReceipt,
     OperationalCycleContextJournal,
@@ -30,6 +48,7 @@ from .campaign_lease import (
 )
 from .campaign_lifecycle import (
     CampaignSnapshot,
+    CampaignStatus,
     CycleSnapshot,
     CycleStatus,
     OperationalCampaignLifecycle,
@@ -37,8 +56,11 @@ from .campaign_lifecycle import (
 )
 from .campaign_roster import (
     OperationalRosterJournal,
+    RosterCompletion,
+    RosterDriftError,
     RosterManifest,
     RosterMember,
+    VerifiedRosterResponse,
     _roster_manifest,
 )
 from .campaign_store import (
@@ -47,8 +69,11 @@ from .campaign_store import (
     OperationalBudgetJournal,
     OperationalCampaignJournal,
     OperationalCycleBudgetJournal,
+    OperationalUsageJournal,
+    RecordedModelAttempt,
     _BUDGET_RESERVED,
     _BUDGET_SETTLED,
+    _attempt_id,
     _event_domain_payload,
     _identifier,
 )
@@ -59,6 +84,15 @@ _WORK_ITEM_AGGREGATE_TYPE = "CAMPAIGN_WORK_ITEM"
 _WORK_ITEM_ADOPTED = "CAMPAIGN_WORK_ITEM_ADOPTED"
 _PREPARATION_AGGREGATE_TYPE = "CAMPAIGN_CYCLE_PREPARATION"
 _CYCLE_PREPARED = "CAMPAIGN_CYCLE_PREPARED"
+_MODEL_CALL_AGGREGATE_TYPE = "OPERATIONAL_MODEL_CALL"
+_MODEL_CALL_STARTED = "OPERATIONAL_MODEL_CALL_STARTED"
+_MODEL_CALL_COMPLETED = "OPERATIONAL_MODEL_CALL_COMPLETED"
+_EXECUTION_USAGE_AGGREGATE_TYPE = "OPERATIONAL_EXECUTION_USAGE"
+_EXECUTION_USAGE_FROZEN = "OPERATIONAL_EXECUTION_USAGE_FROZEN"
+_MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
+_MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
+_MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
+_MODEL_CALL_IN_DOUBT_RESULT = object()
 
 
 def _bounded_limits(
@@ -130,6 +164,39 @@ class CycleReservationLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class OperationalModelCallLimits:
+    max_input_tokens: int
+    max_output_tokens: int
+    max_cost: str | int | Decimal
+    max_wall_time_ms: int
+    max_attempts: int
+
+    def __post_init__(self) -> None:
+        if type(self.max_attempts) is not int or not 1 <= self.max_attempts <= 100:
+            raise ValueError(
+                "max_attempts must be an integer from 1 through 100"
+            )
+        _bounded_limits(
+            max_input_tokens=self.max_input_tokens,
+            max_output_tokens=self.max_output_tokens,
+            max_cost=self.max_cost,
+            max_wall_time_ms=self.max_wall_time_ms,
+            max_tool_attempts=self.max_attempts,
+            max_data_exposures=0,
+            max_disk_growth_bytes=0,
+        )
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "max_input_tokens": self.max_input_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_cost": _cost_text(_bounded_cost(self.max_cost)),
+            "max_wall_time_ms": self.max_wall_time_ms,
+            "max_attempts": self.max_attempts,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedOperationalCycle:
     cycle_id: str
     reservation: BudgetReservation
@@ -151,6 +218,102 @@ class PreparedOperationalCycle:
 class ExecutingOperationalCycle:
     cycle: CycleSnapshot
     lease: CycleLease
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutedOperationalModelCall:
+    cycle_id: str
+    call_id: str
+    member_id: str
+    output_json: str
+    attempt_id: str
+    attempt_count: int
+    wall_time_ms: int | None
+    usage_attempts: tuple[RecordedModelAttempt, ...]
+    verified_response: VerifiedRosterResponse
+    manifest_sha256: str
+    event_id: str
+
+    @property
+    def output(self) -> object:
+        return json.loads(self.output_json)
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalExecutionUsage:
+    cycle_id: str
+    usage_status: UsageStatus
+    input_tokens: int | None
+    output_tokens: int | None
+    cost: str | None
+    currency: str | None
+    wall_time_ms: int | None
+    tool_attempts: int
+    data_exposures: int
+    disk_growth_bytes: int
+    model_calls: tuple[ExecutedOperationalModelCall, ...]
+    roster_completion: RosterCompletion
+    manifest_sha256: str
+    event_id: str
+
+
+class _FencedOperationalUsageJournal:
+    __slots__ = ("_controller", "_execution", "_delegate")
+
+    def __init__(
+        self,
+        *,
+        controller: "OperationalCampaignController",
+        execution: ExecutingOperationalCycle,
+        delegate: OperationalUsageJournal,
+    ) -> None:
+        self._controller = controller
+        self._execution = execution
+        self._delegate = delegate
+
+    def begin(self, envelope: UsageEnvelope) -> None:
+        if not isinstance(envelope, UsageEnvelope):
+            raise TypeError("envelope must be a UsageEnvelope")
+        self._delegate._journal._authorize()
+
+        def begin(connection) -> None:
+            self._controller._require_active_execution_in_transaction(
+                connection,
+                self._execution,
+            )
+            self._delegate._begin_in_transaction(
+                connection,
+                envelope=envelope,
+            )
+
+        _SqliteUnitOfWork(stores._operational_spec())._write(begin)
+
+    def finish(
+        self,
+        *,
+        call_id: str,
+        attempt_id: str,
+        outcome: InvocationOutcome,
+    ) -> None:
+        if not isinstance(outcome, InvocationOutcome):
+            raise TypeError("outcome must be an InvocationOutcome")
+        if outcome is InvocationOutcome.RESPONSE_RECEIVED:
+            raise ValueError("outcome must be a final outcome")
+        self._delegate._journal._authorize()
+
+        def finish(connection) -> None:
+            self._controller._require_active_execution_in_transaction(
+                connection,
+                self._execution,
+            )
+            self._delegate._finish_in_transaction(
+                connection,
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=outcome,
+            )
+
+        _SqliteUnitOfWork(stores._operational_spec())._write(finish)
 
 
 def _stable_id(domain: bytes, *parts: str) -> str:
@@ -176,6 +339,35 @@ def _controller_sha256(domain: bytes, value: object, name: str) -> str:
     return hashlib.sha256(
         domain + b"\0" + _canonical_json_text(value, name).encode("utf-8")
     ).hexdigest()
+
+
+def operational_prompt_sha256(prompt: object) -> str:
+    """Return the bounded canonical prompt identity frozen into a roster."""
+
+    prompt_text = _canonical_json_text(prompt, "operational prompt")
+    if len(prompt_text.encode("utf-8")) > _MAX_OPERATIONAL_PROMPT_BYTES:
+        raise ValueError("operational prompt exceeds the bounded size")
+    return hashlib.sha256(
+        b"control_plane.operational_role_prompt.v1\0"
+        + prompt_text.encode("utf-8")
+    ).hexdigest()
+
+
+def _decimal_text(value: Decimal) -> str:
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _stored_sha256(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise CampaignJournalError(f"{name} is not a SHA-256 digest")
+    return value
 
 
 def _canonical_task(
@@ -223,6 +415,7 @@ class OperationalCampaignController:
         "_roster",
         "_freeze",
         "_leases",
+        "_monotonic_ns",
     )
 
     def __init__(
@@ -299,6 +492,7 @@ class OperationalCampaignController:
         self._roster = roster
         self._freeze = freeze
         self._leases = leases
+        self._monotonic_ns = monotonic_ns
 
     def prepare_cycle(
         self,
@@ -371,17 +565,21 @@ class OperationalCampaignController:
                 cycle_id=cycle_id,
                 cycle_number=cycle_number,
             )
+            if cycle.status in {
+                CycleStatus.CREATED,
+                CycleStatus.BUDGET_RESERVED,
+            }:
+                cycle = self._lifecycle._advance_cycle_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_status=CycleStatus.CREATED,
+                    next_status=CycleStatus.BUDGET_RESERVED,
+                )
             return cycle, reservation
 
         cycle, reservation = _SqliteUnitOfWork(
             stores._operational_spec()
         )._write(reserve_and_open)
-        if cycle.status is CycleStatus.CREATED:
-            self._lifecycle.advance_cycle(
-                cycle_id=cycle_id,
-                expected_status=CycleStatus.CREATED,
-                next_status=CycleStatus.BUDGET_RESERVED,
-            )
         context = self._context.prepare(
             cycle_id=cycle_id,
             proposal=work_item["proposal"],
@@ -437,6 +635,281 @@ class OperationalCampaignController:
         )
         return ExecutingOperationalCycle(cycle=cycle, lease=lease)
 
+    def invoke_member_json(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        member_id: str,
+        provider: object,
+        prompt: object,
+        limits: OperationalModelCallLimits,
+    ) -> ExecutedOperationalModelCall:
+        self._journal._authorize()
+        if not isinstance(limits, OperationalModelCallLimits):
+            raise TypeError("limits must be OperationalModelCallLimits")
+        cycle_id = self._require_active_execution(execution)
+        member_id = _identifier(member_id, "member_id")
+        frozen = self._freeze.snapshot(cycle_id=cycle_id)
+        preparation_manifest_sha256 = self._preparation_snapshot(
+            cycle_id=cycle_id,
+            frozen=frozen,
+        )
+        context = self._context.snapshot(cycle_id=cycle_id)
+        manifest = _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._roster._replay(
+                self._roster._events(connection, cycle_id)
+            )
+        )
+        if (
+            context.manifest_sha256 != frozen.context_manifest_sha256
+            or manifest.manifest_sha256 != frozen.roster_manifest_sha256
+        ):
+            raise CampaignJournalError(
+                "execution inputs conflict with the frozen preparation"
+            )
+        member = next(
+            (
+                candidate
+                for candidate in manifest.members
+                if candidate.member_id == member_id
+            ),
+            None,
+        )
+        if member is None:
+            raise ValueError("member_id is not present in the frozen roster")
+        if not callable(getattr(provider, "invoke", None)):
+            raise TypeError("provider must expose a callable invoke method")
+        provider_identity = tuple(
+            getattr(provider, field_name, None)
+            for field_name in (
+                "provider_name",
+                "profile",
+                "model",
+                "config_sha256",
+                "capability_sha256",
+            )
+        )
+        if any(type(value) is not str for value in provider_identity):
+            raise TypeError("provider binding identity is invalid")
+        if provider_identity != (
+            member.provider,
+            member.profile,
+            member.model,
+            member.config_sha256,
+            member.capability_sha256,
+        ):
+            raise ValueError("provider binding conflicts with the frozen roster")
+        prompt_text = _canonical_json_text(prompt, "operational prompt")
+        if len(prompt_text.encode("utf-8")) > _MAX_OPERATIONAL_PROMPT_BYTES:
+            raise ValueError("operational prompt exceeds the bounded size")
+        if operational_prompt_sha256(prompt) != member.prompt_sha256:
+            raise ValueError("prompt conflicts with the frozen roster")
+        call_id = self._member_call_id(cycle_id, member_id)
+        request = {
+            "schema_version": "control_plane.operational_model_request.v1",
+            "cycle_id": cycle_id,
+            "call_id": call_id,
+            "member_id": member_id,
+            "role": member.role,
+            "prompt": json.loads(prompt_text),
+            "context_manifest_sha256": context.manifest_sha256,
+            "messages": context.messages_for(member.role),
+        }
+        request_text = _canonical_json_text(
+            request,
+            "operational model request",
+        )
+        if len(request_text.encode("utf-8")) > _MAX_OPERATIONAL_REQUEST_BYTES:
+            raise ValueError("operational model request exceeds the bounded size")
+        frozen_request = json.loads(request_text)
+        usage = OperationalUsageJournal(
+            journal=self._journal,
+            cycle_id=cycle_id,
+        )
+        fixed_identity = {
+            "schema_version": "control_plane.operational_model_call.v1",
+            "cycle_id": cycle_id,
+            "call_id": call_id,
+            "member_id": member_id,
+            "role": member.role,
+            "provider": member.provider,
+            "profile": member.profile,
+            "request_model": member.model,
+            "prompt_sha256": member.prompt_sha256,
+            "config_sha256": member.config_sha256,
+            "capability_sha256": member.capability_sha256,
+            "context_manifest_sha256": context.manifest_sha256,
+            "roster_manifest_sha256": manifest.manifest_sha256,
+            "preparation_manifest_sha256": preparation_manifest_sha256,
+            "request_sha256": _controller_sha256(
+                b"control_plane.operational_model_request.v1",
+                frozen_request,
+                "operational model request",
+            ),
+            "call_limits": limits.to_payload(),
+        }
+        replay = _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._begin_model_call_in_transaction(
+                connection,
+                execution=execution,
+                cycle_id=cycle_id,
+                call_id=call_id,
+                fixed_identity=fixed_identity,
+                usage=usage,
+            )
+        )
+        if replay is _MODEL_CALL_IN_DOUBT_RESULT:
+            raise CampaignJournalError(
+                "operational model call is incomplete and in doubt"
+            )
+        if replay is not None:
+            return replay
+        started_monotonic_ns = self._safe_monotonic_ns()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=_FencedOperationalUsageJournal(
+                    controller=self,
+                    execution=execution,
+                    delegate=usage,
+                ),
+                provider_name=member.provider,
+                profile=member.profile,
+                request_model=member.model,
+            ),
+            max_attempts=limits.max_attempts,
+        )
+        try:
+            result = invocation.invoke_json_with_receipt(
+                frozen_request,
+                call_id=call_id,
+            )
+        except (
+            InvalidModelResponseError,
+            ModelInvocationProviderError,
+            ModelInvocationTimeoutError,
+            StreamingDisabledError,
+        ) as error:
+            failed_attempts = usage.list_attempts(call_id=call_id)
+            if failed_attempts:
+                try:
+                    self._roster.verify_response(
+                        cycle_id=cycle_id,
+                        member_id=member_id,
+                        usage_journal=usage,
+                        call_id=call_id,
+                        attempt_id=failed_attempts[-1].envelope.attempt_id,
+                        _transaction_guard=lambda connection: (
+                            self._require_active_execution_in_transaction(
+                                connection,
+                                execution,
+                            )
+                        ),
+                    )
+                except RosterDriftError as drift:
+                    raise drift from error
+            raise
+        finished_monotonic_ns = self._safe_monotonic_ns()
+        wall_time_ms = self._elapsed_wall_time_ms(
+            started_monotonic_ns,
+            finished_monotonic_ns,
+        )
+        output_json = _canonical_json_text(
+            result.output,
+            "operational model output",
+        )
+        if len(output_json.encode("utf-8")) > _MAX_OPERATIONAL_OUTPUT_BYTES:
+            raise ValueError("operational model output exceeds the bounded size")
+        attempts = usage.list_attempts(call_id=call_id)
+        if (
+            len(attempts) != result.attempt_count
+            or attempts[-1].envelope.attempt_id != result.attempt_id
+        ):
+            raise CampaignJournalError(
+                "logical invocation receipt conflicts with persisted usage"
+            )
+        try:
+            self._require_known_model_call_usage_within_limits(
+                usage_attempts=attempts,
+                wall_time_ms=wall_time_ms,
+                attempt_count=result.attempt_count,
+                limits=limits,
+            )
+        except BudgetExceededError:
+            self._block_model_call_budget_exceeded(
+                execution=execution,
+                cycle_id=cycle_id,
+                call_id=call_id,
+            )
+            raise
+        verified = self._roster.verify_response(
+            cycle_id=cycle_id,
+            member_id=member_id,
+            usage_journal=usage,
+            call_id=call_id,
+            attempt_id=result.attempt_id,
+            _transaction_guard=lambda connection: (
+                self._require_active_execution_in_transaction(
+                    connection,
+                    execution,
+                )
+            ),
+        )
+        return self._record_model_call(
+            execution=execution,
+            cycle_id=cycle_id,
+            call_id=call_id,
+            fixed_identity=fixed_identity,
+            output_json=output_json,
+            attempt_id=result.attempt_id,
+            attempt_count=result.attempt_count,
+            wall_time_ms=wall_time_ms,
+            usage=usage,
+            expected_attempts=attempts,
+            expected_verified=verified,
+        )
+
+    def complete_model_execution(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+    ) -> OperationalExecutionUsage:
+        self._journal._authorize()
+        cycle_id = self._require_active_execution(execution)
+        roster_snapshot = self._roster.snapshot(cycle_id=cycle_id)
+        if roster_snapshot.member_ids != roster_snapshot.verified_member_ids:
+            raise CampaignJournalError(
+                "required roster responses are incomplete"
+            )
+        roster_completion = self._roster.complete_responses(
+            cycle_id=cycle_id,
+            _transaction_guard=lambda connection: (
+                self._require_active_execution_in_transaction(
+                    connection,
+                    execution,
+                )
+            ),
+        )
+        frozen = self._freeze.snapshot(cycle_id=cycle_id)
+        preparation_manifest_sha256 = self._preparation_snapshot(
+            cycle_id=cycle_id,
+            frozen=frozen,
+        )
+        context = self._context.snapshot(cycle_id=cycle_id)
+        manifest = _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._roster._replay(
+                self._roster._events(connection, cycle_id)
+            )
+        )
+        return self._record_execution_usage(
+            execution=execution,
+            cycle_id=cycle_id,
+            preparation_manifest_sha256=preparation_manifest_sha256,
+            context=context,
+            roster=manifest,
+            roster_completion=roster_completion,
+        )
+
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
 
@@ -445,6 +918,1239 @@ class OperationalCampaignController:
 
     def budget_snapshot(self) -> BudgetSnapshot:
         return self._budget.snapshot()
+
+    def _record_execution_usage(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        cycle_id: str,
+        preparation_manifest_sha256: str,
+        context: CycleContextReceipt,
+        roster: RosterManifest,
+        roster_completion: RosterCompletion,
+    ) -> OperationalExecutionUsage:
+        def record(connection) -> OperationalExecutionUsage:
+            self._require_active_execution_in_transaction(
+                connection,
+                execution,
+            )
+            roster_events = self._roster._events(connection, cycle_id)
+            roster_history = self._roster._replay_history(
+                connection,
+                roster_events,
+            )
+            completion_event = next(
+                (
+                    event
+                    for event in roster_events
+                    if event.event_id == roster_completion.event_id
+                ),
+                None,
+            )
+            if (
+                roster_history.manifest != roster
+                or roster_history.terminal_event_id != roster_completion.event_id
+                or completion_event is None
+            ):
+                raise CampaignJournalError(
+                    "execution usage roster completion is invalid"
+                )
+            persisted_context = self._context._replay_context(
+                self._context._context_events(connection, cycle_id)
+            )
+            if persisted_context != context:
+                raise CampaignJournalError(
+                    "execution usage context binding is invalid"
+                )
+            expected_call_ids = tuple(
+                self._member_call_id(cycle_id, member.member_id)
+                for member in roster.members
+            )
+            stored_call_ids = tuple(
+                str(row["aggregate_id"])
+                for row in connection.execute(
+                    "SELECT DISTINCT aggregate_id FROM campaign_events "
+                    "WHERE namespace = ? AND campaign_id = ? "
+                    "AND cycle_id = ? AND aggregate_type = ? "
+                    "ORDER BY aggregate_id",
+                    (
+                        self._journal.namespace,
+                        self._journal.campaign_id,
+                        cycle_id,
+                        _MODEL_CALL_AGGREGATE_TYPE,
+                    ),
+                )
+            )
+            if tuple(sorted(expected_call_ids)) != stored_call_ids:
+                raise CampaignJournalError(
+                    "execution usage model call inventory conflicts"
+                )
+            usage = OperationalUsageJournal(
+                journal=self._journal,
+                cycle_id=cycle_id,
+            )
+            model_calls = tuple(
+                self._model_call_for_member_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    member=member,
+                    preparation_manifest_sha256=(
+                        preparation_manifest_sha256
+                    ),
+                    context_manifest_sha256=context.manifest_sha256,
+                    roster_manifest_sha256=roster.manifest_sha256,
+                    usage=usage,
+                )
+                for member in roster.members
+            )
+            all_attempts = usage._list_attempts_in_transaction(
+                connection,
+                call_id=None,
+            )
+            bound_attempts = tuple(
+                attempt
+                for model_call in model_calls
+                for attempt in model_call.usage_attempts
+            )
+            attempt_keys = {
+                (
+                    attempt.envelope.call_id,
+                    attempt.envelope.attempt_id,
+                )
+                for attempt in all_attempts
+            }
+            bound_keys = {
+                (
+                    attempt.envelope.call_id,
+                    attempt.envelope.attempt_id,
+                )
+                for attempt in bound_attempts
+            }
+            if (
+                len(all_attempts) != len(bound_attempts)
+                or attempt_keys != bound_keys
+            ):
+                raise CampaignJournalError(
+                    "execution usage attempt inventory conflicts"
+                )
+
+            def sum_tokens(field_name: str) -> int | None:
+                values = [
+                    getattr(attempt.envelope, field_name)
+                    for attempt in all_attempts
+                ]
+                if any(value is None for value in values):
+                    return None
+                return sum(int(value) for value in values)
+
+            input_tokens = sum_tokens("input_tokens")
+            output_tokens = sum_tokens("output_tokens")
+            reported_costs = [
+                attempt.envelope.reported_cost for attempt in all_attempts
+            ]
+            currencies = {
+                attempt.envelope.currency for attempt in all_attempts
+            }
+            if (
+                any(value is None for value in reported_costs)
+                or None in currencies
+                or len(currencies) > 1
+            ):
+                cost = None
+                currency = None
+            else:
+                cost = _decimal_text(
+                    sum(
+                        (Decimal(str(value)) for value in reported_costs),
+                        Decimal("0"),
+                    )
+                )
+                currency = next(iter(currencies), None)
+            wall_times = [model_call.wall_time_ms for model_call in model_calls]
+            wall_time_ms = (
+                None
+                if any(value is None for value in wall_times)
+                else sum(int(value) for value in wall_times)
+            )
+            attempt_statuses = {
+                attempt.envelope.usage_status for attempt in all_attempts
+            }
+            if (
+                UsageStatus.UNKNOWN in attempt_statuses
+                or input_tokens is None
+                or output_tokens is None
+                or cost is None
+                or wall_time_ms is None
+            ):
+                usage_status = UsageStatus.UNKNOWN
+            elif UsageStatus.ESTIMATED in attempt_statuses:
+                usage_status = UsageStatus.ESTIMATED
+            else:
+                usage_status = UsageStatus.REPORTED
+            identity = {
+                "schema_version": "control_plane.operational_execution_usage.v1",
+                "cycle_id": cycle_id,
+                "preparation_manifest_sha256": (
+                    preparation_manifest_sha256
+                ),
+                "context_manifest_sha256": context.manifest_sha256,
+                "roster_manifest_sha256": roster.manifest_sha256,
+                "roster_completion_event_id": roster_completion.event_id,
+                "model_call_manifest_sha256s": [
+                    model_call.manifest_sha256 for model_call in model_calls
+                ],
+                "usage_status": usage_status.value,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost": cost,
+                "currency": currency,
+                "wall_time_ms": wall_time_ms,
+                "tool_attempts": len(all_attempts),
+                "data_exposures": 0,
+                "disk_growth_bytes": 0,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_execution_usage.v1",
+                identity,
+                "operational execution usage",
+            )
+            payload = {**identity, "manifest_sha256": manifest_sha256}
+            events = self._execution_usage_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if events:
+                if (
+                    len(events) != 1
+                    or events[0].event_id
+                    != self._execution_usage_event_id(cycle_id)
+                    or events[0].event_type != _EXECUTION_USAGE_FROZEN
+                    or _canonical_json_text(
+                        _event_domain_payload(events[0]),
+                        "stored execution usage",
+                    )
+                    != _canonical_json_text(
+                        payload,
+                        "expected execution usage",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational execution usage conflicts"
+                    )
+                event = events[0]
+            else:
+                event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=self._execution_usage_event_id(cycle_id),
+                    cycle_id=cycle_id,
+                    aggregate_type=_EXECUTION_USAGE_AGGREGATE_TYPE,
+                    aggregate_id=cycle_id,
+                    event_type=_EXECUTION_USAGE_FROZEN,
+                    payload=payload,
+                )
+            call_events = tuple(
+                self._model_call_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    call_id=model_call.call_id,
+                )[-1]
+                for model_call in model_calls
+            )
+            if event.sequence <= max(
+                completion_event.sequence,
+                *(call_event.sequence for call_event in call_events),
+            ):
+                raise CampaignJournalError(
+                    "execution usage must follow its model calls and roster"
+                )
+            return OperationalExecutionUsage(
+                cycle_id=cycle_id,
+                usage_status=usage_status,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost=cost,
+                currency=currency,
+                wall_time_ms=wall_time_ms,
+                tool_attempts=len(all_attempts),
+                data_exposures=0,
+                disk_growth_bytes=0,
+                model_calls=model_calls,
+                roster_completion=roster_completion,
+                manifest_sha256=manifest_sha256,
+                event_id=event.event_id,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    def _model_call_for_member_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        member: RosterMember,
+        preparation_manifest_sha256: str,
+        context_manifest_sha256: str,
+        roster_manifest_sha256: str,
+        usage: OperationalUsageJournal,
+    ) -> ExecutedOperationalModelCall:
+        call_id = self._member_call_id(cycle_id, member.member_id)
+        events = self._model_call_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+        )
+        if len(events) != 2:
+            raise CampaignJournalError(
+                "required operational model call is missing"
+            )
+        payload = _event_domain_payload(events[-1])
+        request_sha256 = _stored_sha256(
+            payload.get("request_sha256"),
+            "stored request_sha256",
+        )
+        call_limits = self._model_call_limits_from_payload(
+            payload.get("call_limits")
+        ).to_payload()
+        expected_identity = {
+            "schema_version": "control_plane.operational_model_call.v1",
+            "cycle_id": cycle_id,
+            "call_id": call_id,
+            "member_id": member.member_id,
+            "role": member.role,
+            "provider": member.provider,
+            "profile": member.profile,
+            "request_model": member.model,
+            "prompt_sha256": member.prompt_sha256,
+            "config_sha256": member.config_sha256,
+            "capability_sha256": member.capability_sha256,
+            "context_manifest_sha256": context_manifest_sha256,
+            "roster_manifest_sha256": roster_manifest_sha256,
+            "preparation_manifest_sha256": preparation_manifest_sha256,
+            "request_sha256": request_sha256,
+            "call_limits": call_limits,
+        }
+        model_call = self._replay_model_call_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+            expected_identity=expected_identity,
+            usage=usage,
+        )
+        self._require_known_model_call_usage_within_limits(
+            usage_attempts=model_call.usage_attempts,
+            wall_time_ms=model_call.wall_time_ms,
+            attempt_count=model_call.attempt_count,
+            limits=self._model_call_limits_from_payload(call_limits),
+        )
+        return model_call
+
+    @staticmethod
+    def _require_known_model_call_usage_within_limits(
+        *,
+        usage_attempts: tuple[RecordedModelAttempt, ...],
+        wall_time_ms: int | None,
+        attempt_count: int,
+        limits: OperationalModelCallLimits,
+    ) -> None:
+        def known_token_lower_bound(field_name: str) -> int:
+            values = tuple(
+                getattr(attempt.envelope, field_name)
+                for attempt in usage_attempts
+            )
+            return sum(int(value) for value in values if value is not None)
+
+        reported_costs = tuple(
+            attempt.envelope.reported_cost
+            for attempt in usage_attempts
+        )
+        known_cost_lower_bound = sum(
+            (
+                _bounded_cost(str(value))
+                for value in reported_costs
+                if value is not None
+            ),
+            Decimal("0"),
+        )
+        known_input_tokens = known_token_lower_bound("input_tokens")
+        known_output_tokens = known_token_lower_bound("output_tokens")
+        if (
+            known_input_tokens > limits.max_input_tokens
+            or known_output_tokens > limits.max_output_tokens
+            or known_cost_lower_bound > _bounded_cost(limits.max_cost)
+            or (
+                wall_time_ms is not None
+                and wall_time_ms > limits.max_wall_time_ms
+            )
+            or attempt_count > limits.max_attempts
+        ):
+            raise BudgetExceededError(
+                "known usage exceeds its call limits"
+            )
+
+    def _block_model_call_budget_exceeded(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        cycle_id: str,
+        call_id: str,
+    ) -> None:
+        def block(connection) -> None:
+            self._require_active_execution_in_transaction(
+                connection,
+                execution,
+            )
+            events = self._model_call_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=call_id,
+            )
+            if len(events) != 1 or events[0].event_type != _MODEL_CALL_STARTED:
+                raise CampaignJournalError(
+                    "model call budget violation has no active start intent"
+                )
+            self._lifecycle._block_in_transaction(
+                connection,
+                reason_code="MODEL_CALL_BUDGET_EXCEEDED",
+                source_ref=events[0].event_id,
+            )
+
+        _SqliteUnitOfWork(stores._operational_spec())._write(block)
+
+    def _execution_usage_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_execution_usage.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _execution_usage_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _EXECUTION_USAGE_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_id"] != cycle_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational execution usage stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_EXECUTION_USAGE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _record_model_call(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        cycle_id: str,
+        call_id: str,
+        fixed_identity: dict[str, object],
+        output_json: str,
+        attempt_id: str,
+        attempt_count: int,
+        wall_time_ms: int | None,
+        usage: OperationalUsageJournal,
+        expected_attempts: tuple[RecordedModelAttempt, ...],
+        expected_verified: VerifiedRosterResponse,
+    ) -> ExecutedOperationalModelCall:
+        output = json.loads(output_json)
+        dynamic_identity = {
+            "attempt_id": attempt_id,
+            "attempt_count": attempt_count,
+            "wall_time_ms": wall_time_ms,
+            "output": output,
+            "output_sha256": _controller_sha256(
+                b"control_plane.operational_model_output.v1",
+                output,
+                "operational model output",
+            ),
+            "verified_response_event_id": expected_verified.event_id,
+        }
+        receipt_identity = {**fixed_identity, **dynamic_identity}
+        payload = {
+            **receipt_identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_model_call_receipt.v1",
+                receipt_identity,
+                "operational model call receipt",
+            ),
+        }
+
+        def record(connection) -> ExecutedOperationalModelCall:
+            self._require_active_execution_in_transaction(
+                connection,
+                execution,
+            )
+            events = self._model_call_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=call_id,
+            )
+            if len(events) == 1:
+                self._journal._append_in_transaction(
+                    connection,
+                    event_id=self._model_call_event_id(
+                        cycle_id,
+                        call_id,
+                        "complete",
+                    ),
+                    cycle_id=cycle_id,
+                    aggregate_type=_MODEL_CALL_AGGREGATE_TYPE,
+                    aggregate_id=call_id,
+                    event_type=_MODEL_CALL_COMPLETED,
+                    payload=payload,
+                )
+            elif len(events) != 2:
+                raise CampaignJournalError(
+                    "operational model call journal is incomplete or ambiguous"
+                )
+            replay = self._replay_model_call_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=call_id,
+                expected_identity=fixed_identity,
+                usage=usage,
+            )
+            if (
+                replay.output_json != output_json
+                or replay.attempt_id != attempt_id
+                or replay.attempt_count != attempt_count
+                or replay.wall_time_ms != wall_time_ms
+                or replay.usage_attempts != expected_attempts
+                or replay.verified_response != expected_verified
+            ):
+                raise CampaignJournalError(
+                    "operational model call result conflicts"
+                )
+            return replay
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    @staticmethod
+    def _model_call_limits_from_payload(
+        payload: object,
+    ) -> OperationalModelCallLimits:
+        if not isinstance(payload, dict) or set(payload) != {
+            "max_input_tokens",
+            "max_output_tokens",
+            "max_cost",
+            "max_wall_time_ms",
+            "max_attempts",
+        }:
+            raise CampaignJournalError("model call limits are invalid")
+        try:
+            limits = OperationalModelCallLimits(**payload)
+        except (TypeError, ValueError) as error:
+            raise CampaignJournalError("model call limits are invalid") from error
+        if limits.to_payload() != payload:
+            raise CampaignJournalError("model call limits are not canonical")
+        return limits
+
+    def _require_model_call_allocation_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        call_id: str,
+        call_limits: object,
+    ) -> None:
+        requested = self._model_call_limits_from_payload(call_limits)
+        roster = self._roster._replay(
+            self._roster._events(connection, cycle_id)
+        )
+        expected_call_ids = {
+            self._member_call_id(cycle_id, member.member_id)
+            for member in roster.members
+        }
+        if call_id not in expected_call_ids:
+            raise CampaignJournalError(
+                "model call allocation is outside the frozen roster"
+            )
+        budget_events = self._budget._events_in_transaction(connection)
+        self._budget._replay(budget_events)
+        reservation_id = self._reservation_id(cycle_id)
+        reservation_event = next(
+            (
+                event
+                for event in budget_events
+                if event.event_id
+                == self._budget._event_id(
+                    "reserve",
+                    reservation_id=reservation_id,
+                )
+            ),
+            None,
+        )
+        if reservation_event is None:
+            raise CampaignJournalError(
+                "Cycle resource reservation is missing"
+            )
+        reservation = _event_domain_payload(reservation_event)
+        allocations: list[OperationalModelCallLimits] = []
+        rows = connection.execute(
+            "SELECT * FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? AND cycle_id = ? "
+            "AND aggregate_type = ? AND event_type = ? "
+            "ORDER BY sequence",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                cycle_id,
+                _MODEL_CALL_AGGREGATE_TYPE,
+                _MODEL_CALL_STARTED,
+            ),
+        ).fetchall()
+        start_events = tuple(
+            self._journal._event_in_transaction(
+                connection,
+                str(row["event_id"]),
+            )
+            for row in rows
+        )
+        for event in start_events:
+            if event is None or event.aggregate_id not in expected_call_ids:
+                raise CampaignJournalError(
+                    "model call allocation inventory conflicts"
+                )
+            payload = _event_domain_payload(event)
+            allocations.append(
+                self._model_call_limits_from_payload(
+                    payload.get("call_limits")
+                )
+            )
+        allocations.append(requested)
+        allocated_input = sum(item.max_input_tokens for item in allocations)
+        allocated_output = sum(item.max_output_tokens for item in allocations)
+        allocated_cost = sum(
+            (_bounded_cost(item.max_cost) for item in allocations),
+            Decimal("0"),
+        )
+        allocated_wall_time = sum(
+            item.max_wall_time_ms for item in allocations
+        )
+        allocated_attempts = sum(item.max_attempts for item in allocations)
+        if (
+            allocated_input > reservation["max_input_tokens"]
+            or allocated_output > reservation["max_output_tokens"]
+            or allocated_cost > _bounded_cost(reservation["max_cost"])
+            or allocated_wall_time > reservation["max_wall_time_ms"]
+            or allocated_attempts > reservation["max_tool_attempts"]
+        ):
+            raise BudgetExceededError(
+                "model call allocations exceed the Cycle reservation"
+            )
+
+    def _begin_model_call_in_transaction(
+        self,
+        connection,
+        *,
+        execution: ExecutingOperationalCycle,
+        cycle_id: str,
+        call_id: str,
+        fixed_identity: dict[str, object],
+        usage: OperationalUsageJournal,
+    ) -> ExecutedOperationalModelCall | object | None:
+        self._require_active_execution_in_transaction(connection, execution)
+        self._require_model_attempt_inventory_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            usage=usage,
+        )
+        other_in_doubt = self._other_in_doubt_model_call_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            requested_call_id=call_id,
+        )
+        if other_in_doubt is not None:
+            self._lifecycle._block_in_transaction(
+                connection,
+                reason_code="MODEL_CALL_IN_DOUBT",
+                source_ref=other_in_doubt.event_id,
+            )
+            return _MODEL_CALL_IN_DOUBT_RESULT
+        events = self._model_call_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+        )
+        if len(events) == 2:
+            return self._replay_model_call_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=call_id,
+                expected_identity=fixed_identity,
+                usage=usage,
+            )
+        start_manifest_sha256 = _controller_sha256(
+            b"control_plane.operational_model_call_start.v1",
+            fixed_identity,
+            "operational model call start",
+        )
+        start_payload = {
+            **fixed_identity,
+            "manifest_sha256": start_manifest_sha256,
+        }
+        if events:
+            if (
+                len(events) != 1
+                or events[0].event_id
+                != self._model_call_event_id(cycle_id, call_id, "start")
+                or events[0].event_type != _MODEL_CALL_STARTED
+                or _canonical_json_text(
+                    _event_domain_payload(events[0]),
+                    "stored operational model call start",
+                )
+                != _canonical_json_text(
+                    start_payload,
+                    "expected operational model call start",
+                )
+            ):
+                raise CampaignJournalError(
+                    "operational model call start conflicts"
+                )
+            self._lifecycle._block_in_transaction(
+                connection,
+                reason_code="MODEL_CALL_IN_DOUBT",
+                source_ref=events[0].event_id,
+            )
+            return _MODEL_CALL_IN_DOUBT_RESULT
+        self._require_model_call_allocation_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+            call_limits=fixed_identity["call_limits"],
+        )
+        self._journal._append_in_transaction(
+            connection,
+            event_id=self._model_call_event_id(cycle_id, call_id, "start"),
+            cycle_id=cycle_id,
+            aggregate_type=_MODEL_CALL_AGGREGATE_TYPE,
+            aggregate_id=call_id,
+            event_type=_MODEL_CALL_STARTED,
+            payload=start_payload,
+        )
+        return None
+
+    def _require_model_attempt_inventory_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        usage: OperationalUsageJournal,
+    ) -> None:
+        roster = self._roster._replay(
+            self._roster._events(connection, cycle_id)
+        )
+        members_by_call_id = {
+            self._member_call_id(cycle_id, member.member_id): member
+            for member in roster.members
+        }
+        attempts_by_call_id: dict[str, list[RecordedModelAttempt]] = {}
+        for attempt in usage._list_attempts_in_transaction(
+            connection,
+            call_id=None,
+        ):
+            attempts_by_call_id.setdefault(
+                attempt.envelope.call_id,
+                [],
+            ).append(attempt)
+        for stored_call_id, attempts in attempts_by_call_id.items():
+            member = members_by_call_id.get(stored_call_id)
+            events = self._model_call_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=stored_call_id,
+            )
+            if member is None or not events:
+                raise CampaignJournalError(
+                    "model attempt inventory conflicts with the frozen roster"
+                )
+            start_event = events[0]
+            start_payload = _event_domain_payload(start_event)
+            if (
+                start_event.event_id
+                != self._model_call_event_id(
+                    cycle_id,
+                    stored_call_id,
+                    "start",
+                )
+                or start_event.event_type != _MODEL_CALL_STARTED
+                or start_payload.get("cycle_id") != cycle_id
+                or start_payload.get("call_id") != stored_call_id
+                or start_payload.get("member_id") != member.member_id
+            ):
+                raise CampaignJournalError(
+                    "model attempt inventory has an invalid call start"
+                )
+            limits = self._model_call_limits_from_payload(
+                start_payload.get("call_limits")
+            )
+            expected_attempt_ids = tuple(
+                f"{stored_call_id}-attempt-{index:03d}"
+                for index in range(1, len(attempts) + 1)
+            )
+            if (
+                len(attempts) > limits.max_attempts
+                or tuple(
+                    attempt.envelope.attempt_id for attempt in attempts
+                )
+                != expected_attempt_ids
+            ):
+                raise CampaignJournalError(
+                    "model attempt inventory exceeds its frozen call limits"
+                )
+
+    def _other_in_doubt_model_call_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        requested_call_id: str,
+    ):
+        roster = self._roster._replay(
+            self._roster._events(connection, cycle_id)
+        )
+        members_by_call_id = {
+            self._member_call_id(cycle_id, member.member_id): member
+            for member in roster.members
+        }
+        rows = connection.execute(
+            "SELECT DISTINCT aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? AND cycle_id = ? "
+            "AND aggregate_type = ? ORDER BY aggregate_id",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                cycle_id,
+                _MODEL_CALL_AGGREGATE_TYPE,
+            ),
+        ).fetchall()
+        for row in rows:
+            existing_call_id = str(row["aggregate_id"])
+            if existing_call_id == requested_call_id:
+                continue
+            member = members_by_call_id.get(existing_call_id)
+            if member is None:
+                raise CampaignJournalError(
+                    "model call inventory conflicts with the frozen roster"
+                )
+            events = self._model_call_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=existing_call_id,
+            )
+            if len(events) not in {1, 2}:
+                raise CampaignJournalError(
+                    "operational model call journal is incomplete or ambiguous"
+                )
+            start_event = events[0]
+            start_payload = _event_domain_payload(start_event)
+            if (
+                start_event.event_id
+                != self._model_call_event_id(
+                    cycle_id,
+                    existing_call_id,
+                    "start",
+                )
+                or start_event.event_type != _MODEL_CALL_STARTED
+                or start_payload.get("cycle_id") != cycle_id
+                or start_payload.get("call_id") != existing_call_id
+                or start_payload.get("member_id") != member.member_id
+            ):
+                raise CampaignJournalError(
+                    "operational model call start conflicts"
+                )
+            self._model_call_limits_from_payload(
+                start_payload.get("call_limits")
+            )
+            if len(events) == 1:
+                return start_event
+            completed = events[1]
+            if (
+                completed.event_id
+                != self._model_call_event_id(
+                    cycle_id,
+                    existing_call_id,
+                    "complete",
+                )
+                or completed.event_type != _MODEL_CALL_COMPLETED
+                or completed.sequence <= start_event.sequence
+            ):
+                raise CampaignJournalError(
+                    "operational model call result is invalid"
+                )
+        return None
+
+    def _replay_model_call_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        call_id: str,
+        expected_identity: dict[str, object],
+        usage: OperationalUsageJournal,
+    ) -> ExecutedOperationalModelCall:
+        call_limits = self._model_call_limits_from_payload(
+            expected_identity.get("call_limits")
+        )
+        events = self._model_call_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+        )
+        if len(events) != 2:
+            raise CampaignJournalError(
+                "operational model call result is missing or ambiguous"
+            )
+        start_event, event = events
+        start_payload = {
+            **expected_identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_model_call_start.v1",
+                expected_identity,
+                "expected operational model call start",
+            ),
+        }
+        if (
+            start_event.event_id
+            != self._model_call_event_id(cycle_id, call_id, "start")
+            or start_event.event_type != _MODEL_CALL_STARTED
+            or _canonical_json_text(
+                _event_domain_payload(start_event),
+                "stored operational model call start",
+            )
+            != _canonical_json_text(
+                start_payload,
+                "expected operational model call start",
+            )
+        ):
+            raise CampaignJournalError(
+                "operational model call start conflicts"
+            )
+        payload = _event_domain_payload(event)
+        dynamic_fields = {
+            "attempt_id",
+            "attempt_count",
+            "wall_time_ms",
+            "output",
+            "output_sha256",
+            "verified_response_event_id",
+            "manifest_sha256",
+        }
+        if (
+            event.event_id
+            != self._model_call_event_id(cycle_id, call_id, "complete")
+            or event.event_type != _MODEL_CALL_COMPLETED
+            or event.sequence <= start_event.sequence
+            or set(payload) != set(expected_identity) | dynamic_fields
+            or _canonical_json_text(
+                {key: payload.get(key) for key in expected_identity},
+                "stored operational model call identity",
+            )
+            != _canonical_json_text(
+                expected_identity,
+                "expected operational model call identity",
+            )
+        ):
+            raise CampaignJournalError(
+                "operational model call identity conflicts"
+            )
+        attempt_count = payload["attempt_count"]
+        attempt_id = payload["attempt_id"]
+        wall_time_ms = payload["wall_time_ms"]
+        output = payload["output"]
+        try:
+            output_json = _canonical_json_text(
+                output,
+                "stored operational model output",
+            )
+        except ValueError as error:
+            raise CampaignJournalError(
+                "operational model call output is invalid"
+            ) from error
+        if len(output_json.encode("utf-8")) > _MAX_OPERATIONAL_OUTPUT_BYTES:
+            raise CampaignJournalError(
+                "operational model call output exceeds the bounded size"
+            )
+        receipt_identity = {
+            key: payload[key] for key in payload if key != "manifest_sha256"
+        }
+        if (
+            type(attempt_count) is not int
+            or not 1 <= attempt_count <= call_limits.max_attempts
+            or attempt_id != f"{call_id}-attempt-{attempt_count:03d}"
+            or (
+                wall_time_ms is not None
+                and (type(wall_time_ms) is not int or wall_time_ms < 0)
+            )
+            or payload["output_sha256"]
+            != _controller_sha256(
+                b"control_plane.operational_model_output.v1",
+                output,
+                "stored operational model output",
+            )
+            or payload["manifest_sha256"]
+            != _controller_sha256(
+                b"control_plane.operational_model_call_receipt.v1",
+                receipt_identity,
+                "stored operational model call receipt",
+            )
+        ):
+            raise CampaignJournalError(
+                "operational model call receipt is invalid"
+            )
+        attempts = usage._list_attempts_in_transaction(
+            connection,
+            call_id=call_id,
+        )
+        expected_attempt_ids = tuple(
+            f"{call_id}-attempt-{index:03d}"
+            for index in range(1, attempt_count + 1)
+        )
+        retryable_failures = {
+            InvocationOutcome.EMPTY_OUTPUT,
+            InvocationOutcome.INVALID_JSON,
+            InvocationOutcome.TIMEOUT,
+            InvocationOutcome.EXCEPTION,
+        }
+        if (
+            len(attempts) != attempt_count
+            or tuple(
+                attempt.envelope.attempt_id for attempt in attempts
+            )
+            != expected_attempt_ids
+            or any(
+                attempt.final_outcome not in retryable_failures
+                for attempt in attempts[:-1]
+            )
+            or attempts[-1].envelope.attempt_id != attempt_id
+            or attempts[-1].final_outcome is not InvocationOutcome.SUCCESS
+        ):
+            raise CampaignJournalError(
+                "operational model call usage binding is invalid"
+            )
+        roster_events = self._roster._events(connection, cycle_id)
+        roster_history = self._roster._replay_history(
+            connection,
+            roster_events,
+        )
+        member_id = str(expected_identity["member_id"])
+        verified_event_id = self._roster._event_id(
+            cycle_id,
+            f"verified:{member_id}",
+        )
+        verified_event = next(
+            (
+                roster_event
+                for roster_event in roster_events
+                if roster_event.event_id == verified_event_id
+            ),
+            None,
+        )
+        first_attempt_events = usage._events_in_transaction(
+            connection,
+            _attempt_id(
+                cycle_id,
+                call_id,
+                attempts[0].envelope.attempt_id,
+            ),
+        )
+        last_attempt_events = usage._events_in_transaction(
+            connection,
+            _attempt_id(
+                cycle_id,
+                call_id,
+                attempts[-1].envelope.attempt_id,
+            ),
+        )
+        if (
+            member_id not in roster_history.verified_member_ids
+            or payload["verified_response_event_id"] != verified_event_id
+            or verified_event is None
+            or not first_attempt_events
+            or not last_attempt_events
+            or start_event.sequence >= first_attempt_events[0].sequence
+            or last_attempt_events[-1].sequence >= verified_event.sequence
+            or verified_event.sequence >= event.sequence
+            or attempts[-1].envelope.response_model is None
+        ):
+            raise CampaignJournalError(
+                "operational model call roster binding is invalid"
+            )
+        return ExecutedOperationalModelCall(
+            cycle_id=cycle_id,
+            call_id=call_id,
+            member_id=member_id,
+            output_json=output_json,
+            attempt_id=attempt_id,
+            attempt_count=attempt_count,
+            wall_time_ms=wall_time_ms,
+            usage_attempts=attempts,
+            verified_response=VerifiedRosterResponse(
+                member_id=member_id,
+                response_model=attempts[-1].envelope.response_model,
+                event_id=verified_event_id,
+            ),
+            manifest_sha256=payload["manifest_sha256"],
+            event_id=event.event_id,
+        )
+
+    def _model_call_event_id(
+        self,
+        cycle_id: str,
+        call_id: str,
+        role: str,
+    ) -> str:
+        return _stable_id(
+            b"control_plane.controller_model_call_result.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+            call_id,
+            role,
+        )
+
+    def _model_call_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        call_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND aggregate_id = ?",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _MODEL_CALL_AGGREGATE_TYPE,
+                call_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id or row["aggregate_id"] != call_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational model call stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_MODEL_CALL_AGGREGATE_TYPE,
+            aggregate_id=call_id,
+        )
+
+    def _safe_monotonic_ns(self) -> int | None:
+        try:
+            value = self._monotonic_ns()
+        except Exception:
+            return None
+        if type(value) is not int or value < 0:
+            return None
+        return value
+
+    @staticmethod
+    def _elapsed_wall_time_ms(
+        started_monotonic_ns: int | None,
+        finished_monotonic_ns: int | None,
+    ) -> int | None:
+        if (
+            started_monotonic_ns is None
+            or finished_monotonic_ns is None
+            or finished_monotonic_ns < started_monotonic_ns
+        ):
+            return None
+        elapsed_ns = finished_monotonic_ns - started_monotonic_ns
+        return (elapsed_ns + 999_999) // 1_000_000
+
+    def _require_active_execution(
+        self,
+        execution: ExecutingOperationalCycle,
+    ) -> str:
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._require_active_execution_in_transaction(
+                connection,
+                execution,
+            )
+        )
+
+    def _require_active_execution_in_transaction(
+        self,
+        connection,
+        execution: ExecutingOperationalCycle,
+    ) -> str:
+        if not isinstance(execution, ExecutingOperationalCycle):
+            raise TypeError("execution must be an ExecutingOperationalCycle")
+        cycle_id = _identifier(execution.cycle.cycle_id, "execution.cycle_id")
+        if (
+            execution.lease.cycle_id != cycle_id
+            or execution.cycle.status is not CycleStatus.EXECUTING
+        ):
+            raise CampaignJournalError("execution receipt is invalid")
+        cycle = self._lifecycle._replay_cycle(
+            self._lifecycle._cycle_events(connection, cycle_id)
+        )
+        campaign = self._lifecycle._replay_campaign(
+            self._lifecycle._campaign_events(connection)
+        )
+        lease_history = self._leases._replay(
+            self._leases._events(connection, cycle_id)
+        )
+        if (
+            campaign.status is not CampaignStatus.ACTIVE
+            or cycle != execution.cycle
+            or not self._same_fencing_generation(
+                lease_history.active,
+                execution.lease,
+            )
+        ):
+            raise CampaignJournalError("execution receipt is stale")
+        return cycle_id
+
+    @staticmethod
+    def _same_fencing_generation(
+        active: CycleLease,
+        expected: CycleLease,
+    ) -> bool:
+        return (
+            active.cycle_id == expected.cycle_id
+            and active.acquisition_id == expected.acquisition_id
+            and active.lease_id == expected.lease_id
+            and active.fencing_token == expected.fencing_token
+            and active.owner == expected.owner
+        )
+
+    def _member_call_id(self, cycle_id: str, member_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_member_call.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+            member_id,
+        )
 
     @staticmethod
     def _reservation_payload(
@@ -899,7 +2605,11 @@ class OperationalCampaignController:
 __all__ = [
     "CampaignBudgetLimits",
     "CycleReservationLimits",
+    "ExecutedOperationalModelCall",
     "ExecutingOperationalCycle",
+    "OperationalExecutionUsage",
     "OperationalCampaignController",
+    "OperationalModelCallLimits",
     "PreparedOperationalCycle",
+    "operational_prompt_sha256",
 ]

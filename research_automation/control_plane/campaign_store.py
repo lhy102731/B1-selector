@@ -1404,30 +1404,105 @@ def _envelope_payload(envelope: UsageEnvelope) -> dict[str, object]:
 
 
 def _parse_envelope(payload: Mapping[str, object]) -> UsageEnvelope:
+    token_fields = (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+    )
+    tokens: dict[str, int | None] = {}
+    for field_name in token_fields:
+        value = payload[field_name]
+        if value is not None and (
+            type(value) is not int
+            or value < 0
+            or value.bit_length() > 512
+        ):
+            raise ValueError(f"{field_name} is invalid")
+        tokens[field_name] = value
+    provider = _identifier(payload["provider"], "stored provider")
+    profile = _identifier(payload["profile"], "stored profile")
+    request_model = _identifier(
+        payload["request_model"],
+        "stored request_model",
+    )
+    response_model_value = payload["response_model"]
+    response_model = (
+        None
+        if response_model_value is None
+        else _identifier(response_model_value, "stored response_model")
+    )
+    call_id = _identifier(payload["call_id"], "stored call_id")
+    attempt_id = _identifier(payload["attempt_id"], "stored attempt_id")
+    raw_status = payload["usage_status"]
+    raw_outcome = payload["outcome"]
+    if type(raw_status) is not str or type(raw_outcome) is not str:
+        raise ValueError("usage status or outcome is invalid")
+    usage_status = UsageStatus(raw_status)
+    outcome = InvocationOutcome(raw_outcome)
+    reported_cost_value = payload["reported_cost"]
+    if reported_cost_value is None:
+        reported_cost = None
+    else:
+        if type(reported_cost_value) is not str:
+            raise ValueError("reported_cost is invalid")
+        _cost(reported_cost_value)
+        reported_cost = reported_cost_value
+    currency_value = payload["currency"]
+    if currency_value is None:
+        currency = None
+    elif (
+        type(currency_value) is not str
+        or not currency_value
+        or currency_value != currency_value.strip()
+        or len(currency_value) > 128
+    ):
+        raise ValueError("currency is invalid")
+    else:
+        currency = currency_value
+    fallback = payload["fallback"]
+    streamed = payload["streamed"]
+    if type(fallback) is not bool or type(streamed) is not bool:
+        raise ValueError("fallback or streamed is invalid")
+    raw_usage_sha256 = payload["raw_usage_sha256"]
+    if (
+        type(raw_usage_sha256) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", raw_usage_sha256) is None
+    ):
+        raise ValueError("raw_usage_sha256 is invalid")
+    if usage_status is UsageStatus.UNKNOWN and (
+        any(value is not None for value in tokens.values())
+        or reported_cost is not None
+        or currency is not None
+    ):
+        raise ValueError("UNKNOWN usage must not contain reported values")
+    if usage_status is not UsageStatus.UNKNOWN and (
+        all(value is None for value in tokens.values())
+        and reported_cost is None
+    ):
+        raise ValueError("known usage status requires a reported value")
     return UsageEnvelope(
-        provider=str(payload["provider"]),
-        profile=str(payload["profile"]),
-        request_model=str(payload["request_model"]),
-        response_model=(
-            None if payload["response_model"] is None else str(payload["response_model"])
-        ),
-        call_id=str(payload["call_id"]),
-        attempt_id=str(payload["attempt_id"]),
-        usage_status=UsageStatus(str(payload["usage_status"])),
-        input_tokens=payload["input_tokens"],
-        output_tokens=payload["output_tokens"],
-        total_tokens=payload["total_tokens"],
-        cache_read_tokens=payload["cache_read_tokens"],
-        cache_write_tokens=payload["cache_write_tokens"],
-        reasoning_tokens=payload["reasoning_tokens"],
-        reported_cost=(
-            None if payload["reported_cost"] is None else str(payload["reported_cost"])
-        ),
-        currency=None if payload["currency"] is None else str(payload["currency"]),
-        fallback=bool(payload["fallback"]),
-        streamed=bool(payload["streamed"]),
-        outcome=InvocationOutcome(str(payload["outcome"])),
-        raw_usage_sha256=str(payload["raw_usage_sha256"]),
+        provider=provider,
+        profile=profile,
+        request_model=request_model,
+        response_model=response_model,
+        call_id=call_id,
+        attempt_id=attempt_id,
+        usage_status=usage_status,
+        input_tokens=tokens["input_tokens"],
+        output_tokens=tokens["output_tokens"],
+        total_tokens=tokens["total_tokens"],
+        cache_read_tokens=tokens["cache_read_tokens"],
+        cache_write_tokens=tokens["cache_write_tokens"],
+        reasoning_tokens=tokens["reasoning_tokens"],
+        reported_cost=reported_cost,
+        currency=currency,
+        fallback=fallback,
+        streamed=streamed,
+        outcome=outcome,
+        raw_usage_sha256=raw_usage_sha256,
     )
 
 
@@ -1450,12 +1525,34 @@ class OperationalUsageJournal:
     def begin(self, envelope: UsageEnvelope) -> None:
         if not isinstance(envelope, UsageEnvelope):
             raise TypeError("envelope must be a UsageEnvelope")
+        self._journal._authorize()
+        _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._begin_in_transaction(
+                connection,
+                envelope=envelope,
+            )
+        )
+
+    def _begin_in_transaction(
+        self,
+        connection,
+        *,
+        envelope: UsageEnvelope,
+    ) -> None:
+        try:
+            payload = _envelope_payload(envelope)
+            parsed = _parse_envelope(payload)
+        except (AttributeError, KeyError, TypeError, ValueError) as error:
+            raise ValueError("envelope is invalid") from error
+        if parsed != envelope:
+            raise ValueError("envelope is not canonical")
         aggregate_id = _attempt_id(
             self._cycle_id,
             envelope.call_id,
             envelope.attempt_id,
         )
-        self._journal.append(
+        self._journal._append_in_transaction(
+            connection,
             event_id=_event_id(
                 self._journal._namespace,
                 self._journal._campaign_id,
@@ -1467,7 +1564,7 @@ class OperationalUsageJournal:
             aggregate_type="MODEL_ATTEMPT",
             aggregate_id=aggregate_id,
             event_type="MODEL_USAGE_RECORDED",
-            payload=_envelope_payload(envelope),
+            payload=payload,
         )
 
     def finish(
@@ -1481,8 +1578,41 @@ class OperationalUsageJournal:
             raise TypeError("outcome must be an InvocationOutcome")
         if outcome is InvocationOutcome.RESPONSE_RECEIVED:
             raise ValueError("outcome must be a final outcome")
+        self._journal._authorize()
+        _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._finish_in_transaction(
+                connection,
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=outcome,
+            )
+        )
+
+    def _finish_in_transaction(
+        self,
+        connection,
+        *,
+        call_id: str,
+        attempt_id: str,
+        outcome: InvocationOutcome,
+    ) -> None:
         aggregate_id = _attempt_id(self._cycle_id, call_id, attempt_id)
-        events = self._events(aggregate_id)
+        events = self._events_in_transaction(connection, aggregate_id)
+        if len(events) == 2:
+            recorded = self._read_attempt_in_transaction(
+                connection,
+                call_id=call_id,
+                attempt_id=attempt_id,
+            )
+            if recorded.final_outcome is not outcome:
+                raise CampaignJournalError(
+                    "model finish conflicts with the persisted final outcome"
+                )
+            return
+        if len(events) != 1:
+            raise CampaignJournalError(
+                "model attempt journal is incomplete or ambiguous"
+            )
         usage_events = [
             event for event in events if event.event_type == "MODEL_USAGE_RECORDED"
         ]
@@ -1491,7 +1621,27 @@ class OperationalUsageJournal:
         envelope = _parse_envelope(usage_events[0].payload())
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
-        self._journal.append(
+        if envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:
+            raise CampaignJournalError(
+                "terminal usage cannot accept a later finish event"
+            )
+        if outcome not in {
+            InvocationOutcome.SUCCESS,
+            InvocationOutcome.EMPTY_OUTPUT,
+            InvocationOutcome.INVALID_JSON,
+            InvocationOutcome.STREAMING_DISABLED,
+        }:
+            raise CampaignJournalError(
+                "model finish outcome cannot follow a provider response"
+            )
+        if envelope.streamed != (
+            outcome is InvocationOutcome.STREAMING_DISABLED
+        ):
+            raise CampaignJournalError(
+                "model streaming outcome does not match recorded usage"
+            )
+        self._journal._append_in_transaction(
+            connection,
             event_id=_event_id(
                 self._journal._namespace,
                 self._journal._campaign_id,
@@ -1520,6 +1670,80 @@ class OperationalUsageJournal:
                 attempt_id=attempt_id,
             )
         )
+
+    def list_attempts(
+        self,
+        *,
+        call_id: str | None = None,
+    ) -> tuple[RecordedModelAttempt, ...]:
+        self._journal._authorize()
+        if call_id is not None:
+            call_id = _identifier(call_id, "call_id")
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._list_attempts_in_transaction(
+                connection,
+                call_id=call_id,
+            )
+        )
+
+    def _list_attempts_in_transaction(
+        self,
+        connection,
+        *,
+        call_id: str | None,
+    ) -> tuple[RecordedModelAttempt, ...]:
+        rows = connection.execute(
+            "SELECT aggregate_id, MIN(sequence) AS first_sequence "
+            "FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? AND cycle_id = ? "
+            "AND aggregate_type = ? "
+            "GROUP BY aggregate_id ORDER BY first_sequence",
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                self._cycle_id,
+                "MODEL_ATTEMPT",
+            ),
+        ).fetchall()
+        attempts: list[RecordedModelAttempt] = []
+        for row in rows:
+            aggregate_id = _identifier(
+                row["aggregate_id"],
+                "stored model attempt aggregate_id",
+            )
+            events = self._events_in_transaction(connection, aggregate_id)
+            if not events:
+                raise CampaignJournalError("model attempt stream is missing")
+            payload = _event_domain_payload(events[0])
+            try:
+                stored_call_id = _identifier(
+                    payload.get("call_id"),
+                    "stored call_id",
+                )
+                stored_attempt_id = _identifier(
+                    payload.get("attempt_id"),
+                    "stored attempt_id",
+                )
+            except (TypeError, ValueError) as error:
+                raise CampaignJournalError(
+                    "model attempt identity is invalid"
+                ) from error
+            if aggregate_id != _attempt_id(
+                self._cycle_id,
+                stored_call_id,
+                stored_attempt_id,
+            ):
+                raise CampaignJournalError(
+                    "model attempt aggregate identity is invalid"
+                )
+            recorded = self._read_attempt_in_transaction(
+                connection,
+                call_id=stored_call_id,
+                attempt_id=stored_attempt_id,
+            )
+            if call_id is None or stored_call_id == call_id:
+                attempts.append(recorded)
+        return tuple(attempts)
 
     def _read_attempt_in_transaction(
         self,
