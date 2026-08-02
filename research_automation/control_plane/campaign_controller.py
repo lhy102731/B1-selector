@@ -699,21 +699,22 @@ class OperationalCampaignController:
         )
         if operational_roster != protocol_roster:
             raise ValueError("ExecutionSpec roster conflicts with roster_members")
-        if cycle_number > 1:
-            _SqliteUnitOfWork(stores._operational_spec())._read(
-                lambda connection: (
-                    self._require_prior_cycle_continuation_in_transaction(
-                        connection,
-                        cycle_number=cycle_number,
-                    )
+        _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: (
+                self._require_prior_cycle_continuation_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    cycle_number=cycle_number,
                 )
             )
+        )
         self._lifecycle.activate()
         reservation_id = self._reservation_id(cycle_id)
 
         def reserve_and_open(connection):
             self._require_prior_cycle_continuation_in_transaction(
                 connection,
+                cycle_id=cycle_id,
                 cycle_number=cycle_number,
             )
             self._adopt_work_item_in_transaction(
@@ -825,6 +826,13 @@ class OperationalCampaignController:
                 raise CampaignStateConflictError(
                     "Campaign Cycle continuation chain is invalid"
                 )
+            cycle_budget = self._cycle_budget._snapshot_in_transaction(
+                connection
+            )
+            if cycle_budget.reserved_cycle_ids != tuple(
+                cycle.cycle_id for cycle in cycles
+            ):
+                raise CampaignJournalError("Cycle budget prefix conflicts")
             decisions: list[OperationalNextCycleDecisionReceipt] = []
             for cycle in cycles:
                 information_gain = (
@@ -2614,13 +2622,35 @@ class OperationalCampaignController:
         self,
         connection,
         *,
+        cycle_id: str,
         cycle_number: int,
     ) -> None:
+        opened_cycles = tuple(
+            sorted(
+                self._lifecycle._opened_cycles(connection),
+                key=lambda opened: opened.cycle_number,
+            )
+        )
         if cycle_number == 1:
+            if not opened_cycles:
+                expected_budget_prefix: tuple[str, ...] = ()
+            elif (
+                len(opened_cycles) == 1
+                and opened_cycles[0].cycle_id == cycle_id
+                and opened_cycles[0].cycle_number == 1
+            ):
+                expected_budget_prefix = (cycle_id,)
+            else:
+                raise CampaignJournalError("Cycle budget prefix conflicts")
+            cycle_budget = self._cycle_budget._snapshot_in_transaction(
+                connection
+            )
+            if cycle_budget.reserved_cycle_ids != expected_budget_prefix:
+                raise CampaignJournalError("Cycle budget prefix conflicts")
             return
         previous_cycles = tuple(
             opened
-            for opened in self._lifecycle._opened_cycles(connection)
+            for opened in opened_cycles
             if opened.cycle_number == cycle_number - 1
         )
         if len(previous_cycles) != 1:
@@ -2656,6 +2686,33 @@ class OperationalCampaignController:
             raise CampaignJournalError(
                 "previous Cycle did not authorize continuation"
             )
+        current_cycles = tuple(
+            opened
+            for opened in opened_cycles
+            if opened.cycle_id == cycle_id
+            and opened.cycle_number == cycle_number
+        )
+        replaying_current_cycle = len(current_cycles) == 1
+        expected_opened_count = (
+            cycle_number
+            if replaying_current_cycle
+            else cycle_number - 1
+        )
+        if (
+            len(current_cycles) > 1
+            or len(opened_cycles) != expected_opened_count
+            or tuple(
+                opened.cycle_number for opened in opened_cycles
+            )
+            != tuple(range(1, expected_opened_count + 1))
+        ):
+            raise CampaignJournalError("Cycle budget prefix conflicts")
+        expected_budget_prefix = tuple(
+            opened.cycle_id for opened in opened_cycles
+        )
+        cycle_budget = self._cycle_budget._snapshot_in_transaction(connection)
+        if cycle_budget.reserved_cycle_ids != expected_budget_prefix:
+            raise CampaignJournalError("Cycle budget prefix conflicts")
 
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)

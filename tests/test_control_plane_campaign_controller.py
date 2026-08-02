@@ -8171,6 +8171,97 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             with self.assertRaises(CampaignLifecycleError):
                 controller.cycle_snapshot("cycle-002")
 
+    def test_first_cycle_rejects_an_orphan_budget_prefix_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-first-orphan-budget"
+        owner = ProcessIdentity("host-controller", 152, 52_000)
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=2,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            controller._cycle_budget.reserve(cycle_id="rogue-orphan")
+            campaign_before = controller.campaign_snapshot()
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Cycle budget prefix conflicts",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-001",
+                    cycle_number=1,
+                )
+
+            self.assertEqual(controller.campaign_snapshot(), campaign_before)
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-001")
+
+    def test_successor_rejects_an_orphan_budget_prefix_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-successor-orphan-budget"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    max_cycles=3,
+                )
+            )
+            controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            controller._cycle_budget.reserve(cycle_id="rogue-orphan")
+            campaign_before = controller.campaign_snapshot()
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Cycle budget prefix conflicts",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                )
+
+            self.assertEqual(controller.campaign_snapshot(), campaign_before)
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-002")
+
     def test_invalid_and_tainted_evidence_stop_next_cycle(self) -> None:
         cases = (
             (
@@ -8551,6 +8642,44 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 cycle_number=2,
             )
             self.assertEqual(prepared.cycle_id, "cycle-002")
+
+    def test_campaign_completion_rejects_an_orphan_budget_prefix(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-stop-orphan-budget"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_no_material_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    max_cycles=2,
+                )
+            )
+            controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            controller._cycle_budget.reserve(cycle_id="rogue-orphan")
+            campaign_before = controller.campaign_snapshot()
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Cycle budget prefix conflicts",
+            ):
+                controller.complete_campaign()
+
+            self.assertEqual(controller.campaign_snapshot(), campaign_before)
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
 
     def test_stop_decision_replays_after_campaign_completion(self) -> None:
         campaign_id = "campaign-controller-next-cycle-stop-completed"
