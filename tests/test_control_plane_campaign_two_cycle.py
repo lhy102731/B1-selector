@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
+    CampaignJournalError,
     CycleReservationLimits,
-    ExecutingOperationalCycle,
     OperationalCampaignController,
     operational_prompt_sha256,
 )
@@ -40,9 +40,7 @@ from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
 from tests.test_control_plane_campaign_store import _authorized_campaign
-from tests.test_control_plane_evidence_learning import (
-    EvidenceLearningVerticalSliceTests,
-)
+from tests import test_control_plane_evidence_learning as evidence_fixtures
 from tests.test_foundations_protocols import _approval, _protocol
 
 
@@ -83,8 +81,8 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
         self,
     ) -> None:
         campaign_id = "campaign-controller-offline-two-cycle-proof"
-        owner = ProcessIdentity("host-two-cycle", 201, 201_000)
-        identity_provider = _FakeProcessIdentityProvider(owner)
+        first_owner = ProcessIdentity("host-two-cycle", 201, 201_000)
+        first_identity_provider = _FakeProcessIdentityProvider(first_owner)
         claim_scope = _scope(generation="generation-1")
         claim_summary = "Synthetic scoped finding from cycle one"
         claim = {
@@ -104,10 +102,8 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             report, binding, artifact, expected_evidence, _ = (
-                EvidenceLearningVerticalSliceTests()._authority_fixture(
-                    root,
-                    claim=claim,
-                )
+                evidence_fixtures.EvidenceLearningVerticalSliceTests()
+                ._authority_fixture(root, claim=claim)
             )
             authority_reader = patch(
                 "research_automation.control_plane.evidence_learning."
@@ -124,7 +120,7 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=_BUDGET_LIMITS,
-                identity_provider=identity_provider,
+                identity_provider=first_identity_provider,
                 monotonic_ns=_FakeMonotonicClock(
                     100,
                     1_000_000,
@@ -201,22 +197,31 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 [first_learning.packet_hash],
             )
 
+            second_owner = ProcessIdentity("host-two-cycle", 202, 202_000)
+            second_identity_provider = _FakeProcessIdentityProvider(
+                second_owner,
+                process_starts={
+                    (first_owner.host_id, first_owner.pid): None,
+                },
+            )
             recovered = OperationalCampaignController(
                 journal=journal,
                 repository_root=root,
                 budget_limits=_BUDGET_LIMITS,
-                identity_provider=identity_provider,
+                identity_provider=second_identity_provider,
                 monotonic_ns=_FakeMonotonicClock(
                     3_000_000,
                     4_000_000,
                     5_000_000,
                 ),
             )
-            replayed_first_decision = recovered.decide_next_cycle(
-                execution=ExecutingOperationalCycle(
-                    cycle=recovered.cycle_snapshot("cycle-001"),
-                    lease=first_execution.lease,
-                ),
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                recovered.decide_next_cycle(execution=first_execution)
+            replayed_first_decision = recovered.replay_next_cycle_decision(
+                cycle_id="cycle-001",
             )
             second_prompt = {
                 "instruction": "Return a no-material synthetic artifact"
@@ -294,18 +299,28 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             )
             completed = recovered.complete_campaign()
 
+            final_owner = ProcessIdentity("host-two-cycle", 203, 203_000)
             final_recovered = OperationalCampaignController(
                 journal=journal,
                 repository_root=root,
                 budget_limits=_BUDGET_LIMITS,
-                identity_provider=identity_provider,
+                identity_provider=_FakeProcessIdentityProvider(
+                    final_owner,
+                    process_starts={
+                        (second_owner.host_id, second_owner.pid): None,
+                    },
+                ),
                 monotonic_ns=lambda: 6_000_000,
             )
-            replayed_second_decision = final_recovered.decide_next_cycle(
-                execution=ExecutingOperationalCycle(
-                    cycle=final_recovered.cycle_snapshot("cycle-002"),
-                    lease=second_execution.lease,
-                ),
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                final_recovered.decide_next_cycle(execution=second_execution)
+            replayed_second_decision = (
+                final_recovered.replay_next_cycle_decision(
+                    cycle_id="cycle-002",
+                )
             )
 
             self.assertEqual(second_decision.decision, "STOP")

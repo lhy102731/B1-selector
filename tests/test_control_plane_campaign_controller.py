@@ -8487,6 +8487,86 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 CycleStatus.COMPLETED,
             )
 
+    def test_completed_decision_replays_read_only_after_process_death(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-completed-process-death"
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=2,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 155, 55_000),
+                    process_starts={
+                        ("host-controller", execution.lease.owner.pid): None,
+                    },
+                ),
+                monotonic_ns=lambda: 4_000_000,
+            )
+            events_before = (
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_NEXT_CYCLE_DECISION",
+                    aggregate_id="cycle-001",
+                ),
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="CYCLE_STATE",
+                    aggregate_id="cycle-001",
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                recovered.decide_next_cycle(execution=execution)
+
+            replayed = recovered.replay_next_cycle_decision(
+                cycle_id="cycle-001",
+            )
+
+            self.assertEqual(replayed, decision)
+            self.assertEqual(
+                (
+                    journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="OPERATIONAL_NEXT_CYCLE_DECISION",
+                        aggregate_id="cycle-001",
+                    ),
+                    journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="CYCLE_STATE",
+                        aggregate_id="cycle-001",
+                    ),
+                ),
+                events_before,
+            )
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
     def test_shadow_next_cycle_decision_streams_fail_closed(self) -> None:
         cases = (
             (

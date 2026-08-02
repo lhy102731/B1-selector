@@ -2576,6 +2576,38 @@ class OperationalCampaignController:
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(decide)
 
+    def replay_next_cycle_decision(
+        self,
+        *,
+        cycle_id: str,
+    ) -> OperationalNextCycleDecisionReceipt:
+        """Rebuild a completed Cycle decision without acquiring a lease."""
+
+        self._journal._authorize()
+        cycle_id = _identifier(cycle_id, "cycle_id")
+
+        def replay(connection) -> OperationalNextCycleDecisionReceipt:
+            cycle = self._lifecycle._replay_cycle(
+                self._lifecycle._cycle_events(connection, cycle_id)
+            )
+            if cycle.status is not CycleStatus.COMPLETED:
+                raise CampaignJournalError(
+                    "next-Cycle decision replay requires a completed Cycle"
+                )
+            information_gain = (
+                self._stored_information_gain_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            return self._stored_next_cycle_decision_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                information_gain_receipt=information_gain,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._read(replay)
+
     @staticmethod
     def _derive_next_cycle_decision(
         *,
