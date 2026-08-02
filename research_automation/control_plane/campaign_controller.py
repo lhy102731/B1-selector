@@ -103,6 +103,12 @@ _LEARNING_COMMIT_INTENT_AGGREGATE_TYPE = "OPERATIONAL_LEARNING_COMMIT_INTENT"
 _LEARNING_COMMIT_INTENT_RECORDED = "OPERATIONAL_LEARNING_COMMIT_INTENT_RECORDED"
 _LEARNING_COMMIT_AGGREGATE_TYPE = "OPERATIONAL_LEARNING_COMMIT"
 _LEARNING_COMMIT_RECORDED = "OPERATIONAL_LEARNING_COMMIT_RECORDED"
+_NO_LEARNING_DISPOSITION_AGGREGATE_TYPE = (
+    "OPERATIONAL_NO_LEARNING_DISPOSITION"
+)
+_NO_LEARNING_DISPOSITION_RECORDED = (
+    "OPERATIONAL_NO_LEARNING_DISPOSITION_RECORDED"
+)
 _CYCLE_SETTLEMENT_AGGREGATE_TYPE = "OPERATIONAL_CYCLE_SETTLEMENT"
 _CYCLE_SETTLEMENT_RECORDED = "OPERATIONAL_CYCLE_SETTLEMENT_RECORDED"
 _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
@@ -306,6 +312,20 @@ class OperationalCycleSettlementReceipt:
     settlement_state: str
     execution_usage_manifest_sha256: str
     learning_commit_manifest_sha256: str
+    budget_settlement_event_id: str
+    manifest_sha256: str
+    event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalNoLearningSettlementReceipt:
+    cycle_id: str
+    reservation_id: str
+    disposition_reason: str
+    evidence_manifest_sha256: str
+    execution_usage_manifest_sha256: str
+    settlement_state: str
+    disposition_event_id: str
     budget_settlement_event_id: str
     manifest_sha256: str
     event_id: str
@@ -1707,6 +1727,339 @@ class OperationalCampaignController:
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(settle)
 
+    def settle_cycle_without_learning(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        execution_usage: OperationalExecutionUsage,
+        evidence_receipt: OperationalEvidenceReceipt,
+    ) -> OperationalNoLearningSettlementReceipt:
+        """Settle one ineligible Cycle without fabricating Learning."""
+
+        self._journal._authorize()
+        if type(execution_usage) is not OperationalExecutionUsage:
+            raise TypeError(
+                "execution_usage must be an OperationalExecutionUsage"
+            )
+        if type(evidence_receipt) is not OperationalEvidenceReceipt:
+            raise TypeError(
+                "evidence_receipt must be an OperationalEvidenceReceipt"
+            )
+
+        def settle(connection) -> OperationalNoLearningSettlementReceipt:
+            cycle_id, current_cycle = (
+                self._require_evidence_execution_generation_in_transaction(
+                    connection,
+                    execution,
+                )
+            )
+            if current_cycle.status not in {
+                CycleStatus.EVIDENCE_READY,
+                CycleStatus.SETTLED,
+            }:
+                raise CampaignJournalError(
+                    "no-Learning settlement requires EVIDENCE_READY"
+                )
+            usage_event, replayed_usage = (
+                self._replay_execution_usage_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    receipt=execution_usage,
+                    allow_settled_reservation=(
+                        current_cycle.status is CycleStatus.SETTLED
+                    ),
+                )
+            )
+            self._replay_evidence_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                receipt=evidence_receipt,
+                current_cycle=current_cycle,
+                allow_settled_reservation=(
+                    current_cycle.status is CycleStatus.SETTLED
+                ),
+            )
+            evidence_event = self._model_evidence_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )[0]
+            disposition_reason = self._no_learning_disposition_reason(
+                evidence_receipt.evidence
+            )
+            if (
+                self._learning_commit_intent_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+                or self._learning_commit_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            ):
+                raise CampaignJournalError(
+                    "no-Learning disposition conflicts with Learning state"
+                )
+
+            disposition_identity = {
+                "schema_version": (
+                    "control_plane.operational_no_learning_disposition.v1"
+                ),
+                "cycle_id": cycle_id,
+                "member_id": evidence_receipt.member_id,
+                "evidence_manifest_sha256": evidence_receipt.manifest_sha256,
+                "evidence_verdict": evidence_receipt.evidence.verdict,
+                "scientific_outcome": (
+                    evidence_receipt.evidence.scientific_outcome
+                ),
+                "disposition_reason": disposition_reason,
+            }
+            disposition_manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_no_learning_disposition.v1",
+                disposition_identity,
+                "operational no-Learning disposition",
+            )
+            disposition_payload = {
+                **disposition_identity,
+                "manifest_sha256": disposition_manifest_sha256,
+            }
+            disposition_event_id = self._no_learning_disposition_event_id(
+                cycle_id
+            )
+            disposition_events = (
+                self._no_learning_disposition_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            settlement_events = (
+                self._cycle_settlement_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if current_cycle.status is CycleStatus.EVIDENCE_READY:
+                required_event_ids = (
+                    disposition_event_id,
+                    self._lifecycle._cycle_event_id(
+                        cycle_id,
+                        CycleStatus.LEARNING_SKIPPED.value,
+                    ),
+                    self._budget._event_id(
+                        "settle",
+                        reservation_id=self._reservation_id(cycle_id),
+                    ),
+                    self._cycle_settlement_event_id(cycle_id),
+                    self._lifecycle._cycle_event_id(
+                        cycle_id,
+                        CycleStatus.SETTLED.value,
+                    ),
+                )
+                if (
+                    disposition_events
+                    or settlement_events
+                    or any(
+                        self._journal._event_in_transaction(
+                            connection,
+                            event_id,
+                        )
+                        is not None
+                        for event_id in required_event_ids
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational no-Learning settlement conflicts"
+                    )
+                disposition_event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=disposition_event_id,
+                    cycle_id=cycle_id,
+                    aggregate_type=(
+                        _NO_LEARNING_DISPOSITION_AGGREGATE_TYPE
+                    ),
+                    aggregate_id=cycle_id,
+                    event_type=_NO_LEARNING_DISPOSITION_RECORDED,
+                    payload=disposition_payload,
+                )
+                skipped = self._lifecycle._advance_cycle_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_status=CycleStatus.EVIDENCE_READY,
+                    next_status=CycleStatus.LEARNING_SKIPPED,
+                )
+                skipped_sequence = skipped.sequence
+            else:
+                if (
+                    len(disposition_events) != 1
+                    or disposition_events[0].event_id
+                    != disposition_event_id
+                    or disposition_events[0].event_type
+                    != _NO_LEARNING_DISPOSITION_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(disposition_events[0]),
+                        "stored no-Learning disposition",
+                    )
+                    != _canonical_json_text(
+                        disposition_payload,
+                        "expected no-Learning disposition",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational no-Learning disposition conflicts"
+                    )
+                disposition_event = disposition_events[0]
+                skipped_transitions = tuple(
+                    event
+                    for event in self._lifecycle._cycle_events(
+                        connection,
+                        cycle_id,
+                    )
+                    if event.event_type == _CYCLE_TRANSITIONED
+                    and _event_domain_payload(event).get("to_status")
+                    == CycleStatus.LEARNING_SKIPPED.value
+                )
+                if len(skipped_transitions) != 1:
+                    raise CampaignJournalError(
+                        "LEARNING_SKIPPED transition is missing or ambiguous"
+                    )
+                skipped_sequence = skipped_transitions[0].sequence
+
+            reservation_id = self._reservation_id(cycle_id)
+            settlement = self._budget._settle_in_transaction(
+                connection,
+                reservation_id=reservation_id,
+                input_tokens=replayed_usage.input_tokens,
+                output_tokens=replayed_usage.output_tokens,
+                cost=replayed_usage.cost,
+                wall_time_ms=replayed_usage.wall_time_ms,
+                tool_attempts=replayed_usage.tool_attempts,
+                data_exposures=replayed_usage.data_exposures,
+                disk_growth_bytes=replayed_usage.disk_growth_bytes,
+            )
+            budget_event_id = self._budget._event_id(
+                "settle",
+                reservation_id=reservation_id,
+            )
+            budget_event = next(
+                (
+                    event
+                    for event in self._budget._events_in_transaction(
+                        connection
+                    )
+                    if event.event_id == budget_event_id
+                ),
+                None,
+            )
+            if budget_event is None or budget_event.event_type != _BUDGET_SETTLED:
+                raise CampaignJournalError(
+                    "Cycle budget settlement event is missing"
+                )
+            settlement_identity = {
+                "schema_version": (
+                    "control_plane.operational_no_learning_settlement.v1"
+                ),
+                "cycle_id": cycle_id,
+                "reservation_id": reservation_id,
+                "disposition_reason": disposition_reason,
+                "evidence_manifest_sha256": evidence_receipt.manifest_sha256,
+                "execution_usage_manifest_sha256": (
+                    replayed_usage.manifest_sha256
+                ),
+                "settlement_state": settlement.state,
+                "disposition_event_id": disposition_event.event_id,
+                "budget_settlement_event_id": budget_event.event_id,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_no_learning_settlement.v1",
+                settlement_identity,
+                "operational no-Learning settlement",
+            )
+            settlement_payload = {
+                **settlement_identity,
+                "manifest_sha256": manifest_sha256,
+            }
+            receipt = OperationalNoLearningSettlementReceipt(
+                cycle_id=cycle_id,
+                reservation_id=reservation_id,
+                disposition_reason=disposition_reason,
+                evidence_manifest_sha256=evidence_receipt.manifest_sha256,
+                execution_usage_manifest_sha256=(
+                    replayed_usage.manifest_sha256
+                ),
+                settlement_state=settlement.state,
+                disposition_event_id=disposition_event.event_id,
+                budget_settlement_event_id=budget_event.event_id,
+                manifest_sha256=manifest_sha256,
+                event_id=self._cycle_settlement_event_id(cycle_id),
+            )
+            if settlement_events:
+                if (
+                    len(settlement_events) != 1
+                    or settlement_events[0].event_id != receipt.event_id
+                    or settlement_events[0].event_type
+                    != _CYCLE_SETTLEMENT_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(settlement_events[0]),
+                        "stored no-Learning Cycle settlement",
+                    )
+                    != _canonical_json_text(
+                        settlement_payload,
+                        "expected no-Learning Cycle settlement",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational no-Learning settlement conflicts"
+                    )
+                settlement_event = settlement_events[0]
+            else:
+                settlement_event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=receipt.event_id,
+                    cycle_id=cycle_id,
+                    aggregate_type=_CYCLE_SETTLEMENT_AGGREGATE_TYPE,
+                    aggregate_id=cycle_id,
+                    event_type=_CYCLE_SETTLEMENT_RECORDED,
+                    payload=settlement_payload,
+                )
+
+            if current_cycle.status is CycleStatus.EVIDENCE_READY:
+                advanced = self._lifecycle._advance_cycle_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_status=CycleStatus.LEARNING_SKIPPED,
+                    next_status=CycleStatus.SETTLED,
+                )
+                settled_sequence = advanced.sequence
+            else:
+                settled_transitions = tuple(
+                    event
+                    for event in self._lifecycle._cycle_events(
+                        connection,
+                        cycle_id,
+                    )
+                    if event.event_type == _CYCLE_TRANSITIONED
+                    and _event_domain_payload(event).get("to_status")
+                    == CycleStatus.SETTLED.value
+                )
+                if len(settled_transitions) != 1:
+                    raise CampaignJournalError(
+                        "SETTLED transition is missing or ambiguous"
+                    )
+                settled_sequence = settled_transitions[0].sequence
+            if (
+                usage_event.sequence >= evidence_event.sequence
+                or disposition_event.sequence <= evidence_event.sequence
+                or skipped_sequence <= disposition_event.sequence
+                or budget_event.sequence <= skipped_sequence
+                or settlement_event.sequence <= budget_event.sequence
+                or settled_sequence <= settlement_event.sequence
+            ):
+                raise CampaignJournalError(
+                    "no-Learning Cycle settlement event order conflicts"
+                )
+            return receipt
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(settle)
+
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
 
@@ -2388,6 +2741,7 @@ class OperationalCampaignController:
         cycle_id: str,
         receipt: OperationalEvidenceReceipt,
         current_cycle: CycleSnapshot,
+        allow_settled_reservation: bool = False,
     ) -> object:
         (
             preparation_manifest_sha256,
@@ -2396,6 +2750,7 @@ class OperationalCampaignController:
         ) = self._evidence_preparation_in_transaction(
             connection,
             cycle_id=cycle_id,
+            allow_settled_reservation=allow_settled_reservation,
         )
         member = next(
             (
@@ -2901,6 +3256,79 @@ class OperationalCampaignController:
                 "operational Learning Commit receipt conflicts"
             )
         return events[0]
+
+    @staticmethod
+    def _no_learning_disposition_reason(evidence: EvidenceResult) -> str:
+        if type(evidence) is not EvidenceResult:
+            raise TypeError("evidence must be an EvidenceResult")
+        if evidence.verdict == "NO_MATERIAL_FINDING":
+            if (
+                evidence.promotion_eligible
+                or evidence.scientific_outcome != "NO_MATERIAL_FINDING"
+                or evidence.taint_refs
+                or evidence.invalidation_codes
+            ):
+                raise CampaignJournalError(
+                    "NO_MATERIAL_FINDING evidence is inconsistent"
+                )
+            return "NO_MATERIAL_FINDING"
+        if evidence.promotion_eligible or evidence.verdict == "VALID":
+            raise CampaignJournalError(
+                "Learning-eligible evidence requires Learning Commit"
+            )
+        if evidence.taint_refs:
+            return "TAINTED_EVIDENCE"
+        if evidence.verdict in {
+            "EVIDENCE_INVALID",
+            "MATERIAL_UNAPPROVED",
+            "RESEARCH_ONLY",
+        }:
+            return evidence.verdict
+        raise CampaignJournalError(
+            "evidence has no supported no-Learning disposition"
+        )
+
+    def _no_learning_disposition_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_no_learning_disposition.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _no_learning_disposition_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _NO_LEARNING_DISPOSITION_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_id"] != cycle_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational no-Learning disposition stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_NO_LEARNING_DISPOSITION_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
 
     def _cycle_settlement_event_id(self, cycle_id: str) -> str:
         return _stable_id(
@@ -4300,6 +4728,7 @@ __all__ = [
     "OperationalEvidenceReceipt",
     "OperationalExecutionUsage",
     "OperationalLearningCommitReceipt",
+    "OperationalNoLearningSettlementReceipt",
     "OperationalCampaignController",
     "OperationalModelCallLimits",
     "PreparedOperationalCycle",

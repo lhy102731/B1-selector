@@ -41,6 +41,7 @@ _LEASE_OWNED_CYCLE_STATUSES = frozenset(
         CycleStatus.EXECUTING,
         CycleStatus.EVIDENCE_READY,
         CycleStatus.LEARNING_COMMITTED,
+        CycleStatus.LEARNING_SKIPPED,
         CycleStatus.SETTLED,
         CycleStatus.INFORMATION_GAIN_RECORDED,
         CycleStatus.NEXT_CYCLE_DECIDED,

@@ -57,6 +57,7 @@ class CycleStatus(str, Enum):
     EXECUTING = "EXECUTING"
     EVIDENCE_READY = "EVIDENCE_READY"
     LEARNING_COMMITTED = "LEARNING_COMMITTED"
+    LEARNING_SKIPPED = "LEARNING_SKIPPED"
     SETTLED = "SETTLED"
     INFORMATION_GAIN_RECORDED = "INFORMATION_GAIN_RECORDED"
     NEXT_CYCLE_DECIDED = "NEXT_CYCLE_DECIDED"
@@ -86,18 +87,25 @@ _CAMPAIGN_TRANSITIONS = frozenset(
         (CampaignStatus.ACTIVE, CampaignStatus.COMPLETED),
     }
 )
-_CYCLE_NEXT = {
-    CycleStatus.CREATED: CycleStatus.BUDGET_RESERVED,
-    CycleStatus.BUDGET_RESERVED: CycleStatus.CONTEXT_READY,
-    CycleStatus.CONTEXT_READY: CycleStatus.FROZEN,
-    CycleStatus.FROZEN: CycleStatus.EXECUTING,
-    CycleStatus.EXECUTING: CycleStatus.EVIDENCE_READY,
-    CycleStatus.EVIDENCE_READY: CycleStatus.LEARNING_COMMITTED,
-    CycleStatus.LEARNING_COMMITTED: CycleStatus.SETTLED,
-    CycleStatus.SETTLED: CycleStatus.INFORMATION_GAIN_RECORDED,
-    CycleStatus.INFORMATION_GAIN_RECORDED: CycleStatus.NEXT_CYCLE_DECIDED,
-    CycleStatus.NEXT_CYCLE_DECIDED: CycleStatus.COMPLETED,
-}
+_CYCLE_TRANSITIONS = frozenset(
+    {
+        (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
+        (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
+        (CycleStatus.CONTEXT_READY, CycleStatus.FROZEN),
+        (CycleStatus.FROZEN, CycleStatus.EXECUTING),
+        (CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY),
+        (CycleStatus.EVIDENCE_READY, CycleStatus.LEARNING_COMMITTED),
+        (CycleStatus.EVIDENCE_READY, CycleStatus.LEARNING_SKIPPED),
+        (CycleStatus.LEARNING_COMMITTED, CycleStatus.SETTLED),
+        (CycleStatus.LEARNING_SKIPPED, CycleStatus.SETTLED),
+        (CycleStatus.SETTLED, CycleStatus.INFORMATION_GAIN_RECORDED),
+        (
+            CycleStatus.INFORMATION_GAIN_RECORDED,
+            CycleStatus.NEXT_CYCLE_DECIDED,
+        ),
+        (CycleStatus.NEXT_CYCLE_DECIDED, CycleStatus.COMPLETED),
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -722,6 +730,13 @@ class OperationalCampaignLifecycle:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
         self._validate_cycle_transition(expected_status, next_status)
+        if CycleStatus.LEARNING_SKIPPED in {
+            expected_status,
+            next_status,
+        }:
+            raise CampaignStateConflictError(
+                "LEARNING_SKIPPED transitions are controller-owned"
+            )
 
         def advance_unleased(connection) -> CycleSnapshot:
             if (
@@ -802,7 +817,7 @@ class OperationalCampaignLifecycle:
             CycleStatus,
         ):
             raise TypeError("Cycle transitions require CycleStatus values")
-        if _CYCLE_NEXT.get(expected_status) is not next_status:
+        if (expected_status, next_status) not in _CYCLE_TRANSITIONS:
             raise IllegalCycleTransitionError(
                 "Cycle transition skips a required protocol state"
             )
@@ -1367,7 +1382,7 @@ class OperationalCampaignLifecycle:
                 raise CampaignLifecycleError("Cycle status is invalid") from error
             if (
                 from_status is not status
-                or _CYCLE_NEXT.get(from_status) is not to_status
+                or (from_status, to_status) not in _CYCLE_TRANSITIONS
                 or event.event_id != self._cycle_event_id(cycle_id, to_status.value)
             ):
                 raise CampaignLifecycleError("Cycle transition is invalid")

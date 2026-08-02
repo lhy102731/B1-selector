@@ -1665,6 +1665,40 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
             )
             self.assertEqual(len(events), 1)
 
+    def test_generic_lifecycle_cannot_record_learning_skipped(self) -> None:
+        campaign_id = "campaign-lifecycle-no-learning-controller-only"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            for expected, next_status in (
+                (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
+                (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
+                (CycleStatus.CONTEXT_READY, CycleStatus.FROZEN),
+                (CycleStatus.FROZEN, CycleStatus.EXECUTING),
+                (CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY),
+            ):
+                lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=expected,
+                    next_status=next_status,
+                )
+
+            with self.assertRaisesRegex(
+                CampaignStateConflictError,
+                "controller-owned",
+            ):
+                lifecycle.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=CycleStatus.EVIDENCE_READY,
+                    next_status=CycleStatus.LEARNING_SKIPPED,
+                )
+
+            self.assertEqual(
+                lifecycle.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
     def test_cycle_id_replay_is_idempotent_but_cycle_number_is_unique(self) -> None:
         with _authorized_campaign("campaign-lifecycle-002") as (_, grant, journal):
             lifecycle = OperationalCampaignLifecycle(journal=journal)

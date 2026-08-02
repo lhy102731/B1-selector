@@ -177,6 +177,26 @@ class _InvalidEvidenceArtifactBoundFakeProvider(
         )
 
 
+class _TaintedEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(
+            super().invoke(request),
+            output_text=(
+                '{"access_event_ids":["event:synthetic-tainted"],'
+                '"artifact_refs":[],"claim":null,'
+                '"executed_protocol":{"label":"synthetic-only"},'
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED",'
+                '"taint_refs":["taint:synthetic-test"]}'
+            ),
+        )
+
+
 class _NonObjectEvidenceArtifactBoundFakeProvider(
     _EvidenceArtifactBoundFakeProvider
 ):
@@ -244,6 +264,13 @@ class _AuthorityEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
 
 class _UnknownUsageAuthorityEvidenceArtifactBoundFakeProvider(
     _AuthorityEvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(super().invoke(request), raw_usage={})
+
+
+class _UnknownUsageEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
 ):
     def invoke(self, request: object) -> ProviderResponse:
         return replace(super().invoke(request), raw_usage={})
@@ -5930,6 +5957,388 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(
                 controller.budget_snapshot().reserved_input_tokens,
                 20,
+            )
+
+    def test_no_material_cycle_settles_without_learning_packet(self) -> None:
+        campaign_id = "campaign-controller-settlement-no-material"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            replayed = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(evidence.evidence.verdict, "NO_MATERIAL_FINDING")
+            self.assertEqual(replayed, settled)
+            self.assertEqual(settled.disposition_reason, "NO_MATERIAL_FINDING")
+            self.assertEqual(settled.settlement_state, "SETTLED")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 0)
+            self.assertEqual(snapshot.reserved_output_tokens, 0)
+            self.assertEqual(snapshot.reserved_cost, "0")
+            self.assertEqual(snapshot.spent_input_tokens, usage.input_tokens)
+            self.assertEqual(snapshot.spent_output_tokens, usage.output_tokens)
+            self.assertEqual(snapshot.spent_cost, usage.cost)
+
+    def test_no_material_unknown_usage_keeps_full_reservation(self) -> None:
+        campaign_id = "campaign-controller-settlement-no-material-unknown"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_UnknownUsageEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(usage.usage_status, UsageStatus.UNKNOWN)
+            self.assertEqual(settled.settlement_state, "SETTLED_UNKNOWN")
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "0.1")
+            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_tool_attempts, 2)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            self.assertEqual(snapshot.spent_output_tokens, 0)
+            self.assertEqual(snapshot.spent_cost, "0")
+            self.assertEqual(snapshot.spent_wall_time_ms, 0)
+            self.assertEqual(snapshot.spent_tool_attempts, 0)
+
+    def test_invalid_evidence_cycle_settles_without_learning_packet(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settlement-invalid-evidence"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_InvalidEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(evidence.evidence.verdict, "EVIDENCE_INVALID")
+            self.assertEqual(settled.disposition_reason, "EVIDENCE_INVALID")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+
+    def test_tainted_evidence_cycle_settles_without_learning_packet(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settlement-tainted-evidence"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_TaintedEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(evidence.evidence.verdict, "EVIDENCE_INVALID")
+            self.assertEqual(
+                evidence.evidence.taint_refs,
+                ("taint:synthetic-test",),
+            )
+            self.assertEqual(settled.disposition_reason, "TAINTED_EVIDENCE")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+
+    def test_learning_eligible_evidence_cannot_skip_learning_commit(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settlement-skip-eligible"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "requires Learning Commit",
+            ):
+                controller.settle_cycle_without_learning(
+                    execution=execution,
+                    execution_usage=usage,
+                    evidence_receipt=evidence,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                20,
+            )
+
+    def test_no_learning_settlement_is_atomic(self) -> None:
+        campaign_id = "campaign-controller-settlement-no-learning-atomic"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            advance = (
+                OperationalCampaignLifecycle._advance_cycle_in_transaction
+            )
+
+            def fail_settled(lifecycle, connection, **kwargs):
+                if kwargs["next_status"] is CycleStatus.SETTLED:
+                    raise RuntimeError("synthetic no-Learning crash")
+                return advance(lifecycle, connection, **kwargs)
+
+            with patch.object(
+                OperationalCampaignLifecycle,
+                "_advance_cycle_in_transaction",
+                new=fail_settled,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic no-Learning crash",
+                ):
+                    controller.settle_cycle_without_learning(
+                        execution=execution,
+                        execution_usage=usage,
+                        evidence_receipt=evidence,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_NO_LEARNING_DISPOSITION",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+
+    def test_replacement_lease_recovers_no_learning_settlement(self) -> None:
+        campaign_id = "campaign-controller-no-learning-lease-recovery"
+        recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-no-learning-settlement",
+                stale_after_ns=1,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.settle_cycle_without_learning(
+                    execution=execution,
+                    execution_usage=usage,
+                    evidence_receipt=evidence,
+                )
+
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            settled = recovered.settle_cycle_without_learning(
+                execution=ExecutingOperationalCycle(
+                    cycle=recovered.cycle_snapshot("cycle-001"),
+                    lease=replacement,
+                ),
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(settled.disposition_reason, "NO_MATERIAL_FINDING")
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                recovered.budget_snapshot().spent_input_tokens,
+                usage.input_tokens,
             )
 
     def test_known_usage_settles_reserved_budget_after_learning(self) -> None:
