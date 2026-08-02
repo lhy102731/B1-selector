@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from decimal import Context, Inexact, Rounded, localcontext
 from threading import Barrier, Event
 import hashlib
 import json
@@ -4728,6 +4729,238 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertTrue(
                 all(provider.call_count == 1 for provider in providers.values())
             )
+
+    def test_model_call_cost_allocations_are_summed_exactly(self) -> None:
+        base_protocol = _protocol()
+        second_protocol_member = base_protocol.roster[0].model_copy(
+            update={
+                "role": "source_librarian",
+                "provider_profile_id": "offline-local-2",
+                "model_id": "deterministic-reviewer-2",
+                "public_identity_sha256": "c" * 64,
+            }
+        )
+        protocol = base_protocol.model_copy(
+            update={
+                "roster": tuple(
+                    sorted(
+                        (*base_protocol.roster, second_protocol_member),
+                        key=lambda item: item.role,
+                    )
+                )
+            }
+        )
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompts = {
+            "factor_engineer": {"instruction": "Return factor fixture"},
+            "source_librarian": {"instruction": "Return source fixture"},
+        }
+        factor_member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(
+                prompts["factor_engineer"]
+            ),
+        )
+        source_member = replace(
+            _protocol_member(),
+            member_id="source-librarian",
+            profile="offline-local-2",
+            model="deterministic-reviewer-2",
+            role="source_librarian",
+            prompt_sha256=operational_prompt_sha256(
+                prompts["source_librarian"]
+            ),
+            config_sha256="4" * 64,
+            capability_sha256="5" * 64,
+        )
+        hostile_context = Context(prec=2)
+        hostile_context.traps[Inexact] = True
+        hostile_context.traps[Rounded] = True
+        cases = (
+            ("default", Context()),
+            ("hostile", hostile_context),
+        )
+
+        for label, decimal_context in cases:
+            with self.subTest(decimal_context=label), localcontext(
+                decimal_context
+            ):
+                campaign_id = f"campaign-controller-allocation-cost-{label}"
+                cycle_id = f"cycle-allocation-cost-{label}"
+                task = ExperimentTask(
+                    task_id=cycle_id,
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Call allocations are summed exactly",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                )
+                owner = ProcessIdentity(
+                    f"host-allocation-cost-{label}",
+                    150,
+                    50_000,
+                )
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    controller = OperationalCampaignController(
+                        journal=journal,
+                        repository_root=root,
+                        budget_limits=CampaignBudgetLimits(
+                            currency="USD",
+                            max_cycles=1,
+                            max_input_tokens=40,
+                            max_output_tokens=20,
+                            max_cost="1",
+                            max_wall_time_ms=20,
+                            max_tool_attempts=4,
+                        ),
+                        identity_provider=_FakeProcessIdentityProvider(owner),
+                        monotonic_ns=_FakeMonotonicClock(
+                            100,
+                            1_000_000,
+                            3_000_000,
+                            4_000_000,
+                            7_000_000,
+                        ),
+                    )
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=(source_member, factor_member),
+                        reservation_limits=CycleReservationLimits(
+                            currency="USD",
+                            max_input_tokens=40,
+                            max_output_tokens=20,
+                            max_cost="1",
+                            max_wall_time_ms=20,
+                            max_tool_attempts=4,
+                        ),
+                    )
+                    execution = controller.start_execution(
+                        cycle_id=cycle_id,
+                        acquisition_id=f"execute-allocation-cost-{label}",
+                    )
+                    factor_provider = _BoundFakeProvider()
+                    source_provider = _BoundFakeProvider()
+                    for member, provider in (
+                        (factor_member, factor_provider),
+                        (source_member, source_provider),
+                    ):
+                        provider.profile = member.profile
+                        provider.model = member.model
+                        provider.config_sha256 = member.config_sha256
+                        provider.capability_sha256 = member.capability_sha256
+
+                    first_call = controller.invoke_member_json(
+                        execution=execution,
+                        member_id=factor_member.member_id,
+                        provider=factor_provider,
+                        prompt=prompts[factor_member.role],
+                        limits=OperationalModelCallLimits(
+                            currency="USD",
+                            max_input_tokens=20,
+                            max_output_tokens=10,
+                            max_cost=(
+                                "0.99999999999999999999999999995"
+                            ),
+                            max_wall_time_ms=10,
+                            max_attempts=2,
+                        ),
+                    )
+                    usage = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id=cycle_id,
+                    )
+                    first_events_before = journal.list_events(
+                        cycle_id=cycle_id,
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=first_call.call_id,
+                    )
+                    first_attempts_before = usage.list_attempts(
+                        call_id=first_call.call_id
+                    )
+                    self.assertEqual(factor_provider.call_count, 1)
+                    self.assertEqual(
+                        tuple(
+                            event.event_type for event in first_events_before
+                        ),
+                        (
+                            "OPERATIONAL_MODEL_CALL_STARTED",
+                            "OPERATIONAL_MODEL_CALL_COMPLETED",
+                        ),
+                    )
+                    self.assertEqual(len(first_attempts_before), 1)
+                    self.assertEqual(
+                        first_attempts_before[0].final_outcome.value,
+                        "SUCCESS",
+                    )
+
+                    source_call_id = controller._member_call_id(
+                        cycle_id,
+                        source_member.member_id,
+                    )
+                    with self.assertRaises(BudgetExceededError) as rejected:
+                        controller.invoke_member_json(
+                            execution=execution,
+                            member_id=source_member.member_id,
+                            provider=source_provider,
+                            prompt=prompts[source_member.role],
+                            limits=OperationalModelCallLimits(
+                                currency="USD",
+                                max_input_tokens=20,
+                                max_output_tokens=10,
+                                max_cost=(
+                                    "0.00000000000000000000000000006"
+                                ),
+                                max_wall_time_ms=10,
+                                max_attempts=2,
+                            ),
+                        )
+
+                    self.assertEqual(source_provider.call_count, 0)
+                    self.assertEqual(
+                        str(rejected.exception),
+                        "model call allocations exceed the Cycle reservation",
+                    )
+                    source_events = journal.list_events(
+                        cycle_id=cycle_id,
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=source_call_id,
+                    )
+                    self.assertEqual(source_events, ())
+                    self.assertFalse(
+                        any(
+                            event.event_type
+                            == "OPERATIONAL_MODEL_CALL_STARTED"
+                            for event in source_events
+                        )
+                    )
+                    self.assertEqual(
+                        journal.list_events(
+                            cycle_id=cycle_id,
+                            aggregate_type="OPERATIONAL_MODEL_CALL",
+                            aggregate_id=first_call.call_id,
+                        ),
+                        first_events_before,
+                    )
+                    self.assertEqual(
+                        usage.list_attempts(call_id=first_call.call_id),
+                        first_attempts_before,
+                    )
+                    self.assertEqual(
+                        controller.campaign_snapshot().status,
+                        CampaignStatus.ACTIVE,
+                    )
+                    self.assertEqual(
+                        controller.cycle_snapshot(cycle_id).status,
+                        CycleStatus.EXECUTING,
+                    )
 
     def test_known_call_usage_above_its_limits_blocks_immediately(
         self,

@@ -5492,9 +5492,8 @@ class OperationalCampaignController:
             )
         allocated_input = sum(item.max_input_tokens for item in allocations)
         allocated_output = sum(item.max_output_tokens for item in allocations)
-        allocated_cost = sum(
-            (_bounded_cost(item.max_cost) for item in allocations),
-            Decimal("0"),
+        allocated_cost = _add_cost(
+            *(_bounded_cost(item.max_cost) for item in allocations)
         )
         allocated_wall_time = sum(
             item.max_wall_time_ms for item in allocations
