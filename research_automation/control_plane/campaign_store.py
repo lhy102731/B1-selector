@@ -1700,7 +1700,34 @@ class OperationalUsageJournal:
         ]
         if len(usage_events) != 1:
             raise CampaignJournalError("usage must be recorded before final outcome")
-        usage_payload = _event_domain_payload(usage_events[0])
+        usage_event = usage_events[0]
+        expected_usage_envelope = (
+            self._journal._namespace,
+            self._journal._campaign_id,
+            self._cycle_id,
+            "MODEL_ATTEMPT",
+            aggregate_id,
+            "MODEL_USAGE_RECORDED",
+            _event_id(
+                self._journal._namespace,
+                self._journal._campaign_id,
+                self._cycle_id,
+                aggregate_id,
+                "usage",
+            ),
+        )
+        observed_usage_envelope = (
+            usage_event.namespace,
+            usage_event.campaign_id,
+            usage_event.cycle_id,
+            usage_event.aggregate_type,
+            usage_event.aggregate_id,
+            usage_event.event_type,
+            usage_event.event_id,
+        )
+        if observed_usage_envelope != expected_usage_envelope:
+            raise CampaignJournalError("model usage event envelope is invalid")
+        usage_payload = _event_domain_payload(usage_event)
         try:
             envelope = _parse_envelope(usage_payload)
             observed_usage_json, _ = _payload(usage_payload)

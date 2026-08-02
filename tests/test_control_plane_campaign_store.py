@@ -250,6 +250,44 @@ def _rewrite_campaign_event_payload(
         connection.close()
 
 
+def _rewrite_campaign_event_id(
+    root: Path,
+    *,
+    event_id: str,
+    replacement_event_id: str,
+) -> None:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        row = connection.execute(
+            "SELECT event_id, namespace, campaign_id, cycle_id, aggregate_type, "
+            "aggregate_id, event_type, payload_json, occurred_at, sequence "
+            "FROM campaign_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            raise AssertionError("campaign event does not exist")
+        payload_sha256 = _event_integrity_sha256(
+            event_id=replacement_event_id,
+            namespace=row[1],
+            campaign_id=row[2],
+            cycle_id=row[3],
+            aggregate_type=row[4],
+            aggregate_id=row[5],
+            event_type=row[6],
+            payload_json=row[7],
+            occurred_at=row[8],
+            sequence=row[9],
+        )
+        connection.execute(
+            "UPDATE campaign_events SET event_id = ?, payload_sha256 = ? "
+            "WHERE event_id = ?",
+            (replacement_event_id, payload_sha256, event_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _complete_cycle(
     lifecycle: OperationalCampaignLifecycle,
     *,
@@ -2121,6 +2159,97 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    def test_finish_rejects_usage_event_id_alias_without_writing(self) -> None:
+        campaign_id = "campaign-usage-event-id-alias-finish"
+        cycle_id = "cycle-001"
+        call_id = "call-event-id-alias-finish"
+        attempt_id = "call-event-id-alias-finish-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            )
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            replacement_event_id = "legacy-usage-event-alias"
+            self.assertNotEqual(usage_row[0], replacement_event_id)
+            _rewrite_campaign_event_id(
+                root,
+                event_id=usage_row[0],
+                replacement_event_id=replacement_event_id,
+            )
+
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+            count_before = len(rows_before)
+            hashes_before = tuple((row[0], row[8]) for row in rows_before)
+            rewritten_usage_row = next(
+                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            self.assertEqual(rewritten_usage_row[0], replacement_event_id)
+            self.assertEqual(
+                rewritten_usage_row[8],
+                _event_integrity_sha256(
+                    event_id=rewritten_usage_row[0],
+                    namespace=rewritten_usage_row[1],
+                    campaign_id=rewritten_usage_row[2],
+                    cycle_id=rewritten_usage_row[3],
+                    aggregate_type=rewritten_usage_row[4],
+                    aggregate_id=rewritten_usage_row[5],
+                    event_type=rewritten_usage_row[6],
+                    payload_json=rewritten_usage_row[7],
+                    occurred_at=rewritten_usage_row[9],
+                    sequence=rewritten_usage_row[10],
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage event envelope is invalid$",
+            ):
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                )
+
+            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
+            self.assertEqual(rows_after, rows_before)
+            self.assertEqual(len(rows_after), count_before)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after),
+                hashes_before,
+            )
+            self.assertNotIn(
+                "MODEL_USAGE_FINISHED",
+                {row[6] for row in rows_after},
+            )
+
     def test_finish_rejects_noncanonical_usage_payload_without_writing(self) -> None:
         campaign_id = "campaign-usage-noncanonical-finish"
         cycle_id = "cycle-001"
