@@ -111,6 +111,8 @@ _NO_LEARNING_DISPOSITION_RECORDED = (
 )
 _CYCLE_SETTLEMENT_AGGREGATE_TYPE = "OPERATIONAL_CYCLE_SETTLEMENT"
 _CYCLE_SETTLEMENT_RECORDED = "OPERATIONAL_CYCLE_SETTLEMENT_RECORDED"
+_INFORMATION_GAIN_AGGREGATE_TYPE = "OPERATIONAL_INFORMATION_GAIN"
+_INFORMATION_GAIN_RECORDED = "OPERATIONAL_INFORMATION_GAIN_RECORDED"
 _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
 _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
@@ -331,6 +333,18 @@ class OperationalNoLearningSettlementReceipt:
     event_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class OperationalInformationGainReceipt:
+    cycle_id: str
+    information_gain_status: str
+    continuation_eligible: bool
+    settlement_manifest_sha256: str
+    learning_packet_hash: str | None
+    disposition_reason: str | None
+    manifest_sha256: str
+    event_id: str
+
+
 class _FencedOperationalUsageJournal:
     __slots__ = ("_controller", "_execution", "_delegate")
 
@@ -458,6 +472,47 @@ def _evidence_result_payload(evidence: EvidenceResult) -> dict[str, object]:
         "taint_refs": list(evidence.taint_refs),
         "invalidation_codes": list(evidence.invalidation_codes),
     }
+
+
+def _evidence_result_from_payload(payload: object) -> EvidenceResult:
+    if not isinstance(payload, dict) or set(payload) != {
+        "verdict",
+        "protocol_conformance",
+        "audit_grade",
+        "scientific_outcome",
+        "promotion_eligible",
+        "evidence_refs",
+        "access_event_ids",
+        "taint_refs",
+        "invalidation_codes",
+    }:
+        raise CampaignJournalError("stored operational evidence is invalid")
+    try:
+        evidence = EvidenceResult(
+            verdict=payload["verdict"],
+            protocol_conformance=payload["protocol_conformance"],
+            audit_grade=payload["audit_grade"],
+            scientific_outcome=payload["scientific_outcome"],
+            promotion_eligible=payload["promotion_eligible"],
+            evidence_refs=tuple(
+                dict(reference) for reference in payload["evidence_refs"]
+            ),
+            access_event_ids=tuple(payload["access_event_ids"]),
+            taint_refs=tuple(payload["taint_refs"]),
+            invalidation_codes=tuple(payload["invalidation_codes"]),
+        )
+        if _canonical_json_text(
+            _evidence_result_payload(evidence),
+            "replayed operational evidence",
+        ) != _canonical_json_text(payload, "stored operational evidence"):
+            raise CampaignJournalError(
+                "stored operational evidence is not canonical"
+            )
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise CampaignJournalError(
+            "stored operational evidence is invalid"
+        ) from error
+    return evidence
 
 
 def _canonical_task(
@@ -2060,6 +2115,179 @@ class OperationalCampaignController:
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(settle)
 
+    def record_information_gain(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        settlement_receipt: (
+            OperationalCycleSettlementReceipt
+            | OperationalNoLearningSettlementReceipt
+            | None
+        ) = None,
+    ) -> OperationalInformationGainReceipt:
+        """Record controller-derived information gain for one settled Cycle."""
+
+        self._journal._authorize()
+        if settlement_receipt is not None and type(settlement_receipt) not in {
+            OperationalCycleSettlementReceipt,
+            OperationalNoLearningSettlementReceipt,
+        }:
+            raise TypeError(
+                "settlement_receipt must be a formal operational settlement"
+            )
+
+        def record(connection) -> OperationalInformationGainReceipt:
+            cycle_id, current_cycle = (
+                self._require_evidence_execution_generation_in_transaction(
+                    connection,
+                    execution,
+                    allow_information_gain_recorded=True,
+                )
+            )
+            if current_cycle.status not in {
+                CycleStatus.SETTLED,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            }:
+                raise CampaignJournalError(
+                    "information gain requires SETTLED"
+                )
+            resolved_settlement = (
+                settlement_receipt
+                if settlement_receipt is not None
+                else self._stored_settlement_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if type(resolved_settlement) is OperationalCycleSettlementReceipt:
+                packet_hash, settled_sequence = (
+                    self._replay_learned_settlement_receipt_in_transaction(
+                        connection,
+                        cycle_id=cycle_id,
+                        receipt=resolved_settlement,
+                    )
+                )
+                information_gain_status = "ELIGIBLE_LEARNING_COMMITTED"
+                continuation_eligible = True
+                disposition_reason = None
+            else:
+                disposition_reason, settled_sequence = (
+                    self._replay_no_learning_settlement_receipt_in_transaction(
+                        connection,
+                        cycle_id=cycle_id,
+                        receipt=resolved_settlement,
+                    )
+                )
+                packet_hash = None
+                if disposition_reason in {
+                    "NO_MATERIAL_FINDING",
+                    "MATERIAL_UNAPPROVED",
+                    "RESEARCH_ONLY",
+                }:
+                    information_gain_status = disposition_reason
+                else:
+                    information_gain_status = "INELIGIBLE_EVIDENCE"
+                continuation_eligible = False
+            identity = {
+                "schema_version": (
+                    "control_plane.operational_information_gain.v1"
+                ),
+                "cycle_id": cycle_id,
+                "information_gain_status": information_gain_status,
+                "continuation_eligible": continuation_eligible,
+                "settlement_manifest_sha256": (
+                    resolved_settlement.manifest_sha256
+                ),
+                "learning_packet_hash": packet_hash,
+                "disposition_reason": disposition_reason,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_information_gain.v1",
+                identity,
+                "operational information gain",
+            )
+            payload = {**identity, "manifest_sha256": manifest_sha256}
+            receipt = OperationalInformationGainReceipt(
+                cycle_id=cycle_id,
+                information_gain_status=information_gain_status,
+                continuation_eligible=continuation_eligible,
+                settlement_manifest_sha256=(
+                    resolved_settlement.manifest_sha256
+                ),
+                learning_packet_hash=packet_hash,
+                disposition_reason=disposition_reason,
+                manifest_sha256=manifest_sha256,
+                event_id=self._information_gain_event_id(cycle_id),
+            )
+            events = self._information_gain_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if current_cycle.status is CycleStatus.SETTLED:
+                if (
+                    events
+                    or self._journal._event_in_transaction(
+                        connection,
+                        receipt.event_id,
+                    )
+                    is not None
+                    or self._journal._event_in_transaction(
+                        connection,
+                        self._lifecycle._cycle_event_id(
+                            cycle_id,
+                            CycleStatus.INFORMATION_GAIN_RECORDED.value,
+                        ),
+                    )
+                    is not None
+                ):
+                    raise CampaignJournalError(
+                        "operational information gain conflicts"
+                    )
+                event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=receipt.event_id,
+                    cycle_id=cycle_id,
+                    aggregate_type=_INFORMATION_GAIN_AGGREGATE_TYPE,
+                    aggregate_id=cycle_id,
+                    event_type=_INFORMATION_GAIN_RECORDED,
+                    payload=payload,
+                )
+            else:
+                if (
+                    len(events) != 1
+                    or events[0].event_id != receipt.event_id
+                    or events[0].event_type != _INFORMATION_GAIN_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(events[0]),
+                        "stored operational information gain",
+                    )
+                    != _canonical_json_text(
+                        payload,
+                        "expected operational information gain",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational information gain conflicts"
+                    )
+                event = events[0]
+            if event.sequence <= settled_sequence:
+                raise CampaignJournalError(
+                    "information gain must follow SETTLED"
+                )
+            advanced = self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.SETTLED,
+                next_status=CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+            if advanced.sequence <= event.sequence:
+                raise CampaignJournalError(
+                    "INFORMATION_GAIN_RECORDED must follow its receipt"
+                )
+            return receipt
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
 
@@ -2856,6 +3084,79 @@ class OperationalCampaignController:
             )
         return artifact
 
+    def _replay_stored_evidence_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        expected_manifest_sha256: str,
+    ) -> tuple[object, OperationalEvidenceReceipt]:
+        _stored_sha256(expected_manifest_sha256, "evidence manifest")
+        events = self._model_evidence_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        payload = (
+            _event_domain_payload(events[0])
+            if len(events) == 1
+            else {}
+        )
+        if set(payload) != {
+            "schema_version",
+            "cycle_id",
+            "member_id",
+            "preparation_manifest_sha256",
+            "execution_usage_manifest_sha256",
+            "model_call_manifest_sha256",
+            "artifact_sha256",
+            "adapter_manifest_sha256",
+            "evidence",
+            "manifest_sha256",
+        }:
+            raise CampaignJournalError(
+                "operational evidence receipt conflicts"
+            )
+        try:
+            receipt = OperationalEvidenceReceipt(
+                cycle_id=payload["cycle_id"],
+                member_id=payload["member_id"],
+                preparation_manifest_sha256=(
+                    payload["preparation_manifest_sha256"]
+                ),
+                execution_usage_manifest_sha256=(
+                    payload["execution_usage_manifest_sha256"]
+                ),
+                model_call_manifest_sha256=(
+                    payload["model_call_manifest_sha256"]
+                ),
+                artifact_sha256=payload["artifact_sha256"],
+                adapter_manifest_sha256=(
+                    payload["adapter_manifest_sha256"]
+                ),
+                evidence=_evidence_result_from_payload(payload["evidence"]),
+                manifest_sha256=payload["manifest_sha256"],
+                event_id=events[0].event_id,
+            )
+            current_cycle = self._lifecycle._replay_cycle(
+                self._lifecycle._cycle_events(connection, cycle_id)
+            )
+            self._replay_evidence_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                receipt=receipt,
+                current_cycle=current_cycle,
+                allow_settled_reservation=True,
+            )
+        except (CampaignJournalError, TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "operational evidence receipt conflicts"
+            ) from error
+        if receipt.manifest_sha256 != expected_manifest_sha256:
+            raise CampaignJournalError(
+                "operational evidence receipt conflicts"
+            )
+        return events[0], receipt
+
     def _learning_commit_state_in_transaction(
         self,
         connection,
@@ -3369,6 +3670,602 @@ class OperationalCampaignController:
             connection,
             cycle_id=cycle_id,
             aggregate_type=_CYCLE_SETTLEMENT_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _stored_settlement_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> (
+        OperationalCycleSettlementReceipt
+        | OperationalNoLearningSettlementReceipt
+    ):
+        events = self._cycle_settlement_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if (
+            len(events) != 1
+            or events[0].event_id != self._cycle_settlement_event_id(cycle_id)
+            or events[0].event_type != _CYCLE_SETTLEMENT_RECORDED
+        ):
+            raise CampaignJournalError(
+                "operational Cycle settlement receipt conflicts"
+            )
+        payload = _event_domain_payload(events[0])
+        schema_version = payload.get("schema_version")
+        if (
+            schema_version == "control_plane.operational_cycle_settlement.v1"
+            and set(payload)
+            == {
+                "schema_version",
+                "cycle_id",
+                "reservation_id",
+                "settlement_state",
+                "execution_usage_manifest_sha256",
+                "learning_commit_manifest_sha256",
+                "budget_settlement_event_id",
+                "manifest_sha256",
+            }
+        ):
+            return OperationalCycleSettlementReceipt(
+                cycle_id=payload["cycle_id"],
+                reservation_id=payload["reservation_id"],
+                settlement_state=payload["settlement_state"],
+                execution_usage_manifest_sha256=(
+                    payload["execution_usage_manifest_sha256"]
+                ),
+                learning_commit_manifest_sha256=(
+                    payload["learning_commit_manifest_sha256"]
+                ),
+                budget_settlement_event_id=(
+                    payload["budget_settlement_event_id"]
+                ),
+                manifest_sha256=payload["manifest_sha256"],
+                event_id=events[0].event_id,
+            )
+        if (
+            schema_version
+            == "control_plane.operational_no_learning_settlement.v1"
+            and set(payload)
+            == {
+                "schema_version",
+                "cycle_id",
+                "reservation_id",
+                "disposition_reason",
+                "evidence_manifest_sha256",
+                "execution_usage_manifest_sha256",
+                "settlement_state",
+                "disposition_event_id",
+                "budget_settlement_event_id",
+                "manifest_sha256",
+            }
+        ):
+            return OperationalNoLearningSettlementReceipt(
+                cycle_id=payload["cycle_id"],
+                reservation_id=payload["reservation_id"],
+                disposition_reason=payload["disposition_reason"],
+                evidence_manifest_sha256=(
+                    payload["evidence_manifest_sha256"]
+                ),
+                execution_usage_manifest_sha256=(
+                    payload["execution_usage_manifest_sha256"]
+                ),
+                settlement_state=payload["settlement_state"],
+                disposition_event_id=payload["disposition_event_id"],
+                budget_settlement_event_id=(
+                    payload["budget_settlement_event_id"]
+                ),
+                manifest_sha256=payload["manifest_sha256"],
+                event_id=events[0].event_id,
+            )
+        raise CampaignJournalError(
+            "operational Cycle settlement receipt conflicts"
+        )
+
+    def _replay_learned_settlement_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        receipt: OperationalCycleSettlementReceipt,
+    ) -> tuple[str, int]:
+        for value, name in (
+            (receipt.execution_usage_manifest_sha256, "execution usage"),
+            (receipt.learning_commit_manifest_sha256, "Learning Commit"),
+            (receipt.manifest_sha256, "Cycle settlement"),
+        ):
+            _stored_sha256(value, name)
+        reservation_id = self._reservation_id(cycle_id)
+        expected_identity = {
+            "schema_version": "control_plane.operational_cycle_settlement.v1",
+            "cycle_id": cycle_id,
+            "reservation_id": reservation_id,
+            "settlement_state": receipt.settlement_state,
+            "execution_usage_manifest_sha256": (
+                receipt.execution_usage_manifest_sha256
+            ),
+            "learning_commit_manifest_sha256": (
+                receipt.learning_commit_manifest_sha256
+            ),
+            "budget_settlement_event_id": receipt.budget_settlement_event_id,
+        }
+        expected_payload = {
+            **expected_identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_cycle_settlement.v1",
+                expected_identity,
+                "replayed operational Cycle settlement",
+            ),
+        }
+        settlement_events = self._cycle_settlement_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        usage_events = self._execution_usage_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        learning_events = self._learning_commit_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        budget_events = self._budget._events_in_transaction(connection)
+        self._budget._replay(budget_events)
+        budget_event = next(
+            (
+                event
+                for event in budget_events
+                if event.event_id == receipt.budget_settlement_event_id
+            ),
+            None,
+        )
+        budget_payload = (
+            _event_domain_payload(budget_event)
+            if budget_event is not None
+            else {}
+        )
+        usage_payload = (
+            _event_domain_payload(usage_events[0])
+            if len(usage_events) == 1
+            else {}
+        )
+        lifecycle_events = self._lifecycle._cycle_events(
+            connection,
+            cycle_id,
+        )
+        learning_transitions = tuple(
+            event
+            for event in lifecycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.LEARNING_COMMITTED.value
+        )
+        settled_transitions = tuple(
+            event
+            for event in lifecycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.SETTLED.value
+        )
+        learning_payload = (
+            _event_domain_payload(learning_events[0])
+            if len(learning_events) == 1
+            else {}
+        )
+        if set(learning_payload) != {
+            "schema_version",
+            "cycle_id",
+            "member_id",
+            "evidence_manifest_sha256",
+            "authority_task_report_sha256",
+            "packet_hash",
+            "manifest_sha256",
+        }:
+            raise CampaignJournalError(
+                "operational Cycle settlement receipt conflicts"
+            )
+        try:
+            replayed_learning = OperationalLearningCommitReceipt(
+                cycle_id=learning_payload["cycle_id"],
+                member_id=learning_payload["member_id"],
+                evidence_manifest_sha256=(
+                    learning_payload["evidence_manifest_sha256"]
+                ),
+                authority_task_report_sha256=(
+                    learning_payload["authority_task_report_sha256"]
+                ),
+                packet_hash=learning_payload["packet_hash"],
+                manifest_sha256=learning_payload["manifest_sha256"],
+                event_id=learning_events[0].event_id,
+            )
+            learning_event = (
+                self._replay_learning_commit_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    receipt=replayed_learning,
+                )
+            )
+            _, replayed_evidence = (
+                self._replay_stored_evidence_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_manifest_sha256=(
+                        replayed_learning.evidence_manifest_sha256
+                    ),
+                )
+            )
+        except (CampaignJournalError, TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "operational Cycle settlement receipt conflicts"
+            ) from error
+        learning_identity = {
+            key: value
+            for key, value in learning_payload.items()
+            if key != "manifest_sha256"
+        }
+        packet_hash = replayed_learning.packet_hash
+        if (
+            receipt.cycle_id != cycle_id
+            or receipt.reservation_id != reservation_id
+            or receipt.event_id != self._cycle_settlement_event_id(cycle_id)
+            or receipt.manifest_sha256 != expected_payload["manifest_sha256"]
+            or len(settlement_events) != 1
+            or settlement_events[0].event_id != receipt.event_id
+            or settlement_events[0].event_type != _CYCLE_SETTLEMENT_RECORDED
+            or _canonical_json_text(
+                _event_domain_payload(settlement_events[0]),
+                "stored operational Cycle settlement",
+            )
+            != _canonical_json_text(
+                expected_payload,
+                "replayed operational Cycle settlement",
+            )
+            or len(usage_events) != 1
+            or usage_events[0].event_type != _EXECUTION_USAGE_FROZEN
+            or _event_domain_payload(usage_events[0]).get("manifest_sha256")
+            != receipt.execution_usage_manifest_sha256
+            or replayed_evidence.execution_usage_manifest_sha256
+            != receipt.execution_usage_manifest_sha256
+            or replayed_evidence.member_id != replayed_learning.member_id
+            or learning_payload.get("manifest_sha256")
+            != receipt.learning_commit_manifest_sha256
+            or learning_payload.get("manifest_sha256")
+            != _controller_sha256(
+                b"control_plane.operational_learning_commit.v1",
+                learning_identity,
+                "replayed operational Learning Commit",
+            )
+            or budget_event is None
+            or budget_event.event_type != _BUDGET_SETTLED
+            or budget_event.event_id
+            != self._budget._event_id(
+                "settle",
+                reservation_id=reservation_id,
+            )
+            or budget_payload.get("reservation_id") != reservation_id
+            or budget_payload.get("state") != receipt.settlement_state
+            or any(
+                budget_payload.get(field) != usage_payload.get(field)
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cost",
+                    "wall_time_ms",
+                    "tool_attempts",
+                    "data_exposures",
+                    "disk_growth_bytes",
+                )
+            )
+            or len(learning_transitions) != 1
+            or len(settled_transitions) != 1
+            or usage_events[0].sequence >= learning_event.sequence
+            or learning_transitions[0].sequence
+            <= learning_event.sequence
+            or budget_event.sequence <= learning_transitions[0].sequence
+            or settlement_events[0].sequence <= budget_event.sequence
+            or settled_transitions[0].sequence
+            <= settlement_events[0].sequence
+        ):
+            raise CampaignJournalError(
+                "operational Cycle settlement receipt conflicts"
+            )
+        _stored_sha256(packet_hash, "Learning packet")
+        return packet_hash, settled_transitions[0].sequence
+
+    def _replay_no_learning_settlement_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        receipt: OperationalNoLearningSettlementReceipt,
+    ) -> tuple[str, int]:
+        for value, name in (
+            (receipt.evidence_manifest_sha256, "evidence"),
+            (receipt.execution_usage_manifest_sha256, "execution usage"),
+            (receipt.manifest_sha256, "no-Learning settlement"),
+        ):
+            _stored_sha256(value, name)
+        reservation_id = self._reservation_id(cycle_id)
+        expected_identity = {
+            "schema_version": (
+                "control_plane.operational_no_learning_settlement.v1"
+            ),
+            "cycle_id": cycle_id,
+            "reservation_id": reservation_id,
+            "disposition_reason": receipt.disposition_reason,
+            "evidence_manifest_sha256": receipt.evidence_manifest_sha256,
+            "execution_usage_manifest_sha256": (
+                receipt.execution_usage_manifest_sha256
+            ),
+            "settlement_state": receipt.settlement_state,
+            "disposition_event_id": receipt.disposition_event_id,
+            "budget_settlement_event_id": receipt.budget_settlement_event_id,
+        }
+        expected_payload = {
+            **expected_identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_no_learning_settlement.v1",
+                expected_identity,
+                "replayed no-Learning settlement",
+            ),
+        }
+        settlement_events = self._cycle_settlement_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        disposition_events = (
+            self._no_learning_disposition_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+        )
+        evidence_events = self._model_evidence_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        usage_events = self._execution_usage_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        budget_events = self._budget._events_in_transaction(connection)
+        self._budget._replay(budget_events)
+        budget_event = next(
+            (
+                event
+                for event in budget_events
+                if event.event_id == receipt.budget_settlement_event_id
+            ),
+            None,
+        )
+        budget_payload = (
+            _event_domain_payload(budget_event)
+            if budget_event is not None
+            else {}
+        )
+        usage_payload = (
+            _event_domain_payload(usage_events[0])
+            if len(usage_events) == 1
+            else {}
+        )
+        lifecycle_events = self._lifecycle._cycle_events(
+            connection,
+            cycle_id,
+        )
+        skipped_transitions = tuple(
+            event
+            for event in lifecycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.LEARNING_SKIPPED.value
+        )
+        settled_transitions = tuple(
+            event
+            for event in lifecycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.SETTLED.value
+        )
+        disposition_payload = (
+            _event_domain_payload(disposition_events[0])
+            if len(disposition_events) == 1
+            else {}
+        )
+        disposition_identity = {
+            key: value
+            for key, value in disposition_payload.items()
+            if key != "manifest_sha256"
+        }
+        try:
+            evidence_event, replayed_evidence = (
+                self._replay_stored_evidence_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_manifest_sha256=(
+                        receipt.evidence_manifest_sha256
+                    ),
+                )
+            )
+            replayed_disposition_reason = (
+                self._no_learning_disposition_reason(
+                    replayed_evidence.evidence
+                )
+            )
+        except (CampaignJournalError, TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "operational no-Learning settlement receipt conflicts"
+            ) from error
+        if (
+            receipt.cycle_id != cycle_id
+            or receipt.reservation_id != reservation_id
+            or receipt.event_id != self._cycle_settlement_event_id(cycle_id)
+            or receipt.disposition_event_id
+            != self._no_learning_disposition_event_id(cycle_id)
+            or receipt.manifest_sha256 != expected_payload["manifest_sha256"]
+            or len(settlement_events) != 1
+            or settlement_events[0].event_id != receipt.event_id
+            or settlement_events[0].event_type != _CYCLE_SETTLEMENT_RECORDED
+            or _canonical_json_text(
+                _event_domain_payload(settlement_events[0]),
+                "stored no-Learning settlement",
+            )
+            != _canonical_json_text(
+                expected_payload,
+                "replayed no-Learning settlement",
+            )
+            or len(disposition_events) != 1
+            or disposition_events[0].event_id != receipt.disposition_event_id
+            or disposition_events[0].event_type
+            != _NO_LEARNING_DISPOSITION_RECORDED
+            or set(disposition_payload)
+            != {
+                "schema_version",
+                "cycle_id",
+                "member_id",
+                "evidence_manifest_sha256",
+                "evidence_verdict",
+                "scientific_outcome",
+                "disposition_reason",
+                "manifest_sha256",
+            }
+            or disposition_payload.get("schema_version")
+            != "control_plane.operational_no_learning_disposition.v1"
+            or disposition_payload.get("cycle_id") != cycle_id
+            or disposition_payload.get("evidence_manifest_sha256")
+            != receipt.evidence_manifest_sha256
+            or disposition_payload.get("disposition_reason")
+            != receipt.disposition_reason
+            or disposition_payload.get("disposition_reason")
+            != replayed_disposition_reason
+            or disposition_payload.get("member_id")
+            != replayed_evidence.member_id
+            or disposition_payload.get("evidence_verdict")
+            != replayed_evidence.evidence.verdict
+            or disposition_payload.get("scientific_outcome")
+            != replayed_evidence.evidence.scientific_outcome
+            or disposition_payload.get("manifest_sha256")
+            != _controller_sha256(
+                b"control_plane.operational_no_learning_disposition.v1",
+                disposition_identity,
+                "replayed no-Learning disposition",
+            )
+            or len(evidence_events) != 1
+            or evidence_events[0].event_type != _MODEL_EVIDENCE_RECORDED
+            or evidence_events[0].event_id != evidence_event.event_id
+            or _event_domain_payload(evidence_events[0]).get(
+                "manifest_sha256"
+            )
+            != receipt.evidence_manifest_sha256
+            or len(usage_events) != 1
+            or usage_events[0].event_type != _EXECUTION_USAGE_FROZEN
+            or _event_domain_payload(usage_events[0]).get("manifest_sha256")
+            != receipt.execution_usage_manifest_sha256
+            or replayed_evidence.execution_usage_manifest_sha256
+            != receipt.execution_usage_manifest_sha256
+            or budget_event is None
+            or budget_event.event_type != _BUDGET_SETTLED
+            or budget_event.event_id
+            != self._budget._event_id(
+                "settle",
+                reservation_id=reservation_id,
+            )
+            or budget_payload.get("reservation_id") != reservation_id
+            or budget_payload.get("state") != receipt.settlement_state
+            or any(
+                budget_payload.get(field) != usage_payload.get(field)
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "cost",
+                    "wall_time_ms",
+                    "tool_attempts",
+                    "data_exposures",
+                    "disk_growth_bytes",
+                )
+            )
+            or len(skipped_transitions) != 1
+            or len(settled_transitions) != 1
+            or self._learning_commit_intent_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            or self._learning_commit_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            or usage_events[0].sequence >= evidence_events[0].sequence
+            or disposition_events[0].sequence <= evidence_events[0].sequence
+            or skipped_transitions[0].sequence
+            <= disposition_events[0].sequence
+            or budget_event.sequence <= skipped_transitions[0].sequence
+            or settlement_events[0].sequence <= budget_event.sequence
+            or settled_transitions[0].sequence
+            <= settlement_events[0].sequence
+        ):
+            raise CampaignJournalError(
+                "operational no-Learning settlement receipt conflicts"
+            )
+        if receipt.disposition_reason not in {
+            "NO_MATERIAL_FINDING",
+            "TAINTED_EVIDENCE",
+            "EVIDENCE_INVALID",
+            "MATERIAL_UNAPPROVED",
+            "RESEARCH_ONLY",
+        }:
+            raise CampaignJournalError(
+                "operational no-Learning disposition is invalid"
+            )
+        return receipt.disposition_reason, settled_transitions[0].sequence
+
+    def _information_gain_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_information_gain.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _information_gain_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_type, aggregate_id, event_type "
+            "FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND ((aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)) "
+            "OR (event_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)))",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _INFORMATION_GAIN_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+                _INFORMATION_GAIN_RECORDED,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_type"] != _INFORMATION_GAIN_AGGREGATE_TYPE
+            or row["aggregate_id"] != cycle_id
+            or row["event_type"] != _INFORMATION_GAIN_RECORDED
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational information gain stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_INFORMATION_GAIN_AGGREGATE_TYPE,
             aggregate_id=cycle_id,
         )
 
@@ -4184,19 +5081,25 @@ class OperationalCampaignController:
         self,
         connection,
         execution: ExecutingOperationalCycle,
+        *,
+        allow_information_gain_recorded: bool = False,
     ) -> tuple[str, CycleSnapshot]:
         if not isinstance(execution, ExecutingOperationalCycle):
             raise TypeError("execution must be an ExecutingOperationalCycle")
         cycle_id = _identifier(execution.cycle.cycle_id, "execution.cycle_id")
+        allowed_execution_statuses = {
+            CycleStatus.EXECUTING,
+            CycleStatus.EVIDENCE_READY,
+            CycleStatus.LEARNING_COMMITTED,
+            CycleStatus.SETTLED,
+        }
+        if allow_information_gain_recorded:
+            allowed_execution_statuses.add(
+                CycleStatus.INFORMATION_GAIN_RECORDED
+            )
         if (
             execution.lease.cycle_id != cycle_id
-            or execution.cycle.status
-            not in {
-                CycleStatus.EXECUTING,
-                CycleStatus.EVIDENCE_READY,
-                CycleStatus.LEARNING_COMMITTED,
-                CycleStatus.SETTLED,
-            }
+            or execution.cycle.status not in allowed_execution_statuses
         ):
             raise CampaignJournalError("execution receipt is invalid")
         try:
@@ -4223,15 +5126,19 @@ class OperationalCampaignController:
         lease_history = self._leases._replay(
             self._leases._events(connection, cycle_id)
         )
+        allowed_current_statuses = {
+            CycleStatus.EXECUTING,
+            CycleStatus.EVIDENCE_READY,
+            CycleStatus.LEARNING_COMMITTED,
+            CycleStatus.SETTLED,
+        }
+        if allow_information_gain_recorded:
+            allowed_current_statuses.add(
+                CycleStatus.INFORMATION_GAIN_RECORDED
+            )
         if (
             campaign.status is not CampaignStatus.ACTIVE
-            or current_cycle.status
-            not in {
-                CycleStatus.EXECUTING,
-                CycleStatus.EVIDENCE_READY,
-                CycleStatus.LEARNING_COMMITTED,
-                CycleStatus.SETTLED,
-            }
+            or current_cycle.status not in allowed_current_statuses
             or not original_events
             or self._lifecycle._replay_cycle(original_events)
             != execution.cycle
@@ -4727,6 +5634,7 @@ __all__ = [
     "OperationalCycleSettlementReceipt",
     "OperationalEvidenceReceipt",
     "OperationalExecutionUsage",
+    "OperationalInformationGainReceipt",
     "OperationalLearningCommitReceipt",
     "OperationalNoLearningSettlementReceipt",
     "OperationalCampaignController",

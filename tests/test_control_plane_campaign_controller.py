@@ -423,6 +423,38 @@ def _controller_event_id(domain: bytes, *parts: str) -> str:
     ).hexdigest()
 
 
+def _rewrite_campaign_event_payload(root, event, payload) -> None:
+    payload_json = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    integrity = _event_integrity_sha256(
+        event_id=event.event_id,
+        namespace=event.namespace,
+        campaign_id=event.campaign_id,
+        cycle_id=event.cycle_id,
+        aggregate_type=event.aggregate_type,
+        aggregate_id=event.aggregate_id,
+        event_type=event.event_type,
+        payload_json=payload_json,
+        occurred_at=event.occurred_at.isoformat(),
+        sequence=event.sequence,
+    )
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        connection.execute(
+            "UPDATE campaign_events SET payload_json = ?, "
+            "payload_sha256 = ? WHERE event_id = ?",
+            (payload_json, integrity, event.event_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 class OperationalCampaignControllerTests(unittest.TestCase):
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
         campaign_id = "campaign-controller-001"
@@ -6777,6 +6809,923 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(
                 recovered.budget_snapshot().spent_input_tokens,
                 usage.input_tokens,
+            )
+
+    def test_learned_settlement_records_information_gain(self) -> None:
+        campaign_id = "campaign-controller-information-gain-learned"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        packet_hash = "f" * 64
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value=packet_hash,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value=packet_hash,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+            settled = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+            replayed = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+            replayed_from_current = controller.record_information_gain(
+                execution=ExecutingOperationalCycle(
+                    cycle=controller.cycle_snapshot("cycle-001"),
+                    lease=execution.lease,
+                ),
+                settlement_receipt=settled,
+            )
+
+            self.assertEqual(replayed, information_gain)
+            self.assertEqual(replayed_from_current, information_gain)
+            self.assertEqual(
+                information_gain.information_gain_status,
+                "ELIGIBLE_LEARNING_COMMITTED",
+            )
+            self.assertTrue(information_gain.continuation_eligible)
+            self.assertEqual(information_gain.learning_packet_hash, packet_hash)
+            self.assertIsNone(information_gain.disposition_reason)
+            self.assertEqual(
+                information_gain.settlement_manifest_sha256,
+                settled.manifest_sha256,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=replace(
+                        settled,
+                        learning_commit_manifest_sha256="a" * 64,
+                    ),
+                )
+
+    def test_no_material_settlement_records_no_information_gain(self) -> None:
+        campaign_id = "campaign-controller-information-gain-no-material"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+            replayed = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+
+            self.assertEqual(replayed, information_gain)
+            self.assertEqual(
+                information_gain.information_gain_status,
+                "NO_MATERIAL_FINDING",
+            )
+            self.assertFalse(information_gain.continuation_eligible)
+            self.assertIsNone(information_gain.learning_packet_hash)
+            self.assertEqual(
+                information_gain.disposition_reason,
+                "NO_MATERIAL_FINDING",
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+
+    def test_information_gain_rejects_foreign_learning_payload(self) -> None:
+        campaign_id = "campaign-controller-information-gain-foreign-learning"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        packet_hash = "f" * 64
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value=packet_hash,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value=packet_hash,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+            settled = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            learning_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                aggregate_id="cycle-001",
+            )[0]
+            learning_payload = json.loads(learning_event.payload_json)
+            learning_payload["cycle_id"] = "cycle-foreign"
+            learning_identity = {
+                key: value
+                for key, value in learning_payload.items()
+                if key not in {"manifest_sha256", "_authority_grant_id"}
+            }
+            learning_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.operational_learning_commit.v1",
+                learning_identity,
+                "forged foreign Learning Commit",
+            )
+            settlement_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                aggregate_id="cycle-001",
+            )[0]
+            settlement_payload = json.loads(settlement_event.payload_json)
+            settlement_payload["learning_commit_manifest_sha256"] = (
+                learning_payload["manifest_sha256"]
+            )
+            settlement_identity = {
+                key: value
+                for key, value in settlement_payload.items()
+                if key not in {"manifest_sha256", "_authority_grant_id"}
+            }
+            settlement_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.operational_cycle_settlement.v1",
+                settlement_identity,
+                "forged foreign Learning settlement",
+            )
+
+            connection = sqlite3.connect(root / "operational.sqlite3")
+            try:
+                for event, payload in (
+                    (learning_event, learning_payload),
+                    (settlement_event, settlement_payload),
+                ):
+                    payload_json = json.dumps(
+                        payload,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                    integrity = _event_integrity_sha256(
+                        event_id=event.event_id,
+                        namespace=event.namespace,
+                        campaign_id=event.campaign_id,
+                        cycle_id=event.cycle_id,
+                        aggregate_type=event.aggregate_type,
+                        aggregate_id=event.aggregate_id,
+                        event_type=event.event_type,
+                        payload_json=payload_json,
+                        occurred_at=event.occurred_at.isoformat(),
+                        sequence=event.sequence,
+                    )
+                    connection.execute(
+                        "UPDATE campaign_events SET payload_json = ?, "
+                        "payload_sha256 = ? WHERE event_id = ?",
+                        (payload_json, integrity, event.event_id),
+                    )
+                connection.commit()
+            finally:
+                connection.close()
+            forged_settlement = replace(
+                settled,
+                learning_commit_manifest_sha256=(
+                    learning_payload["manifest_sha256"]
+                ),
+                manifest_sha256=settlement_payload["manifest_sha256"],
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=forged_settlement,
+                )
+
+    def test_information_gain_rejects_foreign_budget_settlement(self) -> None:
+        campaign_id = "campaign-controller-information-gain-foreign-budget"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        packet_hash = "f" * 64
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value=packet_hash,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value=packet_hash,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+            foreign_reservation_id = "foreign-reservation"
+            controller._budget.reserve(
+                reservation_id=foreign_reservation_id,
+                call_id="foreign-call",
+                max_input_tokens=0,
+                max_output_tokens=0,
+                max_cost="0",
+            )
+            controller._budget.settle(
+                foreign_reservation_id,
+                input_tokens=0,
+                output_tokens=0,
+                cost="0",
+            )
+            foreign_budget_event_id = controller._budget._event_id(
+                "settle",
+                reservation_id=foreign_reservation_id,
+            )
+            settled = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            settlement_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                aggregate_id="cycle-001",
+            )[0]
+            settlement_payload = json.loads(settlement_event.payload_json)
+            settlement_payload["budget_settlement_event_id"] = (
+                foreign_budget_event_id
+            )
+            settlement_identity = {
+                key: value
+                for key, value in settlement_payload.items()
+                if key not in {"manifest_sha256", "_authority_grant_id"}
+            }
+            settlement_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.operational_cycle_settlement.v1",
+                settlement_identity,
+                "forged foreign budget settlement",
+            )
+            payload_json = json.dumps(
+                settlement_payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            integrity = _event_integrity_sha256(
+                event_id=settlement_event.event_id,
+                namespace=settlement_event.namespace,
+                campaign_id=settlement_event.campaign_id,
+                cycle_id=settlement_event.cycle_id,
+                aggregate_type=settlement_event.aggregate_type,
+                aggregate_id=settlement_event.aggregate_id,
+                event_type=settlement_event.event_type,
+                payload_json=payload_json,
+                occurred_at=settlement_event.occurred_at.isoformat(),
+                sequence=settlement_event.sequence,
+            )
+            connection = sqlite3.connect(root / "operational.sqlite3")
+            try:
+                connection.execute(
+                    "UPDATE campaign_events SET payload_json = ?, "
+                    "payload_sha256 = ? WHERE event_id = ?",
+                    (payload_json, integrity, settlement_event.event_id),
+                )
+                connection.execute(
+                    "DELETE FROM campaign_events WHERE event_id = ?",
+                    (settled.budget_settlement_event_id,),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+            forged_settlement = replace(
+                settled,
+                budget_settlement_event_id=foreign_budget_event_id,
+                manifest_sha256=settlement_payload["manifest_sha256"],
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=forged_settlement,
+                )
+
+    def test_information_gain_replays_execution_usage_content(self) -> None:
+        campaign_id = "campaign-controller-information-gain-usage-content"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            usage_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id="cycle-001",
+            )[0]
+            budget_event = next(
+                event
+                for event in journal.list_events(
+                    cycle_id=None,
+                    aggregate_type="CAMPAIGN_BUDGET",
+                    aggregate_id=controller._budget._budget_id,
+                )
+                if event.event_id == settled.budget_settlement_event_id
+            )
+            usage_payload = json.loads(usage_event.payload_json)
+            budget_payload = json.loads(budget_event.payload_json)
+            usage_payload["input_tokens"] = int(
+                usage_payload["input_tokens"]
+            ) - 1
+            budget_payload["input_tokens"] = usage_payload["input_tokens"]
+            _rewrite_campaign_event_payload(root, usage_event, usage_payload)
+            _rewrite_campaign_event_payload(root, budget_event, budget_payload)
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+    def test_information_gain_replays_no_learning_evidence_content(self) -> None:
+        campaign_id = "campaign-controller-information-gain-evidence-content"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            evidence_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                aggregate_id="cycle-001",
+            )[0]
+            evidence_payload = json.loads(evidence_event.payload_json)
+            evidence_payload["evidence"]["verdict"] = "EVIDENCE_INVALID"
+            evidence_payload["evidence"]["audit_grade"] = "INVALID"
+            evidence_payload["evidence"]["scientific_outcome"] = "UNKNOWN"
+            evidence_payload["evidence"]["invalidation_codes"] = [
+                "FORGED_EVIDENCE"
+            ]
+            _rewrite_campaign_event_payload(
+                root,
+                evidence_event,
+                evidence_payload,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+    def test_information_gain_rejects_extended_disposition_schema(self) -> None:
+        campaign_id = "campaign-controller-information-gain-disposition-schema"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            disposition_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_NO_LEARNING_DISPOSITION",
+                aggregate_id="cycle-001",
+            )[0]
+            disposition_payload = json.loads(disposition_event.payload_json)
+            disposition_payload["unknown_v1_field"] = "forged"
+            disposition_identity = {
+                key: value
+                for key, value in disposition_payload.items()
+                if key not in {"manifest_sha256", "_authority_grant_id"}
+            }
+            disposition_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.operational_no_learning_disposition.v1",
+                disposition_identity,
+                "extended no-Learning disposition",
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                disposition_event,
+                disposition_payload,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "settlement receipt conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+    def test_tainted_settlement_records_ineligible_information_gain(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-information-gain-tainted"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_TaintedEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+
+            self.assertEqual(
+                information_gain.information_gain_status,
+                "INELIGIBLE_EVIDENCE",
+            )
+            self.assertFalse(information_gain.continuation_eligible)
+            self.assertIsNone(information_gain.learning_packet_hash)
+            self.assertEqual(
+                information_gain.disposition_reason,
+                "TAINTED_EVIDENCE",
+            )
+
+    def test_non_promoted_material_keeps_its_information_gain_status(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "MATERIAL_UNAPPROVED",
+                {
+                    "kind": "NEGATIVE",
+                    "summary": "Different approved claim.",
+                },
+            ),
+            ("RESEARCH_ONLY", None),
+        )
+        for expected_status, approved_claim in cases:
+            campaign_id = (
+                "campaign-controller-information-gain-"
+                + expected_status.lower().replace("_", "-")
+            )
+            with self.subTest(expected_status=expected_status):
+                with _authorized_campaign(campaign_id) as (
+                    root,
+                    _,
+                    journal,
+                ):
+                    controller, execution, member, usage = (
+                        _completed_evidence_model_call(
+                            root,
+                            journal,
+                            campaign_id=campaign_id,
+                            provider=(
+                                _EligibleEvidenceArtifactBoundFakeProvider()
+                            ),
+                        )
+                    )
+                    evidence = controller.record_model_evidence(
+                        execution=execution,
+                        member_id=member.member_id,
+                        evidence_adapter=EvidenceAdapter(
+                            known_runners={"fixture-runner": "1.0.0"},
+                            approved_protocol={"label": "synthetic-only"},
+                            approved_claim=approved_claim,
+                        ),
+                    )
+                    settled = controller.settle_cycle_without_learning(
+                        execution=execution,
+                        execution_usage=usage,
+                        evidence_receipt=evidence,
+                    )
+
+                    information_gain = controller.record_information_gain(
+                        execution=execution,
+                        settlement_receipt=settled,
+                    )
+
+                    self.assertEqual(evidence.evidence.verdict, expected_status)
+                    self.assertEqual(
+                        information_gain.information_gain_status,
+                        expected_status,
+                    )
+                    self.assertFalse(
+                        information_gain.continuation_eligible
+                    )
+
+    def test_information_gain_and_lifecycle_transition_are_atomic(self) -> None:
+        campaign_id = "campaign-controller-information-gain-atomic"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            with patch.object(
+                OperationalCampaignLifecycle,
+                "_advance_cycle_in_transaction",
+                side_effect=RuntimeError("synthetic information-gain crash"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic information-gain crash",
+                ):
+                    controller.record_information_gain(
+                        execution=execution,
+                        settlement_receipt=settled,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_INFORMATION_GAIN",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+
+            recovered = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settled,
+            )
+            self.assertEqual(
+                recovered.information_gain_status,
+                "NO_MATERIAL_FINDING",
+            )
+
+    def test_replacement_lease_recovers_information_gain(self) -> None:
+        campaign_id = "campaign-controller-information-gain-lease-recovery"
+        recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-information-gain",
+                stale_after_ns=1,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            information_gain = recovered.record_information_gain(
+                execution=ExecutingOperationalCycle(
+                    cycle=recovered.cycle_snapshot("cycle-001"),
+                    lease=replacement,
+                ),
+            )
+
+            self.assertEqual(
+                information_gain.information_gain_status,
+                "NO_MATERIAL_FINDING",
+            )
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+
+    def test_shadow_information_gain_stream_blocks_recording(self) -> None:
+        campaign_id = "campaign-controller-information-gain-shadow"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            journal.append(
+                event_id="shadow-information-gain-event",
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_INFORMATION_GAIN",
+                aggregate_id="shadow-cycle-001",
+                event_type="OPERATIONAL_INFORMATION_GAIN_RECORDED",
+                payload={"shadow": True},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "information gain stream conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+
+    def test_cross_type_information_gain_event_blocks_recording(self) -> None:
+        campaign_id = "campaign-controller-information-gain-cross-type-shadow"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settled = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            journal.append(
+                event_id="cross-type-information-gain-event",
+                cycle_id="cycle-001",
+                aggregate_type="SHADOW_INFORMATION_GAIN",
+                aggregate_id="cycle-001",
+                event_type="OPERATIONAL_INFORMATION_GAIN_RECORDED",
+                payload={"shadow": True},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "information gain stream conflicts",
+            ):
+                controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settled,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
             )
 
 
