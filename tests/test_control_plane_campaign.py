@@ -400,6 +400,40 @@ class ModelInvocationTests(unittest.TestCase):
             ],
         )
 
+    def test_excessive_json_integer_digits_are_terminal_invalid_json(
+        self,
+    ) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider("9" * 5_000),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-integer-digits",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-integer-digits",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
     def test_excessive_output_nesting_is_terminal_invalid_json(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(

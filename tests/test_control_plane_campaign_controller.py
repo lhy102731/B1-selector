@@ -312,6 +312,11 @@ class _OversizedOutputBoundFakeProvider(_BoundFakeProvider):
         )
 
 
+class _LargeIntegerOutputBoundFakeProvider(_BoundFakeProvider):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(super().invoke(request), output_text="9" * 5_000)
+
+
 class _FakeMonotonicClock:
     def __init__(self, *values: int) -> None:
         self._values = iter(values)
@@ -2540,6 +2545,98 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 acquisition_id="execute-oversized-output",
             )
             provider = _OversizedOutputBoundFakeProvider()
+            with self.assertRaisesRegex(
+                RosterDriftError,
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+
+            self.assertEqual(provider.call_count, _FAKE_CALL_LIMITS.max_attempts)
+            self.assertEqual(
+                controller.campaign_snapshot().status.value,
+                "BLOCKED",
+            )
+            campaign_events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_STATE",
+                aggregate_id=campaign_id,
+            )
+            self.assertEqual(
+                json.loads(campaign_events[-1].payload_json)["reason_code"],
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            )
+
+    def test_large_integer_output_blocks_campaign_during_first_logical_call(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-large-integer-output"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one bounded synthetic result"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Large JSON integers remain terminal failures",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 134, 34_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=10,
+                    max_tool_attempts=2,
+                ),
+            )
+            execution = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-large-integer-output",
+            )
+            provider = _LargeIntegerOutputBoundFakeProvider()
             with self.assertRaisesRegex(
                 RosterDriftError,
                 "REQUIRED_MEMBER_RESPONSE_INVALID",

@@ -593,6 +593,7 @@ class ModelInvocation:
             UnicodeError,
             RecursionError,
             json.JSONDecodeError,
+            ValueError,
             _ModelOutputBoundsError,
         ) as error:
             self._usage_journal.finish(
