@@ -1037,6 +1037,7 @@ class OperationalCampaignController:
                 provider_name=member.provider,
                 profile=member.profile,
                 request_model=member.model,
+                max_output_bytes=_MAX_OPERATIONAL_OUTPUT_BYTES,
             ),
             max_attempts=limits.max_attempts,
         )

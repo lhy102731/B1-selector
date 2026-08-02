@@ -33,6 +33,19 @@ class _FakeProvider:
         )
 
 
+class _OutputTextProvider:
+    def __init__(self, output_text: str) -> None:
+        self._output_text = output_text
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text=self._output_text,
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
 class _EmptyProvider:
     def invoke(self, request: object) -> ProviderResponse:
         return ProviderResponse(
@@ -355,6 +368,102 @@ class _RecordingUsageJournal:
 
 
 class ModelInvocationTests(unittest.TestCase):
+    def test_oversized_utf8_output_is_terminal_invalid_json(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider('{"payload":"' + "中" * 20_000 + '"}'),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-bytes",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-bytes",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
+    def test_excessive_output_nesting_is_terminal_invalid_json(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider("[" * 2_000 + "0" + "]" * 2_000),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-depth",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-depth",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
+    def test_wide_output_exceeding_node_limit_is_terminal_invalid_json(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider("[" + ",".join("0" for _ in range(4_097)) + "]"),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-nodes",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-nodes",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
     def test_invalid_json_keeps_reported_usage_before_failure_is_exposed(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(

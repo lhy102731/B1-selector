@@ -2477,7 +2477,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 "OPERATIONAL_MODEL_CALL_STARTED",
             )
 
-    def test_oversized_success_output_is_not_invoked_twice(self) -> None:
+    def test_oversized_output_blocks_campaign_during_first_logical_call(self) -> None:
         campaign_id = "campaign-controller-oversized-output"
         protocol = _protocol()
         execution_spec = compile_execution_spec(
@@ -2540,7 +2540,10 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 acquisition_id="execute-oversized-output",
             )
             provider = _OversizedOutputBoundFakeProvider()
-            with self.assertRaisesRegex(ValueError, "output exceeds"):
+            with self.assertRaisesRegex(
+                RosterDriftError,
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            ):
                 controller.invoke_member_json(
                     execution=execution,
                     member_id=member.member_id,
@@ -2549,24 +2552,19 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     limits=_FAKE_CALL_LIMITS,
                 )
 
-            self.assertEqual(provider.call_count, 1)
-            replay_provider = _BoundFakeProvider()
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "incomplete and in doubt",
-            ):
-                controller.invoke_member_json(
-                    execution=execution,
-                    member_id=member.member_id,
-                    provider=replay_provider,
-                    prompt=prompt,
-                    limits=_FAKE_CALL_LIMITS,
-                )
-
-            self.assertEqual(replay_provider.call_count, 0)
+            self.assertEqual(provider.call_count, _FAKE_CALL_LIMITS.max_attempts)
             self.assertEqual(
                 controller.campaign_snapshot().status.value,
                 "BLOCKED",
+            )
+            campaign_events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_STATE",
+                aggregate_id=campaign_id,
+            )
+            self.assertEqual(
+                json.loads(campaign_events[-1].payload_json)["reason_code"],
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
             )
 
     def test_in_doubt_member_blocks_other_provider_calls(self) -> None:

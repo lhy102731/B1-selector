@@ -21,6 +21,9 @@ _MAX_RAW_USAGE_NODES = 1024
 _MAX_RAW_USAGE_COLLECTION_ITEMS = 256
 _MAX_RAW_USAGE_PREFIX_UNITS = 4096
 _MAX_RAW_USAGE_INT_BITS = 512
+_MAX_MODEL_OUTPUT_BYTES = 48 * 1024
+_MAX_MODEL_OUTPUT_DEPTH = 32
+_MAX_MODEL_OUTPUT_NODES = 4096
 _MAX_REPORTED_TEXT_CHARS = 128
 _CONTROL_PLANE_IDENTIFIER_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z"
@@ -57,6 +60,10 @@ class ModelInvocationProviderError(RuntimeError):
 
 class StreamingDisabledError(RuntimeError):
     """Raised when a provider returns an unsupported streamed response."""
+
+
+class _ModelOutputBoundsError(ValueError):
+    """Raised when parsed model JSON exceeds a bounded output contract."""
 
 
 @dataclass(frozen=True)
@@ -321,6 +328,42 @@ def _raw_usage_sha256(raw_usage: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _require_bounded_model_output(value: object) -> None:
+    stack: list[tuple[object, int]] = [(value, 1)]
+    nodes = 0
+    while stack:
+        current, depth = stack.pop()
+        nodes += 1
+        if nodes > _MAX_MODEL_OUTPUT_NODES:
+            raise _ModelOutputBoundsError(
+                f"provider response exceeds {_MAX_MODEL_OUTPUT_NODES} node limit"
+            )
+        if depth > _MAX_MODEL_OUTPUT_DEPTH:
+            raise _ModelOutputBoundsError(
+                f"provider response exceeds {_MAX_MODEL_OUTPUT_DEPTH} level "
+                "nesting limit"
+            )
+        if isinstance(current, Mapping):
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            stack.extend((item, depth + 1) for item in current)
+
+
+def _parse_bounded_model_output(
+    output_text: str,
+    *,
+    max_output_bytes: int,
+) -> object:
+    raw_output = output_text.encode("utf-8", errors="strict")
+    if len(raw_output) > max_output_bytes:
+        raise _ModelOutputBoundsError(
+            "provider response exceeds the bounded size"
+        )
+    parsed = json.loads(output_text)
+    _require_bounded_model_output(parsed)
+    return parsed
+
+
 def _reported_text(raw_usage: Mapping[str, object], field: str) -> str | None:
     value = _usage_get(raw_usage, field)
     if value is None:
@@ -379,6 +422,7 @@ class ModelInvocation:
         "_provider_name",
         "_profile",
         "_request_model",
+        "_max_output_bytes",
     )
 
     def __init__(
@@ -389,12 +433,16 @@ class ModelInvocation:
         provider_name: str,
         profile: str,
         request_model: str,
+        max_output_bytes: int = _MAX_MODEL_OUTPUT_BYTES,
     ) -> None:
+        if type(max_output_bytes) is not int or max_output_bytes < 1:
+            raise ValueError("max_output_bytes must be a positive integer")
         self._provider = provider
         self._usage_journal = usage_journal
         self._provider_name = provider_name
         self._profile = profile
         self._request_model = request_model
+        self._max_output_bytes = max_output_bytes
 
     def invoke_json(
         self,
@@ -537,8 +585,16 @@ class ModelInvocation:
             )
             raise InvalidModelResponseError("provider response is empty")
         try:
-            parsed = json.loads(response.output_text)
-        except (TypeError, json.JSONDecodeError) as error:
+            parsed = _parse_bounded_model_output(
+                response.output_text,
+                max_output_bytes=self._max_output_bytes,
+            )
+        except (
+            UnicodeError,
+            RecursionError,
+            json.JSONDecodeError,
+            _ModelOutputBoundsError,
+        ) as error:
             self._usage_journal.finish(
                 call_id=call_id,
                 attempt_id=attempt_id,
