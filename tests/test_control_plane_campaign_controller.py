@@ -5,6 +5,7 @@ from dataclasses import replace
 from threading import Barrier
 import hashlib
 import json
+import sqlite3
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +15,7 @@ from research_automation.control_plane.campaign_controller import (
     ExecutingOperationalCycle,
     OperationalModelCallLimits,
     OperationalCampaignController,
+    _controller_sha256,
     operational_prompt_sha256,
 )
 from research_automation.control_plane.campaign import (
@@ -22,6 +24,7 @@ from research_automation.control_plane.campaign import (
     UsageEnvelope,
     UsageStatus,
 )
+from research_automation.control_plane.evidence_learning import EvidenceAdapter
 from research_automation.control_plane.campaign_context import (
     OperationalCycleContextJournal,
 )
@@ -45,6 +48,7 @@ from research_automation.control_plane.campaign_lifecycle import (
 from research_automation.control_plane.campaign_store import (
     CampaignJournalError,
     OperationalUsageJournal,
+    _event_integrity_sha256,
 )
 from research_automation.control_plane.campaign_roster import (
     OperationalRosterJournal,
@@ -119,6 +123,60 @@ class _MissingCurrencyBoundFakeProvider(_BoundFakeProvider):
         )
 
 
+class _EvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        self.last_request = request
+        return ProviderResponse(
+            output_text=(
+                '{"access_event_ids":[],"artifact_refs":[],'
+                '"claim":null,"executed_protocol":'
+                '{"label":"synthetic-only"},'
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED","taint_refs":[]}'
+            ),
+            request_model=self.model,
+            response_model=self.model,
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "reported_cost": "0.02",
+                "currency": "USD",
+            },
+        )
+
+
+class _InvalidEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(
+            super().invoke(request),
+            output_text=(
+                '{"access_event_ids":[],"artifact_refs":[],'
+                '"claim":null,"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"schema_version":"runner.artifact.unknown",'
+                '"status":"COMPLETED","taint_refs":[]}'
+            ),
+        )
+
+
+class _NonObjectEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(super().invoke(request), output_text="[]")
+
+
+class _UnboundEvidenceAdapter(EvidenceAdapter):
+    pass
+
+
 class _EstimatedUsageBoundFakeProvider(_BoundFakeProvider):
     def invoke(self, request: object) -> ProviderResponse:
         return replace(
@@ -165,6 +223,81 @@ _FAKE_CALL_LIMITS = OperationalModelCallLimits(
     max_wall_time_ms=10,
     max_attempts=2,
 )
+
+
+def _completed_evidence_model_call(
+    root,
+    journal,
+    *,
+    campaign_id: str,
+    provider=None,
+):
+    protocol = _protocol()
+    execution_spec = compile_execution_spec(
+        protocol,
+        approved_protocol=protocol,
+        approval=_approval(protocol),
+        amendment=None,
+    )
+    prompt = {"instruction": "Return one synthetic runner artifact"}
+    member = replace(
+        _protocol_member(),
+        prompt_sha256=operational_prompt_sha256(prompt),
+    )
+    task = ExperimentTask(
+        task_id="cycle-001",
+        strategy="b1",
+        proposal={
+            "hypothesis": "Synthetic output becomes bounded evidence",
+            "scope": _scope(generation="generation-1"),
+        },
+        source="synthetic-test",
+    )
+    owner = ProcessIdentity("host-controller", 144, 44_000)
+    controller = OperationalCampaignController(
+        journal=journal,
+        repository_root=root,
+        budget_limits=CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        ),
+        identity_provider=_FakeProcessIdentityProvider(owner),
+        monotonic_ns=_FakeMonotonicClock(
+            100,
+            1_000_000,
+            2_000_000,
+        ),
+    )
+    controller.prepare_cycle(
+        task=task,
+        cycle_number=1,
+        execution_spec=execution_spec,
+        roster_members=(member,),
+        reservation_limits=CycleReservationLimits(
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=10,
+            max_tool_attempts=2,
+        ),
+    )
+    execution = controller.start_execution(
+        cycle_id=task.task_id,
+        acquisition_id=f"execute-{campaign_id}",
+    )
+    controller.invoke_member_json(
+        execution=execution,
+        member_id=member.member_id,
+        provider=provider or _EvidenceArtifactBoundFakeProvider(),
+        prompt=prompt,
+        limits=_FAKE_CALL_LIMITS,
+    )
+    usage = controller.complete_model_execution(execution=execution)
+    return controller, execution, member, usage
 
 
 def _controller_event_id(domain: bytes, *parts: str) -> str:
@@ -3612,6 +3745,753 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
 
             self.assertEqual(usage.usage_status, UsageStatus.REPORTED)
+
+    def test_model_output_evidence_advances_the_fenced_cycle(self) -> None:
+        campaign_id = "campaign-controller-model-evidence"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one synthetic runner artifact"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Synthetic output becomes bounded evidence",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 144, 44_000)
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=10,
+                    max_tool_attempts=2,
+                ),
+            )
+            execution = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-model-evidence",
+            )
+            controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=_EvidenceArtifactBoundFakeProvider(),
+                prompt=prompt,
+                limits=_FAKE_CALL_LIMITS,
+            )
+            usage = controller.complete_model_execution(execution=execution)
+
+            receipt = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            self.assertEqual(receipt.cycle_id, task.task_id)
+            self.assertEqual(receipt.member_id, member.member_id)
+            self.assertEqual(
+                receipt.execution_usage_manifest_sha256,
+                usage.manifest_sha256,
+            )
+            self.assertEqual(
+                receipt.model_call_manifest_sha256,
+                usage.model_calls[0].manifest_sha256,
+            )
+            self.assertEqual(receipt.evidence.verdict, "NO_MATERIAL_FINDING")
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_model_output_evidence_exact_replay_is_idempotent(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            adapter = EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_protocol={"label": "synthetic-only"},
+            )
+            first = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+
+            replayed = reopened.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+
+            self.assertEqual(replayed, first)
+
+    def test_evidence_receipt_recovers_from_current_state_and_new_lease(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-model-evidence-durable-recovery"
+        recovered_owner = ProcessIdentity("host-controller", 146, 46_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            adapter = EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_protocol={"label": "synthetic-only"},
+            )
+            original = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-completed-evidence",
+                stale_after_ns=1,
+            )
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            recovered_execution = ExecutingOperationalCycle(
+                cycle=recovered.cycle_snapshot("cycle-001"),
+                lease=replacement,
+            )
+
+            replayed = recovered.record_model_evidence(
+                execution=recovered_execution,
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+
+            self.assertEqual(replayed, original)
+            self.assertEqual(
+                recovered_execution.cycle.status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_model_output_evidence_rejects_adapter_configuration_drift(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-model-evidence-adapter-drift"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "operational model evidence conflicts",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={
+                            "fixture-runner": "1.0.0",
+                            "unused-runner": "9.9.9",
+                        },
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_replaced_lease_fences_model_evidence_recording(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-lease-swap"
+        recovered_owner = ProcessIdentity("host-controller", 145, 45_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="execute-evidence-recovered-generation",
+                stale_after_ns=1,
+            )
+            adapter = EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_protocol={"label": "synthetic-only"},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=adapter,
+                )
+
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            receipt = recovered.record_model_evidence(
+                execution=ExecutingOperationalCycle(
+                    cycle=recovered.cycle_snapshot("cycle-001"),
+                    lease=replacement,
+                ),
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+
+            self.assertEqual(receipt.cycle_id, "cycle-001")
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_blocked_campaign_fences_model_evidence_recording(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-blocked"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            OperationalCampaignLifecycle(journal=journal).block(
+                reason_code="SYNTHETIC_EVIDENCE_BLOCK",
+                source_ref="fixture-block",
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_shadow_model_call_after_usage_freeze_blocks_model_evidence(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-model-evidence-shadow-call"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            journal.append(
+                event_id="shadow-model-call-after-usage-freeze",
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id="shadow-model-call",
+                event_type="OPERATIONAL_MODEL_CALL_STARTED",
+                payload={"shadow": True},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution usage model call inventory conflicts",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_shadow_usage_attempt_after_freeze_blocks_model_evidence(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-model-evidence-shadow-attempt"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).begin(
+                UsageEnvelope(
+                    provider=member.provider,
+                    profile=member.profile,
+                    request_model=member.model,
+                    response_model=None,
+                    call_id="shadow-call",
+                    attempt_id="shadow-call-attempt-001",
+                    usage_status=UsageStatus.UNKNOWN,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost=None,
+                    currency=None,
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.TIMEOUT,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution usage attempt inventory conflicts",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_forged_frozen_usage_totals_block_model_evidence(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-forged-usage"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            usage_event = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id="cycle-001",
+            )[0]
+            payload = json.loads(usage_event.payload_json)
+            payload["input_tokens"] = 8
+            identity = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"manifest_sha256", "_authority_grant_id"}
+            }
+            payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.operational_execution_usage.v1",
+                identity,
+                "forged operational execution usage",
+            )
+            payload_json = json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            forged_integrity = _event_integrity_sha256(
+                event_id=usage_event.event_id,
+                namespace=usage_event.namespace,
+                campaign_id=usage_event.campaign_id,
+                cycle_id=usage_event.cycle_id,
+                aggregate_type=usage_event.aggregate_type,
+                aggregate_id=usage_event.aggregate_id,
+                event_type=usage_event.event_type,
+                payload_json=payload_json,
+                occurred_at=usage_event.occurred_at.isoformat(),
+                sequence=usage_event.sequence,
+            )
+            connection = sqlite3.connect(root / "operational.sqlite3")
+            try:
+                connection.execute(
+                    "UPDATE campaign_events SET payload_json = ?, "
+                    "payload_sha256 = ? WHERE event_id = ?",
+                    (payload_json, forged_integrity, usage_event.event_id),
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "frozen operational execution usage conflicts",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_shadow_evidence_stream_blocks_model_evidence(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-shadow-stream"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            journal.append(
+                event_id="shadow-model-evidence-event",
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                aggregate_id="shadow-cycle-001",
+                event_type="OPERATIONAL_MODEL_EVIDENCE_RECORDED",
+                payload={"shadow": True},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "operational model evidence stream conflicts",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_invalid_model_artifact_records_ineligible_evidence(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-invalid"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_InvalidEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+
+            receipt = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            self.assertEqual(receipt.evidence.verdict, "EVIDENCE_INVALID")
+            self.assertFalse(receipt.evidence.promotion_eligible)
+            self.assertEqual(
+                receipt.evidence.invalidation_codes,
+                ("UNKNOWN_RUNNER_SCHEMA",),
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_non_object_model_artifact_records_ineligible_evidence(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-non-object"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_NonObjectEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+
+            receipt = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+
+            self.assertEqual(receipt.evidence.verdict, "EVIDENCE_INVALID")
+            self.assertEqual(
+                receipt.evidence.invalidation_codes,
+                ("INVALID_ARTIFACT_TYPE",),
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_unbound_evidence_adapter_subclass_is_rejected(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-adapter-subclass"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+
+            with self.assertRaisesRegex(
+                TypeError,
+                "evidence_adapter must be an EvidenceAdapter",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=_UnboundEvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_model_evidence_and_state_transition_are_atomic(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-atomic"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            adapter = EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_protocol={"label": "synthetic-only"},
+            )
+            with patch.object(
+                OperationalCampaignLifecycle,
+                "_advance_cycle_in_transaction",
+                side_effect=RuntimeError("synthetic transition crash"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic transition crash",
+                ):
+                    controller.record_model_evidence(
+                        execution=execution,
+                        member_id=member.member_id,
+                        evidence_adapter=adapter,
+                    )
+
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+            receipt = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=adapter,
+            )
+
+            self.assertEqual(receipt.cycle_id, "cycle-001")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_model_artifact_stream_drift_blocks_evidence(self) -> None:
+        campaign_id = "campaign-controller-model-evidence-artifact-drift"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            call_id = controller._member_call_id(
+                "cycle-001",
+                member.member_id,
+            )
+            journal.append(
+                event_id="drifted-model-artifact-event",
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=call_id,
+                event_type="OPERATIONAL_MODEL_CALL_COMPLETED",
+                payload={"output": {"status": "drifted"}},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "required operational model call is missing",
+            ):
+                controller.record_model_evidence(
+                    execution=execution,
+                    member_id=member.member_id,
+                    evidence_adapter=EvidenceAdapter(
+                        known_runners={"fixture-runner": "1.0.0"},
+                        approved_protocol={"label": "synthetic-only"},
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
 
 
 if __name__ == "__main__":

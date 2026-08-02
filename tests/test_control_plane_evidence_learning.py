@@ -248,6 +248,60 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
         )
         self.assertIn("EXECUTED_PROTOCOL_MISMATCH", result.invalidation_codes)
 
+    def test_adapter_binding_is_immutable_from_caller_mutation(self):
+        from research_automation.control_plane.evidence_learning import EvidenceAdapter
+
+        protocol = {"label": {"name": "synthetic-only"}}
+        adapter = EvidenceAdapter(
+            known_runners={"test-runner": "runner-v1"},
+            approved_protocol=protocol,
+        )
+        original_binding = adapter.binding_payload()
+        protocol["label"]["name"] = "drifted"
+
+        self.assertEqual(adapter.binding_payload(), original_binding)
+        result = adapter.evaluate(
+            {
+                "schema_version": "runner.artifact.v1",
+                "runner": "test-runner",
+                "runner_version": "runner-v1",
+                "status": "COMPLETED",
+                "claim": None,
+                "protocol_conformance": "CONFORMING",
+                "executed_protocol": {
+                    "label": {"name": "synthetic-only"}
+                },
+                "artifact_refs": [],
+                "access_event_ids": [],
+                "taint_refs": [],
+            }
+        )
+        self.assertEqual(result.verdict, "NO_MATERIAL_FINDING")
+
+    def test_adapter_evaluation_methods_cannot_be_overridden_per_instance(self):
+        from research_automation.control_plane.evidence_learning import EvidenceAdapter
+
+        adapter = EvidenceAdapter(known_runners=("test-runner",))
+
+        with self.assertRaises(AttributeError):
+            adapter.binding_payload = lambda: {"forged": True}
+        with self.assertRaises(AttributeError):
+            adapter.evaluate = lambda artifact: None
+
+    def test_non_object_runner_artifacts_are_fail_closed_verdicts(self):
+        from research_automation.control_plane.evidence_learning import EvidenceAdapter
+
+        adapter = EvidenceAdapter(known_runners=("test-runner",))
+        for artifact in ([], None, "runner-output", 1):
+            with self.subTest(artifact=artifact):
+                result = adapter.evaluate(artifact)
+                self.assertEqual(result.verdict, "EVIDENCE_INVALID")
+                self.assertFalse(result.promotion_eligible)
+                self.assertEqual(
+                    result.invalidation_codes,
+                    ("INVALID_ARTIFACT_TYPE",),
+                )
+
     def test_artifact_collection_type_errors_are_fail_closed_verdicts(self):
         from research_automation.control_plane.evidence_learning import EvidenceAdapter
 

@@ -128,6 +128,12 @@ class EvidenceResult:
 class EvidenceAdapter:
     """Evaluate bounded runner metadata independently of runner booleans."""
 
+    __slots__ = (
+        "_known_runners",
+        "_approved_protocol",
+        "_approved_claim",
+    )
+
     def __init__(
         self,
         *,
@@ -135,19 +141,74 @@ class EvidenceAdapter:
         approved_protocol: Mapping[str, object] | None = None,
         approved_claim: Mapping[str, object] | None = None,
     ) -> None:
-        self._known_runners = (
+        known_runners_payload = (
             dict(known_runners)
             if isinstance(known_runners, Mapping)
             else {runner: "" for runner in known_runners}
         )
-        self._approved_protocol = (
-            None if approved_protocol is None else dict(approved_protocol)
+        self._known_runners = self._canonical_mapping_copy(
+            known_runners_payload,
+            "known_runners",
         )
-        self._approved_claim = None if approved_claim is None else dict(approved_claim)
+        self._approved_protocol = None
+        if approved_protocol is not None:
+            self._approved_protocol = self._canonical_mapping_copy(
+                dict(approved_protocol),
+                "approved_protocol",
+            )
+        self._approved_claim = None
+        if approved_claim is not None:
+            self._approved_claim = self._canonical_mapping_copy(
+                dict(approved_claim),
+                "approved_claim",
+            )
 
-    def evaluate(self, artifact: Mapping[str, object]) -> EvidenceResult:
+    @staticmethod
+    def _canonical_mapping_copy(
+        value: Mapping[str, object],
+        name: str,
+    ) -> dict[str, object]:
+        try:
+            canonical = json.loads(_canonical_bytes(dict(value)))
+        except (TypeError, ValueError, UnicodeError) as error:
+            raise ValueError(f"{name} must be canonical JSON") from error
+        if not isinstance(canonical, dict):
+            raise ValueError(f"{name} must be a mapping")
+        return canonical
+
+    def binding_payload(self) -> dict[str, object]:
+        """Return the canonical configuration identity for durable receipts."""
+
+        payload = {
+            "schema_version": "control_plane.evidence_adapter_binding.v1",
+            "adapter_id": "EvidenceAdapter.v1",
+            "known_runners": dict(self._known_runners),
+            "approved_protocol": self._approved_protocol,
+            "approved_claim": self._approved_claim,
+        }
+        try:
+            canonical = json.loads(_canonical_bytes(payload))
+        except (TypeError, ValueError, UnicodeError) as error:
+            raise ValueError(
+                "EvidenceAdapter configuration must be canonical JSON"
+            ) from error
+        if not isinstance(canonical, dict):
+            raise ValueError("EvidenceAdapter configuration is invalid")
+        return canonical
+
+    def evaluate(self, artifact: object) -> EvidenceResult:
         if not isinstance(artifact, Mapping):
-            raise TypeError("runner artifact must be a mapping")
+            return EvidenceResult(
+                "EVIDENCE_INVALID",
+                "UNKNOWN",
+                "INVALID",
+                "UNKNOWN",
+                False,
+                (),
+                (),
+                (),
+                ("INVALID_ARTIFACT_TYPE",),
+            )
         required = {"schema_version", "runner", "status", "claim", "protocol_conformance", "artifact_refs", "access_event_ids", "taint_refs"}
         missing = sorted(required - set(artifact))
         if missing:

@@ -40,6 +40,7 @@ from .campaign_context import (
     OperationalCycleContextJournal,
     canonical_campaign_proposal,
 )
+from .evidence_learning import EvidenceAdapter, EvidenceResult
 from .campaign_freeze import FrozenCycleInputs, OperationalCycleFreezeJournal
 from .campaign_lease import (
     CycleLease,
@@ -91,6 +92,8 @@ _MODEL_CALL_STARTED = "OPERATIONAL_MODEL_CALL_STARTED"
 _MODEL_CALL_COMPLETED = "OPERATIONAL_MODEL_CALL_COMPLETED"
 _EXECUTION_USAGE_AGGREGATE_TYPE = "OPERATIONAL_EXECUTION_USAGE"
 _EXECUTION_USAGE_FROZEN = "OPERATIONAL_EXECUTION_USAGE_FROZEN"
+_MODEL_EVIDENCE_AGGREGATE_TYPE = "OPERATIONAL_MODEL_EVIDENCE"
+_MODEL_EVIDENCE_RECORDED = "OPERATIONAL_MODEL_EVIDENCE_RECORDED"
 _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
 _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
@@ -260,6 +263,20 @@ class OperationalExecutionUsage:
     event_id: str
 
 
+@dataclass(frozen=True, slots=True)
+class OperationalEvidenceReceipt:
+    cycle_id: str
+    member_id: str
+    preparation_manifest_sha256: str
+    execution_usage_manifest_sha256: str
+    model_call_manifest_sha256: str
+    artifact_sha256: str
+    adapter_manifest_sha256: str
+    evidence: EvidenceResult
+    manifest_sha256: str
+    event_id: str
+
+
 class _FencedOperationalUsageJournal:
     __slots__ = ("_controller", "_execution", "_delegate")
 
@@ -371,6 +388,22 @@ def _stored_sha256(value: object, name: str) -> str:
     ):
         raise CampaignJournalError(f"{name} is not a SHA-256 digest")
     return value
+
+
+def _evidence_result_payload(evidence: EvidenceResult) -> dict[str, object]:
+    if not isinstance(evidence, EvidenceResult):
+        raise TypeError("evidence must be an EvidenceResult")
+    return {
+        "verdict": evidence.verdict,
+        "protocol_conformance": evidence.protocol_conformance,
+        "audit_grade": evidence.audit_grade,
+        "scientific_outcome": evidence.scientific_outcome,
+        "promotion_eligible": evidence.promotion_eligible,
+        "evidence_refs": [dict(reference) for reference in evidence.evidence_refs],
+        "access_event_ids": list(evidence.access_event_ids),
+        "taint_refs": list(evidence.taint_refs),
+        "invalidation_codes": list(evidence.invalidation_codes),
+    }
 
 
 def _canonical_task(
@@ -917,6 +950,195 @@ class OperationalCampaignController:
             roster_completion=roster_completion,
         )
 
+    def record_model_evidence(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        member_id: str,
+        evidence_adapter: EvidenceAdapter,
+    ) -> OperationalEvidenceReceipt:
+        """Evaluate one frozen model artifact and durably advance its Cycle."""
+
+        self._journal._authorize()
+        member_id = _identifier(member_id, "member_id")
+        if type(evidence_adapter) is not EvidenceAdapter:
+            raise TypeError("evidence_adapter must be an EvidenceAdapter")
+
+        def record(connection) -> OperationalEvidenceReceipt:
+            cycle_id, current_cycle = (
+                self._require_evidence_execution_generation_in_transaction(
+                    connection,
+                    execution,
+                )
+            )
+            (
+                preparation_manifest_sha256,
+                context,
+                roster,
+            ) = self._evidence_preparation_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            member = next(
+                (
+                    candidate
+                    for candidate in roster.members
+                    if candidate.member_id == member_id
+                ),
+                None,
+            )
+            if member is None:
+                raise ValueError("member_id is not present in the frozen roster")
+            usage = OperationalUsageJournal(
+                journal=self._journal,
+                cycle_id=cycle_id,
+            )
+            model_calls = tuple(
+                self._model_call_for_member_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    member=candidate,
+                    preparation_manifest_sha256=(
+                        preparation_manifest_sha256
+                    ),
+                    context_manifest_sha256=context.manifest_sha256,
+                    roster_manifest_sha256=roster.manifest_sha256,
+                    usage=usage,
+                )
+                for candidate in roster.members
+            )
+            selected_call = next(
+                model_call
+                for model_call in model_calls
+                if model_call.member_id == member_id
+            )
+            usage_event, usage_payload = (
+                self._execution_usage_binding_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    preparation_manifest_sha256=(
+                        preparation_manifest_sha256
+                    ),
+                    context=context,
+                    roster=roster,
+                    model_calls=model_calls,
+                )
+            )
+            artifact = selected_call.output
+            adapter_binding = evidence_adapter.binding_payload()
+            adapter_manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_evidence_adapter.v1",
+                adapter_binding,
+                "operational evidence adapter",
+            )
+            evidence = evidence_adapter.evaluate(artifact)
+            evidence_payload = _evidence_result_payload(evidence)
+            artifact_sha256 = _controller_sha256(
+                b"control_plane.operational_evidence_artifact.v1",
+                artifact,
+                "operational evidence artifact",
+            )
+            identity = {
+                "schema_version": "control_plane.operational_model_evidence.v1",
+                "cycle_id": cycle_id,
+                "member_id": member_id,
+                "preparation_manifest_sha256": (
+                    preparation_manifest_sha256
+                ),
+                "execution_usage_manifest_sha256": usage_payload[
+                    "manifest_sha256"
+                ],
+                "model_call_manifest_sha256": (
+                    selected_call.manifest_sha256
+                ),
+                "artifact_sha256": artifact_sha256,
+                "adapter_manifest_sha256": adapter_manifest_sha256,
+                "evidence": evidence_payload,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_model_evidence.v1",
+                identity,
+                "operational model evidence",
+            )
+            payload = {**identity, "manifest_sha256": manifest_sha256}
+            receipt = OperationalEvidenceReceipt(
+                cycle_id=cycle_id,
+                member_id=member_id,
+                preparation_manifest_sha256=(
+                    preparation_manifest_sha256
+                ),
+                execution_usage_manifest_sha256=usage_payload[
+                    "manifest_sha256"
+                ],
+                model_call_manifest_sha256=(
+                    selected_call.manifest_sha256
+                ),
+                artifact_sha256=artifact_sha256,
+                adapter_manifest_sha256=adapter_manifest_sha256,
+                evidence=evidence,
+                manifest_sha256=manifest_sha256,
+                event_id=self._model_evidence_event_id(cycle_id),
+            )
+            events = self._model_evidence_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if events:
+                if (
+                    len(events) != 1
+                    or events[0].event_id != receipt.event_id
+                    or events[0].event_type != _MODEL_EVIDENCE_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(events[0]),
+                        "stored operational model evidence",
+                    )
+                    != _canonical_json_text(
+                        payload,
+                        "expected operational model evidence",
+                    )
+                    or events[0].sequence <= usage_event.sequence
+                    or current_cycle.status is not CycleStatus.EVIDENCE_READY
+                    or current_cycle.sequence <= events[0].sequence
+                ):
+                    raise CampaignJournalError(
+                        "operational model evidence conflicts"
+                    )
+                return receipt
+            if current_cycle.status is not CycleStatus.EXECUTING:
+                raise CampaignJournalError(
+                    "operational model evidence is missing"
+                )
+            event = self._journal._append_in_transaction(
+                connection,
+                event_id=receipt.event_id,
+                cycle_id=cycle_id,
+                aggregate_type=_MODEL_EVIDENCE_AGGREGATE_TYPE,
+                aggregate_id=cycle_id,
+                event_type=_MODEL_EVIDENCE_RECORDED,
+                payload=payload,
+            )
+            if event.sequence <= usage_event.sequence:
+                raise CampaignJournalError(
+                    "operational evidence must follow its frozen usage"
+                )
+            advanced = self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.EXECUTING,
+                next_status=CycleStatus.EVIDENCE_READY,
+            )
+            if advanced.sequence <= event.sequence:
+                raise CampaignJournalError(
+                    "EVIDENCE_READY must follow operational evidence"
+                )
+            if event.event_id != receipt.event_id:
+                raise CampaignJournalError(
+                    "operational model evidence event identity conflicts"
+                )
+            return receipt
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
 
@@ -1041,81 +1263,23 @@ class OperationalCampaignController:
                     "execution usage attempt inventory conflicts"
                 )
 
-            def sum_tokens(field_name: str) -> int | None:
-                values = [
-                    getattr(attempt.envelope, field_name)
-                    for attempt in all_attempts
-                ]
-                if any(value is None for value in values):
-                    return None
-                return sum(int(value) for value in values)
-
-            input_tokens = sum_tokens("input_tokens")
-            output_tokens = sum_tokens("output_tokens")
-            reported_costs = [
-                attempt.envelope.reported_cost for attempt in all_attempts
-            ]
-            currencies = {
-                attempt.envelope.currency for attempt in all_attempts
-            }
-            if (
-                any(value is None for value in reported_costs)
-                or None in currencies
-                or len(currencies) > 1
-            ):
-                cost = None
-                currency = None
-            else:
-                cost = _decimal_text(
-                    sum(
-                        (Decimal(str(value)) for value in reported_costs),
-                        Decimal("0"),
-                    )
-                )
-                currency = next(iter(currencies), None)
-            wall_times = [model_call.wall_time_ms for model_call in model_calls]
-            wall_time_ms = (
-                None
-                if any(value is None for value in wall_times)
-                else sum(int(value) for value in wall_times)
-            )
-            attempt_statuses = {
-                attempt.envelope.usage_status for attempt in all_attempts
-            }
-            if (
-                UsageStatus.UNKNOWN in attempt_statuses
-                or input_tokens is None
-                or output_tokens is None
-                or cost is None
-                or wall_time_ms is None
-            ):
-                usage_status = UsageStatus.UNKNOWN
-            elif UsageStatus.ESTIMATED in attempt_statuses:
-                usage_status = UsageStatus.ESTIMATED
-            else:
-                usage_status = UsageStatus.REPORTED
-            identity = {
-                "schema_version": "control_plane.operational_execution_usage.v1",
-                "cycle_id": cycle_id,
-                "preparation_manifest_sha256": (
+            identity = self._execution_usage_identity(
+                cycle_id=cycle_id,
+                preparation_manifest_sha256=(
                     preparation_manifest_sha256
                 ),
-                "context_manifest_sha256": context.manifest_sha256,
-                "roster_manifest_sha256": roster.manifest_sha256,
-                "roster_completion_event_id": roster_completion.event_id,
-                "model_call_manifest_sha256s": [
-                    model_call.manifest_sha256 for model_call in model_calls
-                ],
-                "usage_status": usage_status.value,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "cost": cost,
-                "currency": currency,
-                "wall_time_ms": wall_time_ms,
-                "tool_attempts": len(all_attempts),
-                "data_exposures": 0,
-                "disk_growth_bytes": 0,
-            }
+                context_manifest_sha256=context.manifest_sha256,
+                roster_manifest_sha256=roster.manifest_sha256,
+                roster_completion_event_id=roster_completion.event_id,
+                model_calls=model_calls,
+                all_attempts=all_attempts,
+            )
+            usage_status = UsageStatus(str(identity["usage_status"]))
+            input_tokens = identity["input_tokens"]
+            output_tokens = identity["output_tokens"]
+            cost = identity["cost"]
+            currency = identity["currency"]
+            wall_time_ms = identity["wall_time_ms"]
             manifest_sha256 = _controller_sha256(
                 b"control_plane.operational_execution_usage.v1",
                 identity,
@@ -1188,6 +1352,92 @@ class OperationalCampaignController:
             )
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    @staticmethod
+    def _execution_usage_identity(
+        *,
+        cycle_id: str,
+        preparation_manifest_sha256: str,
+        context_manifest_sha256: str,
+        roster_manifest_sha256: str,
+        roster_completion_event_id: str,
+        model_calls: tuple[ExecutedOperationalModelCall, ...],
+        all_attempts: tuple[RecordedModelAttempt, ...],
+    ) -> dict[str, object]:
+        def sum_tokens(field_name: str) -> int | None:
+            values = [
+                getattr(attempt.envelope, field_name)
+                for attempt in all_attempts
+            ]
+            if any(value is None for value in values):
+                return None
+            return sum(int(value) for value in values)
+
+        input_tokens = sum_tokens("input_tokens")
+        output_tokens = sum_tokens("output_tokens")
+        reported_costs = [
+            attempt.envelope.reported_cost for attempt in all_attempts
+        ]
+        currencies = {attempt.envelope.currency for attempt in all_attempts}
+        if (
+            any(value is None for value in reported_costs)
+            or None in currencies
+            or len(currencies) > 1
+        ):
+            cost = None
+            currency = None
+        else:
+            cost = _decimal_text(
+                sum(
+                    (
+                        Decimal(str(value))
+                        for value in reported_costs
+                    ),
+                    Decimal("0"),
+                )
+            )
+            currency = next(iter(currencies), None)
+        wall_times = [model_call.wall_time_ms for model_call in model_calls]
+        wall_time_ms = (
+            None
+            if any(value is None for value in wall_times)
+            else sum(int(value) for value in wall_times)
+        )
+        attempt_statuses = {
+            attempt.envelope.usage_status for attempt in all_attempts
+        }
+        if (
+            UsageStatus.UNKNOWN in attempt_statuses
+            or input_tokens is None
+            or output_tokens is None
+            or cost is None
+            or wall_time_ms is None
+        ):
+            usage_status = UsageStatus.UNKNOWN
+        elif UsageStatus.ESTIMATED in attempt_statuses:
+            usage_status = UsageStatus.ESTIMATED
+        else:
+            usage_status = UsageStatus.REPORTED
+        return {
+            "schema_version": "control_plane.operational_execution_usage.v1",
+            "cycle_id": cycle_id,
+            "preparation_manifest_sha256": preparation_manifest_sha256,
+            "context_manifest_sha256": context_manifest_sha256,
+            "roster_manifest_sha256": roster_manifest_sha256,
+            "roster_completion_event_id": roster_completion_event_id,
+            "model_call_manifest_sha256s": [
+                model_call.manifest_sha256 for model_call in model_calls
+            ],
+            "usage_status": usage_status.value,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost": cost,
+            "currency": currency,
+            "wall_time_ms": wall_time_ms,
+            "tool_attempts": len(all_attempts),
+            "data_exposures": 0,
+            "disk_growth_bytes": 0,
+        }
 
     def _model_call_for_member_in_transaction(
         self,
@@ -1362,6 +1612,244 @@ class OperationalCampaignController:
             connection,
             cycle_id=cycle_id,
             aggregate_type=_EXECUTION_USAGE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _evidence_preparation_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> tuple[str, CycleContextReceipt, RosterManifest]:
+        policy = self._freeze._replay_policy(
+            self._freeze._policy_events(connection)
+        )
+        frozen = self._freeze._replay_freeze(
+            self._freeze._freeze_events(connection, cycle_id)
+        )
+        self._freeze._require_complete_freeze_order(
+            connection,
+            policy,
+            frozen,
+        )
+        identity, _, _, minimum_sequence = (
+            self._controller_artifact_identity_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                frozen=frozen,
+            )
+        )
+        preparation_manifest_sha256 = _controller_sha256(
+            b"control_plane.campaign_cycle_preparation.v1",
+            identity,
+            "Cycle preparation identity",
+        )
+        self._replay_preparation(
+            cycle_id=cycle_id,
+            events=self._preparation_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            ),
+            expected_payload={
+                **identity,
+                "manifest_sha256": preparation_manifest_sha256,
+            },
+            minimum_sequence=minimum_sequence,
+        )
+        context = self._context._replay_context(
+            self._context._context_events(connection, cycle_id)
+        )
+        roster = self._roster._replay(
+            self._roster._events(connection, cycle_id)
+        )
+        if (
+            context.manifest_sha256 != frozen.context_manifest_sha256
+            or roster.manifest_sha256 != frozen.roster_manifest_sha256
+        ):
+            raise CampaignJournalError(
+                "evidence inputs conflict with the frozen preparation"
+            )
+        return preparation_manifest_sha256, context, roster
+
+    def _execution_usage_binding_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        preparation_manifest_sha256: str,
+        context: CycleContextReceipt,
+        roster: RosterManifest,
+        model_calls: tuple[ExecutedOperationalModelCall, ...],
+    ):
+        events = self._execution_usage_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if len(events) != 1:
+            raise CampaignJournalError(
+                "frozen operational execution usage is missing or ambiguous"
+            )
+        event = events[0]
+        payload = _event_domain_payload(event)
+        roster_events = self._roster._events(connection, cycle_id)
+        roster_history = self._roster._replay_history(
+            connection,
+            roster_events,
+        )
+        stored_call_ids = tuple(
+            str(row["aggregate_id"])
+            for row in connection.execute(
+                "SELECT DISTINCT aggregate_id FROM campaign_events "
+                "WHERE namespace = ? AND campaign_id = ? "
+                "AND cycle_id = ? AND aggregate_type = ? "
+                "ORDER BY aggregate_id",
+                (
+                    self._journal.namespace,
+                    self._journal.campaign_id,
+                    cycle_id,
+                    _MODEL_CALL_AGGREGATE_TYPE,
+                ),
+            )
+        )
+        expected_call_ids = tuple(
+            sorted(model_call.call_id for model_call in model_calls)
+        )
+        if stored_call_ids != expected_call_ids:
+            raise CampaignJournalError(
+                "execution usage model call inventory conflicts"
+            )
+        all_attempts = OperationalUsageJournal(
+            journal=self._journal,
+            cycle_id=cycle_id,
+        )._list_attempts_in_transaction(
+            connection,
+            call_id=None,
+        )
+        bound_attempts = tuple(
+            attempt
+            for model_call in model_calls
+            for attempt in model_call.usage_attempts
+        )
+        if (
+            len(all_attempts) != len(bound_attempts)
+            or {
+                (attempt.envelope.call_id, attempt.envelope.attempt_id)
+                for attempt in all_attempts
+            }
+            != {
+                (attempt.envelope.call_id, attempt.envelope.attempt_id)
+                for attempt in bound_attempts
+            }
+        ):
+            raise CampaignJournalError(
+                "execution usage attempt inventory conflicts"
+            )
+        completion_event = next(
+            (
+                roster_event
+                for roster_event in roster_events
+                if roster_event.event_id
+                == roster_history.terminal_event_id
+            ),
+            None,
+        )
+        call_events = tuple(
+            self._model_call_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                call_id=model_call.call_id,
+            )[-1]
+            for model_call in model_calls
+        )
+        if (
+            completion_event is None
+            or roster_history.terminal_event_id is None
+            or roster_history.terminal_event_type
+            != "ROSTER_RESPONSES_COMPLETED"
+            or roster_history.verified_member_ids
+            != frozenset(member.member_id for member in roster.members)
+        ):
+            raise CampaignJournalError(
+                "frozen operational execution usage conflicts"
+            )
+        expected_identity = self._execution_usage_identity(
+            cycle_id=cycle_id,
+            preparation_manifest_sha256=preparation_manifest_sha256,
+            context_manifest_sha256=context.manifest_sha256,
+            roster_manifest_sha256=roster.manifest_sha256,
+            roster_completion_event_id=roster_history.terminal_event_id,
+            model_calls=model_calls,
+            all_attempts=all_attempts,
+        )
+        expected_payload = {
+            **expected_identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_execution_usage.v1",
+                expected_identity,
+                "replayed operational execution usage",
+            ),
+        }
+        if (
+            event.event_id != self._execution_usage_event_id(cycle_id)
+            or event.event_type != _EXECUTION_USAGE_FROZEN
+            or _canonical_json_text(
+                payload,
+                "stored operational execution usage",
+            )
+            != _canonical_json_text(
+                expected_payload,
+                "replayed operational execution usage",
+            )
+            or event.sequence
+            <= max(
+                completion_event.sequence,
+                *(call_event.sequence for call_event in call_events),
+            )
+        ):
+            raise CampaignJournalError(
+                "frozen operational execution usage conflicts"
+            )
+        return event, payload
+
+    def _model_evidence_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_model_evidence.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _model_evidence_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _MODEL_EVIDENCE_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_id"] != cycle_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational model evidence stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_MODEL_EVIDENCE_AGGREGATE_TYPE,
             aggregate_id=cycle_id,
         )
 
@@ -2173,6 +2661,59 @@ class OperationalCampaignController:
             raise CampaignJournalError("execution receipt is stale")
         return cycle_id
 
+    def _require_evidence_execution_generation_in_transaction(
+        self,
+        connection,
+        execution: ExecutingOperationalCycle,
+    ) -> tuple[str, CycleSnapshot]:
+        if not isinstance(execution, ExecutingOperationalCycle):
+            raise TypeError("execution must be an ExecutingOperationalCycle")
+        cycle_id = _identifier(execution.cycle.cycle_id, "execution.cycle_id")
+        if (
+            execution.lease.cycle_id != cycle_id
+            or execution.cycle.status
+            not in {CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY}
+        ):
+            raise CampaignJournalError("execution receipt is invalid")
+        try:
+            current_owner = _verified_current_owner(
+                self._leases._identity_provider
+            )
+        except CycleLeaseConflictError as error:
+            raise CampaignJournalError("execution receipt is stale") from error
+        if (
+            current_owner != self._leases._owner
+            or execution.lease.owner != current_owner
+        ):
+            raise CampaignJournalError("execution receipt is stale")
+        cycle_events = self._lifecycle._cycle_events(connection, cycle_id)
+        current_cycle = self._lifecycle._replay_cycle(cycle_events)
+        original_events = tuple(
+            event
+            for event in cycle_events
+            if event.sequence <= execution.cycle.sequence
+        )
+        campaign = self._lifecycle._replay_campaign(
+            self._lifecycle._campaign_events(connection)
+        )
+        lease_history = self._leases._replay(
+            self._leases._events(connection, cycle_id)
+        )
+        if (
+            campaign.status is not CampaignStatus.ACTIVE
+            or current_cycle.status
+            not in {CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY}
+            or not original_events
+            or self._lifecycle._replay_cycle(original_events)
+            != execution.cycle
+            or not self._same_fencing_generation(
+                lease_history.active,
+                execution.lease,
+            )
+        ):
+            raise CampaignJournalError("execution receipt is stale")
+        return cycle_id, current_cycle
+
     @staticmethod
     def _same_fencing_generation(
         active: CycleLease,
@@ -2650,6 +3191,7 @@ __all__ = [
     "CycleReservationLimits",
     "ExecutedOperationalModelCall",
     "ExecutingOperationalCycle",
+    "OperationalEvidenceReceipt",
     "OperationalExecutionUsage",
     "OperationalCampaignController",
     "OperationalModelCallLimits",
