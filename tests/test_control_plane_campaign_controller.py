@@ -1234,6 +1234,249 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 payload["manifest_sha256"],
             )
 
+    def test_unrepresentable_exact_retry_cost_replays_unknown_and_settles(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-cost-unrepresentable-retry-001"
+        cycle_id = "cycle-001"
+        max_cost = "2e128"
+        reported_costs = ("1e128", "1e-128")
+        provider = _CanonicalCurrencyRetryEvidenceArtifactBoundFakeProvider(
+            first_reported_cost=reported_costs[0],
+            success_reported_cost=reported_costs[1],
+        )
+
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            controller, _, member, frozen_usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=provider,
+                    campaign_max_cost=max_cost,
+                    reservation_max_cost=max_cost,
+                    call_max_cost=max_cost,
+                )
+            )
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            ).list_attempts()
+            usage_events = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id=cycle_id,
+            )
+            usage_payload = usage_events[0].payload()
+
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(
+                tuple(attempt.envelope.reported_cost for attempt in attempts),
+                reported_costs,
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.currency for attempt in attempts),
+                ("USD", "USD"),
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.usage_status for attempt in attempts),
+                (UsageStatus.REPORTED, UsageStatus.REPORTED),
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.outcome for attempt in attempts),
+                (
+                    InvocationOutcome.RESPONSE_RECEIVED,
+                    InvocationOutcome.RESPONSE_RECEIVED,
+                ),
+            )
+            self.assertEqual(
+                tuple(attempt.final_outcome for attempt in attempts),
+                (InvocationOutcome.INVALID_JSON, InvocationOutcome.SUCCESS),
+            )
+            self.assertEqual(len(usage_events), 1)
+            self.assertEqual(
+                usage_payload["schema_version"],
+                "control_plane.operational_execution_usage.v2",
+            )
+            self.assertEqual(frozen_usage.usage_status, UsageStatus.UNKNOWN)
+            self.assertIsNone(frozen_usage.cost)
+            self.assertEqual(frozen_usage.currency, "USD")
+            self.assertEqual(
+                usage_payload["usage_status"],
+                UsageStatus.UNKNOWN.value,
+            )
+            self.assertIsNone(usage_payload["cost"])
+            self.assertEqual(usage_payload["currency"], "USD")
+
+            rows_before_replay = _campaign_event_rows(root, campaign_id)
+            del controller
+            replay_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=grant,
+                namespace="formal",
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+            reopened = OperationalCampaignController(
+                journal=replay_journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost=max_cost,
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+            replay_execution = reopened.start_execution(
+                cycle_id=cycle_id,
+                acquisition_id=f"execute-{campaign_id}",
+            )
+            replay_provider = _EvidenceArtifactBoundFakeProvider()
+            replayed_call = reopened.invoke_member_json(
+                execution=replay_execution,
+                member_id=member.member_id,
+                provider=replay_provider,
+                prompt={
+                    "instruction": "Return one synthetic runner artifact"
+                },
+                limits=replace(_FAKE_CALL_LIMITS, max_cost=max_cost),
+            )
+            replayed_usage = reopened.complete_model_execution(
+                execution=replay_execution,
+            )
+
+            self.assertEqual(replay_provider.call_count, 0)
+            self.assertEqual(replayed_call, frozen_usage.model_calls[0])
+            self.assertEqual(replayed_usage, frozen_usage)
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                rows_before_replay,
+            )
+            self.assertEqual(
+                len(
+                    replay_journal.list_events(
+                        cycle_id=cycle_id,
+                        aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                        aggregate_id=cycle_id,
+                    )
+                ),
+                1,
+            )
+            self.assertEqual(
+                len(
+                    OperationalUsageJournal(
+                        journal=replay_journal,
+                        cycle_id=cycle_id,
+                    ).list_attempts()
+                ),
+                2,
+            )
+
+            evidence = reopened.record_model_evidence(
+                execution=replay_execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            self.assertEqual(
+                reopened.cycle_snapshot(cycle_id).status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            settled = reopened.settle_cycle_without_learning(
+                execution=replay_execution,
+                execution_usage=replayed_usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(settled.settlement_state, "SETTLED_UNKNOWN")
+            self.assertEqual(
+                reopened.cycle_snapshot(cycle_id).status,
+                CycleStatus.SETTLED,
+            )
+            snapshot = reopened.budget_snapshot()
+            self.assertEqual(snapshot.currency, "USD")
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "2e+128")
+            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_tool_attempts, 2)
+            self.assertEqual(snapshot.reserved_data_exposures, 0)
+            self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            self.assertEqual(snapshot.spent_output_tokens, 0)
+            self.assertEqual(snapshot.spent_cost, "0")
+            self.assertEqual(snapshot.spent_wall_time_ms, 0)
+            self.assertEqual(snapshot.spent_tool_attempts, 0)
+            self.assertEqual(snapshot.spent_data_exposures, 0)
+            self.assertEqual(snapshot.spent_disk_growth_bytes, 0)
+            self.assertEqual(
+                len(
+                    replay_journal.list_events(
+                        cycle_id=cycle_id,
+                        aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                        aggregate_id=cycle_id,
+                    )
+                ),
+                1,
+            )
+            self.assertEqual(
+                len(
+                    replay_journal.list_events(
+                        cycle_id=cycle_id,
+                        aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                        aggregate_id=cycle_id,
+                    )
+                ),
+                1,
+            )
+            budget_settlement_events = tuple(
+                event
+                for event in replay_journal.list_events(
+                    cycle_id=None,
+                    aggregate_type="CAMPAIGN_BUDGET",
+                    aggregate_id=reopened._budget._budget_id,
+                )
+                if event.event_type == "BUDGET_SETTLED"
+            )
+            self.assertEqual(len(budget_settlement_events), 1)
+
+            rows_before_settlement_replay = _campaign_event_rows(
+                root,
+                campaign_id,
+            )
+            replayed_settlement = reopened.settle_cycle_without_learning(
+                execution=replay_execution,
+                execution_usage=replayed_usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(replayed_settlement, settled)
+            self.assertEqual(replay_provider.call_count, 0)
+            self.assertEqual(reopened.budget_snapshot(), snapshot)
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                rows_before_settlement_replay,
+            )
+            self.assertEqual(
+                len(
+                    OperationalUsageJournal(
+                        journal=replay_journal,
+                        cycle_id=cycle_id,
+                    ).list_attempts()
+                ),
+                2,
+            )
+
     def test_controller_reopen_currency_mismatch_fails_before_any_event_write(
         self,
     ) -> None:

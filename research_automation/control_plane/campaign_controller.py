@@ -3033,7 +3033,7 @@ class OperationalCampaignController:
             cost = None
         else:
             try:
-                cost = _cost_text(
+                cost_text = _cost_text(
                     _add_cost(
                         *(
                             _bounded_cost(reported_cost)
@@ -3041,6 +3041,8 @@ class OperationalCampaignController:
                         )
                     )
                 )
+                _bounded_cost(cost_text)
+                cost = cost_text
             except ValueError:
                 cost = None
         wall_times = [model_call.wall_time_ms for model_call in model_calls]
