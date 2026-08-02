@@ -359,6 +359,7 @@ class _LeaseSwapMonotonicClock:
 
 
 _FAKE_CALL_LIMITS = OperationalModelCallLimits(
+    currency="USD",
     max_input_tokens=20,
     max_output_tokens=10,
     max_cost="0.1",
@@ -401,6 +402,7 @@ def _completed_evidence_model_call(
         journal=journal,
         repository_root=root,
         budget_limits=CampaignBudgetLimits(
+            currency="USD",
             max_cycles=max_cycles,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -421,6 +423,7 @@ def _completed_evidence_model_call(
         execution_spec=execution_spec,
         roster_members=(member,),
         reservation_limits=CycleReservationLimits(
+            currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
@@ -567,6 +570,7 @@ def _prepare_synthetic_cycle(
         execution_spec=execution_spec,
         roster_members=(member,),
         reservation_limits=CycleReservationLimits(
+            currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
@@ -615,6 +619,183 @@ def _rewrite_campaign_event_payload(root, event, payload) -> None:
 
 
 class OperationalCampaignControllerTests(unittest.TestCase):
+    def test_usd_is_bound_through_the_operational_no_learning_path(self) -> None:
+        campaign_id = "campaign-controller-currency-001"
+        cycle_id = "cycle-currency-001"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one synthetic runner artifact"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        campaign_limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        reservation_limits = CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=10,
+            max_tool_attempts=2,
+        )
+        call_limits = OperationalModelCallLimits(
+            currency="USD",
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=10,
+            max_attempts=2,
+        )
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=campaign_limits,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-currency", 101, 1_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            prepared = controller.prepare_cycle(
+                task=ExperimentTask(
+                    task_id=cycle_id,
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Currency remains auditable",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                ),
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=reservation_limits,
+            )
+            preparation_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                aggregate_id=cycle_id,
+            )[0]
+            preparation_payload = preparation_event.payload()
+            preparation_payload.pop("_authority_grant_id")
+            budget_events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_BUDGET",
+                aggregate_id=controller._budget._budget_id,
+            )
+            reservation_event = next(
+                event
+                for event in budget_events
+                if event.event_type == "BUDGET_RESERVED"
+            )
+            reservation_payload = reservation_event.payload()
+            reservation_payload.pop("_authority_grant_id")
+
+            self.assertEqual(campaign_limits.currency, "USD")
+            self.assertEqual(reservation_limits.currency, "USD")
+            self.assertEqual(call_limits.currency, "USD")
+            self.assertEqual(prepared.reservation.currency, "USD")
+            self.assertEqual(preparation_payload["currency"], "USD")
+            self.assertEqual(
+                preparation_payload["schema_version"],
+                "control_plane.campaign_cycle_preparation.v2",
+            )
+            self.assertEqual(
+                preparation_payload["reservation_sha256"],
+                _controller_sha256(
+                    b"control_plane.controller_cycle_reservation_bounds.v2",
+                    reservation_payload,
+                    "expected currency-bound Cycle reservation",
+                ),
+            )
+
+            execution = controller.start_execution(
+                cycle_id=cycle_id,
+                acquisition_id="execute-currency-001",
+            )
+            provider = _EvidenceArtifactBoundFakeProvider()
+            model_call = controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=provider,
+                prompt=prompt,
+                limits=call_limits,
+            )
+            call_start = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=model_call.call_id,
+            )[0]
+            call_start_payload = call_start.payload()
+            call_start_payload.pop("_authority_grant_id")
+            usage = controller.complete_model_execution(execution=execution)
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settlement = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(provider.call_count, 1)
+            self.assertEqual(
+                call_start_payload["schema_version"],
+                "control_plane.operational_model_call.v2",
+            )
+            self.assertEqual(call_start_payload["call_limits"], call_limits.to_payload())
+            self.assertEqual(call_start_payload["call_limits"]["currency"], "USD")
+            self.assertEqual(usage.currency, "USD")
+            self.assertEqual(settlement.currency, "USD")
+            settlement_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                aggregate_id=cycle_id,
+            )[0]
+            settlement_payload = settlement_event.payload()
+            settlement_payload.pop("_authority_grant_id")
+            self.assertEqual(
+                settlement_payload["schema_version"],
+                "control_plane.operational_no_learning_settlement.v2",
+            )
+            self.assertEqual(settlement_payload["currency"], "USD")
+            budget_settlement_event = next(
+                event
+                for event in journal.list_events(
+                    cycle_id=None,
+                    aggregate_type="CAMPAIGN_BUDGET",
+                    aggregate_id=controller._budget._budget_id,
+                )
+                if event.event_type == "BUDGET_SETTLED"
+            )
+            budget_settlement_payload = budget_settlement_event.payload()
+            budget_settlement_payload.pop("_authority_grant_id")
+            self.assertEqual(budget_settlement_payload["currency"], "USD")
+            self.assertEqual(controller.budget_snapshot().currency, "USD")
+
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
         campaign_id = "campaign-controller-001"
         protocol = _protocol()
@@ -640,6 +821,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             process_started_at_ns=1_000,
         )
         budget = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=2,
             max_input_tokens=10_000,
             max_output_tokens=5_000,
@@ -650,6 +832,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_disk_growth_bytes=1_000_000,
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=1_000,
             max_output_tokens=500,
             max_cost="1.00",
@@ -743,6 +926,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=1_000,
                     max_output_tokens=500,
@@ -761,6 +945,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(_protocol_member(),),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="0.1",
@@ -779,6 +964,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=1_000,
                     max_output_tokens=500,
@@ -825,6 +1011,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=10,
                     max_output_tokens=10,
@@ -841,6 +1028,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     execution_spec=execution_spec,
                     roster_members=(_protocol_member(),),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=11,
                         max_output_tokens=1,
                         max_cost="0.1",
@@ -890,12 +1078,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 104, 4_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -966,6 +1156,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 105, 5_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -998,6 +1189,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     execution_spec=execution_spec,
                     roster_members=(_protocol_member(),),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=10,
                         max_output_tokens=5,
                         max_cost="0.1",
@@ -1033,12 +1225,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 106, 6_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -1115,12 +1309,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 107, 7_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -1185,6 +1381,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 108, 8_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -1192,11 +1389,13 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         reservations = (
             CycleReservationLimits(
+                currency="USD",
                 max_input_tokens=10,
                 max_output_tokens=5,
                 max_cost="0.1",
             ),
             CycleReservationLimits(
+                currency="USD",
                 max_input_tokens=11,
                 max_output_tokens=6,
                 max_cost="0.2",
@@ -1274,12 +1473,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 109, 9_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -1360,6 +1561,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1382,6 +1584,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     execution_spec=execution_spec,
                     roster_members=(_protocol_member(),),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=10,
                         max_output_tokens=5,
                         max_cost="0.1",
@@ -1406,6 +1609,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1496,6 +1700,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1586,6 +1791,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1605,6 +1811,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     execution_spec=execution_spec,
                     roster_members=(_protocol_member(),),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=10,
                         max_output_tokens=5,
                         max_cost="0.1",
@@ -1655,6 +1862,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1676,6 +1884,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         replace(_protocol_member(), model="drifted-model"),
                     ),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=10,
                         max_output_tokens=5,
                         max_cost="0.1",
@@ -1728,12 +1937,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 115, 15_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -1798,12 +2009,14 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 116, 16_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=10,
             max_output_tokens=5,
             max_cost="0.1",
@@ -1901,6 +2114,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1917,6 +2131,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     execution_spec=execution_spec,
                     roster_members=(_protocol_member(),),
                     reservation_limits=CycleReservationLimits(
+                        currency="USD",
                         max_input_tokens=10,
                         max_output_tokens=5,
                         max_cost="0.1",
@@ -1957,6 +2172,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -1971,6 +2187,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(_protocol_member(),),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=10,
                     max_output_tokens=5,
                     max_cost="0.1",
@@ -2032,6 +2249,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -2048,6 +2266,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -2134,6 +2353,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -2150,6 +2370,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -2205,6 +2426,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -2304,6 +2526,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -2320,6 +2543,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -2412,6 +2636,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -2428,6 +2653,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -2524,6 +2750,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         journal=journal,
                         repository_root=root,
                         budget_limits=CampaignBudgetLimits(
+                            currency="USD",
                             max_cycles=1,
                             max_input_tokens=100,
                             max_output_tokens=50,
@@ -2542,6 +2769,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         execution_spec=execution_spec,
                         roster_members=(member,),
                         reservation_limits=CycleReservationLimits(
+                            currency="USD",
                             max_input_tokens=20,
                             max_output_tokens=10,
                             max_cost="0.1",
@@ -2561,6 +2789,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             provider=provider,
                             prompt=prompt,
                             limits=OperationalModelCallLimits(
+                                currency="USD",
                                 max_input_tokens=20,
                                 max_output_tokens=10,
                                 max_cost="0.1",
@@ -2595,6 +2824,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             provider=replay_provider,
                             prompt=prompt,
                             limits=OperationalModelCallLimits(
+                                currency="USD",
                                 max_input_tokens=20,
                                 max_output_tokens=10,
                                 max_cost="0.1",
@@ -2629,6 +2859,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 121, 21_000)
         limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -2637,6 +2868,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_tool_attempts=2,
         )
         reservation = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
@@ -2754,6 +2986,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 133, 33_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -2780,6 +3013,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -2851,6 +3085,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 134, 34_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -2877,6 +3112,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -3010,6 +3246,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -3031,6 +3268,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(factor_member, source_member),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
@@ -3144,6 +3382,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -3164,6 +3403,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(factor_member, source_member),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
@@ -3261,6 +3501,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         first_owner = ProcessIdentity("host-controller", 140, 40_000)
         other_owner = ProcessIdentity("host-controller", 141, 41_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -3283,6 +3524,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -3355,6 +3597,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         first_owner = ProcessIdentity("host-controller", 124, 24_000)
         recovered_owner = ProcessIdentity("host-controller", 125, 25_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -3363,6 +3606,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_tool_attempts=2,
         )
         reservation_limits = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
@@ -3476,6 +3720,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         first_owner = ProcessIdentity("host-controller", 128, 28_000)
         recovered_owner = ProcessIdentity("host-controller", 129, 29_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -3499,6 +3744,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -3603,6 +3849,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         first_owner = ProcessIdentity("host-controller", 128, 28_000)
         recovered_owner = ProcessIdentity("host-controller", 129, 29_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -3611,6 +3858,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_tool_attempts=2,
         )
         reservation_limits = CycleReservationLimits(
+            currency="USD",
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
@@ -3769,6 +4017,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -3785,6 +4034,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(source_member, factor_member),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
@@ -3812,6 +4062,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             provider=provider,
                             prompt=prompts[member.role],
                             limits=OperationalModelCallLimits(
+                                currency="USD",
                                 max_input_tokens=21,
                                 max_output_tokens=10,
                                 max_cost="0.1",
@@ -3880,6 +4131,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -3896,6 +4148,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -3918,6 +4171,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     provider=provider,
                     prompt=prompt,
                     limits=OperationalModelCallLimits(
+                        currency="USD",
                         max_input_tokens=6,
                         max_output_tokens=10,
                         max_cost="0.1",
@@ -3957,6 +4211,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         owner = ProcessIdentity("host-controller", 143, 43_000)
         limits = OperationalModelCallLimits(
+            currency="USD",
             max_input_tokens=6,
             max_output_tokens=10,
             max_cost="0.1",
@@ -3969,6 +4224,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -3985,6 +4241,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4058,6 +4315,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -4078,6 +4336,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4101,6 +4360,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     provider=provider,
                     prompt=prompt,
                     limits=OperationalModelCallLimits(
+                        currency="USD",
                         max_input_tokens=6,
                         max_output_tokens=10,
                         max_cost="0.1",
@@ -4152,6 +4412,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -4172,6 +4433,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4227,6 +4489,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -4247,6 +4510,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4302,6 +4566,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         first_owner = ProcessIdentity("host-controller", 131, 31_000)
         recovered_owner = ProcessIdentity("host-controller", 132, 32_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -4329,6 +4594,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4441,6 +4707,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -4461,6 +4728,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_spec=execution_spec,
                 roster_members=(member,),
                 reservation_limits=CycleReservationLimits(
+                    currency="USD",
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
@@ -4529,6 +4797,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=1,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -4556,6 +4825,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         campaign_id = "campaign-controller-model-evidence-durable-recovery"
         recovered_owner = ProcessIdentity("host-controller", 146, 46_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -4664,6 +4934,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         campaign_id = "campaign-controller-model-evidence-lease-swap"
         recovered_owner = ProcessIdentity("host-controller", 145, 45_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -6301,6 +6572,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         report = {"synthetic": "terminal-report"}
         recovered_owner = ProcessIdentity("host-controller", 147, 47_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -6815,6 +7087,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         campaign_id = "campaign-controller-no-learning-lease-recovery"
         recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -7225,6 +7498,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         }
         recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -7556,7 +7830,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 if key not in {"manifest_sha256", "_authority_grant_id"}
             }
             settlement_payload["manifest_sha256"] = _controller_sha256(
-                b"control_plane.operational_cycle_settlement.v1",
+                b"control_plane.operational_cycle_settlement.v2",
                 settlement_identity,
                 "forged foreign Learning settlement",
             )
@@ -7659,6 +7933,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 )
             foreign_reservation_id = "foreign-reservation"
             controller._budget.reserve(
+                currency="USD",
                 reservation_id=foreign_reservation_id,
                 call_id="foreign-call",
                 max_input_tokens=0,
@@ -7667,6 +7942,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             controller._budget.settle(
                 foreign_reservation_id,
+                currency="USD",
                 input_tokens=0,
                 output_tokens=0,
                 cost="0",
@@ -7695,7 +7971,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 if key not in {"manifest_sha256", "_authority_grant_id"}
             }
             settlement_payload["manifest_sha256"] = _controller_sha256(
-                b"control_plane.operational_cycle_settlement.v1",
+                b"control_plane.operational_cycle_settlement.v2",
                 settlement_identity,
                 "forged foreign budget settlement",
             )
@@ -8077,6 +8353,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         campaign_id = "campaign-controller-information-gain-lease-recovery"
         recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=1,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -8509,6 +8786,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=2,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -8561,6 +8839,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 journal=journal,
                 repository_root=root,
                 budget_limits=CampaignBudgetLimits(
+                    currency="USD",
                     max_cycles=2,
                     max_input_tokens=100,
                     max_output_tokens=50,
@@ -8807,6 +9086,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         campaign_id = "campaign-controller-next-cycle-lease-recovery"
         recovered_owner = ProcessIdentity("host-controller", 150, 50_000)
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=2,
             max_input_tokens=100,
             max_output_tokens=50,
@@ -8872,6 +9152,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
     ) -> None:
         campaign_id = "campaign-controller-next-cycle-completed-process-death"
         budget_limits = CampaignBudgetLimits(
+            currency="USD",
             max_cycles=2,
             max_input_tokens=100,
             max_output_tokens=50,

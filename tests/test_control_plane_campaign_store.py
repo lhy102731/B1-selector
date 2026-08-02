@@ -318,10 +318,151 @@ class OperationalCampaignMigrationTests(unittest.TestCase):
 
 
 class OperationalBudgetJournalTests(unittest.TestCase):
+    def test_currency_survives_budget_journal_replay_and_conflicting_reopen(self) -> None:
+        campaign_id = "campaign-budget-currency-001"
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            budget = OperationalBudgetJournal(
+                journal=journal,
+                budget_id="campaign-budget",
+                currency="USD",
+                max_input_tokens=100,
+                max_output_tokens=50,
+                max_cost="1",
+            )
+            reservation = budget.reserve(
+                reservation_id="reservation-currency",
+                call_id="call-currency",
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.2",
+            )
+            settlement = budget.settle(
+                reservation.reservation_id,
+                currency="USD",
+                input_tokens=None,
+                output_tokens=None,
+                cost=None,
+            )
+            reopened = OperationalBudgetJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                budget_id="campaign-budget",
+                currency="USD",
+                max_input_tokens=100,
+                max_output_tokens=50,
+                max_cost="1.0",
+            )
+
+            self.assertEqual(reservation.currency, "USD")
+            self.assertEqual(settlement.currency, "USD")
+            self.assertEqual(reopened.snapshot().currency, "USD")
+            events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_BUDGET",
+                aggregate_id="campaign-budget",
+            )
+            domain_payloads = []
+            for event in events:
+                payload = event.payload()
+                payload.pop("_authority_grant_id")
+                domain_payloads.append(payload)
+            self.assertEqual(
+                domain_payloads,
+                [
+                    {
+                        "budget_id": "campaign-budget",
+                        "currency": "USD",
+                        "max_input_tokens": 100,
+                        "max_output_tokens": 50,
+                        "max_cost": "1",
+                        "max_wall_time_ms": 0,
+                        "max_tool_attempts": 0,
+                        "max_data_exposures": 0,
+                        "max_disk_growth_bytes": 0,
+                    },
+                    {
+                        "reservation_id": "reservation-currency",
+                        "call_id": "call-currency",
+                        "currency": "USD",
+                        "max_input_tokens": 20,
+                        "max_output_tokens": 10,
+                        "max_cost": "0.2",
+                        "max_wall_time_ms": 0,
+                        "max_tool_attempts": 0,
+                        "max_data_exposures": 0,
+                        "max_disk_growth_bytes": 0,
+                    },
+                    {
+                        "reservation_id": "reservation-currency",
+                        "currency": "USD",
+                        "input_tokens": None,
+                        "output_tokens": None,
+                        "cost": None,
+                        "wall_time_ms": None,
+                        "tool_attempts": None,
+                        "data_exposures": None,
+                        "disk_growth_bytes": None,
+                        "state": "SETTLED_UNKNOWN",
+                    },
+                ],
+            )
+            connection = sqlite3.connect(root / "operational.sqlite3")
+            try:
+                rows_before = connection.execute(
+                    "SELECT event_id, event_type, payload_json, sequence "
+                    "FROM campaign_events WHERE namespace = ? "
+                    "AND campaign_id = ? AND aggregate_type = ? "
+                    "AND aggregate_id = ? ORDER BY sequence",
+                    (
+                        "formal",
+                        campaign_id,
+                        "CAMPAIGN_BUDGET",
+                        "campaign-budget",
+                    ),
+                ).fetchall()
+            finally:
+                connection.close()
+
+            with self.assertRaises(BudgetConflictError):
+                OperationalBudgetJournal(
+                    journal=journal,
+                    budget_id="campaign-budget",
+                    currency="EUR",
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                )
+
+            connection = sqlite3.connect(root / "operational.sqlite3")
+            try:
+                rows_after = connection.execute(
+                    "SELECT event_id, event_type, payload_json, sequence "
+                    "FROM campaign_events WHERE namespace = ? "
+                    "AND campaign_id = ? AND aggregate_type = ? "
+                    "AND aggregate_id = ? ORDER BY sequence",
+                    (
+                        "formal",
+                        campaign_id,
+                        "CAMPAIGN_BUDGET",
+                        "campaign-budget",
+                    ),
+                ).fetchall()
+            finally:
+                connection.close()
+            self.assertEqual(rows_after, rows_before)
+            self.assertEqual(reopened.snapshot().currency, "USD")
+
     def test_resource_budget_settlement_survives_reopen(self) -> None:
         campaign_id = "campaign-resource-budget-001"
         with _authorized_campaign(campaign_id) as (_, grant, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=10,
@@ -333,6 +474,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_disk_growth_bytes=1_000,
             )
             budget.reserve(
+                currency="USD",
                 reservation_id="resource-reservation",
                 call_id="resource-call",
                 max_input_tokens=0,
@@ -345,6 +487,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
             budget.settle(
                 "resource-reservation",
+                currency="USD",
                 input_tokens=0,
                 output_tokens=0,
                 cost="0",
@@ -355,6 +498,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
 
             reopened = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
@@ -385,6 +529,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
         campaign_id = "campaign-resource-budget-002"
         with _authorized_campaign(campaign_id) as (_, grant, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=0,
@@ -396,6 +541,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_disk_growth_bytes=1_000,
             )
             budget.reserve(
+                currency="USD",
                 reservation_id="resource-reservation-unknown",
                 call_id="resource-call-unknown",
                 max_input_tokens=0,
@@ -409,11 +555,13 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             settlement = budget.settle(
                 "resource-reservation-unknown",
+                currency="USD",
                 input_tokens=0,
                 output_tokens=0,
                 cost="0",
             )
             reopened = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
@@ -443,6 +591,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
         with _authorized_campaign(campaign_id) as (_, grant, journal):
             budgets = (
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=journal,
                     budget_id="campaign-budget",
                     max_input_tokens=0,
@@ -451,6 +600,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_wall_time_ms=100,
                 ),
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=OperationalCampaignJournal(
                         root_secret=ROOT_SECRET,
                         grant=grant,
@@ -469,6 +619,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             def reserve(index: int) -> bool:
                 try:
                     budgets[index].reserve(
+                        currency="USD",
                         reservation_id=f"resource-reservation-{index}",
                         call_id=f"resource-call-{index}",
                         max_input_tokens=0,
@@ -512,6 +663,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 if path.is_file()
             }
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="dry-run-budget",
                 max_input_tokens=100,
@@ -519,6 +671,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             budget.reserve(
+                currency="USD",
                 reservation_id="preview-reservation-001",
                 call_id="preview-call-001",
                 max_input_tokens=10,
@@ -580,6 +733,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 clock=lambda: NOW,
             )
             formal_budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=formal_journal,
                 budget_id="shared-budget-id",
                 max_input_tokens=100,
@@ -587,6 +741,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             dry_budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=dry_journal,
                 budget_id="shared-budget-id",
                 max_input_tokens=20,
@@ -595,6 +750,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
 
             formal_budget.reserve(
+                currency="USD",
                 reservation_id="shared-reservation-id",
                 call_id="shared-call-id",
                 max_input_tokens=11,
@@ -602,6 +758,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="0.11",
             )
             dry_budget.reserve(
+                currency="USD",
                 reservation_id="shared-reservation-id",
                 call_id="shared-call-id",
                 max_input_tokens=7,
@@ -610,6 +767,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
 
             reopened_formal = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=formal_grant,
@@ -623,6 +781,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             reopened_dry = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=dry_grant,
@@ -642,6 +801,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
         with _authorized_campaign("campaign-budget-001") as (_, grant, journal):
             budgets = (
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=journal,
                     budget_id="campaign-budget",
                     max_input_tokens=100,
@@ -649,6 +809,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_cost="1.00",
                 ),
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=OperationalCampaignJournal(
                         root_secret=ROOT_SECRET,
                         grant=grant,
@@ -666,6 +827,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             def reserve(index: int) -> bool:
                 try:
                     budgets[index].reserve(
+                        currency="USD",
                         reservation_id=f"reservation-{index}",
                         call_id=f"call-{index}",
                         max_input_tokens=60,
@@ -681,6 +843,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             self.assertEqual(sum(outcomes), 1)
             reopened = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
@@ -701,6 +864,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_known_settlement_survives_reopen_and_is_idempotent(self) -> None:
         with _authorized_campaign("campaign-budget-002") as (_, grant, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -708,6 +872,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             budget.reserve(
+                currency="USD",
                 reservation_id="reservation-known",
                 call_id="call-known",
                 max_input_tokens=60,
@@ -717,11 +882,13 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             settlement = budget.settle(
                 "reservation-known",
+                currency="USD",
                 input_tokens=20,
                 output_tokens=10,
                 cost="0.20",
             )
             reopened = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
@@ -736,6 +903,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             )
             replay = reopened.settle(
                 "reservation-known",
+                currency="USD",
                 input_tokens=20,
                 output_tokens=10,
                 cost="0.2",
@@ -754,6 +922,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_unknown_settlement_keeps_full_persistent_reservation(self) -> None:
         with _authorized_campaign("campaign-budget-003") as (_, grant, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -761,6 +930,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             budget.reserve(
+                currency="USD",
                 reservation_id="reservation-unknown",
                 call_id="call-unknown",
                 max_input_tokens=60,
@@ -770,11 +940,13 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             settlement = budget.settle(
                 "reservation-unknown",
+                currency="USD",
                 input_tokens=None,
                 output_tokens=None,
                 cost=None,
             )
             reopened = OperationalBudgetJournal(
+                currency="USD",
                 journal=OperationalCampaignJournal(
                     root_secret=ROOT_SECRET,
                     grant=grant,
@@ -795,6 +967,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
             self.assertEqual(snapshot.reserved_cost, "0.6")
             with self.assertRaises(BudgetExceededError):
                 reopened.reserve(
+                    currency="USD",
                     reservation_id="reservation-next",
                     call_id="call-next",
                     max_input_tokens=50,
@@ -805,6 +978,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_reopen_rejects_budget_configuration_drift(self) -> None:
         with _authorized_campaign("campaign-budget-004") as (_, grant, journal):
             OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -814,6 +988,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             with self.assertRaises(BudgetConflictError):
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=OperationalCampaignJournal(
                         root_secret=ROOT_SECRET,
                         grant=grant,
@@ -828,6 +1003,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 )
             with self.assertRaises(BudgetConflictError):
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=OperationalCampaignJournal(
                         root_secret=ROOT_SECRET,
                         grant=grant,
@@ -872,6 +1048,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                         event_type="BUDGET_OPENED",
                         payload={
                             "budget_id": budget_id,
+                            "currency": "USD",
                             "max_input_tokens": stored_input,
                             "max_output_tokens": stored_output,
                             "max_cost": "1",
@@ -884,6 +1061,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
                     with self.assertRaises(BudgetConflictError):
                         OperationalBudgetJournal(
+                            currency="USD",
                             journal=journal,
                             budget_id=budget_id,
                             max_input_tokens=1,
@@ -894,6 +1072,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_replay_rejects_malformed_budget_identifiers_fail_closed(self) -> None:
         with _authorized_campaign("campaign-budget-005") as (_, _, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -909,6 +1088,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 payload={
                     "reservation_id": "réservation-invalid",
                     "call_id": " ",
+                    "currency": "USD",
                     "max_input_tokens": 1,
                     "max_output_tokens": 1,
                     "max_cost": "0.1",
@@ -927,6 +1107,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
         reservation_id = "reservation-noncanonical"
         with _authorized_campaign(campaign_id) as (_, _, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -934,6 +1115,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 max_cost="1.00",
             )
             budget.reserve(
+                currency="USD",
                 reservation_id=reservation_id,
                 call_id="call-noncanonical",
                 max_input_tokens=60,
@@ -955,6 +1137,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                 event_type="BUDGET_SETTLED",
                 payload={
                     "reservation_id": reservation_id,
+                    "currency": "USD",
                     "input_tokens": 20,
                     "output_tokens": 10,
                     "cost": "0.20",
@@ -972,6 +1155,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_revocation_precedes_budget_input_validation(self) -> None:
         with _authorized_campaign("campaign-budget-007") as (root, grant, journal):
             budget = OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="campaign-budget",
                 max_input_tokens=100,
@@ -991,6 +1175,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             with self.assertRaises(PermissionError):
                 budget.reserve(
+                    currency="USD",
                     reservation_id="invalid identifier",
                     call_id="",
                     max_input_tokens=1,
@@ -1001,6 +1186,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
     def test_campaign_cannot_split_usage_across_budget_ids(self) -> None:
         with _authorized_campaign("campaign-budget-008") as (_, _, journal):
             OperationalBudgetJournal(
+                currency="USD",
                 journal=journal,
                 budget_id="primary-budget",
                 max_input_tokens=100,
@@ -1010,6 +1196,7 @@ class OperationalBudgetJournalTests(unittest.TestCase):
 
             with self.assertRaises(BudgetConflictError):
                 OperationalBudgetJournal(
+                    currency="USD",
                     journal=journal,
                     budget_id="second-budget",
                     max_input_tokens=100,

@@ -22,6 +22,7 @@ from .budget import (
     BudgetReservation,
     BudgetSettlement,
     BudgetSnapshot,
+    _canonical_currency,
     _cost,
     _cost_text,
 )
@@ -603,6 +604,7 @@ class OperationalBudgetJournal:
     __slots__ = (
         "_journal",
         "_budget_id",
+        "_currency",
         "_max_input_tokens",
         "_max_output_tokens",
         "_max_cost",
@@ -617,6 +619,7 @@ class OperationalBudgetJournal:
         *,
         journal: OperationalCampaignJournal,
         budget_id: str,
+        currency: str,
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
@@ -630,7 +633,9 @@ class OperationalBudgetJournal:
         journal._authorize()
         self._journal = journal
         self._budget_id = _identifier(budget_id, "budget_id")
+        self._currency = _canonical_currency(currency)
         BudgetLedger(
+            currency=self._currency,
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
             max_cost=max_cost,
@@ -669,6 +674,7 @@ class OperationalBudgetJournal:
         *,
         reservation_id: str,
         call_id: str,
+        currency: str,
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
@@ -678,6 +684,9 @@ class OperationalBudgetJournal:
         max_disk_growth_bytes: int = 0,
     ) -> BudgetReservation:
         self._journal._authorize()
+        currency = _canonical_currency(currency)
+        if currency != self._currency:
+            raise BudgetConflictError("reservation currency conflicts with budget")
         reservation_id = _identifier(reservation_id, "reservation_id")
         call_id = _identifier(call_id, "call_id")
         return _SqliteUnitOfWork(stores._operational_spec())._write(
@@ -685,6 +694,7 @@ class OperationalBudgetJournal:
                 connection,
                 reservation_id=reservation_id,
                 call_id=call_id,
+                currency=currency,
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
                 max_cost=max_cost,
@@ -701,6 +711,7 @@ class OperationalBudgetJournal:
         *,
         reservation_id: str,
         call_id: str,
+        currency: str,
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
@@ -709,11 +720,15 @@ class OperationalBudgetJournal:
         max_data_exposures: int = 0,
         max_disk_growth_bytes: int = 0,
     ) -> BudgetReservation:
+        currency = _canonical_currency(currency)
+        if currency != self._currency:
+            raise BudgetConflictError("reservation currency conflicts with budget")
         events = self._events_in_transaction(connection)
         ledger = self._replay(events)
         reservation = ledger.reserve(
             reservation_id=reservation_id,
             call_id=call_id,
+            currency=currency,
             max_input_tokens=max_input_tokens,
             max_output_tokens=max_output_tokens,
             max_cost=max_cost,
@@ -738,6 +753,7 @@ class OperationalBudgetJournal:
             payload={
                 "reservation_id": reservation.reservation_id,
                 "call_id": reservation.call_id,
+                "currency": reservation.currency,
                 "max_input_tokens": reservation.max_input_tokens,
                 "max_output_tokens": reservation.max_output_tokens,
                 "max_cost": reservation.max_cost,
@@ -753,6 +769,7 @@ class OperationalBudgetJournal:
         self,
         reservation_id: str,
         *,
+        currency: str,
         input_tokens: int | None,
         output_tokens: int | None,
         cost: str | int | Decimal | None,
@@ -762,11 +779,15 @@ class OperationalBudgetJournal:
         disk_growth_bytes: int | None = None,
     ) -> BudgetSettlement:
         self._journal._authorize()
+        currency = _canonical_currency(currency)
+        if currency != self._currency:
+            raise BudgetConflictError("settlement currency conflicts with budget")
         reservation_id = _identifier(reservation_id, "reservation_id")
         return _SqliteUnitOfWork(stores._operational_spec())._write(
             lambda connection: self._settle_in_transaction(
                 connection,
                 reservation_id=reservation_id,
+                currency=currency,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost=cost,
@@ -782,6 +803,7 @@ class OperationalBudgetJournal:
         connection,
         *,
         reservation_id: str,
+        currency: str,
         input_tokens: int | None,
         output_tokens: int | None,
         cost: str | int | Decimal | None,
@@ -790,10 +812,14 @@ class OperationalBudgetJournal:
         data_exposures: int | None = None,
         disk_growth_bytes: int | None = None,
     ) -> BudgetSettlement:
+        currency = _canonical_currency(currency)
+        if currency != self._currency:
+            raise BudgetConflictError("settlement currency conflicts with budget")
         events = self._events_in_transaction(connection)
         ledger = self._replay(events)
         settlement = ledger.settle(
             reservation_id,
+            currency=currency,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost=cost,
@@ -817,6 +843,7 @@ class OperationalBudgetJournal:
             event_type=_BUDGET_SETTLED,
             payload={
                 "reservation_id": reservation_id,
+                "currency": settlement.currency,
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
                 "cost": None if cost is None else _cost_text(_cost(cost)),
@@ -840,6 +867,7 @@ class OperationalBudgetJournal:
     def _limits_payload(self) -> dict[str, object]:
         return {
             "budget_id": self._budget_id,
+            "currency": self._currency,
             "max_input_tokens": self._max_input_tokens,
             "max_output_tokens": self._max_output_tokens,
             "max_cost": self._max_cost,
@@ -889,6 +917,7 @@ class OperationalBudgetJournal:
             or set(opened_payload)
             != {
                 "budget_id",
+                "currency",
                 "max_input_tokens",
                 "max_output_tokens",
                 "max_cost",
@@ -898,6 +927,7 @@ class OperationalBudgetJournal:
                 "max_disk_growth_bytes",
             }
             or opened_payload["budget_id"] != self._budget_id
+            or opened_payload["currency"] != self._currency
             or type(opened_payload["max_input_tokens"]) is not int
             or opened_payload["max_input_tokens"] != self._max_input_tokens
             or type(opened_payload["max_output_tokens"]) is not int
@@ -916,6 +946,7 @@ class OperationalBudgetJournal:
         ):
             raise BudgetConflictError("campaign budget configuration conflicts")
         ledger = BudgetLedger(
+            currency=self._currency,
             max_input_tokens=self._max_input_tokens,
             max_output_tokens=self._max_output_tokens,
             max_cost=self._max_cost,
@@ -930,6 +961,7 @@ class OperationalBudgetJournal:
                 expected_fields = {
                     "reservation_id",
                     "call_id",
+                    "currency",
                     "max_input_tokens",
                     "max_output_tokens",
                     "max_cost",
@@ -963,6 +995,7 @@ class OperationalBudgetJournal:
                     reservation = ledger.reserve(
                         reservation_id=reservation_id,
                         call_id=call_id,
+                        currency=payload["currency"],
                         max_input_tokens=payload["max_input_tokens"],
                         max_output_tokens=payload["max_output_tokens"],
                         max_cost=payload["max_cost"],
@@ -974,6 +1007,7 @@ class OperationalBudgetJournal:
                     canonical_payload = {
                         "reservation_id": reservation.reservation_id,
                         "call_id": reservation.call_id,
+                        "currency": reservation.currency,
                         "max_input_tokens": reservation.max_input_tokens,
                         "max_output_tokens": reservation.max_output_tokens,
                         "max_cost": reservation.max_cost,
@@ -991,6 +1025,7 @@ class OperationalBudgetJournal:
             elif event.event_type == _BUDGET_SETTLED:
                 expected_fields = {
                     "reservation_id",
+                    "currency",
                     "input_tokens",
                     "output_tokens",
                     "cost",
@@ -1023,6 +1058,7 @@ class OperationalBudgetJournal:
                 try:
                     settlement = ledger.settle(
                         reservation_id,
+                        currency=payload["currency"],
                         input_tokens=payload["input_tokens"],
                         output_tokens=payload["output_tokens"],
                         cost=payload["cost"],
@@ -1033,6 +1069,7 @@ class OperationalBudgetJournal:
                     )
                     canonical_payload = {
                         "reservation_id": reservation_id,
+                        "currency": settlement.currency,
                         "input_tokens": payload["input_tokens"],
                         "output_tokens": payload["output_tokens"],
                         "cost": (

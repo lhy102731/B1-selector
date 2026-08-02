@@ -126,6 +126,7 @@ _MODEL_CALL_BUDGET_EXCEEDED_RESULT = object()
 
 def _bounded_limits(
     *,
+    currency: str,
     max_input_tokens: int,
     max_output_tokens: int,
     max_cost: str | int | Decimal,
@@ -135,6 +136,7 @@ def _bounded_limits(
     max_disk_growth_bytes: int,
 ) -> None:
     BudgetLedger(
+        currency=currency,
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
         max_cost=max_cost,
@@ -148,6 +150,7 @@ def _bounded_limits(
 @dataclass(frozen=True, slots=True)
 class CampaignBudgetLimits:
     max_cycles: int
+    currency: str
     max_input_tokens: int
     max_output_tokens: int
     max_cost: str | int | Decimal
@@ -160,6 +163,7 @@ class CampaignBudgetLimits:
         if type(self.max_cycles) is not int or self.max_cycles < 0:
             raise ValueError("max_cycles must be a non-negative integer")
         _bounded_limits(
+            currency=self.currency,
             max_input_tokens=self.max_input_tokens,
             max_output_tokens=self.max_output_tokens,
             max_cost=self.max_cost,
@@ -172,6 +176,7 @@ class CampaignBudgetLimits:
 
 @dataclass(frozen=True, slots=True)
 class CycleReservationLimits:
+    currency: str
     max_input_tokens: int
     max_output_tokens: int
     max_cost: str | int | Decimal
@@ -182,6 +187,7 @@ class CycleReservationLimits:
 
     def __post_init__(self) -> None:
         _bounded_limits(
+            currency=self.currency,
             max_input_tokens=self.max_input_tokens,
             max_output_tokens=self.max_output_tokens,
             max_cost=self.max_cost,
@@ -194,6 +200,7 @@ class CycleReservationLimits:
 
 @dataclass(frozen=True, slots=True)
 class OperationalModelCallLimits:
+    currency: str
     max_input_tokens: int
     max_output_tokens: int
     max_cost: str | int | Decimal
@@ -206,6 +213,7 @@ class OperationalModelCallLimits:
                 "max_attempts must be an integer from 1 through 100"
             )
         _bounded_limits(
+            currency=self.currency,
             max_input_tokens=self.max_input_tokens,
             max_output_tokens=self.max_output_tokens,
             max_cost=self.max_cost,
@@ -217,6 +225,7 @@ class OperationalModelCallLimits:
 
     def to_payload(self) -> dict[str, object]:
         return {
+            "currency": self.currency,
             "max_input_tokens": self.max_input_tokens,
             "max_output_tokens": self.max_output_tokens,
             "max_cost": _cost_text(_bounded_cost(self.max_cost)),
@@ -315,6 +324,7 @@ class OperationalLearningCommitReceipt:
 class OperationalCycleSettlementReceipt:
     cycle_id: str
     reservation_id: str
+    currency: str
     settlement_state: str
     execution_usage_manifest_sha256: str
     learning_commit_manifest_sha256: str
@@ -327,6 +337,7 @@ class OperationalCycleSettlementReceipt:
 class OperationalNoLearningSettlementReceipt:
     cycle_id: str
     reservation_id: str
+    currency: str
     disposition_reason: str
     evidence_manifest_sha256: str
     execution_usage_manifest_sha256: str
@@ -617,6 +628,7 @@ class OperationalCampaignController:
                 b"control_plane.controller_resource_budget.v1",
                 *budget_identity,
             ),
+            currency=budget_limits.currency,
             max_input_tokens=budget_limits.max_input_tokens,
             max_output_tokens=budget_limits.max_output_tokens,
             max_cost=budget_limits.max_cost,
@@ -670,6 +682,10 @@ class OperationalCampaignController:
         self._journal._authorize()
         if not isinstance(reservation_limits, CycleReservationLimits):
             raise TypeError("reservation_limits must be CycleReservationLimits")
+        if reservation_limits.currency != self._budget._currency:
+            raise BudgetConflictError(
+                "Cycle reservation currency conflicts with Campaign budget"
+            )
         cycle_id, work_item = _canonical_task(
             task,
             cycle_number=cycle_number,
@@ -730,6 +746,7 @@ class OperationalCampaignController:
                 connection,
                 reservation_id=reservation_id,
                 call_id=cycle_id,
+                currency=reservation_limits.currency,
                 max_input_tokens=reservation_limits.max_input_tokens,
                 max_output_tokens=reservation_limits.max_output_tokens,
                 max_cost=reservation_limits.max_cost,
@@ -904,6 +921,10 @@ class OperationalCampaignController:
         self._journal._authorize()
         if not isinstance(limits, OperationalModelCallLimits):
             raise TypeError("limits must be OperationalModelCallLimits")
+        if limits.currency != self._budget._currency:
+            raise BudgetConflictError(
+                "model call currency conflicts with Campaign budget"
+            )
         cycle_id = self._require_active_execution(execution)
         member_id = _identifier(member_id, "member_id")
         frozen = self._freeze.snapshot(cycle_id=cycle_id)
@@ -984,7 +1005,7 @@ class OperationalCampaignController:
             cycle_id=cycle_id,
         )
         fixed_identity = {
-            "schema_version": "control_plane.operational_model_call.v1",
+            "schema_version": "control_plane.operational_model_call.v2",
             "cycle_id": cycle_id,
             "call_id": call_id,
             "member_id": member_id,
@@ -1781,12 +1802,19 @@ class OperationalCampaignController:
                     "operational Cycle settlement conflicts"
                 )
             reservation_id = self._reservation_id(cycle_id)
+            if replayed_usage.cost is None or replayed_usage.currency is None:
+                settlement_currency = self._budget._currency
+                settlement_cost = None
+            else:
+                settlement_currency = replayed_usage.currency
+                settlement_cost = replayed_usage.cost
             settlement = self._budget._settle_in_transaction(
                 connection,
                 reservation_id=reservation_id,
+                currency=settlement_currency,
                 input_tokens=replayed_usage.input_tokens,
                 output_tokens=replayed_usage.output_tokens,
-                cost=replayed_usage.cost,
+                cost=settlement_cost,
                 wall_time_ms=replayed_usage.wall_time_ms,
                 tool_attempts=replayed_usage.tool_attempts,
                 data_exposures=replayed_usage.data_exposures,
@@ -1811,9 +1839,10 @@ class OperationalCampaignController:
                     "Cycle budget settlement event is missing"
                 )
             identity = {
-                "schema_version": "control_plane.operational_cycle_settlement.v1",
+                "schema_version": "control_plane.operational_cycle_settlement.v2",
                 "cycle_id": cycle_id,
                 "reservation_id": reservation_id,
+                "currency": settlement.currency,
                 "settlement_state": settlement.state,
                 "execution_usage_manifest_sha256": (
                     replayed_usage.manifest_sha256
@@ -1824,7 +1853,7 @@ class OperationalCampaignController:
                 "budget_settlement_event_id": budget_event.event_id,
             }
             manifest_sha256 = _controller_sha256(
-                b"control_plane.operational_cycle_settlement.v1",
+                b"control_plane.operational_cycle_settlement.v2",
                 identity,
                 "operational Cycle settlement",
             )
@@ -1832,6 +1861,7 @@ class OperationalCampaignController:
             receipt = OperationalCycleSettlementReceipt(
                 cycle_id=cycle_id,
                 reservation_id=reservation_id,
+                currency=settlement.currency,
                 settlement_state=settlement.state,
                 execution_usage_manifest_sha256=(
                     replayed_usage.manifest_sha256
@@ -2092,12 +2122,19 @@ class OperationalCampaignController:
                 skipped_sequence = skipped_transitions[0].sequence
 
             reservation_id = self._reservation_id(cycle_id)
+            if replayed_usage.cost is None or replayed_usage.currency is None:
+                settlement_currency = self._budget._currency
+                settlement_cost = None
+            else:
+                settlement_currency = replayed_usage.currency
+                settlement_cost = replayed_usage.cost
             settlement = self._budget._settle_in_transaction(
                 connection,
                 reservation_id=reservation_id,
+                currency=settlement_currency,
                 input_tokens=replayed_usage.input_tokens,
                 output_tokens=replayed_usage.output_tokens,
-                cost=replayed_usage.cost,
+                cost=settlement_cost,
                 wall_time_ms=replayed_usage.wall_time_ms,
                 tool_attempts=replayed_usage.tool_attempts,
                 data_exposures=replayed_usage.data_exposures,
@@ -2123,10 +2160,11 @@ class OperationalCampaignController:
                 )
             settlement_identity = {
                 "schema_version": (
-                    "control_plane.operational_no_learning_settlement.v1"
+                    "control_plane.operational_no_learning_settlement.v2"
                 ),
                 "cycle_id": cycle_id,
                 "reservation_id": reservation_id,
+                "currency": settlement.currency,
                 "disposition_reason": disposition_reason,
                 "evidence_manifest_sha256": evidence_receipt.manifest_sha256,
                 "execution_usage_manifest_sha256": (
@@ -2137,7 +2175,7 @@ class OperationalCampaignController:
                 "budget_settlement_event_id": budget_event.event_id,
             }
             manifest_sha256 = _controller_sha256(
-                b"control_plane.operational_no_learning_settlement.v1",
+                b"control_plane.operational_no_learning_settlement.v2",
                 settlement_identity,
                 "operational no-Learning settlement",
             )
@@ -2148,6 +2186,7 @@ class OperationalCampaignController:
             receipt = OperationalNoLearningSettlementReceipt(
                 cycle_id=cycle_id,
                 reservation_id=reservation_id,
+                currency=settlement.currency,
                 disposition_reason=disposition_reason,
                 evidence_manifest_sha256=evidence_receipt.manifest_sha256,
                 execution_usage_manifest_sha256=(
@@ -3076,8 +3115,12 @@ class OperationalCampaignController:
         call_limits = self._model_call_limits_from_payload(
             payload.get("call_limits")
         ).to_payload()
+        if call_limits["currency"] != self._budget._currency:
+            raise CampaignJournalError(
+                "model call currency conflicts with Campaign budget"
+            )
         expected_identity = {
-            "schema_version": "control_plane.operational_model_call.v1",
+            "schema_version": "control_plane.operational_model_call.v2",
             "cycle_id": cycle_id,
             "call_id": call_id,
             "member_id": member.member_id,
@@ -3250,7 +3293,7 @@ class OperationalCampaignController:
             )
         )
         preparation_manifest_sha256 = _controller_sha256(
-            b"control_plane.campaign_cycle_preparation.v1",
+            b"control_plane.campaign_cycle_preparation.v2",
             identity,
             "Cycle preparation identity",
         )
@@ -4156,12 +4199,13 @@ class OperationalCampaignController:
         payload = _event_domain_payload(events[0])
         schema_version = payload.get("schema_version")
         if (
-            schema_version == "control_plane.operational_cycle_settlement.v1"
+            schema_version == "control_plane.operational_cycle_settlement.v2"
             and set(payload)
             == {
                 "schema_version",
                 "cycle_id",
                 "reservation_id",
+                "currency",
                 "settlement_state",
                 "execution_usage_manifest_sha256",
                 "learning_commit_manifest_sha256",
@@ -4172,6 +4216,7 @@ class OperationalCampaignController:
             return OperationalCycleSettlementReceipt(
                 cycle_id=payload["cycle_id"],
                 reservation_id=payload["reservation_id"],
+                currency=payload["currency"],
                 settlement_state=payload["settlement_state"],
                 execution_usage_manifest_sha256=(
                     payload["execution_usage_manifest_sha256"]
@@ -4187,12 +4232,13 @@ class OperationalCampaignController:
             )
         if (
             schema_version
-            == "control_plane.operational_no_learning_settlement.v1"
+            == "control_plane.operational_no_learning_settlement.v2"
             and set(payload)
             == {
                 "schema_version",
                 "cycle_id",
                 "reservation_id",
+                "currency",
                 "disposition_reason",
                 "evidence_manifest_sha256",
                 "execution_usage_manifest_sha256",
@@ -4205,6 +4251,7 @@ class OperationalCampaignController:
             return OperationalNoLearningSettlementReceipt(
                 cycle_id=payload["cycle_id"],
                 reservation_id=payload["reservation_id"],
+                currency=payload["currency"],
                 disposition_reason=payload["disposition_reason"],
                 evidence_manifest_sha256=(
                     payload["evidence_manifest_sha256"]
@@ -4239,9 +4286,10 @@ class OperationalCampaignController:
             _stored_sha256(value, name)
         reservation_id = self._reservation_id(cycle_id)
         expected_identity = {
-            "schema_version": "control_plane.operational_cycle_settlement.v1",
+            "schema_version": "control_plane.operational_cycle_settlement.v2",
             "cycle_id": cycle_id,
             "reservation_id": reservation_id,
+            "currency": receipt.currency,
             "settlement_state": receipt.settlement_state,
             "execution_usage_manifest_sha256": (
                 receipt.execution_usage_manifest_sha256
@@ -4254,7 +4302,7 @@ class OperationalCampaignController:
         expected_payload = {
             **expected_identity,
             "manifest_sha256": _controller_sha256(
-                b"control_plane.operational_cycle_settlement.v1",
+                b"control_plane.operational_cycle_settlement.v2",
                 expected_identity,
                 "replayed operational Cycle settlement",
             ),
@@ -4291,6 +4339,15 @@ class OperationalCampaignController:
             if len(usage_events) == 1
             else {}
         )
+        if (
+            usage_payload.get("cost") is None
+            or usage_payload.get("currency") is None
+        ):
+            expected_budget_currency = self._budget._currency
+            expected_budget_cost = None
+        else:
+            expected_budget_currency = usage_payload["currency"]
+            expected_budget_cost = usage_payload["cost"]
         lifecycle_events = self._lifecycle._cycle_events(
             connection,
             cycle_id,
@@ -4369,6 +4426,7 @@ class OperationalCampaignController:
         if (
             receipt.cycle_id != cycle_id
             or receipt.reservation_id != reservation_id
+            or receipt.currency != self._budget._currency
             or receipt.event_id != self._cycle_settlement_event_id(cycle_id)
             or receipt.manifest_sha256 != expected_payload["manifest_sha256"]
             or len(settlement_events) != 1
@@ -4405,13 +4463,15 @@ class OperationalCampaignController:
                 reservation_id=reservation_id,
             )
             or budget_payload.get("reservation_id") != reservation_id
+            or budget_payload.get("currency") != expected_budget_currency
+            or budget_payload.get("currency") != receipt.currency
+            or budget_payload.get("cost") != expected_budget_cost
             or budget_payload.get("state") != receipt.settlement_state
             or any(
                 budget_payload.get(field) != usage_payload.get(field)
                 for field in (
                     "input_tokens",
                     "output_tokens",
-                    "cost",
                     "wall_time_ms",
                     "tool_attempts",
                     "data_exposures",
@@ -4450,10 +4510,11 @@ class OperationalCampaignController:
         reservation_id = self._reservation_id(cycle_id)
         expected_identity = {
             "schema_version": (
-                "control_plane.operational_no_learning_settlement.v1"
+                "control_plane.operational_no_learning_settlement.v2"
             ),
             "cycle_id": cycle_id,
             "reservation_id": reservation_id,
+            "currency": receipt.currency,
             "disposition_reason": receipt.disposition_reason,
             "evidence_manifest_sha256": receipt.evidence_manifest_sha256,
             "execution_usage_manifest_sha256": (
@@ -4466,7 +4527,7 @@ class OperationalCampaignController:
         expected_payload = {
             **expected_identity,
             "manifest_sha256": _controller_sha256(
-                b"control_plane.operational_no_learning_settlement.v1",
+                b"control_plane.operational_no_learning_settlement.v2",
                 expected_identity,
                 "replayed no-Learning settlement",
             ),
@@ -4509,6 +4570,15 @@ class OperationalCampaignController:
             if len(usage_events) == 1
             else {}
         )
+        if (
+            usage_payload.get("cost") is None
+            or usage_payload.get("currency") is None
+        ):
+            expected_budget_currency = self._budget._currency
+            expected_budget_cost = None
+        else:
+            expected_budget_currency = usage_payload["currency"]
+            expected_budget_cost = usage_payload["cost"]
         lifecycle_events = self._lifecycle._cycle_events(
             connection,
             cycle_id,
@@ -4559,6 +4629,7 @@ class OperationalCampaignController:
         if (
             receipt.cycle_id != cycle_id
             or receipt.reservation_id != reservation_id
+            or receipt.currency != self._budget._currency
             or receipt.event_id != self._cycle_settlement_event_id(cycle_id)
             or receipt.disposition_event_id
             != self._no_learning_disposition_event_id(cycle_id)
@@ -4631,13 +4702,15 @@ class OperationalCampaignController:
                 reservation_id=reservation_id,
             )
             or budget_payload.get("reservation_id") != reservation_id
+            or budget_payload.get("currency") != expected_budget_currency
+            or budget_payload.get("currency") != receipt.currency
+            or budget_payload.get("cost") != expected_budget_cost
             or budget_payload.get("state") != receipt.settlement_state
             or any(
                 budget_payload.get(field) != usage_payload.get(field)
                 for field in (
                     "input_tokens",
                     "output_tokens",
-                    "cost",
                     "wall_time_ms",
                     "tool_attempts",
                     "data_exposures",
@@ -5251,7 +5324,7 @@ class OperationalCampaignController:
         payload = {
             **receipt_identity,
             "manifest_sha256": _controller_sha256(
-                b"control_plane.operational_model_call_receipt.v1",
+                b"control_plane.operational_model_call_receipt.v2",
                 receipt_identity,
                 "operational model call receipt",
             ),
@@ -5312,6 +5385,7 @@ class OperationalCampaignController:
         payload: object,
     ) -> OperationalModelCallLimits:
         if not isinstance(payload, dict) or set(payload) != {
+            "currency",
             "max_input_tokens",
             "max_output_tokens",
             "max_cost",
@@ -5320,7 +5394,14 @@ class OperationalCampaignController:
         }:
             raise CampaignJournalError("model call limits are invalid")
         try:
-            limits = OperationalModelCallLimits(**payload)
+            limits = OperationalModelCallLimits(
+                currency=payload["currency"],
+                max_input_tokens=payload["max_input_tokens"],
+                max_output_tokens=payload["max_output_tokens"],
+                max_cost=payload["max_cost"],
+                max_wall_time_ms=payload["max_wall_time_ms"],
+                max_attempts=payload["max_attempts"],
+            )
         except (TypeError, ValueError) as error:
             raise CampaignJournalError("model call limits are invalid") from error
         if limits.to_payload() != payload:
@@ -5400,6 +5481,13 @@ class OperationalCampaignController:
                 )
             )
         allocations.append(requested)
+        if any(
+            item.currency != reservation.get("currency")
+            for item in allocations
+        ):
+            raise BudgetConflictError(
+                "model call currency conflicts with Cycle reservation"
+            )
         allocated_input = sum(item.max_input_tokens for item in allocations)
         allocated_output = sum(item.max_output_tokens for item in allocations)
         allocated_cost = sum(
@@ -5482,7 +5570,7 @@ class OperationalCampaignController:
                 return _MODEL_CALL_BUDGET_EXCEEDED_RESULT
             return replay
         start_manifest_sha256 = _controller_sha256(
-            b"control_plane.operational_model_call_start.v1",
+            b"control_plane.operational_model_call_start.v2",
             fixed_identity,
             "operational model call start",
         )
@@ -5712,7 +5800,7 @@ class OperationalCampaignController:
         start_payload = {
             **expected_identity,
             "manifest_sha256": _controller_sha256(
-                b"control_plane.operational_model_call_start.v1",
+                b"control_plane.operational_model_call_start.v2",
                 expected_identity,
                 "expected operational model call start",
             ),
@@ -5797,7 +5885,7 @@ class OperationalCampaignController:
             )
             or payload["manifest_sha256"]
             != _controller_sha256(
-                b"control_plane.operational_model_call_receipt.v1",
+                b"control_plane.operational_model_call_receipt.v2",
                 receipt_identity,
                 "stored operational model call receipt",
             )
@@ -6154,6 +6242,7 @@ class OperationalCampaignController:
         return {
             "reservation_id": reservation.reservation_id,
             "call_id": reservation.call_id,
+            "currency": reservation.currency,
             "max_input_tokens": reservation.max_input_tokens,
             "max_output_tokens": reservation.max_output_tokens,
             "max_cost": reservation.max_cost,
@@ -6251,11 +6340,12 @@ class OperationalCampaignController:
                 "controller preparation is incomplete: artifact binding is invalid"
             )
         identity = {
-            "schema_version": "control_plane.campaign_cycle_preparation.v1",
+            "schema_version": "control_plane.campaign_cycle_preparation.v2",
             "cycle_id": cycle_id,
             "cycle_number": cycle.cycle_number,
             "cycle_budget_id": cycle_budget.budget_id,
             "resource_budget_id": self._budget._budget_id,
+            "currency": reservation_payload["currency"],
             "work_item_event_id": work_event.event_id,
             "work_item_sha256": _controller_sha256(
                 b"control_plane.controller_work_item_payload.v1",
@@ -6265,7 +6355,7 @@ class OperationalCampaignController:
             "reservation_event_id": reservation_event.event_id,
             "reservation_id": reservation_id,
             "reservation_sha256": _controller_sha256(
-                b"control_plane.controller_cycle_reservation_bounds.v1",
+                b"control_plane.controller_cycle_reservation_bounds.v2",
                 reservation_payload,
                 "stored Cycle reservation",
             ),
@@ -6325,7 +6415,7 @@ class OperationalCampaignController:
                     "controller preparation artifacts conflict"
                 )
             manifest_sha256 = _controller_sha256(
-                b"control_plane.campaign_cycle_preparation.v1",
+                b"control_plane.campaign_cycle_preparation.v2",
                 identity,
                 "Cycle preparation identity",
             )
@@ -6374,7 +6464,7 @@ class OperationalCampaignController:
                 )
             )
             manifest_sha256 = _controller_sha256(
-                b"control_plane.campaign_cycle_preparation.v1",
+                b"control_plane.campaign_cycle_preparation.v2",
                 identity,
                 "Cycle preparation identity",
             )

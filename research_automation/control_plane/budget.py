@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Context, Decimal, Inexact, InvalidOperation, Rounded, localcontext
+import re
 from threading import RLock
 
 
@@ -14,6 +15,7 @@ _MAX_COST_INT_BITS = 512
 _COST_CONTEXT = Context(prec=512)
 _COST_CONTEXT.traps[Inexact] = True
 _COST_CONTEXT.traps[Rounded] = True
+_CANONICAL_CURRENCY_RE = re.compile(r"[A-Z]{3}\Z", re.ASCII)
 
 
 class BudgetError(RuntimeError):
@@ -28,10 +30,17 @@ class BudgetConflictError(BudgetError):
     """Raised when an idempotency key is reused with different bounds."""
 
 
+def _canonical_currency(value: object) -> str:
+    if type(value) is not str or _CANONICAL_CURRENCY_RE.fullmatch(value) is None:
+        raise ValueError("currency must be an exact three-letter uppercase code")
+    return value
+
+
 @dataclass(frozen=True)
 class BudgetReservation:
     reservation_id: str
     call_id: str
+    currency: str
     max_input_tokens: int
     max_output_tokens: int
     max_cost: str
@@ -43,6 +52,7 @@ class BudgetReservation:
 
 @dataclass(frozen=True)
 class BudgetSnapshot:
+    currency: str
     reserved_input_tokens: int
     reserved_output_tokens: int
     reserved_cost: str
@@ -62,6 +72,7 @@ class BudgetSnapshot:
 @dataclass(frozen=True)
 class BudgetSettlement:
     reservation_id: str
+    currency: str
     state: str
 
 
@@ -73,6 +84,7 @@ class _ReservationRecord:
     actual_input_tokens: int | None = None
     actual_output_tokens: int | None = None
     actual_cost: str | None = None
+    actual_currency: str | None = None
     actual_wall_time_ms: int | None = None
     actual_tool_attempts: int | None = None
     actual_data_exposures: int | None = None
@@ -155,6 +167,7 @@ class BudgetLedger:
 
     __slots__ = (
         "_lock",
+        "_currency",
         "_max_input_tokens",
         "_max_output_tokens",
         "_max_cost",
@@ -182,6 +195,7 @@ class BudgetLedger:
     def __init__(
         self,
         *,
+        currency: str,
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
@@ -191,6 +205,7 @@ class BudgetLedger:
         max_disk_growth_bytes: int = 0,
     ) -> None:
         self._lock = RLock()
+        self._currency = _canonical_currency(currency)
         self._max_input_tokens = _bound(max_input_tokens, "max_input_tokens")
         self._max_output_tokens = _bound(max_output_tokens, "max_output_tokens")
         self._max_cost = _cost(max_cost)
@@ -225,6 +240,7 @@ class BudgetLedger:
         *,
         reservation_id: str,
         call_id: str,
+        currency: str,
         max_input_tokens: int,
         max_output_tokens: int,
         max_cost: str | int | Decimal,
@@ -233,6 +249,9 @@ class BudgetLedger:
         max_data_exposures: int = 0,
         max_disk_growth_bytes: int = 0,
     ) -> BudgetReservation:
+        requested_currency = _canonical_currency(currency)
+        if requested_currency != self._currency:
+            raise BudgetConflictError("reservation currency conflicts with ledger")
         if not isinstance(reservation_id, str) or not reservation_id.strip():
             raise ValueError("reservation_id must be non-empty")
         if not isinstance(call_id, str) or not call_id.strip():
@@ -241,6 +260,7 @@ class BudgetLedger:
         reservation = BudgetReservation(
             reservation_id=reservation_id,
             call_id=call_id,
+            currency=requested_currency,
             max_input_tokens=_bound(max_input_tokens, "max_input_tokens"),
             max_output_tokens=_bound(max_output_tokens, "max_output_tokens"),
             max_cost=_cost_text(requested_cost),
@@ -308,6 +328,7 @@ class BudgetLedger:
     def snapshot(self) -> BudgetSnapshot:
         with self._lock:
             return BudgetSnapshot(
+                currency=self._currency,
                 reserved_input_tokens=self._reserved_input_tokens,
                 reserved_output_tokens=self._reserved_output_tokens,
                 reserved_cost=_cost_text(self._reserved_cost),
@@ -328,6 +349,7 @@ class BudgetLedger:
         self,
         reservation_id: str,
         *,
+        currency: str,
         input_tokens: int | None,
         output_tokens: int | None,
         cost: str | int | Decimal | None,
@@ -336,6 +358,9 @@ class BudgetLedger:
         data_exposures: int | None = None,
         disk_growth_bytes: int | None = None,
     ) -> BudgetSettlement:
+        actual_currency = _canonical_currency(currency)
+        if actual_currency != self._currency:
+            raise BudgetConflictError("settlement currency conflicts with ledger")
         if input_tokens is not None:
             _bound(input_tokens, "input_tokens")
         if output_tokens is not None:
@@ -376,12 +401,14 @@ class BudgetLedger:
                 input_tokens,
                 output_tokens,
                 actual_cost,
+                actual_currency,
                 *normalized_resources,
             )
             stored_tuple = (
                 record.actual_input_tokens,
                 record.actual_output_tokens,
                 record.actual_cost,
+                record.actual_currency,
                 record.actual_wall_time_ms,
                 record.actual_tool_attempts,
                 record.actual_data_exposures,
@@ -392,7 +419,11 @@ class BudgetLedger:
                     raise BudgetConflictError(
                         "settlement was replayed with different actual usage"
                     )
-                return BudgetSettlement(reservation_id, record.state)
+                return BudgetSettlement(
+                    reservation_id=reservation_id,
+                    currency=self._currency,
+                    state=record.state,
+                )
             if (
                 input_tokens is None
                 or output_tokens is None
@@ -402,6 +433,7 @@ class BudgetLedger:
                 record.actual_input_tokens = input_tokens
                 record.actual_output_tokens = output_tokens
                 record.actual_cost = actual_cost
+                record.actual_currency = actual_currency
                 (
                     record.actual_wall_time_ms,
                     record.actual_tool_attempts,
@@ -409,7 +441,11 @@ class BudgetLedger:
                     record.actual_disk_growth_bytes,
                 ) = normalized_resources
                 record.state = "SETTLED_UNKNOWN"
-                return BudgetSettlement(reservation_id, record.state)
+                return BudgetSettlement(
+                    reservation_id=reservation_id,
+                    currency=self._currency,
+                    state=record.state,
+                )
             (
                 actual_wall_time_ms,
                 actual_tool_attempts,
@@ -469,12 +505,17 @@ class BudgetLedger:
             record.actual_input_tokens = input_tokens
             record.actual_output_tokens = output_tokens
             record.actual_cost = actual_cost
+            record.actual_currency = actual_currency
             record.actual_wall_time_ms = actual_wall_time_ms
             record.actual_tool_attempts = actual_tool_attempts
             record.actual_data_exposures = actual_data_exposures
             record.actual_disk_growth_bytes = actual_disk_growth_bytes
             record.state = "SETTLED"
-            return BudgetSettlement(reservation_id, record.state)
+            return BudgetSettlement(
+                reservation_id=reservation_id,
+                currency=self._currency,
+                state=record.state,
+            )
 
 
 __all__ = [

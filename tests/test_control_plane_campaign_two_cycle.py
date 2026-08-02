@@ -45,6 +45,7 @@ from tests.test_foundations_protocols import _approval, _protocol
 
 
 _BUDGET_LIMITS = CampaignBudgetLimits(
+    currency="USD",
     max_cycles=2,
     max_input_tokens=200,
     max_output_tokens=100,
@@ -53,6 +54,7 @@ _BUDGET_LIMITS = CampaignBudgetLimits(
     max_tool_attempts=4,
 )
 _RESERVATION_LIMITS = CycleReservationLimits(
+    currency="USD",
     max_input_tokens=20,
     max_output_tokens=10,
     max_cost="0.1",
@@ -189,6 +191,10 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 information_gain_receipt=first_information_gain,
             )
 
+            self.assertEqual(first_prepared.reservation.currency, "USD")
+            self.assertEqual(first_usage.currency, "USD")
+            self.assertEqual(first_settlement.currency, "USD")
+            self.assertEqual(controller.budget_snapshot().currency, "USD")
             self.assertEqual(first_evidence.evidence, expected_evidence)
             self.assertEqual(first_decision.decision, "CONTINUE")
             ledger_claims = CommittedLearningLedgerReader(root).read_claims()
@@ -299,6 +305,11 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             )
             completed = recovered.complete_campaign()
 
+            self.assertEqual(second_prepared.reservation.currency, "USD")
+            self.assertEqual(second_usage.currency, "USD")
+            self.assertEqual(second_settlement.currency, "USD")
+            self.assertEqual(recovered.budget_snapshot().currency, "USD")
+
             final_owner = ProcessIdentity("host-two-cycle", 203, 203_000)
             final_recovered = OperationalCampaignController(
                 journal=journal,
@@ -326,6 +337,7 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             self.assertEqual(second_decision.decision, "STOP")
             self.assertEqual(replayed_second_decision, second_decision)
             self.assertEqual(completed.status, CampaignStatus.COMPLETED)
+            self.assertEqual(final_recovered.budget_snapshot().currency, "USD")
             self.assertEqual(
                 final_recovered.cycle_snapshot("cycle-002").status,
                 CycleStatus.COMPLETED,
