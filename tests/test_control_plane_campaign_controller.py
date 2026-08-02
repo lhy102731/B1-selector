@@ -57,6 +57,7 @@ from research_automation.control_plane.campaign_lifecycle import (
 from research_automation.control_plane.campaign_store import (
     CampaignLearningCommitSink,
     CampaignJournalError,
+    OperationalCampaignJournal,
     OperationalUsageJournal,
     _event_integrity_sha256,
 )
@@ -73,7 +74,11 @@ from research_automation.task_queue import ExperimentTask
 from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
-from tests.test_control_plane_campaign_store import _authorized_campaign
+from tests.test_control_plane_campaign_store import (
+    NOW,
+    ROOT_SECRET,
+    _authorized_campaign,
+)
 from tests.test_control_plane_evidence_learning import (
     EvidenceLearningVerticalSliceTests,
 )
@@ -358,6 +363,17 @@ class _LeaseSwapMonotonicClock:
         return value
 
 
+_FAKE_CAMPAIGN_LIMITS = CampaignBudgetLimits(
+    currency="USD",
+    max_cycles=1,
+    max_input_tokens=100,
+    max_output_tokens=50,
+    max_cost="1",
+    max_wall_time_ms=100,
+    max_tool_attempts=2,
+)
+
+
 _FAKE_CALL_LIMITS = OperationalModelCallLimits(
     currency="USD",
     max_input_tokens=20,
@@ -543,6 +559,7 @@ def _prepare_synthetic_cycle(
     *,
     cycle_id: str,
     cycle_number: int,
+    reservation_limits: CycleReservationLimits | None = None,
 ):
     protocol = _protocol()
     execution_spec = compile_execution_spec(
@@ -569,13 +586,16 @@ def _prepare_synthetic_cycle(
         cycle_number=cycle_number,
         execution_spec=execution_spec,
         roster_members=(member,),
-        reservation_limits=CycleReservationLimits(
-            currency="USD",
-            max_input_tokens=20,
-            max_output_tokens=10,
-            max_cost="0.1",
-            max_wall_time_ms=10,
-            max_tool_attempts=1,
+        reservation_limits=(
+            reservation_limits
+            or CycleReservationLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=10,
+                max_tool_attempts=1,
+            )
         ),
     )
 
@@ -584,6 +604,23 @@ def _controller_event_id(domain: bytes, *parts: str) -> str:
     return hashlib.sha256(
         domain + b"\0" + "\0".join(parts).encode("ascii")
     ).hexdigest()
+
+
+def _campaign_event_rows(root, campaign_id: str) -> tuple[tuple[object, ...], ...]:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        return tuple(
+            connection.execute(
+                "SELECT event_id, namespace, campaign_id, cycle_id, "
+                "aggregate_type, aggregate_id, event_type, payload_json, "
+                "payload_sha256, occurred_at, sequence "
+                "FROM campaign_events WHERE namespace = ? AND campaign_id = ? "
+                "ORDER BY sequence",
+                ("formal", campaign_id),
+            ).fetchall()
+        )
+    finally:
+        connection.close()
 
 
 def _rewrite_campaign_event_payload(root, event, payload) -> None:
@@ -795,6 +832,198 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             budget_settlement_payload.pop("_authority_grant_id")
             self.assertEqual(budget_settlement_payload["currency"], "USD")
             self.assertEqual(controller.budget_snapshot().currency, "USD")
+
+    def test_controller_reopen_currency_mismatch_fails_before_any_event_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-currency-reopen-001"
+        owner = ProcessIdentity("host-currency-reopen", 101, 1_001)
+
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            events_before = _campaign_event_rows(root, campaign_id)
+            reopened_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=grant,
+                namespace="formal",
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+
+            with self.assertRaisesRegex(
+                BudgetConflictError,
+                "campaign budget configuration conflicts",
+            ):
+                OperationalCampaignController(
+                    journal=reopened_journal,
+                    repository_root=root,
+                    budget_limits=replace(
+                        _FAKE_CAMPAIGN_LIMITS,
+                        currency="EUR",
+                    ),
+                    identity_provider=_FakeProcessIdentityProvider(owner),
+                    monotonic_ns=lambda: 100,
+                )
+
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                events_before,
+            )
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.CREATED,
+            )
+            self.assertEqual(controller.budget_snapshot().currency, "USD")
+
+    def test_prepare_cycle_currency_mismatch_fails_before_cycle_or_budget_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-currency-reservation-001"
+        cycle_id = "cycle-currency-reservation-001"
+        owner = ProcessIdentity("host-currency-reservation", 102, 1_002)
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            events_before = _campaign_event_rows(root, campaign_id)
+            budget_before = controller.budget_snapshot()
+            cycle_budget_before = controller.cycle_budget_snapshot()
+
+            with self.assertRaisesRegex(
+                BudgetConflictError,
+                "Cycle reservation currency conflicts with Campaign budget",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id=cycle_id,
+                    cycle_number=1,
+                    reservation_limits=CycleReservationLimits(
+                        currency="EUR",
+                        max_input_tokens=20,
+                        max_output_tokens=10,
+                        max_cost="0.1",
+                        max_wall_time_ms=10,
+                        max_tool_attempts=1,
+                    ),
+                )
+
+            events_after = _campaign_event_rows(root, campaign_id)
+            self.assertEqual(events_after, events_before)
+            self.assertEqual(controller.budget_snapshot(), budget_before)
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.cycle_budget_snapshot().reserved_cycle_ids,
+                (),
+            )
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.CREATED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=cycle_id,
+                    aggregate_type="CAMPAIGN_WORK_ITEM",
+                    aggregate_id=cycle_id,
+                ),
+                (),
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=cycle_id,
+                    aggregate_type="CYCLE_STATE",
+                    aggregate_id=cycle_id,
+                ),
+                (),
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot(cycle_id)
+
+    def test_model_call_currency_mismatch_fails_before_start_or_provider_invocation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-currency-call-001"
+        cycle_id = "cycle-currency-call-001"
+        owner = ProcessIdentity("host-currency-call", 103, 1_003)
+        prompt = {"instruction": "Return synthetic artifact 1"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            _prepare_synthetic_cycle(
+                controller,
+                cycle_id=cycle_id,
+                cycle_number=1,
+            )
+            execution = controller.start_execution(
+                cycle_id=cycle_id,
+                acquisition_id="execute-currency-call-001",
+            )
+            provider = _BoundFakeProvider()
+            call_id = controller._member_call_id(cycle_id, member.member_id)
+            call_events_before = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=call_id,
+            )
+            events_before = _campaign_event_rows(root, campaign_id)
+
+            with self.assertRaisesRegex(
+                BudgetConflictError,
+                "model call currency conflicts with Campaign budget",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=replace(_FAKE_CALL_LIMITS, currency="EUR"),
+                )
+
+            call_events_after = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=call_id,
+            )
+            self.assertEqual(provider.call_count, 0)
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                events_before,
+            )
+            self.assertEqual(call_events_after, call_events_before)
+            self.assertEqual(call_events_after, ())
+            self.assertFalse(
+                any(
+                    event.event_type == "OPERATIONAL_MODEL_CALL_STARTED"
+                    for event in call_events_after
+                )
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(cycle_id).status,
+                CycleStatus.EXECUTING,
+            )
 
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
         campaign_id = "campaign-controller-001"
