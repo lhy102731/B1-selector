@@ -1422,6 +1422,16 @@ def _parse_envelope(payload: Mapping[str, object]) -> UsageEnvelope:
         ):
             raise ValueError(f"{field_name} is invalid")
         tokens[field_name] = value
+    known_component_tokens = sum(
+        int(tokens[field_name])
+        for field_name in ("input_tokens", "output_tokens")
+        if tokens[field_name] is not None
+    )
+    if (
+        tokens["total_tokens"] is not None
+        and tokens["total_tokens"] < known_component_tokens
+    ):
+        raise ValueError("total_tokens is below known token components")
     provider = _identifier(payload["provider"], "stored provider")
     profile = _identifier(payload["profile"], "stored profile")
     request_model = _identifier(
@@ -1546,6 +1556,12 @@ class OperationalUsageJournal:
             raise ValueError("envelope is invalid") from error
         if parsed != envelope:
             raise ValueError("envelope is not canonical")
+        if parsed.outcome not in {
+            InvocationOutcome.RESPONSE_RECEIVED,
+            InvocationOutcome.TIMEOUT,
+            InvocationOutcome.EXCEPTION,
+        }:
+            raise ValueError("initial outcome is invalid")
         aggregate_id = _attempt_id(
             self._cycle_id,
             envelope.call_id,

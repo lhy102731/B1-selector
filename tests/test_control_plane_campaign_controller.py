@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier
+import hashlib
 import json
 import unittest
 from unittest.mock import patch
@@ -157,21 +158,6 @@ class _LeaseSwapMonotonicClock:
         return value
 
 
-class _LeaseSwapMonotonicClock:
-    def __init__(self, barrier: Barrier) -> None:
-        self._barrier = barrier
-        self._values = iter((100, 1_000_000, 2_000_000))
-        self._calls = 0
-
-    def __call__(self) -> int:
-        self._calls += 1
-        value = next(self._values)
-        if self._calls == 3:
-            self._barrier.wait(timeout=5)
-            self._barrier.wait(timeout=5)
-        return value
-
-
 _FAKE_CALL_LIMITS = OperationalModelCallLimits(
     max_input_tokens=20,
     max_output_tokens=10,
@@ -179,6 +165,12 @@ _FAKE_CALL_LIMITS = OperationalModelCallLimits(
     max_wall_time_ms=10,
     max_attempts=2,
 )
+
+
+def _controller_event_id(domain: bytes, *parts: str) -> str:
+    return hashlib.sha256(
+        domain + b"\0" + "\0".join(parts).encode("ascii")
+    ).hexdigest()
 
 
 class OperationalCampaignControllerTests(unittest.TestCase):
@@ -2289,6 +2281,256 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 "BLOCKED",
             )
 
+    def test_invalid_completed_member_blocks_other_provider_calls(self) -> None:
+        campaign_id = "campaign-controller-invalid-completed-member"
+        base_protocol = _protocol()
+        second_protocol_member = base_protocol.roster[0].model_copy(
+            update={
+                "role": "source_librarian",
+                "provider_profile_id": "offline-local-2",
+                "model_id": "deterministic-reviewer-2",
+                "public_identity_sha256": "c" * 64,
+            }
+        )
+        protocol = base_protocol.model_copy(
+            update={
+                "roster": tuple(
+                    sorted(
+                        (*base_protocol.roster, second_protocol_member),
+                        key=lambda item: item.role,
+                    )
+                )
+            }
+        )
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompts = {
+            "factor_engineer": {"instruction": "Return factor fixture"},
+            "source_librarian": {"instruction": "Return source fixture"},
+        }
+        factor_member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(
+                prompts["factor_engineer"]
+            ),
+        )
+        source_member = replace(
+            _protocol_member(),
+            member_id="source-librarian",
+            profile="offline-local-2",
+            model="deterministic-reviewer-2",
+            role="source_librarian",
+            prompt_sha256=operational_prompt_sha256(
+                prompts["source_librarian"]
+            ),
+            config_sha256="4" * 64,
+            capability_sha256="5" * 64,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Invalid completion cannot unlock another call",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 142, 42_000)
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=4,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(factor_member, source_member),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=40,
+                    max_output_tokens=20,
+                    max_cost="0.2",
+                    max_wall_time_ms=20,
+                    max_tool_attempts=4,
+                ),
+            )
+            execution = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-invalid-completed-member",
+            )
+            with patch(
+                "research_automation.control_plane.campaign_controller."
+                "RetryingModelInvocation.invoke_json_with_receipt",
+                side_effect=RuntimeError("synthetic mid-call crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "mid-call crash"):
+                    controller.invoke_member_json(
+                        execution=execution,
+                        member_id=factor_member.member_id,
+                        provider=_BoundFakeProvider(),
+                        prompt=prompts[factor_member.role],
+                        limits=_FAKE_CALL_LIMITS,
+                    )
+
+            factor_call_id = _controller_event_id(
+                b"control_plane.controller_member_call.v1",
+                journal.namespace,
+                campaign_id,
+                task.task_id,
+                factor_member.member_id,
+            )
+            journal.append(
+                event_id=_controller_event_id(
+                    b"control_plane.controller_model_call_result.v1",
+                    journal.namespace,
+                    campaign_id,
+                    task.task_id,
+                    factor_call_id,
+                    "complete",
+                ),
+                cycle_id=task.task_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=factor_call_id,
+                event_type="OPERATIONAL_MODEL_CALL_COMPLETED",
+                payload={"synthetic": "not-a-call-receipt"},
+            )
+            provider = _BoundFakeProvider()
+            provider.profile = source_member.profile
+            provider.model = source_member.model
+            provider.config_sha256 = source_member.config_sha256
+            provider.capability_sha256 = source_member.capability_sha256
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "incomplete and in doubt",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=source_member.member_id,
+                    provider=provider,
+                    prompt=prompts[source_member.role],
+                    limits=_FAKE_CALL_LIMITS,
+                )
+
+            self.assertEqual(provider.call_count, 0)
+            self.assertEqual(
+                controller.campaign_snapshot().status.value,
+                "BLOCKED",
+            )
+
+    def test_reconstructed_execution_receipt_cannot_cross_local_owner(self) -> None:
+        campaign_id = "campaign-controller-local-owner-fence"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one bounded synthetic result"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "A persisted receipt cannot transfer lease ownership",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        first_owner = ProcessIdentity("host-controller", 140, 40_000)
+        other_owner = ProcessIdentity("host-controller", 141, 41_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=_FakeProcessIdentityProvider(first_owner),
+                monotonic_ns=lambda: 100,
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=10,
+                    max_tool_attempts=2,
+                ),
+            )
+            controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-original-owner",
+            )
+
+            other_identity = _FakeProcessIdentityProvider(other_owner)
+            other_controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=other_identity,
+                monotonic_ns=_FakeMonotonicClock(1_000_000, 2_000_000),
+            )
+            observed_lease = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=other_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).snapshot(cycle_id=task.task_id)
+            reconstructed = ExecutingOperationalCycle(
+                cycle=other_controller.cycle_snapshot(task.task_id),
+                lease=observed_lease,
+            )
+            provider = _BoundFakeProvider()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                other_controller.invoke_member_json(
+                    execution=reconstructed,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+
+            self.assertEqual(provider.call_count, 0)
+
     def test_replaced_lease_blocks_provider_before_model_call_start(self) -> None:
         campaign_id = "campaign-controller-lease-swap"
         protocol = _protocol()
@@ -2887,6 +3129,102 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 )
 
             self.assertEqual(provider.call_count, 1)
+            self.assertEqual(
+                controller.campaign_snapshot().status.value,
+                "BLOCKED",
+            )
+
+    def test_completed_call_replay_rechecks_known_usage_limits(self) -> None:
+        campaign_id = "campaign-controller-completed-limit-replay"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one bounded synthetic result"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Replay enforces the persisted call allocation",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 143, 43_000)
+        limits = OperationalModelCallLimits(
+            max_input_tokens=6,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=10,
+            max_attempts=2,
+        )
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=_FakeMonotonicClock(100, 1_000_000, 2_000_000),
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=10,
+                    max_tool_attempts=2,
+                ),
+            )
+            execution = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-completed-limit-replay",
+            )
+            with patch.object(
+                OperationalCampaignController,
+                "_require_known_model_call_usage_within_limits",
+                return_value=None,
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=_BoundFakeProvider(),
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            replay_provider = _BoundFakeProvider()
+            with self.assertRaisesRegex(
+                BudgetExceededError,
+                "known usage exceeds its call limits",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            self.assertEqual(replay_provider.call_count, 0)
             self.assertEqual(
                 controller.campaign_snapshot().status.value,
                 "BLOCKED",

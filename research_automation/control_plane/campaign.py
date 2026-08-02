@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
@@ -21,6 +22,9 @@ _MAX_RAW_USAGE_COLLECTION_ITEMS = 256
 _MAX_RAW_USAGE_PREFIX_UNITS = 4096
 _MAX_RAW_USAGE_INT_BITS = 512
 _MAX_REPORTED_TEXT_CHARS = 128
+_CONTROL_PLANE_IDENTIFIER_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z"
+)
 
 
 class UsageStatus(str, Enum):
@@ -423,6 +427,37 @@ class ModelInvocation:
                 outcome=InvocationOutcome.EXCEPTION,
             )
             raise ModelInvocationProviderError("provider invocation failed") from error
+        if (
+            type(response.fallback) is not bool
+            or type(response.streamed) is not bool
+        ):
+            error = TypeError("provider response flags are invalid")
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
+        if (
+            type(response.response_model) is not str
+            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.response_model)
+            is None
+        ):
+            error = TypeError("provider response model is invalid")
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
+        if response.output_text is not None and type(response.output_text) is not str:
+            error = TypeError("provider response output is invalid")
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
         raw_usage_source = response.raw_usage
         raw_usage = raw_usage_source if isinstance(raw_usage_source, Mapping) else {}
         values = {
@@ -436,24 +471,34 @@ class ModelInvocation:
                 "reasoning_tokens",
             )
         }
+        known_component_tokens = sum(
+            int(values[field])
+            for field in ("input_tokens", "output_tokens")
+            if values[field] is not None
+        )
+        if (
+            values["total_tokens"] is not None
+            and values["total_tokens"] < known_component_tokens
+        ):
+            values["total_tokens"] = known_component_tokens
         reported_cost = _reported_cost(raw_usage)
         currency = _reported_text(raw_usage, "currency")
         status_hint = response.usage_status
         if status_hint is not None and not isinstance(status_hint, UsageStatus):
-            status_hint = UsageStatus.UNKNOWN
-        if (
-            status_hint is UsageStatus.UNKNOWN
-            or (
-                all(value is None for value in values.values())
-                and reported_cost is None
-            )
-        ):
+            status_hint = None
+        has_known_usage = (
+            any(value is not None for value in values.values())
+            or reported_cost is not None
+        )
+        if not has_known_usage:
             status = UsageStatus.UNKNOWN
             values = {field: None for field in values}
             reported_cost = None
             currency = None
+        elif status_hint is UsageStatus.ESTIMATED:
+            status = UsageStatus.ESTIMATED
         else:
-            status = status_hint or UsageStatus.REPORTED
+            status = UsageStatus.REPORTED
         self._usage_journal.begin(
             UsageEnvelope(
                 provider=self._provider_name,

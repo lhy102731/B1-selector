@@ -1099,28 +1099,41 @@ class OperationalRosterJournalTests(unittest.TestCase):
                 journal=journal,
                 cycle_id="cycle-001",
             )
-            usage.begin(
-                UsageEnvelope(
-                    provider=member.provider,
-                    profile=member.profile,
-                    request_model=member.model,
-                    response_model=member.model,
-                    call_id="call-alpha",
-                    attempt_id="call-alpha-attempt-001",
-                    usage_status=UsageStatus.REPORTED,
-                    input_tokens=3,
-                    output_tokens=2,
-                    total_tokens=5,
-                    cache_read_tokens=None,
-                    cache_write_tokens=None,
-                    reasoning_tokens=None,
-                    reported_cost="0.01",
-                    currency="USD",
-                    fallback=False,
-                    streamed=False,
-                    outcome=InvocationOutcome.SUCCESS,
-                    raw_usage_sha256="4" * 64,
-                )
+            aggregate_id = hashlib.sha256(
+                b"cycle-001\0call-alpha\0call-alpha-attempt-001"
+            ).hexdigest()
+            usage_event_id = hashlib.sha256(
+                (
+                    f"formal\0{campaign_id}\0cycle-001\0{aggregate_id}\0usage"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=usage_event_id,
+                cycle_id="cycle-001",
+                aggregate_type="MODEL_ATTEMPT",
+                aggregate_id=aggregate_id,
+                event_type="MODEL_USAGE_RECORDED",
+                payload={
+                    "provider": member.provider,
+                    "profile": member.profile,
+                    "request_model": member.model,
+                    "response_model": member.model,
+                    "call_id": "call-alpha",
+                    "attempt_id": "call-alpha-attempt-001",
+                    "usage_status": UsageStatus.REPORTED.value,
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "total_tokens": 5,
+                    "cache_read_tokens": None,
+                    "cache_write_tokens": None,
+                    "reasoning_tokens": None,
+                    "reported_cost": "0.01",
+                    "currency": "USD",
+                    "fallback": False,
+                    "streamed": False,
+                    "outcome": InvocationOutcome.SUCCESS.value,
+                    "raw_usage_sha256": "4" * 64,
+                },
             )
 
             with self.assertRaises(RosterDriftError):

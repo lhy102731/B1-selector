@@ -43,8 +43,10 @@ from .campaign_context import (
 from .campaign_freeze import FrozenCycleInputs, OperationalCycleFreezeJournal
 from .campaign_lease import (
     CycleLease,
+    CycleLeaseConflictError,
     OperationalCycleLeaseJournal,
     ProcessIdentityProvider,
+    _verified_current_owner,
 )
 from .campaign_lifecycle import (
     CampaignSnapshot,
@@ -93,6 +95,7 @@ _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
 _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
 _MODEL_CALL_IN_DOUBT_RESULT = object()
+_MODEL_CALL_BUDGET_EXCEEDED_RESULT = object()
 
 
 def _bounded_limits(
@@ -761,6 +764,10 @@ class OperationalCampaignController:
         if replay is _MODEL_CALL_IN_DOUBT_RESULT:
             raise CampaignJournalError(
                 "operational model call is incomplete and in doubt"
+            )
+        if replay is _MODEL_CALL_BUDGET_EXCEEDED_RESULT:
+            raise BudgetExceededError(
+                "known usage exceeds its call limits"
             )
         if replay is not None:
             return replay
@@ -1580,6 +1587,8 @@ class OperationalCampaignController:
             connection,
             cycle_id=cycle_id,
             requested_call_id=call_id,
+            requested_identity=fixed_identity,
+            usage=usage,
         )
         if other_in_doubt is not None:
             self._lifecycle._block_in_transaction(
@@ -1594,13 +1603,30 @@ class OperationalCampaignController:
             call_id=call_id,
         )
         if len(events) == 2:
-            return self._replay_model_call_in_transaction(
+            replay = self._replay_model_call_in_transaction(
                 connection,
                 cycle_id=cycle_id,
                 call_id=call_id,
                 expected_identity=fixed_identity,
                 usage=usage,
             )
+            try:
+                self._require_known_model_call_usage_within_limits(
+                    usage_attempts=replay.usage_attempts,
+                    wall_time_ms=replay.wall_time_ms,
+                    attempt_count=replay.attempt_count,
+                    limits=self._model_call_limits_from_payload(
+                        fixed_identity["call_limits"]
+                    ),
+                )
+            except BudgetExceededError:
+                self._lifecycle._block_in_transaction(
+                    connection,
+                    reason_code="MODEL_CALL_BUDGET_EXCEEDED",
+                    source_ref=events[-1].event_id,
+                )
+                return _MODEL_CALL_BUDGET_EXCEEDED_RESULT
+            return replay
         start_manifest_sha256 = _controller_sha256(
             b"control_plane.operational_model_call_start.v1",
             fixed_identity,
@@ -1726,6 +1752,8 @@ class OperationalCampaignController:
         *,
         cycle_id: str,
         requested_call_id: str,
+        requested_identity: dict[str, object],
+        usage: OperationalUsageJournal,
     ):
         roster = self._roster._replay(
             self._roster._events(connection, cycle_id)
@@ -1785,20 +1813,24 @@ class OperationalCampaignController:
             )
             if len(events) == 1:
                 return start_event
-            completed = events[1]
-            if (
-                completed.event_id
-                != self._model_call_event_id(
-                    cycle_id,
-                    existing_call_id,
-                    "complete",
+            try:
+                self._model_call_for_member_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    member=member,
+                    preparation_manifest_sha256=str(
+                        requested_identity["preparation_manifest_sha256"]
+                    ),
+                    context_manifest_sha256=str(
+                        requested_identity["context_manifest_sha256"]
+                    ),
+                    roster_manifest_sha256=str(
+                        requested_identity["roster_manifest_sha256"]
+                    ),
+                    usage=usage,
                 )
-                or completed.event_type != _MODEL_CALL_COMPLETED
-                or completed.sequence <= start_event.sequence
-            ):
-                raise CampaignJournalError(
-                    "operational model call result is invalid"
-                )
+            except (BudgetExceededError, CampaignJournalError):
+                return start_event
         return None
 
     def _replay_model_call_in_transaction(
@@ -2110,6 +2142,17 @@ class OperationalCampaignController:
             or execution.cycle.status is not CycleStatus.EXECUTING
         ):
             raise CampaignJournalError("execution receipt is invalid")
+        try:
+            current_owner = _verified_current_owner(
+                self._leases._identity_provider
+            )
+        except CycleLeaseConflictError as error:
+            raise CampaignJournalError("execution receipt is stale") from error
+        if (
+            current_owner != self._leases._owner
+            or execution.lease.owner != current_owner
+        ):
+            raise CampaignJournalError("execution receipt is stale")
         cycle = self._lifecycle._replay_cycle(
             self._lifecycle._cycle_events(connection, cycle_id)
         )

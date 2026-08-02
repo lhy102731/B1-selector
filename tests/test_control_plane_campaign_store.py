@@ -1923,6 +1923,43 @@ class OperationalUsageJournalTests(unittest.TestCase):
                 (),
             )
 
+    def test_usage_writer_rejects_total_below_known_token_components(self) -> None:
+        campaign_id = "campaign-usage-inconsistent-total"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            envelope = UsageEnvelope(
+                provider="fake-provider",
+                profile="offline",
+                request_model="fake-model",
+                response_model="fake-model",
+                call_id="call-inconsistent-total",
+                attempt_id="call-inconsistent-total-attempt-001",
+                usage_status=UsageStatus.REPORTED,
+                input_tokens=3,
+                output_tokens=2,
+                total_tokens=4,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                reasoning_tokens=None,
+                reported_cost=None,
+                currency=None,
+                fallback=False,
+                streamed=False,
+                outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                raw_usage_sha256="4" * 64,
+            )
+
+            with self.assertRaisesRegex(ValueError, "envelope"):
+                usage.begin(envelope)
+
+            self.assertEqual(
+                usage.list_attempts(call_id="call-inconsistent-total"),
+                (),
+            )
+
     def test_terminal_usage_cannot_accept_a_later_finish_event(self) -> None:
         with _authorized_campaign("campaign-terminal-usage-finish") as (
             _,
@@ -1977,6 +2014,43 @@ class OperationalUsageJournalTests(unittest.TestCase):
                 recorded.final_outcome,
                 InvocationOutcome.TIMEOUT,
             )
+
+    def test_success_cannot_be_persisted_as_an_initial_usage_outcome(self) -> None:
+        campaign_id = "campaign-usage-initial-success"
+        cycle_id = "cycle-001"
+        call_id = "call-initial-success"
+        attempt_id = "call-initial-success-attempt-001"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            )
+            envelope = UsageEnvelope(
+                provider="fake-provider",
+                profile="offline",
+                request_model="fake-model",
+                response_model="fake-model",
+                call_id=call_id,
+                attempt_id=attempt_id,
+                usage_status=UsageStatus.REPORTED,
+                input_tokens=1,
+                output_tokens=1,
+                total_tokens=2,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                reasoning_tokens=None,
+                reported_cost=None,
+                currency=None,
+                fallback=False,
+                streamed=False,
+                outcome=InvocationOutcome.SUCCESS,
+                raw_usage_sha256="4" * 64,
+            )
+
+            with self.assertRaisesRegex(ValueError, "initial outcome"):
+                usage.begin(envelope)
+
+            self.assertEqual(usage.list_attempts(call_id=call_id), ())
 
     def test_response_received_cannot_be_recorded_as_final_outcome(self) -> None:
         with TemporaryDirectory() as temporary:

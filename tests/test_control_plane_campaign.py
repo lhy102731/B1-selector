@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from decimal import Decimal
 
 from research_automation.control_plane.campaign import (
@@ -65,6 +66,20 @@ class _ExceptionProvider:
 class _MalformedResponseProvider:
     def invoke(self, request: object) -> object:
         return {"output_text": '{"status":"not-a-response"}'}
+
+
+class _MalformedFieldsProvider:
+    def __init__(self, **changes: object) -> None:
+        self._changes = changes
+
+    def invoke(self, request: object) -> ProviderResponse:
+        response = ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={"input_tokens": 1},
+        )
+        return replace(response, **self._changes)
 
 
 class _FallbackProvider:
@@ -498,6 +513,99 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
 
+    def test_malformed_provider_fields_are_accounted_before_rejection(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(fallback=1),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-fields",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertFalse(envelope.fallback)
+
+    def test_malformed_response_model_is_accounted_before_rejection(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(response_model=""),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-response-model",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertIsNone(envelope.response_model)
+
+    def test_malformed_streamed_flag_is_accounted_before_rejection(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(streamed=1),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-streamed",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertFalse(envelope.streamed)
+
+    def test_malformed_output_type_is_accounted_before_rejection(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(output_text=1),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-malformed-output",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+
     def test_fallback_response_preserves_extended_usage_and_model_identity(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
@@ -549,6 +657,35 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.total_tokens, 16)
         self.assertEqual(envelope.currency, "USD")
 
+    def test_unknown_status_hint_cannot_erase_known_usage(self) -> None:
+        for index, status_hint in enumerate(
+            (UsageStatus.UNKNOWN, "reported"),
+            start=1,
+        ):
+            with self.subTest(status_hint=status_hint):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_MalformedFieldsProvider(
+                        usage_status=status_hint,
+                    ),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-request-model",
+                )
+
+                result = invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id=f"call-contradictory-status-{index}",
+                    attempt_id="attempt-001",
+                )
+
+                self.assertEqual(result, {"status": "ok"})
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
+                self.assertEqual(envelope.input_tokens, 1)
+
     def test_streamed_response_is_accounted_then_blocked(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
@@ -598,6 +735,33 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertIsNone(envelope.output_tokens)
         self.assertIsNone(envelope.total_tokens)
         self.assertEqual(len(envelope.raw_usage_sha256), 64)
+
+    def test_reported_total_is_raised_to_known_token_components(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedFieldsProvider(
+                raw_usage={
+                    "input_tokens": 3,
+                    "output_tokens": 2,
+                    "total_tokens": 4,
+                }
+            ),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-inconsistent-total",
+            attempt_id="attempt-001",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.total_tokens, 5)
 
     def test_nonfinite_cost_cannot_bypass_unknown_usage_accounting(self) -> None:
         journal = _RecordingUsageJournal()
