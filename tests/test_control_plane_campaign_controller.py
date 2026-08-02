@@ -110,6 +110,15 @@ class _BoundFakeProvider:
         )
 
 
+class _InvalidJsonBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self, output_text: str) -> None:
+        super().__init__()
+        self._output_text = output_text
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(super().invoke(request), output_text=self._output_text)
+
+
 class _LeaseSwapBoundFakeProvider(_BoundFakeProvider):
     def __init__(self, barrier: Barrier) -> None:
         super().__init__()
@@ -2356,6 +2365,127 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 controller.budget_snapshot().reserved_input_tokens,
                 20,
             )
+
+    def test_invalid_model_output_blocks_required_member_without_replay(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "canonical-expansion",
+                '{"payload":"' + "\u4e2d" * 10_000 + '"}',
+            ),
+            ("nan", "NaN"),
+            ("overflow", "1e10000"),
+        )
+        for label, output_text in cases:
+            with self.subTest(label=label):
+                campaign_id = f"campaign-controller-invalid-output-{label}"
+                protocol = _protocol()
+                execution_spec = compile_execution_spec(
+                    protocol,
+                    approved_protocol=protocol,
+                    approval=_approval(protocol),
+                    amendment=None,
+                )
+                prompt = {"instruction": "Return one bounded synthetic result"}
+                member = replace(
+                    _protocol_member(),
+                    prompt_sha256=operational_prompt_sha256(prompt),
+                )
+                task = ExperimentTask(
+                    task_id="cycle-001",
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Invalid required member blocks closed",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                )
+                provider = _InvalidJsonBoundFakeProvider(output_text)
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    controller = OperationalCampaignController(
+                        journal=journal,
+                        repository_root=root,
+                        budget_limits=CampaignBudgetLimits(
+                            max_cycles=1,
+                            max_input_tokens=100,
+                            max_output_tokens=50,
+                            max_cost="1",
+                            max_wall_time_ms=100,
+                            max_tool_attempts=1,
+                        ),
+                        identity_provider=_FakeProcessIdentityProvider(
+                            ProcessIdentity("host-controller", 122, 22_000)
+                        ),
+                        monotonic_ns=lambda: 100,
+                    )
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=(member,),
+                        reservation_limits=CycleReservationLimits(
+                            max_input_tokens=20,
+                            max_output_tokens=10,
+                            max_cost="0.1",
+                            max_wall_time_ms=10,
+                            max_tool_attempts=1,
+                        ),
+                    )
+                    execution = controller.start_execution(
+                        cycle_id=task.task_id,
+                        acquisition_id=f"execute-invalid-output-{label}",
+                    )
+
+                    with self.assertRaises(RosterDriftError):
+                        controller.invoke_member_json(
+                            execution=execution,
+                            member_id=member.member_id,
+                            provider=provider,
+                            prompt=prompt,
+                            limits=OperationalModelCallLimits(
+                                max_input_tokens=20,
+                                max_output_tokens=10,
+                                max_cost="0.1",
+                                max_wall_time_ms=10,
+                                max_attempts=1,
+                            ),
+                        )
+
+                    self.assertEqual(provider.call_count, 1)
+                    self.assertEqual(
+                        controller.campaign_snapshot().status,
+                        CampaignStatus.BLOCKED,
+                    )
+                    attempts = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id=task.task_id,
+                    ).list_attempts()
+                    self.assertEqual(len(attempts), 1)
+                    self.assertEqual(
+                        attempts[0].final_outcome,
+                        InvocationOutcome.INVALID_JSON,
+                    )
+
+                    replay_provider = _BoundFakeProvider()
+                    with self.assertRaisesRegex(
+                        CampaignJournalError,
+                        "execution receipt is stale",
+                    ):
+                        controller.invoke_member_json(
+                            execution=execution,
+                            member_id=member.member_id,
+                            provider=replay_provider,
+                            prompt=prompt,
+                            limits=OperationalModelCallLimits(
+                                max_input_tokens=20,
+                                max_output_tokens=10,
+                                max_cost="0.1",
+                                max_wall_time_ms=10,
+                                max_attempts=1,
+                            ),
+                        )
+                    self.assertEqual(replay_provider.call_count, 0)
 
     def test_mid_call_crash_is_fenced_without_second_provider_call(self) -> None:
         campaign_id = "campaign-controller-021"

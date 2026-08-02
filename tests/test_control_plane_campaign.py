@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
@@ -368,6 +369,117 @@ class _RecordingUsageJournal:
 
 
 class ModelInvocationTests(unittest.TestCase):
+    def test_canonical_ascii_expansion_is_terminal_invalid_json(self) -> None:
+        journal = _RecordingUsageJournal()
+        output_text = '{"payload":"' + "\u4e2d" * 10_000 + '"}'
+        self.assertLess(len(output_text.encode("utf-8")), 48 * 1024)
+        canonical_text = json.dumps(
+            json.loads(output_text),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        self.assertGreater(len(canonical_text), 48 * 1024)
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider(output_text),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-canonical-bytes",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-canonical-bytes",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
+    def test_nonfinite_json_numbers_are_terminal_invalid_json(self) -> None:
+        for label, output_text in (("nan", "NaN"), ("overflow", "1e10000")):
+            with self.subTest(label=label):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OutputTextProvider(output_text),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-request-model",
+                )
+
+                with self.assertRaises(InvalidModelResponseError):
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-output-{label}",
+                        attempt_id="attempt-001",
+                    )
+
+                self.assertEqual(
+                    journal.events,
+                    [
+                        ("begin", journal.events[0][1]),
+                        (
+                            "finish",
+                            (
+                                f"call-output-{label}",
+                                "attempt-001",
+                                InvocationOutcome.INVALID_JSON,
+                            ),
+                        ),
+                    ],
+                )
+
+    def test_character_count_above_output_limit_is_terminal_invalid_json(
+        self,
+    ) -> None:
+        journal = _RecordingUsageJournal()
+        output_text = "0" * (48 * 1024 + 1)
+        invocation = ModelInvocation(
+            provider=_OutputTextProvider(output_text),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(InvalidModelResponseError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-character-count",
+                attempt_id="attempt-001",
+            )
+
+        self.assertEqual(
+            journal.events,
+            [
+                ("begin", journal.events[0][1]),
+                (
+                    "finish",
+                    (
+                        "call-output-character-count",
+                        "attempt-001",
+                        InvocationOutcome.INVALID_JSON,
+                    ),
+                ),
+            ],
+        )
+
     def test_oversized_utf8_output_is_terminal_invalid_json(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(

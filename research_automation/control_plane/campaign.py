@@ -354,6 +354,10 @@ def _parse_bounded_model_output(
     *,
     max_output_bytes: int,
 ) -> object:
+    if len(output_text) > max_output_bytes:
+        raise _ModelOutputBoundsError(
+            "provider response exceeds the bounded size"
+        )
     raw_output = output_text.encode("utf-8", errors="strict")
     if len(raw_output) > max_output_bytes:
         raise _ModelOutputBoundsError(
@@ -361,6 +365,18 @@ def _parse_bounded_model_output(
         )
     parsed = json.loads(output_text)
     _require_bounded_model_output(parsed)
+    canonical_output = json.dumps(
+        parsed,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    canonical_output_bytes = canonical_output.encode("utf-8")
+    if len(canonical_output_bytes) > max_output_bytes:
+        raise _ModelOutputBoundsError(
+            "provider response exceeds the bounded size"
+        )
     return parsed
 
 
@@ -577,7 +593,11 @@ class ModelInvocation:
                 outcome=InvocationOutcome.STREAMING_DISABLED,
             )
             raise StreamingDisabledError("streaming usage accounting is not enabled")
-        if response.output_text is None or not response.output_text.strip():
+        if (
+            response.output_text is None
+            or not response.output_text
+            or response.output_text.isspace()
+        ):
             self._usage_journal.finish(
                 call_id=call_id,
                 attempt_id=attempt_id,
