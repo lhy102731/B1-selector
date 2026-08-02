@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
@@ -40,7 +40,11 @@ from .campaign_context import (
     OperationalCycleContextJournal,
     canonical_campaign_proposal,
 )
-from .evidence_learning import EvidenceAdapter, EvidenceResult
+from .evidence_learning import (
+    EvidenceAdapter,
+    EvidenceResult,
+    LearningCommitService,
+)
 from .campaign_freeze import FrozenCycleInputs, OperationalCycleFreezeJournal
 from .campaign_lease import (
     CycleLease,
@@ -67,6 +71,7 @@ from .campaign_roster import (
     _roster_manifest,
 )
 from .campaign_store import (
+    CampaignLearningCommitSink,
     CampaignJournalError,
     CycleBudgetSnapshot,
     OperationalBudgetJournal,
@@ -94,6 +99,10 @@ _EXECUTION_USAGE_AGGREGATE_TYPE = "OPERATIONAL_EXECUTION_USAGE"
 _EXECUTION_USAGE_FROZEN = "OPERATIONAL_EXECUTION_USAGE_FROZEN"
 _MODEL_EVIDENCE_AGGREGATE_TYPE = "OPERATIONAL_MODEL_EVIDENCE"
 _MODEL_EVIDENCE_RECORDED = "OPERATIONAL_MODEL_EVIDENCE_RECORDED"
+_LEARNING_COMMIT_INTENT_AGGREGATE_TYPE = "OPERATIONAL_LEARNING_COMMIT_INTENT"
+_LEARNING_COMMIT_INTENT_RECORDED = "OPERATIONAL_LEARNING_COMMIT_INTENT_RECORDED"
+_LEARNING_COMMIT_AGGREGATE_TYPE = "OPERATIONAL_LEARNING_COMMIT"
+_LEARNING_COMMIT_RECORDED = "OPERATIONAL_LEARNING_COMMIT_RECORDED"
 _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
 _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
@@ -273,6 +282,17 @@ class OperationalEvidenceReceipt:
     artifact_sha256: str
     adapter_manifest_sha256: str
     evidence: EvidenceResult
+    manifest_sha256: str
+    event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalLearningCommitReceipt:
+    cycle_id: str
+    member_id: str
+    evidence_manifest_sha256: str
+    authority_task_report_sha256: str
+    packet_hash: str
     manifest_sha256: str
     event_id: str
 
@@ -1139,6 +1159,334 @@ class OperationalCampaignController:
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
 
+    def commit_learning(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        evidence_receipt: OperationalEvidenceReceipt,
+        authority_task_report: Mapping[str, object],
+        learning_commit_sink: CampaignLearningCommitSink,
+    ) -> OperationalLearningCommitReceipt:
+        """Project eligible evidence and advance one fenced Cycle."""
+
+        self._journal._authorize()
+        if type(evidence_receipt) is not OperationalEvidenceReceipt:
+            raise TypeError(
+                "evidence_receipt must be an OperationalEvidenceReceipt"
+            )
+        if not isinstance(authority_task_report, Mapping):
+            raise TypeError("authority_task_report must be a mapping")
+        if type(learning_commit_sink) is not CampaignLearningCommitSink:
+            raise TypeError(
+                "learning_commit_sink must be a CampaignLearningCommitSink"
+            )
+        if learning_commit_sink._journal is not self._journal:
+            raise ValueError(
+                "learning_commit_sink must use the same Campaign journal"
+            )
+        learning_service = learning_commit_sink._service
+        if type(learning_service) is not LearningCommitService:
+            raise TypeError(
+                "learning_commit_sink must use the formal LearningCommitService"
+            )
+        if learning_service._root != self._context._repository_root:
+            raise ValueError(
+                "learning_commit_sink must use the same repository root"
+            )
+        self._journal.require_formal_learning_sink()
+        report_text = _canonical_json_text(
+            dict(authority_task_report),
+            "Authority TaskReport",
+        )
+        if len(report_text.encode("utf-8")) > _MAX_OPERATIONAL_REQUEST_BYTES:
+            raise ValueError("Authority TaskReport exceeds the bounded size")
+        frozen_report = json.loads(report_text)
+        authority_task_report_sha256 = _controller_sha256(
+            b"control_plane.operational_learning_task_report.v1",
+            frozen_report,
+            "Authority TaskReport",
+        )
+
+        def prepare_intent(connection) -> str:
+            cycle_id, current_cycle, frozen_artifact, _ = (
+                self._learning_commit_state_in_transaction(
+                    connection,
+                    execution=execution,
+                    evidence_receipt=evidence_receipt,
+                )
+            )
+            intent_events = (
+                self._learning_commit_intent_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if len(intent_events) > 1:
+                raise CampaignJournalError(
+                    "operational Learning Commit intent conflicts"
+                )
+            if not intent_events and self._journal._event_in_transaction(
+                connection,
+                self._learning_commit_intent_event_id(cycle_id),
+            ) is not None:
+                raise CampaignJournalError(
+                    "operational Learning Commit intent conflicts"
+                )
+            expected_packet_hash = _stored_sha256(
+                LearningCommitService.expected_packet_hash(
+                    learning_service,
+                    frozen_report,
+                    expected_artifact=frozen_artifact,
+                    expected_evidence=evidence_receipt.evidence,
+                ),
+                "expected Learning packet hash",
+            )
+            intent_payload = self._learning_commit_intent_payload(
+                cycle_id=cycle_id,
+                evidence_receipt=evidence_receipt,
+                authority_task_report_sha256=(
+                    authority_task_report_sha256
+                ),
+                packet_hash=expected_packet_hash,
+            )
+            if intent_events:
+                if (
+                    len(intent_events) != 1
+                    or intent_events[0].event_id
+                    != self._learning_commit_intent_event_id(cycle_id)
+                    or intent_events[0].event_type
+                    != _LEARNING_COMMIT_INTENT_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(intent_events[0]),
+                        "stored operational Learning Commit intent",
+                    )
+                    != _canonical_json_text(
+                        intent_payload,
+                        "expected operational Learning Commit intent",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational Learning Commit intent conflicts"
+                    )
+                intent_event = intent_events[0]
+            else:
+                if current_cycle.status is CycleStatus.LEARNING_COMMITTED:
+                    raise CampaignJournalError(
+                        "operational Learning Commit intent conflicts"
+                    )
+                intent_event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=self._learning_commit_intent_event_id(cycle_id),
+                    cycle_id=cycle_id,
+                    aggregate_type=(
+                        _LEARNING_COMMIT_INTENT_AGGREGATE_TYPE
+                    ),
+                    aggregate_id=cycle_id,
+                    event_type=_LEARNING_COMMIT_INTENT_RECORDED,
+                    payload=intent_payload,
+                )
+            evidence_events = self._model_evidence_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if (
+                len(evidence_events) != 1
+                or intent_event.sequence <= evidence_events[0].sequence
+                or (
+                    current_cycle.status is CycleStatus.EVIDENCE_READY
+                    and intent_event.sequence <= current_cycle.sequence
+                )
+            ):
+                raise CampaignJournalError(
+                    "Learning Commit intent must follow operational evidence"
+                )
+            return expected_packet_hash
+
+        expected_packet_hash = _SqliteUnitOfWork(
+            stores._operational_spec()
+        )._write(prepare_intent)
+
+        def record(connection) -> OperationalLearningCommitReceipt:
+            cycle_id, current_cycle, frozen_artifact, events = (
+                self._learning_commit_state_in_transaction(
+                    connection,
+                    execution=execution,
+                    evidence_receipt=evidence_receipt,
+                )
+            )
+            if current_cycle.status is CycleStatus.LEARNING_COMMITTED:
+                stored_payload = _event_domain_payload(events[0])
+                stored_identity = {
+                    key: value
+                    for key, value in stored_payload.items()
+                    if key != "manifest_sha256"
+                }
+                if (
+                    set(stored_payload)
+                    != {
+                        "schema_version",
+                        "cycle_id",
+                        "member_id",
+                        "evidence_manifest_sha256",
+                        "authority_task_report_sha256",
+                        "packet_hash",
+                        "manifest_sha256",
+                    }
+                    or stored_payload["schema_version"]
+                    != "control_plane.operational_learning_commit.v1"
+                    or stored_payload["cycle_id"] != cycle_id
+                    or stored_payload["member_id"]
+                    != evidence_receipt.member_id
+                    or stored_payload["evidence_manifest_sha256"]
+                    != evidence_receipt.manifest_sha256
+                    or stored_payload["authority_task_report_sha256"]
+                    != authority_task_report_sha256
+                    or stored_payload["manifest_sha256"]
+                    != _controller_sha256(
+                        b"control_plane.operational_learning_commit.v1",
+                        stored_identity,
+                        "stored operational Learning Commit",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational Learning Commit conflicts"
+                    )
+                _stored_sha256(
+                    stored_payload["packet_hash"],
+                    "stored Learning packet hash",
+                )
+            intent_payload = self._learning_commit_intent_payload(
+                cycle_id=cycle_id,
+                evidence_receipt=evidence_receipt,
+                authority_task_report_sha256=(
+                    authority_task_report_sha256
+                ),
+                packet_hash=expected_packet_hash,
+            )
+            intent_events = (
+                self._learning_commit_intent_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if (
+                len(intent_events) != 1
+                or intent_events[0].event_id
+                != self._learning_commit_intent_event_id(cycle_id)
+                or intent_events[0].event_type
+                != _LEARNING_COMMIT_INTENT_RECORDED
+                or _canonical_json_text(
+                    _event_domain_payload(intent_events[0]),
+                    "stored operational Learning Commit intent",
+                )
+                != _canonical_json_text(
+                    intent_payload,
+                    "expected operational Learning Commit intent",
+                )
+            ):
+                raise CampaignJournalError(
+                    "operational Learning Commit intent conflicts"
+                )
+            intent_event = intent_events[0]
+            packet_hash = _stored_sha256(
+                LearningCommitService.commit(
+                    learning_service,
+                    frozen_report,
+                    expected_artifact=frozen_artifact,
+                    expected_evidence=evidence_receipt.evidence,
+                ),
+                "Learning packet hash",
+            )
+            if packet_hash != expected_packet_hash:
+                raise CampaignJournalError(
+                    "Learning packet hash differs from its durable intent"
+                )
+            identity = {
+                "schema_version": "control_plane.operational_learning_commit.v1",
+                "cycle_id": cycle_id,
+                "member_id": evidence_receipt.member_id,
+                "evidence_manifest_sha256": (
+                    evidence_receipt.manifest_sha256
+                ),
+                "authority_task_report_sha256": (
+                    authority_task_report_sha256
+                ),
+                "packet_hash": packet_hash,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_learning_commit.v1",
+                identity,
+                "operational Learning Commit",
+            )
+            payload = {**identity, "manifest_sha256": manifest_sha256}
+            receipt = OperationalLearningCommitReceipt(
+                cycle_id=cycle_id,
+                member_id=evidence_receipt.member_id,
+                evidence_manifest_sha256=evidence_receipt.manifest_sha256,
+                authority_task_report_sha256=(
+                    authority_task_report_sha256
+                ),
+                packet_hash=packet_hash,
+                manifest_sha256=manifest_sha256,
+                event_id=self._learning_commit_event_id(cycle_id),
+            )
+            if events:
+                if (
+                    len(events) != 1
+                    or events[0].event_id != receipt.event_id
+                    or events[0].event_type != _LEARNING_COMMIT_RECORDED
+                    or _canonical_json_text(
+                        _event_domain_payload(events[0]),
+                        "stored operational Learning Commit",
+                    )
+                    != _canonical_json_text(
+                        payload,
+                        "expected operational Learning Commit",
+                    )
+                ):
+                    raise CampaignJournalError(
+                        "operational Learning Commit conflicts"
+                    )
+                event = events[0]
+            else:
+                event = self._journal._append_in_transaction(
+                    connection,
+                    event_id=receipt.event_id,
+                    cycle_id=cycle_id,
+                    aggregate_type=_LEARNING_COMMIT_AGGREGATE_TYPE,
+                    aggregate_id=cycle_id,
+                    event_type=_LEARNING_COMMIT_RECORDED,
+                    payload=payload,
+                )
+            evidence_events = self._model_evidence_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if (
+                len(evidence_events) != 1
+                or event.sequence
+                <= max(
+                    evidence_events[0].sequence,
+                    intent_event.sequence,
+                )
+            ):
+                raise CampaignJournalError(
+                    "Learning Commit must follow its intent and evidence"
+                )
+            advanced = self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.EVIDENCE_READY,
+                next_status=CycleStatus.LEARNING_COMMITTED,
+            )
+            if advanced.sequence <= event.sequence:
+                raise CampaignJournalError(
+                    "LEARNING_COMMITTED must follow its receipt"
+                )
+            return receipt
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
 
@@ -1811,6 +2159,200 @@ class OperationalCampaignController:
             )
         return event, payload
 
+    def _replay_evidence_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        receipt: OperationalEvidenceReceipt,
+        current_cycle: CycleSnapshot,
+    ) -> object:
+        (
+            preparation_manifest_sha256,
+            context,
+            roster,
+        ) = self._evidence_preparation_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        member = next(
+            (
+                candidate
+                for candidate in roster.members
+                if candidate.member_id == receipt.member_id
+            ),
+            None,
+        )
+        if member is None:
+            raise CampaignJournalError(
+                "evidence member is absent from the frozen roster"
+            )
+        usage = OperationalUsageJournal(
+            journal=self._journal,
+            cycle_id=cycle_id,
+        )
+        model_calls = tuple(
+            self._model_call_for_member_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                member=candidate,
+                preparation_manifest_sha256=preparation_manifest_sha256,
+                context_manifest_sha256=context.manifest_sha256,
+                roster_manifest_sha256=roster.manifest_sha256,
+                usage=usage,
+            )
+            for candidate in roster.members
+        )
+        selected_call = next(
+            model_call
+            for model_call in model_calls
+            if model_call.member_id == receipt.member_id
+        )
+        usage_event, usage_payload = (
+            self._execution_usage_binding_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                preparation_manifest_sha256=preparation_manifest_sha256,
+                context=context,
+                roster=roster,
+                model_calls=model_calls,
+            )
+        )
+        artifact = selected_call.output
+        expected_identity = {
+            "schema_version": "control_plane.operational_model_evidence.v1",
+            "cycle_id": cycle_id,
+            "member_id": receipt.member_id,
+            "preparation_manifest_sha256": preparation_manifest_sha256,
+            "execution_usage_manifest_sha256": usage_payload[
+                "manifest_sha256"
+            ],
+            "model_call_manifest_sha256": selected_call.manifest_sha256,
+            "artifact_sha256": _controller_sha256(
+                b"control_plane.operational_evidence_artifact.v1",
+                artifact,
+                "replayed operational evidence artifact",
+            ),
+            "adapter_manifest_sha256": receipt.adapter_manifest_sha256,
+            "evidence": _evidence_result_payload(receipt.evidence),
+        }
+        manifest_sha256 = _controller_sha256(
+            b"control_plane.operational_model_evidence.v1",
+            expected_identity,
+            "replayed operational model evidence",
+        )
+        expected_payload = {
+            **expected_identity,
+            "manifest_sha256": manifest_sha256,
+        }
+        events = self._model_evidence_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if (
+            receipt.cycle_id != cycle_id
+            or receipt.preparation_manifest_sha256
+            != preparation_manifest_sha256
+            or receipt.execution_usage_manifest_sha256
+            != usage_payload["manifest_sha256"]
+            or receipt.model_call_manifest_sha256
+            != selected_call.manifest_sha256
+            or receipt.artifact_sha256 != expected_identity["artifact_sha256"]
+            or receipt.manifest_sha256 != manifest_sha256
+            or receipt.event_id != self._model_evidence_event_id(cycle_id)
+            or len(events) != 1
+            or events[0].event_id != receipt.event_id
+            or events[0].event_type != _MODEL_EVIDENCE_RECORDED
+            or _canonical_json_text(
+                _event_domain_payload(events[0]),
+                "stored operational model evidence",
+            )
+            != _canonical_json_text(
+                expected_payload,
+                "replayed operational model evidence",
+            )
+            or events[0].sequence <= usage_event.sequence
+            or current_cycle.sequence <= events[0].sequence
+        ):
+            raise CampaignJournalError(
+                "operational evidence receipt conflicts"
+            )
+        return artifact
+
+    def _learning_commit_state_in_transaction(
+        self,
+        connection,
+        *,
+        execution: ExecutingOperationalCycle,
+        evidence_receipt: OperationalEvidenceReceipt,
+    ) -> tuple[str, CycleSnapshot, dict[str, object], tuple]:
+        cycle_id, current_cycle = (
+            self._require_evidence_execution_generation_in_transaction(
+                connection,
+                execution,
+            )
+        )
+        if current_cycle.status not in {
+            CycleStatus.EVIDENCE_READY,
+            CycleStatus.LEARNING_COMMITTED,
+        }:
+            raise CampaignJournalError(
+                "Learning Commit requires EVIDENCE_READY"
+            )
+        artifact = self._replay_evidence_receipt_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            receipt=evidence_receipt,
+            current_cycle=current_cycle,
+        )
+        if (
+            evidence_receipt.evidence.verdict != "VALID"
+            or not evidence_receipt.evidence.promotion_eligible
+            or evidence_receipt.evidence.taint_refs
+            or evidence_receipt.evidence.invalidation_codes
+            or not isinstance(artifact, Mapping)
+        ):
+            raise CampaignJournalError(
+                "operational evidence is not Learning eligible"
+            )
+        events = self._learning_commit_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if current_cycle.status is CycleStatus.EVIDENCE_READY:
+            required_event_ids = (
+                self._learning_commit_event_id(cycle_id),
+                self._lifecycle._cycle_event_id(
+                    cycle_id,
+                    CycleStatus.LEARNING_COMMITTED.value,
+                ),
+            )
+            if any(
+                self._journal._event_in_transaction(
+                    connection,
+                    event_id,
+                )
+                is not None
+                for event_id in required_event_ids
+            ):
+                raise CampaignJournalError(
+                    "operational Learning Commit event identity conflicts"
+                )
+            if events:
+                raise CampaignJournalError(
+                    "operational Learning Commit conflicts"
+                )
+        elif (
+            len(events) != 1
+            or events[0].event_id
+            != self._learning_commit_event_id(cycle_id)
+            or events[0].event_type != _LEARNING_COMMIT_RECORDED
+        ):
+            raise CampaignJournalError(
+                "operational Learning Commit conflicts"
+            )
+        return cycle_id, current_cycle, dict(artifact), events
+
     def _model_evidence_event_id(self, cycle_id: str) -> str:
         return _stable_id(
             b"control_plane.controller_model_evidence.v1",
@@ -1850,6 +2392,117 @@ class OperationalCampaignController:
             connection,
             cycle_id=cycle_id,
             aggregate_type=_MODEL_EVIDENCE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _learning_commit_intent_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_learning_commit_intent.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    @staticmethod
+    def _learning_commit_intent_payload(
+        *,
+        cycle_id: str,
+        evidence_receipt: OperationalEvidenceReceipt,
+        authority_task_report_sha256: str,
+        packet_hash: str,
+    ) -> dict[str, object]:
+        identity = {
+            "schema_version": (
+                "control_plane.operational_learning_commit_intent.v1"
+            ),
+            "cycle_id": cycle_id,
+            "member_id": evidence_receipt.member_id,
+            "evidence_manifest_sha256": evidence_receipt.manifest_sha256,
+            "authority_task_report_sha256": authority_task_report_sha256,
+            "packet_hash": packet_hash,
+        }
+        return {
+            **identity,
+            "manifest_sha256": _controller_sha256(
+                b"control_plane.operational_learning_commit_intent.v1",
+                identity,
+                "operational Learning Commit intent",
+            ),
+        }
+
+    def _learning_commit_intent_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _LEARNING_COMMIT_INTENT_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_id"] != cycle_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational Learning Commit intent stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_LEARNING_COMMIT_INTENT_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _learning_commit_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_learning_commit.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _learning_commit_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _LEARNING_COMMIT_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_id"] != cycle_id
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational Learning Commit stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_LEARNING_COMMIT_AGGREGATE_TYPE,
             aggregate_id=cycle_id,
         )
 
@@ -2672,7 +3325,11 @@ class OperationalCampaignController:
         if (
             execution.lease.cycle_id != cycle_id
             or execution.cycle.status
-            not in {CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY}
+            not in {
+                CycleStatus.EXECUTING,
+                CycleStatus.EVIDENCE_READY,
+                CycleStatus.LEARNING_COMMITTED,
+            }
         ):
             raise CampaignJournalError("execution receipt is invalid")
         try:
@@ -2702,7 +3359,11 @@ class OperationalCampaignController:
         if (
             campaign.status is not CampaignStatus.ACTIVE
             or current_cycle.status
-            not in {CycleStatus.EXECUTING, CycleStatus.EVIDENCE_READY}
+            not in {
+                CycleStatus.EXECUTING,
+                CycleStatus.EVIDENCE_READY,
+                CycleStatus.LEARNING_COMMITTED,
+            }
             or not original_events
             or self._lifecycle._replay_cycle(original_events)
             != execution.cycle
@@ -3193,6 +3854,7 @@ __all__ = [
     "ExecutingOperationalCycle",
     "OperationalEvidenceReceipt",
     "OperationalExecutionUsage",
+    "OperationalLearningCommitReceipt",
     "OperationalCampaignController",
     "OperationalModelCallLimits",
     "PreparedOperationalCycle",

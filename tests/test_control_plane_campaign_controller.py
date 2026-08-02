@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from threading import Barrier
+from threading import Barrier, Event
 import hashlib
 import json
 import sqlite3
@@ -13,6 +13,7 @@ from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
     CycleReservationLimits,
     ExecutingOperationalCycle,
+    OperationalEvidenceReceipt,
     OperationalModelCallLimits,
     OperationalCampaignController,
     _controller_sha256,
@@ -24,7 +25,11 @@ from research_automation.control_plane.campaign import (
     UsageEnvelope,
     UsageStatus,
 )
-from research_automation.control_plane.evidence_learning import EvidenceAdapter
+from research_automation.control_plane.evidence_learning import (
+    EvidenceAdapter,
+    LearningCommitAuthorizationError,
+    LearningCommitService,
+)
 from research_automation.control_plane.campaign_context import (
     OperationalCycleContextJournal,
 )
@@ -46,6 +51,7 @@ from research_automation.control_plane.campaign_lifecycle import (
     OperationalCampaignLifecycle,
 )
 from research_automation.control_plane.campaign_store import (
+    CampaignLearningCommitSink,
     CampaignJournalError,
     OperationalUsageJournal,
     _event_integrity_sha256,
@@ -54,6 +60,7 @@ from research_automation.control_plane.campaign_roster import (
     OperationalRosterJournal,
     RosterDriftError,
 )
+from research_automation.control_plane.task_reports import build_task_report_v2
 from research_automation.foundations.protocols import (
     MaterialProtocolChangeError,
     compile_execution_spec,
@@ -63,6 +70,9 @@ from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
 from tests.test_control_plane_campaign_store import _authorized_campaign
+from tests.test_control_plane_evidence_learning import (
+    EvidenceLearningVerticalSliceTests,
+)
 from tests.test_foundations_protocols import _approval, _protocol
 
 
@@ -173,8 +183,80 @@ class _NonObjectEvidenceArtifactBoundFakeProvider(
         return replace(super().invoke(request), output_text="[]")
 
 
+class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        self.last_request = request
+        return ProviderResponse(
+            output_text=(
+                '{"access_event_ids":["event:synthetic-eligible"],'
+                '"artifact_refs":[{"ref":"fixtures/result.json",'
+                '"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],'
+                '"claim":{"kind":"NEGATIVE",'
+                '"summary":"Synthetic eligible finding."},'
+                '"executed_protocol":{"label":"synthetic-only"},'
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED","taint_refs":[]}'
+            ),
+            request_model=self.model,
+            response_model=self.model,
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "reported_cost": "0.02",
+                "currency": "USD",
+            },
+        )
+
+
+class _AuthorityEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self, artifact: object) -> None:
+        super().__init__()
+        self._artifact = artifact
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self.call_count += 1
+        self.last_request = request
+        return ProviderResponse(
+            output_text=json.dumps(
+                self._artifact,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            request_model=self.model,
+            response_model=self.model,
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "reported_cost": "0.02",
+                "currency": "USD",
+            },
+        )
+
+
 class _UnboundEvidenceAdapter(EvidenceAdapter):
     pass
+
+
+class _UnboundOperationalEvidenceReceipt(OperationalEvidenceReceipt):
+    pass
+
+
+class _UnboundCampaignLearningCommitSink(CampaignLearningCommitSink):
+    def commit(self, *args, **kwargs) -> str:
+        return "f" * 64
+
+
+class _UnboundLearningCommitService(LearningCommitService):
+    def commit(self, *args, **kwargs) -> str:
+        return "f" * 64
 
 
 class _EstimatedUsageBoundFakeProvider(_BoundFakeProvider):
@@ -4492,6 +4574,1230 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 controller.cycle_snapshot("cycle-001").status,
                 CycleStatus.EXECUTING,
             )
+
+    def test_eligible_evidence_commits_learning_and_advances_cycle(self) -> None:
+        campaign_id = "campaign-controller-learning-commit"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                receipt = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={"synthetic": "terminal-report"},
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            self.assertEqual(receipt.cycle_id, "cycle-001")
+            self.assertEqual(
+                receipt.evidence_manifest_sha256,
+                evidence.manifest_sha256,
+            )
+            self.assertEqual(receipt.packet_hash, "f" * 64)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_authority_bound_learning_packet_advances_the_cycle(self) -> None:
+        campaign_id = "campaign-controller-learning-authority"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, expected_evidence, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                receipt = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+                ledger = service.rebuild_ledger()
+
+            self.assertEqual(evidence.evidence, expected_evidence)
+            self.assertEqual(
+                ledger["packet_hashes"],
+                [receipt.packet_hash],
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_learning_sink_from_another_repository_is_rejected_before_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-foreign-root"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            foreign_root = root / "foreign-repository"
+            foreign_root.mkdir()
+            service = LearningCommitService(repository_root=foreign_root)
+
+            with patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("foreign root reached Learning"),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "same repository root",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report={
+                            "synthetic": "terminal-report"
+                        },
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_exact_learning_service_rejects_an_unbound_task_report(self) -> None:
+        campaign_id = "campaign-controller-learning-unbound-report"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with self.assertRaisesRegex(
+                LearningCommitAuthorizationError,
+                "TaskReport authority is unavailable",
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            self.assertEqual(service.rebuild_ledger()["packet_hashes"], [])
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_no_material_evidence_cannot_enter_learning(self) -> None:
+        campaign_id = "campaign-controller-learning-ineligible"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("ineligible sink invocation"),
+            ):
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "not Learning eligible",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report={
+                            "synthetic": "terminal-report"
+                        },
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_unbound_evidence_receipt_subclass_is_rejected_before_learning(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-receipt-subclass"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            unbound_evidence = _UnboundOperationalEvidenceReceipt(
+                cycle_id=evidence.cycle_id,
+                member_id=evidence.member_id,
+                preparation_manifest_sha256=(
+                    evidence.preparation_manifest_sha256
+                ),
+                execution_usage_manifest_sha256=(
+                    evidence.execution_usage_manifest_sha256
+                ),
+                model_call_manifest_sha256=(
+                    evidence.model_call_manifest_sha256
+                ),
+                artifact_sha256=evidence.artifact_sha256,
+                adapter_manifest_sha256=(
+                    evidence.adapter_manifest_sha256
+                ),
+                evidence=evidence.evidence,
+                manifest_sha256=evidence.manifest_sha256,
+                event_id=evidence.event_id,
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("receipt subclass reached Learning"),
+            ):
+                with self.assertRaisesRegex(
+                    TypeError,
+                    "evidence_receipt must be an OperationalEvidenceReceipt",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=unbound_evidence,
+                        authority_task_report={
+                            "synthetic": "terminal-report"
+                        },
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_unbound_learning_sink_subclass_is_rejected(self) -> None:
+        campaign_id = "campaign-controller-learning-sink-subclass"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                TypeError,
+                "learning_commit_sink must be a CampaignLearningCommitSink",
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=(
+                        _UnboundCampaignLearningCommitSink(
+                            journal=journal,
+                            service=LearningCommitService(
+                                repository_root=root
+                            ),
+                        )
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_unbound_learning_service_subclass_is_rejected(self) -> None:
+        campaign_id = "campaign-controller-learning-service-subclass"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                TypeError,
+                "service must be a LearningCommitService",
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=_UnboundLearningCommitService(
+                            repository_root=root
+                        ),
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_shadow_learning_stream_blocks_sink_invocation(self) -> None:
+        campaign_id = "campaign-controller-learning-shadow-stream"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            journal.append(
+                event_id="shadow-learning-commit-event",
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                aggregate_id="shadow-cycle-001",
+                event_type="OPERATIONAL_LEARNING_COMMIT_RECORDED",
+                payload={"shadow": True},
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("shadow stream reached sink"),
+            ):
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "operational Learning Commit stream conflicts",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report={
+                            "synthetic": "terminal-report"
+                        },
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_learning_receipt_event_collision_blocks_formal_packet_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-receipt-collision"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            journal.append(
+                event_id=controller._learning_commit_event_id("cycle-001"),
+                cycle_id="cycle-001",
+                aggregate_type="COLLIDING_OPERATIONAL_STREAM",
+                aggregate_id="cycle-001",
+                event_type="COLLIDING_OPERATIONAL_EVENT",
+                payload={"collision": "synthetic"},
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report=report,
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+                ledger = service.rebuild_ledger()
+
+            self.assertEqual(ledger["packet_hashes"], [])
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_learning_transition_event_collision_blocks_formal_packet_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-transition-collision"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            journal.append(
+                event_id=controller._lifecycle._cycle_event_id(
+                    "cycle-001",
+                    CycleStatus.LEARNING_COMMITTED.value,
+                ),
+                cycle_id="cycle-001",
+                aggregate_type="COLLIDING_OPERATIONAL_STREAM",
+                aggregate_id="cycle-001",
+                event_type="COLLIDING_OPERATIONAL_EVENT",
+                payload={"collision": "synthetic"},
+            )
+            service = LearningCommitService(repository_root=root)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report=report,
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+                ledger = service.rebuild_ledger()
+
+            self.assertEqual(ledger["packet_hashes"], [])
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_learning_commit_exact_replay_is_idempotent(self) -> None:
+        campaign_id = "campaign-controller-learning-replay"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        report = {"synthetic": "terminal-report"}
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                first = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=sink,
+                )
+
+                replayed = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=sink,
+                )
+
+            self.assertEqual(replayed, first)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_learning_replay_rejects_task_report_drift_before_sink(self) -> None:
+        campaign_id = "campaign-controller-learning-report-drift"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={"synthetic": "report-a"},
+                    learning_commit_sink=sink,
+                )
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("drift reached Learning sink"),
+            ):
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "operational Learning Commit intent conflicts",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report={"synthetic": "report-b"},
+                        learning_commit_sink=sink,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_learning_receipt_and_state_transition_are_atomic(self) -> None:
+        campaign_id = "campaign-controller-learning-atomic"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                with patch.object(
+                    OperationalCampaignLifecycle,
+                    "_advance_cycle_in_transaction",
+                    side_effect=RuntimeError("synthetic Learning crash"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "synthetic Learning crash",
+                    ):
+                        controller.commit_learning(
+                            execution=execution,
+                            evidence_receipt=evidence,
+                            authority_task_report={
+                                "synthetic": "terminal-report"
+                            },
+                            learning_commit_sink=sink,
+                        )
+
+                self.assertEqual(
+                    journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                        aggregate_id="cycle-001",
+                    ),
+                    (),
+                )
+                self.assertEqual(
+                    controller.cycle_snapshot("cycle-001").status,
+                    CycleStatus.EVIDENCE_READY,
+                )
+
+                receipt = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=sink,
+                )
+
+            self.assertEqual(receipt.packet_hash, "f" * 64)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_learning_commit_recovers_when_formal_packet_precedes_cycle_commit(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-orphan-recovery"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                with patch.object(
+                    OperationalCampaignLifecycle,
+                    "_advance_cycle_in_transaction",
+                    side_effect=RuntimeError("synthetic post-packet crash"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "synthetic post-packet crash",
+                    ):
+                        controller.commit_learning(
+                            execution=execution,
+                            evidence_receipt=evidence,
+                            authority_task_report=report,
+                            learning_commit_sink=sink,
+                        )
+
+                packet_hashes_after_crash = service.rebuild_ledger()[
+                    "packet_hashes"
+                ]
+                self.assertEqual(
+                    controller.cycle_snapshot("cycle-001").status,
+                    CycleStatus.EVIDENCE_READY,
+                )
+                self.assertEqual(len(packet_hashes_after_crash), 1)
+
+                recovered = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=sink,
+                )
+                packet_hashes_after_recovery = service.rebuild_ledger()[
+                    "packet_hashes"
+                ]
+
+            self.assertEqual(
+                packet_hashes_after_recovery,
+                packet_hashes_after_crash,
+            )
+            self.assertEqual(
+                recovered.packet_hash,
+                packet_hashes_after_recovery[0],
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_post_packet_crash_cannot_retry_with_another_task_report(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-report-crash-drift"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report_a, binding_a, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            report_b_draft = json.loads(json.dumps(report_a))
+            for computed_field in (
+                "schema_version",
+                "unexpected_changes",
+                "outcome",
+                "reason_codes",
+                "report_payload_sha256",
+            ):
+                report_b_draft.pop(computed_field)
+            report_b_draft.update(
+                {
+                    "ticket_id": "ticket-learning-002",
+                    "idempotency_key": "p4-learning-commit-002",
+                    "started_at": "2026-07-30T09:00:00Z",
+                    "completed_at": "2026-07-30T09:01:00Z",
+                }
+            )
+            report_b = build_task_report_v2(report_b_draft)
+            binding_b = type(binding_a)(**vars(binding_a))
+            binding_b.ticket_id = report_b["ticket_id"]
+            binding_b.report_payload_sha256 = report_b[
+                "report_payload_sha256"
+            ]
+
+            def binding_for_report(candidate):
+                if candidate["ticket_id"] == report_a["ticket_id"]:
+                    return binding_a
+                if candidate["ticket_id"] == report_b["ticket_id"]:
+                    return binding_b
+                raise AssertionError("unexpected synthetic TaskReport")
+
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=binding_for_report,
+            ):
+                with patch.object(
+                    OperationalCampaignLifecycle,
+                    "_advance_cycle_in_transaction",
+                    side_effect=RuntimeError("synthetic post-packet crash"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "synthetic post-packet crash",
+                    ):
+                        controller.commit_learning(
+                            execution=execution,
+                            evidence_receipt=evidence,
+                            authority_task_report=report_a,
+                            learning_commit_sink=sink,
+                        )
+
+                packet_hashes_after_crash = service.rebuild_ledger()[
+                    "packet_hashes"
+                ]
+                intent_events_after_crash = journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                    aggregate_id="cycle-001",
+                )
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "Learning Commit intent conflicts",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report=report_b,
+                        learning_commit_sink=sink,
+                    )
+                packet_hashes_after_drift = service.rebuild_ledger()[
+                    "packet_hashes"
+                ]
+
+            self.assertEqual(len(packet_hashes_after_crash), 1)
+            self.assertEqual(len(intent_events_after_crash), 1)
+            self.assertEqual(
+                packet_hashes_after_drift,
+                packet_hashes_after_crash,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_learning_commit_holds_fence_through_the_durable_sink(self) -> None:
+        campaign_id = "campaign-controller-learning-fenced-sink"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        recovered_owner = ProcessIdentity("host-controller", 148, 48_000)
+        sink_entered = Event()
+        release_sink = Event()
+        recovery_completed = Event()
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            recovery_leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=_FakeProcessIdentityProvider(
+                    recovered_owner,
+                    process_starts={("host-controller", 144): None},
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+
+            def commit_and_wait(*args, **kwargs):
+                sink_entered.set()
+                if not release_sink.wait(timeout=5):
+                    raise RuntimeError("synthetic Learning sink timed out")
+                return "f" * 64
+
+            def recover_lease():
+                try:
+                    return recovery_leases.recover(
+                        cycle_id="cycle-001",
+                        acquisition_id="recover-during-learning",
+                        stale_after_ns=1,
+                    )
+                finally:
+                    recovery_completed.set()
+
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                commit_and_wait,
+            ), (
+                ThreadPoolExecutor(max_workers=2)
+            ) as pool:
+                learning = pool.submit(
+                    controller.commit_learning,
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=sink,
+                )
+                self.assertTrue(sink_entered.wait(timeout=5))
+                recovery = pool.submit(recover_lease)
+                try:
+                    self.assertFalse(recovery_completed.wait(timeout=0.5))
+                finally:
+                    release_sink.set()
+
+                receipt = learning.result(timeout=5)
+                replacement = recovery.result(timeout=5)
+
+            self.assertEqual(receipt.packet_hash, "f" * 64)
+            self.assertGreater(replacement.fencing_token, execution.lease.fencing_token)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
+    def test_learning_receipt_recovers_from_current_state_and_new_lease(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-durable-recovery"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        report = {"synthetic": "terminal-report"}
+        recovered_owner = ProcessIdentity("host-controller", 147, 47_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                original = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=sink,
+                )
+                recovery_identity = _FakeProcessIdentityProvider(
+                    recovered_owner,
+                    process_starts={("host-controller", 144): None},
+                )
+                replacement = OperationalCycleLeaseJournal(
+                    journal=journal,
+                    lifecycle=OperationalCampaignLifecycle(
+                        journal=journal
+                    ),
+                    identity_provider=recovery_identity,
+                    monotonic_ns=lambda: 3_000_000,
+                ).recover(
+                    cycle_id="cycle-001",
+                    acquisition_id="recover-completed-learning",
+                    stale_after_ns=1,
+                )
+                recovered = OperationalCampaignController(
+                    journal=journal,
+                    repository_root=root,
+                    budget_limits=budget_limits,
+                    identity_provider=recovery_identity,
+                    monotonic_ns=lambda: 4_000_000,
+                )
+
+                replayed = recovered.commit_learning(
+                    execution=ExecutingOperationalCycle(
+                        cycle=recovered.cycle_snapshot("cycle-001"),
+                        lease=replacement,
+                    ),
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=sink,
+                )
+
+            self.assertEqual(replayed, original)
 
 
 if __name__ == "__main__":

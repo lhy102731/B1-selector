@@ -150,7 +150,11 @@ class P4RunControllerVerticalSliceTests(unittest.TestCase):
                 learning_commit_service=service,
             )
             authority_report = {"ticket_id": "fixture-terminal-report"}
-            with patch.object(service, "commit", return_value="f" * 64):
+            with patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
                 first = controller.finalize(
                     artifact=artifact,
                     authority_task_report=authority_report,

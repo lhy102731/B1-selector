@@ -599,11 +599,52 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
                 "AuthorityReader.verify_task_report_binding",
                 return_value=binding,
             ):
+                expected = service.expected_packet_hash(report)
+                self.assertFalse(
+                    (
+                        root
+                        / "research_state/control_plane/learning_packets"
+                    ).exists()
+                )
+                self.assertFalse(
+                    (
+                        root
+                        / "research_state/control_plane/learning_commit.sqlite3"
+                    ).exists()
+                )
                 first = service.commit(report)
                 second = service.commit(report)
                 ledger = service.rebuild_ledger()
+            self.assertEqual(expected, first)
             self.assertEqual(first, second)
             self.assertEqual(ledger["packet_hashes"], [first])
+
+    def test_learning_commit_service_instance_boundary_is_immutable(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            service = LearningCommitService(repository_root=root)
+
+            with self.assertRaisesRegex(
+                AttributeError,
+                "LearningCommitService is immutable",
+            ):
+                service.commit = lambda *_args, **_kwargs: "f" * 64
+            with self.assertRaisesRegex(
+                AttributeError,
+                "LearningCommitService is immutable",
+            ):
+                service._root = root / "foreign"
+            with self.assertRaisesRegex(
+                AttributeError,
+                "LearningCommitService is immutable",
+            ):
+                del service._root
+
+            self.assertEqual(service._root, root.resolve())
 
     def test_existing_original_journal_schema_projects_without_migration(self):
         from research_automation.control_plane.evidence_learning import LearningCommitService

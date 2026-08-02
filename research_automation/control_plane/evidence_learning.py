@@ -571,16 +571,40 @@ def _validate_legacy_learning_packet(raw: bytes) -> None:
 class LearningCommitService:
     """Project one Authority-valid terminal P4 decision into Learning."""
 
-    def __init__(self, *, repository_root: str | Path):
-        self._root = Path(repository_root).resolve()
+    __slots__ = ("_root",)
 
-    def commit(
+    def __init__(self, *, repository_root: str | Path):
+        object.__setattr__(self, "_root", Path(repository_root).resolve())
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("LearningCommitService is immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("LearningCommitService is immutable")
+
+    def expected_packet_hash(
         self,
         task_report: Mapping[str, object],
         *,
         expected_artifact: Mapping[str, object] | None = None,
         expected_evidence: EvidenceResult | None = None,
     ) -> str:
+        """Validate one projection without writing Packet or Ledger state."""
+
+        _, _, digest, _ = self._prepare_commit(
+            task_report,
+            expected_artifact=expected_artifact,
+            expected_evidence=expected_evidence,
+        )
+        return digest
+
+    def _prepare_commit(
+        self,
+        task_report: Mapping[str, object],
+        *,
+        expected_artifact: Mapping[str, object] | None,
+        expected_evidence: EvidenceResult | None,
+    ):
         binding, evidence, claim, frozen_report, artifact = _authority_projection(
             self._root,
             task_report,
@@ -620,6 +644,20 @@ class LearningCommitService:
         authority_order_key = _authority_order_key(
             frozen_report["completed_at"],
             binding.ticket_id,
+        )
+        return binding, raw, digest, authority_order_key
+
+    def commit(
+        self,
+        task_report: Mapping[str, object],
+        *,
+        expected_artifact: Mapping[str, object] | None = None,
+        expected_evidence: EvidenceResult | None = None,
+    ) -> str:
+        binding, raw, digest, authority_order_key = self._prepare_commit(
+            task_report,
+            expected_artifact=expected_artifact,
+            expected_evidence=expected_evidence,
         )
         directory = self._root / "research_state/control_plane/learning_packets"
         journal = directory.parent / "learning_commit.sqlite3"

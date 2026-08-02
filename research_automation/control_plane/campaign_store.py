@@ -510,11 +510,17 @@ class CampaignLearningCommitSink:
 
         if not isinstance(journal, OperationalCampaignJournal):
             raise TypeError("journal must be an OperationalCampaignJournal")
-        if not isinstance(service, LearningCommitService):
+        if type(service) is not LearningCommitService:
             raise TypeError("service must be a LearningCommitService")
         journal._authorize()
-        self._journal = journal
-        self._service = service
+        object.__setattr__(self, "_journal", journal)
+        object.__setattr__(self, "_service", service)
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("CampaignLearningCommitSink is immutable")
+
+    def __delattr__(self, _name: str) -> None:
+        raise AttributeError("CampaignLearningCommitSink is immutable")
 
     def commit(
         self,

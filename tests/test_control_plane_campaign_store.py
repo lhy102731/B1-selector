@@ -1275,6 +1275,46 @@ class OperationalCycleBudgetJournalTests(unittest.TestCase):
 
 
 class CampaignLearningCommitSinkTests(unittest.TestCase):
+    def test_formal_learning_sink_binding_is_exact_and_immutable(self) -> None:
+        class UnboundLearningCommitService(LearningCommitService):
+            def commit(self, *_args, **_kwargs) -> str:
+                return "f" * 64
+
+        with _authorized_campaign(
+            "campaign-formal-learning-sink-boundary"
+        ) as (root, _, journal):
+            with self.assertRaisesRegex(
+                TypeError,
+                "service must be a LearningCommitService",
+            ):
+                CampaignLearningCommitSink(
+                    journal=journal,
+                    service=UnboundLearningCommitService(
+                        repository_root=root
+                    ),
+                )
+
+            service = LearningCommitService(repository_root=root)
+            sink = CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            )
+            with self.assertRaisesRegex(
+                AttributeError,
+                "CampaignLearningCommitSink is immutable",
+            ):
+                sink._service = service
+            with self.assertRaisesRegex(
+                AttributeError,
+                "CampaignLearningCommitSink is immutable",
+            ):
+                sink._journal = journal
+            with self.assertRaisesRegex(
+                AttributeError,
+                "CampaignLearningCommitSink is immutable",
+            ):
+                del sink._service
+
     def test_valid_p4_evidence_is_blocked_by_a_dry_run_sink_before_write(self) -> None:
         claim = {"kind": "NEGATIVE", "summary": "Preview-only finding."}
         protocol = {"label": "signal-day", "embargo_days": 5}
