@@ -370,6 +370,221 @@ class _RecordingUsageJournal:
 
 
 class ModelInvocationTests(unittest.TestCase):
+    def test_raw_utf8_output_exact_limit_succeeds_and_next_byte_rejects(self) -> None:
+        escaped_as = r"\u0061" * 1_000
+        cjk_character = chr(0x4E2D)
+        filler = "a" * (48 * 1024 - 17 - len(escaped_as))
+        exact_output = '{"payload":"' + escaped_as + cjk_character + filler + '"}'
+        next_output = '{"payload":"' + escaped_as + cjk_character + filler + "a" + '"}'
+
+        exact_canonical = json.dumps(
+            json.loads(exact_output),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        self.assertLess(len(exact_output), 48 * 1024)
+        self.assertEqual(len(exact_output.encode("utf-8")), 48 * 1024)
+        self.assertLess(len(exact_canonical.encode("utf-8")), 48 * 1024)
+        self.assertEqual(len(next_output.encode("utf-8")), 48 * 1024 + 1)
+
+        exact_journal = _RecordingUsageJournal()
+        exact_invocation = ModelInvocation(
+            provider=_OutputTextProvider(exact_output),
+            usage_journal=exact_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        self.assertEqual(
+            exact_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-raw-utf8-exact",
+                attempt_id="attempt-001",
+            )["payload"],
+            "a" * 1_000 + cjk_character + filler,
+        )
+        self.assertEqual(exact_journal.events[-1][1][-1], InvocationOutcome.SUCCESS)
+
+        next_journal = _RecordingUsageJournal()
+        next_invocation = ModelInvocation(
+            provider=_OutputTextProvider(next_output),
+            usage_journal=next_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        with self.assertRaises(InvalidModelResponseError):
+            next_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-raw-utf8-next",
+                attempt_id="attempt-001",
+            )
+        self.assertEqual(
+            next_journal.events[-1][1],
+            (
+                "call-output-raw-utf8-next",
+                "attempt-001",
+                InvocationOutcome.INVALID_JSON,
+            ),
+        )
+
+    def test_canonical_output_exact_limit_succeeds_and_next_byte_rejects(self) -> None:
+        cjk_characters = chr(0x4E2D) * 1_000
+        filler = "a" * (48 * 1024 - 14 - 6 * len(cjk_characters))
+        exact_output = '{"payload":"' + cjk_characters + filler + '"}'
+        next_output = '{"payload":"' + cjk_characters + filler + "a" + '"}'
+
+        exact_canonical = json.dumps(
+            json.loads(exact_output),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        next_canonical = json.dumps(
+            json.loads(next_output),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        self.assertLess(len(exact_output.encode("utf-8")), 48 * 1024)
+        self.assertEqual(len(exact_canonical.encode("utf-8")), 48 * 1024)
+        self.assertEqual(len(next_canonical.encode("utf-8")), 48 * 1024 + 1)
+
+        exact_journal = _RecordingUsageJournal()
+        exact_invocation = ModelInvocation(
+            provider=_OutputTextProvider(exact_output),
+            usage_journal=exact_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        self.assertEqual(
+            exact_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-canonical-exact",
+                attempt_id="attempt-001",
+            )["payload"],
+            cjk_characters + filler,
+        )
+        self.assertEqual(exact_journal.events[-1][1][-1], InvocationOutcome.SUCCESS)
+
+        next_journal = _RecordingUsageJournal()
+        next_invocation = ModelInvocation(
+            provider=_OutputTextProvider(next_output),
+            usage_journal=next_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        with self.assertRaises(InvalidModelResponseError):
+            next_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-canonical-next",
+                attempt_id="attempt-001",
+            )
+        self.assertEqual(
+            next_journal.events[-1][1],
+            (
+                "call-output-canonical-next",
+                "attempt-001",
+                InvocationOutcome.INVALID_JSON,
+            ),
+        )
+
+    def test_output_nesting_exact_limit_succeeds_and_next_level_rejects(self) -> None:
+        exact_output = "[" * 31 + "0" + "]" * 31
+        next_output = "[" * 32 + "0" + "]" * 32
+
+        exact_journal = _RecordingUsageJournal()
+        exact_invocation = ModelInvocation(
+            provider=_OutputTextProvider(exact_output),
+            usage_journal=exact_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        self.assertEqual(
+            exact_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-depth-exact",
+                attempt_id="attempt-001",
+            ),
+            json.loads(exact_output),
+        )
+        self.assertEqual(exact_journal.events[-1][1][-1], InvocationOutcome.SUCCESS)
+
+        next_journal = _RecordingUsageJournal()
+        next_invocation = ModelInvocation(
+            provider=_OutputTextProvider(next_output),
+            usage_journal=next_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        with self.assertRaises(InvalidModelResponseError):
+            next_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-depth-next",
+                attempt_id="attempt-001",
+            )
+        self.assertEqual(
+            next_journal.events[-1][1],
+            (
+                "call-output-depth-next",
+                "attempt-001",
+                InvocationOutcome.INVALID_JSON,
+            ),
+        )
+
+    def test_output_nodes_exact_limit_succeeds_and_next_node_rejects(self) -> None:
+        exact_output = "[" + ",".join("0" for _ in range(4_095)) + "]"
+        next_output = "[" + ",".join("0" for _ in range(4_096)) + "]"
+
+        exact_journal = _RecordingUsageJournal()
+        exact_invocation = ModelInvocation(
+            provider=_OutputTextProvider(exact_output),
+            usage_journal=exact_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        self.assertEqual(
+            exact_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-nodes-exact",
+                attempt_id="attempt-001",
+            ),
+            [0] * 4_095,
+        )
+        self.assertEqual(exact_journal.events[-1][1][-1], InvocationOutcome.SUCCESS)
+
+        next_journal = _RecordingUsageJournal()
+        next_invocation = ModelInvocation(
+            provider=_OutputTextProvider(next_output),
+            usage_journal=next_journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+        with self.assertRaises(InvalidModelResponseError):
+            next_invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-output-nodes-next",
+                attempt_id="attempt-001",
+            )
+        self.assertEqual(
+            next_journal.events[-1][1],
+            (
+                "call-output-nodes-next",
+                "attempt-001",
+                InvocationOutcome.INVALID_JSON,
+            ),
+        )
+
     def test_canonical_ascii_expansion_is_terminal_invalid_json(self) -> None:
         journal = _RecordingUsageJournal()
         output_text = '{"payload":"' + "\u4e2d" * 10_000 + '"}'
