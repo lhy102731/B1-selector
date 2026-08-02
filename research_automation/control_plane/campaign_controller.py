@@ -17,6 +17,7 @@ from research_automation.task_queue import ExperimentTask
 
 from . import stores
 from .budget import (
+    BudgetConflictError,
     BudgetLedger,
     BudgetExceededError,
     BudgetReservation,
@@ -54,6 +55,7 @@ from .campaign_lease import (
     _verified_current_owner,
 )
 from .campaign_lifecycle import (
+    CampaignStateConflictError,
     CampaignSnapshot,
     CampaignStatus,
     CycleSnapshot,
@@ -113,6 +115,8 @@ _CYCLE_SETTLEMENT_AGGREGATE_TYPE = "OPERATIONAL_CYCLE_SETTLEMENT"
 _CYCLE_SETTLEMENT_RECORDED = "OPERATIONAL_CYCLE_SETTLEMENT_RECORDED"
 _INFORMATION_GAIN_AGGREGATE_TYPE = "OPERATIONAL_INFORMATION_GAIN"
 _INFORMATION_GAIN_RECORDED = "OPERATIONAL_INFORMATION_GAIN_RECORDED"
+_NEXT_CYCLE_DECISION_AGGREGATE_TYPE = "OPERATIONAL_NEXT_CYCLE_DECISION"
+_NEXT_CYCLE_DECISION_RECORDED = "OPERATIONAL_NEXT_CYCLE_DECISION_RECORDED"
 _MAX_OPERATIONAL_PROMPT_BYTES = 48 * 1024
 _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
@@ -341,6 +345,21 @@ class OperationalInformationGainReceipt:
     settlement_manifest_sha256: str
     learning_packet_hash: str | None
     disposition_reason: str | None
+    manifest_sha256: str
+    event_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class OperationalNextCycleDecisionReceipt:
+    cycle_id: str
+    decision: str
+    continuation_allowed: bool
+    reason_code: str
+    next_cycle_number: int | None
+    information_gain_manifest_sha256: str
+    cycle_budget_id: str
+    reserved_cycle_count: int
+    max_cycles: int
     manifest_sha256: str
     event_id: str
 
@@ -680,10 +699,23 @@ class OperationalCampaignController:
         )
         if operational_roster != protocol_roster:
             raise ValueError("ExecutionSpec roster conflicts with roster_members")
+        if cycle_number > 1:
+            _SqliteUnitOfWork(stores._operational_spec())._read(
+                lambda connection: (
+                    self._require_prior_cycle_continuation_in_transaction(
+                        connection,
+                        cycle_number=cycle_number,
+                    )
+                )
+            )
         self._lifecycle.activate()
         reservation_id = self._reservation_id(cycle_id)
 
         def reserve_and_open(connection):
+            self._require_prior_cycle_continuation_in_transaction(
+                connection,
+                cycle_number=cycle_number,
+            )
             self._adopt_work_item_in_transaction(
                 connection,
                 cycle_id=cycle_id,
@@ -759,6 +791,78 @@ class OperationalCampaignController:
 
     def campaign_snapshot(self) -> CampaignSnapshot:
         return self._lifecycle.snapshot()
+
+    def complete_campaign(self) -> CampaignSnapshot:
+        """Complete a controller-managed Campaign after a durable STOP."""
+
+        self._journal._authorize()
+
+        def complete(connection) -> CampaignSnapshot:
+            opened = self._lifecycle._opened_cycles(connection)
+            cycles = tuple(
+                sorted(
+                    (
+                        self._lifecycle._replay_cycle(
+                            self._lifecycle._cycle_events(
+                                connection,
+                                opened_cycle.cycle_id,
+                            )
+                        )
+                        for opened_cycle in opened
+                    ),
+                    key=lambda cycle: cycle.cycle_number,
+                )
+            )
+            if not cycles or any(
+                cycle.status is not CycleStatus.COMPLETED for cycle in cycles
+            ):
+                raise CampaignStateConflictError(
+                    "Campaign has an incomplete Cycle"
+                )
+            if tuple(cycle.cycle_number for cycle in cycles) != tuple(
+                range(1, len(cycles) + 1)
+            ):
+                raise CampaignStateConflictError(
+                    "Campaign Cycle continuation chain is invalid"
+                )
+            decisions: list[OperationalNextCycleDecisionReceipt] = []
+            for cycle in cycles:
+                information_gain = (
+                    self._stored_information_gain_receipt_in_transaction(
+                        connection,
+                        cycle_id=cycle.cycle_id,
+                    )
+                )
+                decisions.append(
+                    self._stored_next_cycle_decision_receipt_in_transaction(
+                        connection,
+                        cycle_id=cycle.cycle_id,
+                        information_gain_receipt=information_gain,
+                    )
+                )
+            for index, decision in enumerate(decisions[:-1]):
+                successor = cycles[index + 1]
+                if (
+                    decision.decision != "CONTINUE"
+                    or not decision.continuation_allowed
+                    or decision.next_cycle_number
+                    != successor.cycle_number
+                ):
+                    raise CampaignStateConflictError(
+                        "Campaign Cycle continuation chain is invalid"
+                    )
+            final_decision = decisions[-1]
+            if (
+                final_decision.decision != "STOP"
+                or final_decision.continuation_allowed
+                or final_decision.next_cycle_number is not None
+            ):
+                raise CampaignStateConflictError(
+                    "Campaign has an unconsumed continuation decision"
+                )
+            return self._lifecycle._complete_in_transaction(connection)
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(complete)
 
     def start_execution(
         self,
@@ -2287,6 +2391,271 @@ class OperationalCampaignController:
             return receipt
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    def decide_next_cycle(
+        self,
+        *,
+        execution: ExecutingOperationalCycle,
+        information_gain_receipt: OperationalInformationGainReceipt | None = None,
+    ) -> OperationalNextCycleDecisionReceipt:
+        """Record the mechanical continuation decision and complete a Cycle."""
+
+        self._journal._authorize()
+        if (
+            information_gain_receipt is not None
+            and type(information_gain_receipt)
+            is not OperationalInformationGainReceipt
+        ):
+            raise TypeError(
+                "information_gain_receipt must be a formal operational "
+                "information-gain receipt"
+            )
+
+        def decide(connection) -> OperationalNextCycleDecisionReceipt:
+            cycle_id, current_cycle = (
+                self._require_evidence_execution_generation_in_transaction(
+                    connection,
+                    execution,
+                    allow_cycle_completed=True,
+                )
+            )
+            if current_cycle.status not in {
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+                CycleStatus.COMPLETED,
+            }:
+                raise CampaignJournalError(
+                    "next-Cycle decision requires INFORMATION_GAIN_RECORDED"
+                )
+            resolved_information_gain = (
+                information_gain_receipt
+                if information_gain_receipt is not None
+                else self._stored_information_gain_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            information_gain_sequence = (
+                self._replay_information_gain_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    receipt=resolved_information_gain,
+                )
+            )
+            events = self._next_cycle_decision_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if current_cycle.status is CycleStatus.COMPLETED:
+                return self._stored_next_cycle_decision_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    information_gain_receipt=resolved_information_gain,
+                )
+            cycle_budget = self._cycle_budget._snapshot_in_transaction(
+                connection
+            )
+            self._require_cycle_budget_prefix(
+                cycle_budget=cycle_budget,
+                cycle_id=cycle_id,
+                cycle_number=current_cycle.cycle_number,
+            )
+            reserved_cycle_count = len(cycle_budget.reserved_cycle_ids)
+            (
+                decision,
+                continuation_allowed,
+                reason_code,
+                next_cycle_number,
+            ) = self._derive_next_cycle_decision(
+                information_gain_receipt=resolved_information_gain,
+                cycle_number=current_cycle.cycle_number,
+                reserved_cycle_count=reserved_cycle_count,
+                max_cycles=cycle_budget.max_cycles,
+            )
+            identity = {
+                "schema_version": (
+                    "control_plane.operational_next_cycle_decision.v1"
+                ),
+                "cycle_id": cycle_id,
+                "decision": decision,
+                "continuation_allowed": continuation_allowed,
+                "reason_code": reason_code,
+                "next_cycle_number": next_cycle_number,
+                "information_gain_manifest_sha256": (
+                    resolved_information_gain.manifest_sha256
+                ),
+                "cycle_budget_id": cycle_budget.budget_id,
+                "reserved_cycle_count": reserved_cycle_count,
+                "max_cycles": cycle_budget.max_cycles,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_next_cycle_decision.v1",
+                identity,
+                "operational next-Cycle decision",
+            )
+            payload = {**identity, "manifest_sha256": manifest_sha256}
+            receipt = OperationalNextCycleDecisionReceipt(
+                cycle_id=cycle_id,
+                decision=decision,
+                continuation_allowed=continuation_allowed,
+                reason_code=reason_code,
+                next_cycle_number=next_cycle_number,
+                information_gain_manifest_sha256=(
+                    resolved_information_gain.manifest_sha256
+                ),
+                cycle_budget_id=cycle_budget.budget_id,
+                reserved_cycle_count=reserved_cycle_count,
+                max_cycles=cycle_budget.max_cycles,
+                manifest_sha256=manifest_sha256,
+                event_id=self._next_cycle_decision_event_id(cycle_id),
+            )
+            if (
+                events
+                or self._journal._event_in_transaction(
+                    connection,
+                    receipt.event_id,
+                )
+                is not None
+                or self._journal._event_in_transaction(
+                    connection,
+                    self._lifecycle._cycle_event_id(
+                        cycle_id,
+                        CycleStatus.NEXT_CYCLE_DECIDED.value,
+                    ),
+                )
+                is not None
+                or self._journal._event_in_transaction(
+                    connection,
+                    self._lifecycle._cycle_event_id(
+                        cycle_id,
+                        CycleStatus.COMPLETED.value,
+                    ),
+                )
+                is not None
+            ):
+                raise CampaignJournalError(
+                    "operational next-Cycle decision conflicts"
+                )
+            event = self._journal._append_in_transaction(
+                connection,
+                event_id=receipt.event_id,
+                cycle_id=cycle_id,
+                aggregate_type=_NEXT_CYCLE_DECISION_AGGREGATE_TYPE,
+                aggregate_id=cycle_id,
+                event_type=_NEXT_CYCLE_DECISION_RECORDED,
+                payload=payload,
+            )
+            decided = self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.INFORMATION_GAIN_RECORDED,
+                next_status=CycleStatus.NEXT_CYCLE_DECIDED,
+            )
+            completed = self._lifecycle._advance_cycle_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.NEXT_CYCLE_DECIDED,
+                next_status=CycleStatus.COMPLETED,
+            )
+            if (
+                event.sequence <= information_gain_sequence
+                or decided.sequence <= event.sequence
+                or completed.sequence <= decided.sequence
+            ):
+                raise CampaignJournalError(
+                    "next-Cycle decision event order conflicts"
+                )
+            return receipt
+
+        return _SqliteUnitOfWork(stores._operational_spec())._write(decide)
+
+    @staticmethod
+    def _derive_next_cycle_decision(
+        *,
+        information_gain_receipt: OperationalInformationGainReceipt,
+        cycle_number: int,
+        reserved_cycle_count: int,
+        max_cycles: int,
+    ) -> tuple[str, bool, str, int | None]:
+        continuation_allowed = (
+            information_gain_receipt.continuation_eligible
+            and reserved_cycle_count < max_cycles
+            and cycle_number < 1_000_000
+        )
+        if continuation_allowed:
+            return (
+                "CONTINUE",
+                True,
+                "CONTINUATION_ELIGIBLE",
+                cycle_number + 1,
+            )
+        if not information_gain_receipt.continuation_eligible:
+            reason_code = "INFORMATION_GAIN_INELIGIBLE"
+        elif reserved_cycle_count >= max_cycles:
+            reason_code = "CYCLE_BUDGET_EXHAUSTED"
+        else:
+            reason_code = "CYCLE_NUMBER_EXHAUSTED"
+        return "STOP", False, reason_code, None
+
+    @staticmethod
+    def _require_cycle_budget_prefix(
+        *,
+        cycle_budget: CycleBudgetSnapshot,
+        cycle_id: str,
+        cycle_number: int,
+    ) -> None:
+        if (
+            len(cycle_budget.reserved_cycle_ids) != cycle_number
+            or not cycle_budget.reserved_cycle_ids
+            or cycle_budget.reserved_cycle_ids[-1] != cycle_id
+        ):
+            raise CampaignJournalError("Cycle budget prefix conflicts")
+
+    def _require_prior_cycle_continuation_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_number: int,
+    ) -> None:
+        if cycle_number == 1:
+            return
+        previous_cycles = tuple(
+            opened
+            for opened in self._lifecycle._opened_cycles(connection)
+            if opened.cycle_number == cycle_number - 1
+        )
+        if len(previous_cycles) != 1:
+            raise CampaignJournalError(
+                "previous Cycle did not authorize continuation"
+            )
+        previous_cycle = self._lifecycle._replay_cycle(
+            self._lifecycle._cycle_events(
+                connection,
+                previous_cycles[0].cycle_id,
+            )
+        )
+        if previous_cycle.status is not CycleStatus.COMPLETED:
+            raise CampaignJournalError(
+                "previous Cycle did not authorize continuation"
+            )
+        information_gain = (
+            self._stored_information_gain_receipt_in_transaction(
+                connection,
+                cycle_id=previous_cycle.cycle_id,
+            )
+        )
+        decision = self._stored_next_cycle_decision_receipt_in_transaction(
+            connection,
+            cycle_id=previous_cycle.cycle_id,
+            information_gain_receipt=information_gain,
+        )
+        if (
+            decision.decision != "CONTINUE"
+            or not decision.continuation_allowed
+            or decision.next_cycle_number != cycle_number
+        ):
+            raise CampaignJournalError(
+                "previous Cycle did not authorize continuation"
+            )
 
     def cycle_snapshot(self, cycle_id: str) -> CycleSnapshot:
         return self._lifecycle.cycle_snapshot(cycle_id)
@@ -4269,6 +4638,497 @@ class OperationalCampaignController:
             aggregate_id=cycle_id,
         )
 
+    def _replay_information_gain_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        receipt: OperationalInformationGainReceipt,
+    ) -> int:
+        if (
+            type(receipt) is not OperationalInformationGainReceipt
+            or receipt.cycle_id != cycle_id
+        ):
+            raise CampaignJournalError("information-gain receipt conflicts")
+        events = self._information_gain_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        transitions = tuple(
+            event
+            for event in self._lifecycle._cycle_events(connection, cycle_id)
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.INFORMATION_GAIN_RECORDED.value
+        )
+        payload = {
+            "schema_version": "control_plane.operational_information_gain.v1",
+            "cycle_id": receipt.cycle_id,
+            "information_gain_status": receipt.information_gain_status,
+            "continuation_eligible": receipt.continuation_eligible,
+            "settlement_manifest_sha256": (
+                receipt.settlement_manifest_sha256
+            ),
+            "learning_packet_hash": receipt.learning_packet_hash,
+            "disposition_reason": receipt.disposition_reason,
+            "manifest_sha256": receipt.manifest_sha256,
+        }
+        identity = {
+            key: value for key, value in payload.items() if key != "manifest_sha256"
+        }
+        settlement = self._stored_settlement_receipt_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if type(settlement) is OperationalCycleSettlementReceipt:
+            packet_hash, settled_sequence = (
+                self._replay_learned_settlement_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    receipt=settlement,
+                )
+            )
+            expected_status = "ELIGIBLE_LEARNING_COMMITTED"
+            expected_continuation = True
+            expected_disposition = None
+        else:
+            expected_disposition, settled_sequence = (
+                self._replay_no_learning_settlement_receipt_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    receipt=settlement,
+                )
+            )
+            packet_hash = None
+            if expected_disposition in {
+                "NO_MATERIAL_FINDING",
+                "MATERIAL_UNAPPROVED",
+                "RESEARCH_ONLY",
+            }:
+                expected_status = expected_disposition
+            else:
+                expected_status = "INELIGIBLE_EVIDENCE"
+            expected_continuation = False
+        if (
+            len(events) != 1
+            or len(transitions) != 1
+            or receipt.event_id != self._information_gain_event_id(cycle_id)
+            or receipt.manifest_sha256
+            != _controller_sha256(
+                b"control_plane.operational_information_gain.v1",
+                identity,
+                "operational information gain",
+            )
+            or receipt.information_gain_status != expected_status
+            or receipt.continuation_eligible is not expected_continuation
+            or receipt.settlement_manifest_sha256
+            != settlement.manifest_sha256
+            or receipt.learning_packet_hash != packet_hash
+            or receipt.disposition_reason != expected_disposition
+            or events[0].event_id != receipt.event_id
+            or _canonical_json_text(
+                _event_domain_payload(events[0]),
+                "stored operational information gain",
+            )
+            != _canonical_json_text(payload, "expected operational information gain")
+            or events[0].sequence <= settled_sequence
+            or transitions[0].sequence <= events[0].sequence
+        ):
+            raise CampaignJournalError("information-gain receipt conflicts")
+        return transitions[0].sequence
+
+    def _stored_information_gain_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> OperationalInformationGainReceipt:
+        events = self._information_gain_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if len(events) != 1:
+            raise CampaignJournalError(
+                "operational information gain is missing or ambiguous"
+            )
+        event = events[0]
+        payload = _event_domain_payload(event)
+        if set(payload) != {
+            "schema_version",
+            "cycle_id",
+            "information_gain_status",
+            "continuation_eligible",
+            "settlement_manifest_sha256",
+            "learning_packet_hash",
+            "disposition_reason",
+            "manifest_sha256",
+        }:
+            raise CampaignJournalError(
+                "operational information gain payload is invalid"
+            )
+        try:
+            stored_cycle_id = _identifier(
+                payload["cycle_id"],
+                "stored information-gain cycle_id",
+            )
+            information_gain_status = _identifier(
+                payload["information_gain_status"],
+                "stored information_gain_status",
+            )
+            continuation_eligible = payload["continuation_eligible"]
+            if type(continuation_eligible) is not bool:
+                raise ValueError("stored continuation_eligible is invalid")
+            settlement_manifest_sha256 = _stored_sha256(
+                payload["settlement_manifest_sha256"],
+                "stored settlement_manifest_sha256",
+            )
+            learning_packet_hash = payload["learning_packet_hash"]
+            if learning_packet_hash is not None:
+                learning_packet_hash = _stored_sha256(
+                    learning_packet_hash,
+                    "stored learning_packet_hash",
+                )
+            disposition_reason = payload["disposition_reason"]
+            if disposition_reason is not None:
+                disposition_reason = _identifier(
+                    disposition_reason,
+                    "stored disposition_reason",
+                )
+            manifest_sha256 = _stored_sha256(
+                payload["manifest_sha256"],
+                "stored information-gain manifest_sha256",
+            )
+        except (TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "operational information gain payload is invalid"
+            ) from error
+        if (
+            payload["schema_version"]
+            != "control_plane.operational_information_gain.v1"
+            or stored_cycle_id != cycle_id
+            or event.event_id != self._information_gain_event_id(cycle_id)
+        ):
+            raise CampaignJournalError(
+                "operational information gain payload is invalid"
+            )
+        receipt = OperationalInformationGainReceipt(
+            cycle_id=stored_cycle_id,
+            information_gain_status=information_gain_status,
+            continuation_eligible=continuation_eligible,
+            settlement_manifest_sha256=settlement_manifest_sha256,
+            learning_packet_hash=learning_packet_hash,
+            disposition_reason=disposition_reason,
+            manifest_sha256=manifest_sha256,
+            event_id=event.event_id,
+        )
+        self._replay_information_gain_receipt_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            receipt=receipt,
+        )
+        return receipt
+
+    def _next_cycle_decision_event_id(self, cycle_id: str) -> str:
+        return _stable_id(
+            b"control_plane.controller_next_cycle_decision.v1",
+            self._journal.namespace,
+            self._journal.campaign_id,
+            cycle_id,
+        )
+
+    def _next_cycle_decision_events_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ):
+        rows = connection.execute(
+            "SELECT cycle_id, aggregate_type, aggregate_id, event_type "
+            "FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? "
+            "AND ((aggregate_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)) "
+            "OR (event_type = ? "
+            "AND (cycle_id = ? OR aggregate_id = ?)))",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                _NEXT_CYCLE_DECISION_AGGREGATE_TYPE,
+                cycle_id,
+                cycle_id,
+                _NEXT_CYCLE_DECISION_RECORDED,
+                cycle_id,
+                cycle_id,
+            ),
+        ).fetchall()
+        if any(
+            row["cycle_id"] != cycle_id
+            or row["aggregate_type"] != _NEXT_CYCLE_DECISION_AGGREGATE_TYPE
+            or row["aggregate_id"] != cycle_id
+            or row["event_type"] != _NEXT_CYCLE_DECISION_RECORDED
+            for row in rows
+        ):
+            raise CampaignJournalError(
+                "operational next-Cycle decision stream conflicts"
+            )
+        return self._journal._list_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            aggregate_type=_NEXT_CYCLE_DECISION_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+        )
+
+    def _stored_next_cycle_decision_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        information_gain_receipt: OperationalInformationGainReceipt,
+    ) -> OperationalNextCycleDecisionReceipt:
+        events = self._next_cycle_decision_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if len(events) != 1:
+            raise CampaignJournalError(
+                "operational next-Cycle decision is missing or ambiguous"
+            )
+        event = events[0]
+        payload = _event_domain_payload(event)
+        if set(payload) != {
+            "schema_version",
+            "cycle_id",
+            "decision",
+            "continuation_allowed",
+            "reason_code",
+            "next_cycle_number",
+            "information_gain_manifest_sha256",
+            "cycle_budget_id",
+            "reserved_cycle_count",
+            "max_cycles",
+            "manifest_sha256",
+        }:
+            raise CampaignJournalError(
+                "operational next-Cycle decision payload is invalid"
+            )
+        try:
+            stored_cycle_id = _identifier(
+                payload["cycle_id"],
+                "stored next-Cycle decision cycle_id",
+            )
+            decision = _identifier(
+                payload["decision"],
+                "stored next-Cycle decision",
+            )
+            continuation_allowed = payload["continuation_allowed"]
+            if type(continuation_allowed) is not bool:
+                raise ValueError("stored continuation_allowed is invalid")
+            reason_code = _identifier(
+                payload["reason_code"],
+                "stored next-Cycle reason_code",
+            )
+            next_cycle_number = payload["next_cycle_number"]
+            if next_cycle_number is not None and (
+                type(next_cycle_number) is not int
+                or not 1 <= next_cycle_number <= 1_000_000
+            ):
+                raise ValueError("stored next_cycle_number is invalid")
+            information_gain_manifest_sha256 = _stored_sha256(
+                payload["information_gain_manifest_sha256"],
+                "stored information_gain_manifest_sha256",
+            )
+            cycle_budget_id = _identifier(
+                payload["cycle_budget_id"],
+                "stored cycle_budget_id",
+            )
+            reserved_cycle_count = payload["reserved_cycle_count"]
+            max_cycles = payload["max_cycles"]
+            if (
+                type(reserved_cycle_count) is not int
+                or reserved_cycle_count < 0
+                or type(max_cycles) is not int
+                or max_cycles < 0
+            ):
+                raise ValueError("stored Cycle budget snapshot is invalid")
+            manifest_sha256 = _stored_sha256(
+                payload["manifest_sha256"],
+                "stored next-Cycle decision manifest_sha256",
+            )
+        except (TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "operational next-Cycle decision payload is invalid"
+            ) from error
+        receipt = OperationalNextCycleDecisionReceipt(
+            cycle_id=stored_cycle_id,
+            decision=decision,
+            continuation_allowed=continuation_allowed,
+            reason_code=reason_code,
+            next_cycle_number=next_cycle_number,
+            information_gain_manifest_sha256=(
+                information_gain_manifest_sha256
+            ),
+            cycle_budget_id=cycle_budget_id,
+            reserved_cycle_count=reserved_cycle_count,
+            max_cycles=max_cycles,
+            manifest_sha256=manifest_sha256,
+            event_id=event.event_id,
+        )
+        self._replay_next_cycle_decision_receipt_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            receipt=receipt,
+            information_gain_receipt=information_gain_receipt,
+        )
+        return receipt
+
+    def _replay_next_cycle_decision_receipt_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        receipt: OperationalNextCycleDecisionReceipt,
+        information_gain_receipt: OperationalInformationGainReceipt,
+    ) -> int:
+        if (
+            type(receipt) is not OperationalNextCycleDecisionReceipt
+            or receipt.cycle_id != cycle_id
+        ):
+            raise CampaignJournalError(
+                "operational next-Cycle decision receipt conflicts"
+            )
+        information_gain_sequence = (
+            self._replay_information_gain_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                receipt=information_gain_receipt,
+            )
+        )
+        events = self._next_cycle_decision_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        transitions = tuple(
+            event
+            for event in self._lifecycle._cycle_events(connection, cycle_id)
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            in {
+                CycleStatus.NEXT_CYCLE_DECIDED.value,
+                CycleStatus.COMPLETED.value,
+            }
+        )
+        if len(events) != 1 or len(transitions) != 2:
+            raise CampaignJournalError(
+                "operational next-Cycle decision receipt conflicts"
+            )
+        transition_by_status = {
+            _event_domain_payload(event).get("to_status"): event
+            for event in transitions
+        }
+        if set(transition_by_status) != {
+            CycleStatus.NEXT_CYCLE_DECIDED.value,
+            CycleStatus.COMPLETED.value,
+        }:
+            raise CampaignJournalError(
+                "operational next-Cycle decision receipt conflicts"
+            )
+        event = events[0]
+        historical_budget_events = tuple(
+            budget_event
+            for budget_event in self._cycle_budget._events_in_transaction(
+                connection
+            )
+            if budget_event.sequence < event.sequence
+        )
+        try:
+            historical_budget = self._cycle_budget._replay(
+                historical_budget_events
+            )
+        except (CampaignJournalError, BudgetConflictError) as error:
+            raise CampaignJournalError(
+                "operational next-Cycle budget binding conflicts"
+            ) from error
+        cycle = self._lifecycle._replay_cycle(
+            self._lifecycle._cycle_events(connection, cycle_id)
+        )
+        self._require_cycle_budget_prefix(
+            cycle_budget=historical_budget,
+            cycle_id=cycle_id,
+            cycle_number=cycle.cycle_number,
+        )
+        reserved_cycle_count = len(historical_budget.reserved_cycle_ids)
+        (
+            expected_decision,
+            expected_allowed,
+            expected_reason,
+            expected_next_cycle_number,
+        ) = self._derive_next_cycle_decision(
+            information_gain_receipt=information_gain_receipt,
+            cycle_number=cycle.cycle_number,
+            reserved_cycle_count=reserved_cycle_count,
+            max_cycles=historical_budget.max_cycles,
+        )
+        identity = {
+            "schema_version": (
+                "control_plane.operational_next_cycle_decision.v1"
+            ),
+            "cycle_id": cycle_id,
+            "decision": expected_decision,
+            "continuation_allowed": expected_allowed,
+            "reason_code": expected_reason,
+            "next_cycle_number": expected_next_cycle_number,
+            "information_gain_manifest_sha256": (
+                information_gain_receipt.manifest_sha256
+            ),
+            "cycle_budget_id": historical_budget.budget_id,
+            "reserved_cycle_count": reserved_cycle_count,
+            "max_cycles": historical_budget.max_cycles,
+        }
+        manifest_sha256 = _controller_sha256(
+            b"control_plane.operational_next_cycle_decision.v1",
+            identity,
+            "operational next-Cycle decision",
+        )
+        expected_payload = {**identity, "manifest_sha256": manifest_sha256}
+        decided = transition_by_status[CycleStatus.NEXT_CYCLE_DECIDED.value]
+        completed = transition_by_status[CycleStatus.COMPLETED.value]
+        if (
+            cycle.status is not CycleStatus.COMPLETED
+            or cycle_id not in historical_budget.reserved_cycle_ids
+            or receipt
+            != OperationalNextCycleDecisionReceipt(
+                cycle_id=cycle_id,
+                decision=expected_decision,
+                continuation_allowed=expected_allowed,
+                reason_code=expected_reason,
+                next_cycle_number=expected_next_cycle_number,
+                information_gain_manifest_sha256=(
+                    information_gain_receipt.manifest_sha256
+                ),
+                cycle_budget_id=historical_budget.budget_id,
+                reserved_cycle_count=reserved_cycle_count,
+                max_cycles=historical_budget.max_cycles,
+                manifest_sha256=manifest_sha256,
+                event_id=self._next_cycle_decision_event_id(cycle_id),
+            )
+            or event.event_id != receipt.event_id
+            or _canonical_json_text(
+                _event_domain_payload(event),
+                "stored operational next-Cycle decision",
+            )
+            != _canonical_json_text(
+                expected_payload,
+                "expected operational next-Cycle decision",
+            )
+            or event.sequence <= information_gain_sequence
+            or decided.sequence <= event.sequence
+            or completed.sequence <= decided.sequence
+        ):
+            raise CampaignJournalError(
+                "operational next-Cycle decision receipt conflicts"
+            )
+        return completed.sequence
+
     def _record_model_call(
         self,
         *,
@@ -5083,6 +5943,7 @@ class OperationalCampaignController:
         execution: ExecutingOperationalCycle,
         *,
         allow_information_gain_recorded: bool = False,
+        allow_cycle_completed: bool = False,
     ) -> tuple[str, CycleSnapshot]:
         if not isinstance(execution, ExecutingOperationalCycle):
             raise TypeError("execution must be an ExecutingOperationalCycle")
@@ -5096,6 +5957,14 @@ class OperationalCampaignController:
         if allow_information_gain_recorded:
             allowed_execution_statuses.add(
                 CycleStatus.INFORMATION_GAIN_RECORDED
+            )
+        if allow_cycle_completed:
+            allowed_execution_statuses.update(
+                {
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                    CycleStatus.NEXT_CYCLE_DECIDED,
+                    CycleStatus.COMPLETED,
+                }
             )
         if (
             execution.lease.cycle_id != cycle_id
@@ -5136,8 +6005,24 @@ class OperationalCampaignController:
             allowed_current_statuses.add(
                 CycleStatus.INFORMATION_GAIN_RECORDED
             )
+        if allow_cycle_completed:
+            allowed_current_statuses.update(
+                {
+                    CycleStatus.INFORMATION_GAIN_RECORDED,
+                    CycleStatus.NEXT_CYCLE_DECIDED,
+                    CycleStatus.COMPLETED,
+                }
+            )
+        campaign_status_allowed = (
+            campaign.status is CampaignStatus.ACTIVE
+            or (
+                allow_cycle_completed
+                and current_cycle.status is CycleStatus.COMPLETED
+                and campaign.status is CampaignStatus.COMPLETED
+            )
+        )
         if (
-            campaign.status is not CampaignStatus.ACTIVE
+            not campaign_status_allowed
             or current_cycle.status not in allowed_current_statuses
             or not original_events
             or self._lifecycle._replay_cycle(original_events)
@@ -5636,6 +6521,7 @@ __all__ = [
     "OperationalExecutionUsage",
     "OperationalInformationGainReceipt",
     "OperationalLearningCommitReceipt",
+    "OperationalNextCycleDecisionReceipt",
     "OperationalNoLearningSettlementReceipt",
     "OperationalCampaignController",
     "OperationalModelCallLimits",

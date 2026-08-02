@@ -542,48 +542,58 @@ class OperationalCampaignLifecycle:
     def complete(self) -> CampaignSnapshot:
         self._journal._authorize()
 
-        def complete_campaign(connection) -> CampaignSnapshot:
-            snapshot = self._replay_campaign(self._campaign_events(connection))
-            if snapshot.status is CampaignStatus.COMPLETED:
-                return snapshot
-            if snapshot.status is not CampaignStatus.ACTIVE:
-                raise CampaignStateConflictError("Campaign is not ACTIVE")
-            pause = self._replay_pause(self._pause_events(connection))
-            if pause.status is not CampaignPauseStatus.RUNNING:
+        def complete_unmanaged_campaign(connection) -> CampaignSnapshot:
+            if self._cycle_context_policy_configured(connection):
                 raise CampaignStateConflictError(
-                    "Campaign must resume before completion"
+                    "controller-managed Campaign requires controller completion"
                 )
-            opened = self._opened_cycles(connection)
-            if not opened or any(
-                self._replay_cycle(
-                    self._cycle_events(connection, cycle.cycle_id)
-                ).status
-                is not CycleStatus.COMPLETED
-                for cycle in opened
-            ):
-                raise CampaignStateConflictError(
-                    "Campaign has an incomplete Cycle"
-                )
-            event = self._journal._append_in_transaction(
-                connection,
-                event_id=self._campaign_event_id(CampaignStatus.COMPLETED.value),
-                cycle_id=None,
-                aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
-                aggregate_id=self._journal._campaign_id,
-                event_type=_CAMPAIGN_TRANSITIONED,
-                payload={
-                    "from_status": CampaignStatus.ACTIVE.value,
-                    "to_status": CampaignStatus.COMPLETED.value,
-                },
-            )
-            return CampaignSnapshot(
-                self._journal._campaign_id,
-                CampaignStatus.COMPLETED,
-                event.sequence,
-            )
+            return self._complete_in_transaction(connection)
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(
-            complete_campaign
+            complete_unmanaged_campaign
+        )
+
+    def _complete_in_transaction(
+        self,
+        connection,
+    ) -> CampaignSnapshot:
+        snapshot = self._replay_campaign(self._campaign_events(connection))
+        if snapshot.status is CampaignStatus.COMPLETED:
+            return snapshot
+        if snapshot.status is not CampaignStatus.ACTIVE:
+            raise CampaignStateConflictError("Campaign is not ACTIVE")
+        pause = self._replay_pause(self._pause_events(connection))
+        if pause.status is not CampaignPauseStatus.RUNNING:
+            raise CampaignStateConflictError(
+                "Campaign must resume before completion"
+            )
+        opened = self._opened_cycles(connection)
+        if not opened or any(
+            self._replay_cycle(
+                self._cycle_events(connection, cycle.cycle_id)
+            ).status
+            is not CycleStatus.COMPLETED
+            for cycle in opened
+        ):
+            raise CampaignStateConflictError(
+                "Campaign has an incomplete Cycle"
+            )
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=self._campaign_event_id(CampaignStatus.COMPLETED.value),
+            cycle_id=None,
+            aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
+            aggregate_id=self._journal._campaign_id,
+            event_type=_CAMPAIGN_TRANSITIONED,
+            payload={
+                "from_status": CampaignStatus.ACTIVE.value,
+                "to_status": CampaignStatus.COMPLETED.value,
+            },
+        )
+        return CampaignSnapshot(
+            self._journal._campaign_id,
+            CampaignStatus.COMPLETED,
+            event.sequence,
         )
 
     def block(self, *, reason_code: str, source_ref: str) -> CampaignSnapshot:

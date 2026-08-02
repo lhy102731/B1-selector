@@ -48,6 +48,8 @@ from research_automation.control_plane.campaign_lease import (
 )
 from research_automation.control_plane.campaign_lifecycle import (
     CampaignLifecycleError,
+    CampaignStateConflictError,
+    CampaignStatus,
     CycleStatus,
     OperationalCampaignLifecycle,
 )
@@ -348,6 +350,7 @@ def _completed_evidence_model_call(
     *,
     campaign_id: str,
     provider=None,
+    max_cycles: int = 1,
 ):
     protocol = _protocol()
     execution_spec = compile_execution_spec(
@@ -375,7 +378,7 @@ def _completed_evidence_model_call(
         journal=journal,
         repository_root=root,
         budget_limits=CampaignBudgetLimits(
-            max_cycles=1,
+            max_cycles=max_cycles,
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
@@ -415,6 +418,139 @@ def _completed_evidence_model_call(
     )
     usage = controller.complete_model_execution(execution=execution)
     return controller, execution, member, usage
+
+
+def _completed_eligible_information_gain(
+    root,
+    journal,
+    *,
+    campaign_id: str,
+    max_cycles: int = 2,
+):
+    claim = {
+        "kind": "NEGATIVE",
+        "summary": "Synthetic eligible finding.",
+    }
+    packet_hash = "f" * 64
+    controller, execution, member, usage = _completed_evidence_model_call(
+        root,
+        journal,
+        campaign_id=campaign_id,
+        provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+        max_cycles=max_cycles,
+    )
+    evidence = controller.record_model_evidence(
+        execution=execution,
+        member_id=member.member_id,
+        evidence_adapter=EvidenceAdapter(
+            known_runners={"fixture-runner": "1.0.0"},
+            approved_protocol={"label": "synthetic-only"},
+            approved_claim=claim,
+        ),
+    )
+    service = LearningCommitService(repository_root=root)
+    with patch.object(
+        LearningCommitService,
+        "expected_packet_hash",
+        return_value=packet_hash,
+    ), patch.object(
+        LearningCommitService,
+        "commit",
+        return_value=packet_hash,
+    ):
+        learning = controller.commit_learning(
+            execution=execution,
+            evidence_receipt=evidence,
+            authority_task_report={"synthetic": "terminal-report"},
+            learning_commit_sink=CampaignLearningCommitSink(
+                journal=journal,
+                service=service,
+            ),
+        )
+    settlement = controller.settle_cycle(
+        execution=execution,
+        execution_usage=usage,
+        learning_commit_receipt=learning,
+    )
+    information_gain = controller.record_information_gain(
+        execution=execution,
+        settlement_receipt=settlement,
+    )
+    return controller, execution, information_gain
+
+
+def _completed_no_material_information_gain(
+    root,
+    journal,
+    *,
+    campaign_id: str,
+    max_cycles: int = 2,
+):
+    controller, execution, member, usage = _completed_evidence_model_call(
+        root,
+        journal,
+        campaign_id=campaign_id,
+        max_cycles=max_cycles,
+    )
+    evidence = controller.record_model_evidence(
+        execution=execution,
+        member_id=member.member_id,
+        evidence_adapter=EvidenceAdapter(
+            known_runners={"fixture-runner": "1.0.0"},
+            approved_protocol={"label": "synthetic-only"},
+        ),
+    )
+    settlement = controller.settle_cycle_without_learning(
+        execution=execution,
+        execution_usage=usage,
+        evidence_receipt=evidence,
+    )
+    information_gain = controller.record_information_gain(
+        execution=execution,
+        settlement_receipt=settlement,
+    )
+    return controller, execution, information_gain
+
+
+def _prepare_synthetic_cycle(
+    controller: OperationalCampaignController,
+    *,
+    cycle_id: str,
+    cycle_number: int,
+):
+    protocol = _protocol()
+    execution_spec = compile_execution_spec(
+        protocol,
+        approved_protocol=protocol,
+        approval=_approval(protocol),
+        amendment=None,
+    )
+    prompt = {"instruction": f"Return synthetic artifact {cycle_number}"}
+    member = replace(
+        _protocol_member(),
+        prompt_sha256=operational_prompt_sha256(prompt),
+    )
+    return controller.prepare_cycle(
+        task=ExperimentTask(
+            task_id=cycle_id,
+            strategy="b1",
+            proposal={
+                "hypothesis": f"Synthetic cycle {cycle_number}",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        ),
+        cycle_number=cycle_number,
+        execution_spec=execution_spec,
+        roster_members=(member,),
+        reservation_limits=CycleReservationLimits(
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=10,
+            max_tool_attempts=1,
+        ),
+    )
 
 
 def _controller_event_id(domain: bytes, *parts: str) -> str:
@@ -7727,6 +7863,716 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 controller.cycle_snapshot("cycle-001").status,
                 CycleStatus.SETTLED,
             )
+
+    def test_eligible_information_gain_allows_one_budgeted_next_cycle(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-eligible"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            replayed = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+
+            self.assertEqual(replayed, decision)
+            self.assertEqual(decision.decision, "CONTINUE")
+            self.assertTrue(decision.continuation_allowed)
+            self.assertEqual(decision.reason_code, "CONTINUATION_ELIGIBLE")
+            self.assertEqual(decision.next_cycle_number, 2)
+            self.assertEqual(
+                decision.information_gain_manifest_sha256,
+                information_gain.manifest_sha256,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
+    def test_next_cycle_decision_recovers_durable_information_gain(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-recovery"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_no_material_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+
+            decision = controller.decide_next_cycle(execution=execution)
+            replayed = controller.decide_next_cycle(
+                execution=ExecutingOperationalCycle(
+                    cycle=controller.cycle_snapshot("cycle-001"),
+                    lease=execution.lease,
+                ),
+            )
+
+            self.assertEqual(replayed, decision)
+            self.assertEqual(decision.decision, "STOP")
+            self.assertFalse(decision.continuation_allowed)
+            self.assertEqual(
+                decision.reason_code,
+                "INFORMATION_GAIN_INELIGIBLE",
+            )
+            self.assertIsNone(decision.next_cycle_number)
+            self.assertEqual(
+                decision.information_gain_manifest_sha256,
+                information_gain.manifest_sha256,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
+    def test_next_cycle_decision_replay_survives_next_reservation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-stable-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            prepared = _prepare_synthetic_cycle(
+                controller,
+                cycle_id="cycle-002",
+                cycle_number=2,
+            )
+
+            replayed = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+
+            self.assertEqual(replayed, decision)
+            self.assertEqual(prepared.cycle_id, "cycle-002")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-002").status,
+                CycleStatus.FROZEN,
+            )
+
+    def test_stop_decision_blocks_next_cycle_before_budget_mutation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-stop-boundary"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_no_material_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "previous Cycle did not authorize continuation",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                )
+
+            self.assertEqual(decision.decision, "STOP")
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-002")
+
+    def test_cycle_budget_exhaustion_records_a_stop_decision(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-budget-stop"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    max_cycles=1,
+                )
+            )
+
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+
+            self.assertEqual(decision.decision, "STOP")
+            self.assertFalse(decision.continuation_allowed)
+            self.assertEqual(
+                decision.reason_code,
+                "CYCLE_BUDGET_EXHAUSTED",
+            )
+            self.assertIsNone(decision.next_cycle_number)
+            self.assertEqual(decision.reserved_cycle_count, 1)
+            self.assertEqual(decision.max_cycles, 1)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
+    def test_missing_decision_blocks_successor_without_side_effects(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-missing-decision"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, _, _ = _completed_no_material_information_gain(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "previous Cycle did not authorize continuation",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                )
+
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-002")
+
+    def test_successor_admission_rejects_a_cycle_number_gap(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-gap"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    max_cycles=3,
+                )
+            )
+            controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "previous Cycle did not authorize continuation",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-003",
+                    cycle_number=3,
+                )
+
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-003")
+
+    def test_first_cycle_cannot_start_at_ordinal_two(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-first-gap"
+        owner = ProcessIdentity("host-controller", 151, 51_000)
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    max_cycles=2,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=100,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            cycle_budget_before = controller.cycle_budget_snapshot()
+            resource_budget_before = controller.budget_snapshot()
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.CREATED,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "previous Cycle did not authorize continuation",
+            ):
+                _prepare_synthetic_cycle(
+                    controller,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                )
+
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.CREATED,
+            )
+            self.assertEqual(
+                controller.cycle_budget_snapshot(),
+                cycle_budget_before,
+            )
+            self.assertEqual(
+                controller.budget_snapshot(),
+                resource_budget_before,
+            )
+            with self.assertRaises(CampaignLifecycleError):
+                controller.cycle_snapshot("cycle-002")
+
+    def test_invalid_and_tainted_evidence_stop_next_cycle(self) -> None:
+        cases = (
+            (
+                "invalid",
+                _InvalidEvidenceArtifactBoundFakeProvider(),
+                "EVIDENCE_INVALID",
+            ),
+            (
+                "tainted",
+                _TaintedEvidenceArtifactBoundFakeProvider(),
+                "TAINTED_EVIDENCE",
+            ),
+        )
+        for label, provider, expected_disposition in cases:
+            campaign_id = f"campaign-controller-next-cycle-{label}-stop"
+            with self.subTest(label=label):
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    controller, execution, member, usage = (
+                        _completed_evidence_model_call(
+                            root,
+                            journal,
+                            campaign_id=campaign_id,
+                            provider=provider,
+                            max_cycles=2,
+                        )
+                    )
+                    evidence = controller.record_model_evidence(
+                        execution=execution,
+                        member_id=member.member_id,
+                        evidence_adapter=EvidenceAdapter(
+                            known_runners={"fixture-runner": "1.0.0"},
+                            approved_protocol={"label": "synthetic-only"},
+                        ),
+                    )
+                    settlement = controller.settle_cycle_without_learning(
+                        execution=execution,
+                        execution_usage=usage,
+                        evidence_receipt=evidence,
+                    )
+                    information_gain = controller.record_information_gain(
+                        execution=execution,
+                        settlement_receipt=settlement,
+                    )
+
+                    decision = controller.decide_next_cycle(
+                        execution=execution,
+                        information_gain_receipt=information_gain,
+                    )
+
+                    self.assertEqual(
+                        information_gain.disposition_reason,
+                        expected_disposition,
+                    )
+                    self.assertEqual(decision.decision, "STOP")
+                    self.assertFalse(decision.continuation_allowed)
+                    self.assertEqual(
+                        decision.reason_code,
+                        "INFORMATION_GAIN_INELIGIBLE",
+                    )
+
+    def test_caller_cannot_self_report_next_cycle_eligibility(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-forged-eligibility"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_no_material_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "information-gain receipt conflicts",
+            ):
+                controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=replace(
+                        information_gain,
+                        information_gain_status=(
+                            "ELIGIBLE_LEARNING_COMMITTED"
+                        ),
+                        continuation_eligible=True,
+                        disposition_reason=None,
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+
+    def test_next_cycle_decision_and_completion_are_atomic(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-atomic"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            original_advance = (
+                OperationalCampaignLifecycle._advance_cycle_in_transaction
+            )
+
+            def crash_before_completion(
+                lifecycle,
+                connection,
+                *,
+                cycle_id,
+                expected_status,
+                next_status,
+            ):
+                if next_status is CycleStatus.COMPLETED:
+                    raise RuntimeError("synthetic next-Cycle completion crash")
+                return original_advance(
+                    lifecycle,
+                    connection,
+                    cycle_id=cycle_id,
+                    expected_status=expected_status,
+                    next_status=next_status,
+                )
+
+            with patch.object(
+                OperationalCampaignLifecycle,
+                "_advance_cycle_in_transaction",
+                new=crash_before_completion,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic next-Cycle completion crash",
+                ):
+                    controller.decide_next_cycle(
+                        execution=execution,
+                        information_gain_receipt=information_gain,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_NEXT_CYCLE_DECISION",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+
+            recovered = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            self.assertEqual(recovered.decision, "CONTINUE")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
+    def test_replacement_lease_recovers_next_cycle_decision(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-lease-recovery"
+        recovered_owner = ProcessIdentity("host-controller", 150, 50_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=2,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-next-cycle-decision",
+                stale_after_ns=1,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=information_gain,
+                )
+
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            decision = recovered.decide_next_cycle(
+                execution=ExecutingOperationalCycle(
+                    cycle=recovered.cycle_snapshot("cycle-001"),
+                    lease=replacement,
+                ),
+            )
+
+            self.assertEqual(decision.decision, "CONTINUE")
+            self.assertTrue(decision.continuation_allowed)
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.COMPLETED,
+            )
+
+    def test_shadow_next_cycle_decision_streams_fail_closed(self) -> None:
+        cases = (
+            (
+                "shadow-aggregate",
+                "OPERATIONAL_NEXT_CYCLE_DECISION",
+                "shadow-cycle-001",
+            ),
+            (
+                "cross-type",
+                "SHADOW_NEXT_CYCLE_DECISION",
+                "cycle-001",
+            ),
+        )
+        for label, aggregate_type, aggregate_id in cases:
+            campaign_id = f"campaign-controller-next-cycle-{label}"
+            with self.subTest(label=label):
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    controller, execution, information_gain = (
+                        _completed_eligible_information_gain(
+                            root,
+                            journal,
+                            campaign_id=campaign_id,
+                        )
+                    )
+                    journal.append(
+                        event_id=f"{label}-next-cycle-event",
+                        cycle_id="cycle-001",
+                        aggregate_type=aggregate_type,
+                        aggregate_id=aggregate_id,
+                        event_type=(
+                            "OPERATIONAL_NEXT_CYCLE_DECISION_RECORDED"
+                        ),
+                        payload={"shadow": True},
+                    )
+
+                    with self.assertRaisesRegex(
+                        CampaignJournalError,
+                        "next-Cycle decision stream conflicts",
+                    ):
+                        controller.decide_next_cycle(
+                            execution=execution,
+                            information_gain_receipt=information_gain,
+                        )
+
+                    self.assertEqual(
+                        controller.cycle_snapshot("cycle-001").status,
+                        CycleStatus.INFORMATION_GAIN_RECORDED,
+                    )
+
+    def test_next_cycle_decision_event_id_collision_fails_closed(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-event-id-collision"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            journal.append(
+                event_id=_controller_event_id(
+                    b"control_plane.controller_next_cycle_decision.v1",
+                    journal.namespace,
+                    campaign_id,
+                    "cycle-001",
+                ),
+                cycle_id="cycle-001",
+                aggregate_type="UNRELATED_COLLISION",
+                aggregate_id="unrelated-collision",
+                event_type="UNRELATED_COLLISION_RECORDED",
+                payload={"collision": True},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "operational next-Cycle decision conflicts",
+            ):
+                controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=information_gain,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+
+    def test_next_cycle_decision_rejects_a_pre_reserved_successor(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-pre-reserved"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    max_cycles=3,
+                )
+            )
+            controller._cycle_budget.reserve(
+                cycle_id="premature-cycle-002",
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Cycle budget prefix conflicts",
+            ):
+                controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=information_gain,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.INFORMATION_GAIN_RECORDED,
+            )
+
+    def test_campaign_cannot_complete_before_continuation_is_consumed(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-next-cycle-pending-continuation"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_eligible_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignStateConflictError,
+                "controller-managed Campaign requires controller completion",
+            ):
+                OperationalCampaignLifecycle(journal=journal).complete()
+            with self.assertRaisesRegex(
+                CampaignStateConflictError,
+                "unconsumed continuation decision",
+            ):
+                controller.complete_campaign()
+
+            self.assertEqual(decision.decision, "CONTINUE")
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.ACTIVE,
+            )
+            prepared = _prepare_synthetic_cycle(
+                controller,
+                cycle_id="cycle-002",
+                cycle_number=2,
+            )
+            self.assertEqual(prepared.cycle_id, "cycle-002")
+
+    def test_stop_decision_replays_after_campaign_completion(self) -> None:
+        campaign_id = "campaign-controller-next-cycle-stop-completed"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, information_gain = (
+                _completed_no_material_information_gain(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            completed = controller.complete_campaign()
+
+            replayed = controller.decide_next_cycle(execution=execution)
+
+            self.assertEqual(completed.status, CampaignStatus.COMPLETED)
+            self.assertEqual(replayed, decision)
+            self.assertEqual(replayed.decision, "STOP")
 
 
 if __name__ == "__main__":
