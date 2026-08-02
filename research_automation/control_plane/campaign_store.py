@@ -763,12 +763,10 @@ class OperationalBudgetJournal:
     ) -> BudgetSettlement:
         self._journal._authorize()
         reservation_id = _identifier(reservation_id, "reservation_id")
-
-        def settle_budget(connection) -> BudgetSettlement:
-            events = self._events_in_transaction(connection)
-            ledger = self._replay(events)
-            settlement = ledger.settle(
-                reservation_id,
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
+            lambda connection: self._settle_in_transaction(
+                connection,
+                reservation_id=reservation_id,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cost=cost,
@@ -777,34 +775,59 @@ class OperationalBudgetJournal:
                 data_exposures=data_exposures,
                 disk_growth_bytes=disk_growth_bytes,
             )
-            event_id = self._event_id(
-                "settle",
-                reservation_id=reservation_id,
-            )
-            if any(event.event_id == event_id for event in events):
-                return settlement
-            self._journal._append_in_transaction(
-                connection,
-                event_id=event_id,
-                cycle_id=None,
-                aggregate_type=_BUDGET_AGGREGATE_TYPE,
-                aggregate_id=self._budget_id,
-                event_type=_BUDGET_SETTLED,
-                payload={
-                    "reservation_id": reservation_id,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "cost": None if cost is None else _cost_text(_cost(cost)),
-                    "wall_time_ms": wall_time_ms,
-                    "tool_attempts": tool_attempts,
-                    "data_exposures": data_exposures,
-                    "disk_growth_bytes": disk_growth_bytes,
-                    "state": settlement.state,
-                },
-            )
-            return settlement
+        )
 
-        return _SqliteUnitOfWork(stores._operational_spec())._write(settle_budget)
+    def _settle_in_transaction(
+        self,
+        connection,
+        *,
+        reservation_id: str,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        cost: str | int | Decimal | None,
+        wall_time_ms: int | None = None,
+        tool_attempts: int | None = None,
+        data_exposures: int | None = None,
+        disk_growth_bytes: int | None = None,
+    ) -> BudgetSettlement:
+        events = self._events_in_transaction(connection)
+        ledger = self._replay(events)
+        settlement = ledger.settle(
+            reservation_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost=cost,
+            wall_time_ms=wall_time_ms,
+            tool_attempts=tool_attempts,
+            data_exposures=data_exposures,
+            disk_growth_bytes=disk_growth_bytes,
+        )
+        event_id = self._event_id(
+            "settle",
+            reservation_id=reservation_id,
+        )
+        if any(event.event_id == event_id for event in events):
+            return settlement
+        self._journal._append_in_transaction(
+            connection,
+            event_id=event_id,
+            cycle_id=None,
+            aggregate_type=_BUDGET_AGGREGATE_TYPE,
+            aggregate_id=self._budget_id,
+            event_type=_BUDGET_SETTLED,
+            payload={
+                "reservation_id": reservation_id,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost": None if cost is None else _cost_text(_cost(cost)),
+                "wall_time_ms": wall_time_ms,
+                "tool_attempts": tool_attempts,
+                "data_exposures": data_exposures,
+                "disk_growth_bytes": disk_growth_bytes,
+                "state": settlement.state,
+            },
+        )
+        return settlement
 
     def snapshot(self) -> BudgetSnapshot:
         self._journal._authorize()

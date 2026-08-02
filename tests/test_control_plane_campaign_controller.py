@@ -14,6 +14,7 @@ from research_automation.control_plane.campaign_controller import (
     CycleReservationLimits,
     ExecutingOperationalCycle,
     OperationalEvidenceReceipt,
+    OperationalLearningCommitReceipt,
     OperationalModelCallLimits,
     OperationalCampaignController,
     _controller_sha256,
@@ -239,6 +240,13 @@ class _AuthorityEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
                 "currency": "USD",
             },
         )
+
+
+class _UnknownUsageAuthorityEvidenceArtifactBoundFakeProvider(
+    _AuthorityEvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        return replace(super().invoke(request), raw_usage={})
 
 
 class _UnboundEvidenceAdapter(EvidenceAdapter):
@@ -5798,6 +5806,569 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 )
 
             self.assertEqual(replayed, original)
+
+    def test_cycle_settlement_rejects_learning_receipt_after_transition(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settlement-learning-order"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        report = {"synthetic": "terminal-report"}
+        packet_hash = "f" * 64
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value=packet_hash,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=RuntimeError("synthetic pre-packet crash"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic pre-packet crash",
+                ):
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report=report,
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+
+            journal.append(
+                event_id=controller._lifecycle._cycle_event_id(
+                    "cycle-001",
+                    CycleStatus.LEARNING_COMMITTED.value,
+                ),
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-001",
+                event_type="CYCLE_TRANSITIONED",
+                payload={
+                    "cycle_id": "cycle-001",
+                    "cycle_number": 1,
+                    "from_status": CycleStatus.EVIDENCE_READY.value,
+                    "to_status": CycleStatus.LEARNING_COMMITTED.value,
+                },
+            )
+            authority_task_report_sha256 = _controller_sha256(
+                b"control_plane.operational_learning_task_report.v1",
+                report,
+                "Authority TaskReport",
+            )
+            identity = {
+                "schema_version": "control_plane.operational_learning_commit.v1",
+                "cycle_id": "cycle-001",
+                "member_id": member.member_id,
+                "evidence_manifest_sha256": evidence.manifest_sha256,
+                "authority_task_report_sha256": (
+                    authority_task_report_sha256
+                ),
+                "packet_hash": packet_hash,
+            }
+            manifest_sha256 = _controller_sha256(
+                b"control_plane.operational_learning_commit.v1",
+                identity,
+                "operational Learning Commit",
+            )
+            learning = OperationalLearningCommitReceipt(
+                cycle_id="cycle-001",
+                member_id=member.member_id,
+                evidence_manifest_sha256=evidence.manifest_sha256,
+                authority_task_report_sha256=authority_task_report_sha256,
+                packet_hash=packet_hash,
+                manifest_sha256=manifest_sha256,
+                event_id=controller._learning_commit_event_id("cycle-001"),
+            )
+            journal.append(
+                event_id=learning.event_id,
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                aggregate_id="cycle-001",
+                event_type="OPERATIONAL_LEARNING_COMMIT_RECORDED",
+                payload={**identity, "manifest_sha256": manifest_sha256},
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Cycle settlement event order conflicts",
+            ):
+                controller.settle_cycle(
+                    execution=execution,
+                    execution_usage=usage,
+                    learning_commit_receipt=learning,
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                20,
+            )
+
+    def test_known_usage_settles_reserved_budget_after_learning(self) -> None:
+        campaign_id = "campaign-controller-settlement-known"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+            settled = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            replayed = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+
+            self.assertEqual(replayed, settled)
+            self.assertEqual(settled.cycle_id, "cycle-001")
+            self.assertEqual(settled.settlement_state, "SETTLED")
+            self.assertEqual(
+                settled.execution_usage_manifest_sha256,
+                usage.manifest_sha256,
+            )
+            self.assertEqual(
+                settled.learning_commit_manifest_sha256,
+                learning.manifest_sha256,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 0)
+            self.assertEqual(snapshot.reserved_output_tokens, 0)
+            self.assertEqual(snapshot.reserved_cost, "0")
+            self.assertEqual(snapshot.reserved_wall_time_ms, 0)
+            self.assertEqual(snapshot.reserved_tool_attempts, 0)
+            self.assertEqual(snapshot.reserved_data_exposures, 0)
+            self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
+            self.assertEqual(snapshot.spent_input_tokens, usage.input_tokens)
+            self.assertEqual(snapshot.spent_output_tokens, usage.output_tokens)
+            self.assertEqual(snapshot.spent_cost, usage.cost)
+            self.assertEqual(snapshot.spent_wall_time_ms, usage.wall_time_ms)
+            self.assertEqual(snapshot.spent_tool_attempts, usage.tool_attempts)
+            self.assertEqual(snapshot.spent_data_exposures, usage.data_exposures)
+            self.assertEqual(
+                snapshot.spent_disk_growth_bytes,
+                usage.disk_growth_bytes,
+            )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution usage receipt conflicts",
+            ):
+                controller.settle_cycle(
+                    execution=execution,
+                    execution_usage=replace(
+                        usage,
+                        input_tokens=int(usage.input_tokens) + 1,
+                    ),
+                    learning_commit_receipt=learning,
+                )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Learning Commit receipt conflicts",
+            ):
+                controller.settle_cycle(
+                    execution=execution,
+                    execution_usage=usage,
+                    learning_commit_receipt=replace(
+                        learning,
+                        packet_hash="e" * 64,
+                    ),
+                )
+
+    def test_unknown_usage_keeps_the_full_cycle_reservation(self) -> None:
+        campaign_id = "campaign-controller-settlement-unknown"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=(
+                        _UnknownUsageAuthorityEvidenceArtifactBoundFakeProvider(
+                            artifact
+                        )
+                    ),
+                )
+            )
+            self.assertEqual(usage.usage_status, UsageStatus.UNKNOWN)
+            self.assertIsNone(usage.input_tokens)
+            self.assertIsNone(usage.output_tokens)
+            self.assertIsNone(usage.cost)
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            settled = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+
+            self.assertEqual(settled.settlement_state, "SETTLED_UNKNOWN")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "0.1")
+            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_tool_attempts, 2)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            self.assertEqual(snapshot.spent_output_tokens, 0)
+            self.assertEqual(snapshot.spent_cost, "0")
+            self.assertEqual(snapshot.spent_wall_time_ms, 0)
+            self.assertEqual(snapshot.spent_tool_attempts, 0)
+
+    def test_cycle_cannot_settle_before_learning_is_committed(self) -> None:
+        campaign_id = "campaign-controller-settlement-before-learning"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            fake_learning = OperationalLearningCommitReceipt(
+                cycle_id="cycle-001",
+                member_id=member.member_id,
+                evidence_manifest_sha256=evidence.manifest_sha256,
+                authority_task_report_sha256="a" * 64,
+                packet_hash="b" * 64,
+                manifest_sha256="c" * 64,
+                event_id="d" * 64,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "requires LEARNING_COMMITTED",
+            ):
+                controller.settle_cycle(
+                    execution=execution,
+                    execution_usage=usage,
+                    learning_commit_receipt=fake_learning,
+                )
+
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "0.1")
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+
+    def test_cycle_settlement_and_lifecycle_transition_are_atomic(self) -> None:
+        campaign_id = "campaign-controller-settlement-atomic"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            with patch.object(
+                OperationalCampaignLifecycle,
+                "_advance_cycle_in_transaction",
+                side_effect=RuntimeError("synthetic settlement crash"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic settlement crash",
+                ):
+                    controller.settle_cycle(
+                        execution=execution,
+                        execution_usage=usage,
+                        learning_commit_receipt=learning,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "0.1")
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+
+            recovered = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            self.assertEqual(recovered.settlement_state, "SETTLED")
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+
+    def test_replacement_lease_recovers_cycle_settlement(self) -> None:
+        campaign_id = "campaign-controller-settlement-lease-recovery"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
+        budget_limits = CampaignBudgetLimits(
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=100,
+            max_tool_attempts=2,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            recovery_identity = _FakeProcessIdentityProvider(
+                recovered_owner,
+                process_starts={("host-controller", 144): None},
+            )
+            replacement = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 3_000_000,
+            ).recover(
+                cycle_id="cycle-001",
+                acquisition_id="recover-settlement",
+                stale_after_ns=1,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.settle_cycle(
+                    execution=execution,
+                    execution_usage=usage,
+                    learning_commit_receipt=learning,
+                )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                20,
+            )
+
+            recovered = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=recovery_identity,
+                monotonic_ns=lambda: 4_000_000,
+            )
+            settled = recovered.settle_cycle(
+                execution=ExecutingOperationalCycle(
+                    cycle=recovered.cycle_snapshot("cycle-001"),
+                    lease=replacement,
+                ),
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+
+            self.assertEqual(settled.settlement_state, "SETTLED")
+            self.assertEqual(
+                recovered.cycle_snapshot("cycle-001").status,
+                CycleStatus.SETTLED,
+            )
+            self.assertEqual(
+                recovered.budget_snapshot().spent_input_tokens,
+                usage.input_tokens,
+            )
 
 
 if __name__ == "__main__":
