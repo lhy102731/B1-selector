@@ -284,7 +284,7 @@ class OperationalExecutionUsage:
     input_tokens: int | None
     output_tokens: int | None
     cost: str | None
-    currency: str | None
+    currency: str
     wall_time_ms: int | None
     tool_attempts: int
     data_exposures: int
@@ -2912,6 +2912,7 @@ class OperationalCampaignController:
 
             identity = self._execution_usage_identity(
                 cycle_id=cycle_id,
+                canonical_currency=self._budget._currency,
                 preparation_manifest_sha256=(
                     preparation_manifest_sha256
                 ),
@@ -2928,7 +2929,7 @@ class OperationalCampaignController:
             currency = identity["currency"]
             wall_time_ms = identity["wall_time_ms"]
             manifest_sha256 = _controller_sha256(
-                b"control_plane.operational_execution_usage.v1",
+                b"control_plane.operational_execution_usage.v2",
                 identity,
                 "operational execution usage",
             )
@@ -3004,6 +3005,7 @@ class OperationalCampaignController:
     def _execution_usage_identity(
         *,
         cycle_id: str,
+        canonical_currency: str,
         preparation_manifest_sha256: str,
         context_manifest_sha256: str,
         roster_manifest_sha256: str,
@@ -3025,25 +3027,29 @@ class OperationalCampaignController:
         reported_costs = [
             attempt.envelope.reported_cost for attempt in all_attempts
         ]
-        currencies = {attempt.envelope.currency for attempt in all_attempts}
-        if (
-            any(value is None for value in reported_costs)
-            or None in currencies
-            or len(currencies) > 1
+        if not all(
+            reported_cost is not None
+            and attempt.envelope.currency == canonical_currency
+            for attempt, reported_cost in zip(
+                all_attempts,
+                reported_costs,
+                strict=True,
+            )
         ):
             cost = None
-            currency = None
         else:
-            cost = _decimal_text(
-                sum(
-                    (
-                        Decimal(str(value))
-                        for value in reported_costs
-                    ),
-                    Decimal("0"),
+            try:
+                cost = _decimal_text(
+                    sum(
+                        (
+                            _bounded_cost(reported_cost)
+                            for reported_cost in reported_costs
+                        ),
+                        Decimal("0"),
+                    )
                 )
-            )
-            currency = next(iter(currencies), None)
+            except ValueError:
+                cost = None
         wall_times = [model_call.wall_time_ms for model_call in model_calls]
         wall_time_ms = (
             None
@@ -3066,7 +3072,7 @@ class OperationalCampaignController:
         else:
             usage_status = UsageStatus.REPORTED
         return {
-            "schema_version": "control_plane.operational_execution_usage.v1",
+            "schema_version": "control_plane.operational_execution_usage.v2",
             "cycle_id": cycle_id,
             "preparation_manifest_sha256": preparation_manifest_sha256,
             "context_manifest_sha256": context_manifest_sha256,
@@ -3079,7 +3085,7 @@ class OperationalCampaignController:
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "cost": cost,
-            "currency": currency,
+            "currency": canonical_currency,
             "wall_time_ms": wall_time_ms,
             "tool_attempts": len(all_attempts),
             "data_exposures": 0,
@@ -3167,15 +3173,18 @@ class OperationalCampaignController:
             )
             return sum(int(value) for value in values if value is not None)
 
-        reported_costs = tuple(
-            attempt.envelope.reported_cost
+        comparable_reported_costs = tuple(
+            reported_cost
             for attempt in usage_attempts
+            if (
+                (reported_cost := attempt.envelope.reported_cost) is not None
+                and attempt.envelope.currency == limits.currency
+            )
         )
         known_cost_lower_bound = sum(
             (
-                _bounded_cost(str(value))
-                for value in reported_costs
-                if value is not None
+                _bounded_cost(reported_cost)
+                for reported_cost in comparable_reported_costs
             ),
             Decimal("0"),
         )
@@ -3427,6 +3436,7 @@ class OperationalCampaignController:
             )
         expected_identity = self._execution_usage_identity(
             cycle_id=cycle_id,
+            canonical_currency=self._budget._currency,
             preparation_manifest_sha256=preparation_manifest_sha256,
             context_manifest_sha256=context.manifest_sha256,
             roster_manifest_sha256=roster.manifest_sha256,
@@ -3437,7 +3447,7 @@ class OperationalCampaignController:
         expected_payload = {
             **expected_identity,
             "manifest_sha256": _controller_sha256(
-                b"control_plane.operational_execution_usage.v1",
+                b"control_plane.operational_execution_usage.v2",
                 expected_identity,
                 "replayed operational execution usage",
             ),

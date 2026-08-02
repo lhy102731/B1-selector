@@ -186,6 +186,58 @@ class _EvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
         )
 
 
+class _ObservedCostEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def __init__(self, *, reported_cost: str, currency: str | None) -> None:
+        super().__init__()
+        self._reported_cost = reported_cost
+        self._currency = currency
+
+    def invoke(self, request: object) -> ProviderResponse:
+        response = super().invoke(request)
+        raw_usage = {
+            **response.raw_usage,
+            "reported_cost": self._reported_cost,
+        }
+        if self._currency is None:
+            raw_usage.pop("currency", None)
+        else:
+            raw_usage["currency"] = self._currency
+        return replace(response, raw_usage=raw_usage)
+
+
+class _MixedCurrencyRetryEvidenceArtifactBoundFakeProvider(
+    _EvidenceArtifactBoundFakeProvider
+):
+    def __init__(self, *, success_reported_cost: str = "0.02") -> None:
+        super().__init__()
+        self._success_reported_cost = success_reported_cost
+
+    def invoke(self, request: object) -> ProviderResponse:
+        response = super().invoke(request)
+        if self.call_count == 1:
+            return replace(
+                response,
+                output_text="{",
+                raw_usage={
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "total_tokens": 10,
+                    "reported_cost": "100",
+                    "currency": "JPY",
+                },
+            )
+        return replace(
+            response,
+            raw_usage={
+                **response.raw_usage,
+                "reported_cost": self._success_reported_cost,
+                "currency": "USD",
+            },
+        )
+
+
 class _InvalidEvidenceArtifactBoundFakeProvider(
     _EvidenceArtifactBoundFakeProvider
 ):
@@ -832,6 +884,205 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             budget_settlement_payload.pop("_authority_grant_id")
             self.assertEqual(budget_settlement_payload["currency"], "USD")
             self.assertEqual(controller.budget_snapshot().currency, "USD")
+
+    def test_non_usd_observed_cost_keeps_full_usd_reservation(self) -> None:
+        cases = (
+            ("missing", None),
+            ("foreign", "EUR"),
+        )
+        for label, observed_currency in cases:
+            with self.subTest(observed_currency=observed_currency):
+                campaign_id = f"campaign-controller-cost-{label}-001"
+                provider = _ObservedCostEvidenceArtifactBoundFakeProvider(
+                    reported_cost="100",
+                    currency=observed_currency,
+                )
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    controller, execution, member, usage = (
+                        _completed_evidence_model_call(
+                            root,
+                            journal,
+                            campaign_id=campaign_id,
+                            provider=provider,
+                        )
+                    )
+                    attempts = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id="cycle-001",
+                    ).list_attempts()
+                    evidence = controller.record_model_evidence(
+                        execution=execution,
+                        member_id=member.member_id,
+                        evidence_adapter=EvidenceAdapter(
+                            known_runners={"fixture-runner": "1.0.0"},
+                            approved_protocol={"label": "synthetic-only"},
+                        ),
+                    )
+                    settlement = controller.settle_cycle_without_learning(
+                        execution=execution,
+                        execution_usage=usage,
+                        evidence_receipt=evidence,
+                    )
+
+                    self.assertEqual(provider.call_count, 1)
+                    self.assertEqual(len(attempts), 1)
+                    self.assertEqual(
+                        attempts[0].envelope.usage_status,
+                        UsageStatus.REPORTED,
+                    )
+                    self.assertEqual(attempts[0].envelope.reported_cost, "100")
+                    self.assertEqual(
+                        attempts[0].envelope.currency,
+                        observed_currency,
+                    )
+                    self.assertEqual(
+                        attempts[0].final_outcome,
+                        InvocationOutcome.SUCCESS,
+                    )
+                    self.assertEqual(usage.usage_status, UsageStatus.UNKNOWN)
+                    self.assertIsNone(usage.cost)
+                    self.assertEqual(usage.currency, "USD")
+                    self.assertEqual(
+                        settlement.settlement_state,
+                        "SETTLED_UNKNOWN",
+                    )
+                    snapshot = controller.budget_snapshot()
+                    self.assertEqual(snapshot.currency, "USD")
+                    self.assertEqual(snapshot.reserved_input_tokens, 20)
+                    self.assertEqual(snapshot.reserved_output_tokens, 10)
+                    self.assertEqual(snapshot.reserved_cost, "0.1")
+                    self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+                    self.assertEqual(snapshot.reserved_tool_attempts, 2)
+                    self.assertEqual(snapshot.reserved_data_exposures, 0)
+                    self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
+                    self.assertEqual(snapshot.spent_input_tokens, 0)
+                    self.assertEqual(snapshot.spent_output_tokens, 0)
+                    self.assertEqual(snapshot.spent_cost, "0")
+                    self.assertEqual(snapshot.spent_wall_time_ms, 0)
+                    self.assertEqual(snapshot.spent_tool_attempts, 0)
+                    self.assertEqual(snapshot.spent_data_exposures, 0)
+                    self.assertEqual(snapshot.spent_disk_growth_bytes, 0)
+
+    def test_mixed_currency_retry_keeps_raw_attempts_and_usd_reservation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-cost-mixed-retry-001"
+        provider = _MixedCurrencyRetryEvidenceArtifactBoundFakeProvider()
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=provider,
+                )
+            )
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts()
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            settlement = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(
+                tuple(attempt.envelope.reported_cost for attempt in attempts),
+                ("100", "0.02"),
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.currency for attempt in attempts),
+                ("JPY", "USD"),
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.usage_status for attempt in attempts),
+                (UsageStatus.REPORTED, UsageStatus.REPORTED),
+            )
+            self.assertEqual(
+                tuple(attempt.final_outcome for attempt in attempts),
+                (InvocationOutcome.INVALID_JSON, InvocationOutcome.SUCCESS),
+            )
+            self.assertEqual(usage.input_tokens, 14)
+            self.assertEqual(usage.output_tokens, 6)
+            self.assertEqual(usage.usage_status, UsageStatus.UNKNOWN)
+            self.assertIsNone(usage.cost)
+            self.assertEqual(usage.currency, "USD")
+            self.assertEqual(settlement.settlement_state, "SETTLED_UNKNOWN")
+            snapshot = controller.budget_snapshot()
+            self.assertEqual(snapshot.currency, "USD")
+            self.assertEqual(snapshot.reserved_input_tokens, 20)
+            self.assertEqual(snapshot.reserved_output_tokens, 10)
+            self.assertEqual(snapshot.reserved_cost, "0.1")
+            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_tool_attempts, 2)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            self.assertEqual(snapshot.spent_output_tokens, 0)
+            self.assertEqual(snapshot.spent_cost, "0")
+            self.assertEqual(snapshot.spent_wall_time_ms, 0)
+            self.assertEqual(snapshot.spent_tool_attempts, 0)
+
+    def test_foreign_retry_cannot_hide_later_usd_cost_overrun(self) -> None:
+        campaign_id = "campaign-controller-cost-usd-overrun-001"
+        provider = _MixedCurrencyRetryEvidenceArtifactBoundFakeProvider(
+            success_reported_cost="0.2"
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            with self.assertRaisesRegex(
+                BudgetExceededError,
+                "known usage exceeds its call limits",
+            ):
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=provider,
+                )
+
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts()
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual(
+                tuple(attempt.envelope.reported_cost for attempt in attempts),
+                ("100", "0.2"),
+            )
+            self.assertEqual(
+                tuple(attempt.envelope.currency for attempt in attempts),
+                ("JPY", "USD"),
+            )
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+            self.assertEqual(
+                reopened.campaign_snapshot().status,
+                CampaignStatus.BLOCKED,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
 
     def test_controller_reopen_currency_mismatch_fails_before_any_event_write(
         self,
@@ -2699,7 +2950,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertIsNone(execution_usage.input_tokens)
             self.assertIsNone(execution_usage.output_tokens)
             self.assertIsNone(execution_usage.cost)
-            self.assertIsNone(execution_usage.currency)
+            self.assertEqual(execution_usage.currency, "USD")
             self.assertEqual(execution_usage.wall_time_ms, 5)
             self.assertEqual(execution_usage.tool_attempts, 2)
             self.assertEqual(
@@ -4611,7 +4862,9 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 "BLOCKED",
             )
 
-    def test_execution_usage_without_cost_currency_is_unknown(self) -> None:
+    def test_execution_usage_without_cost_currency_is_canonical_unknown(
+        self,
+    ) -> None:
         campaign_id = "campaign-controller-missing-currency"
         protocol = _protocol()
         execution_spec = compile_execution_spec(
@@ -4686,7 +4939,41 @@ class OperationalCampaignControllerTests(unittest.TestCase):
 
             self.assertEqual(usage.usage_status, UsageStatus.UNKNOWN)
             self.assertIsNone(usage.cost)
-            self.assertIsNone(usage.currency)
+            self.assertEqual(usage.currency, "USD")
+            usage_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id=task.task_id,
+            )[0]
+            payload = usage_event.payload()
+            payload.pop("_authority_grant_id")
+            identity = {
+                key: value
+                for key, value in payload.items()
+                if key != "manifest_sha256"
+            }
+            self.assertEqual(
+                payload["schema_version"],
+                "control_plane.operational_execution_usage.v2",
+            )
+            self.assertEqual(payload["currency"], "USD")
+            self.assertEqual(
+                payload["manifest_sha256"],
+                _controller_sha256(
+                    b"control_plane.operational_execution_usage.v2",
+                    identity,
+                    "expected operational execution usage",
+                ),
+            )
+            self.assertEqual(
+                usage.event_id,
+                _controller_event_id(
+                    b"control_plane.controller_execution_usage.v1",
+                    "formal",
+                    campaign_id,
+                    task.task_id,
+                ),
+            )
 
     def test_execution_usage_preserves_estimated_attempt_status(self) -> None:
         campaign_id = "campaign-controller-estimated-usage"
@@ -5382,7 +5669,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 if key not in {"manifest_sha256", "_authority_grant_id"}
             }
             payload["manifest_sha256"] = _controller_sha256(
-                b"control_plane.operational_execution_usage.v1",
+                b"control_plane.operational_execution_usage.v2",
                 identity,
                 "forged operational execution usage",
             )
