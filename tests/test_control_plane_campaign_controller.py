@@ -4934,13 +4934,6 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         aggregate_id=source_call_id,
                     )
                     self.assertEqual(source_events, ())
-                    self.assertFalse(
-                        any(
-                            event.event_type
-                            == "OPERATIONAL_MODEL_CALL_STARTED"
-                            for event in source_events
-                        )
-                    )
                     self.assertEqual(
                         journal.list_events(
                             cycle_id=cycle_id,
