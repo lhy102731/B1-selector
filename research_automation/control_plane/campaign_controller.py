@@ -708,7 +708,6 @@ class OperationalCampaignController:
                 )
             )
         )
-        self._lifecycle.activate()
         reservation_id = self._reservation_id(cycle_id)
 
         def reserve_and_open(connection):
@@ -717,6 +716,7 @@ class OperationalCampaignController:
                 cycle_id=cycle_id,
                 cycle_number=cycle_number,
             )
+            self._lifecycle._activate_in_transaction(connection)
             self._adopt_work_item_in_transaction(
                 connection,
                 cycle_id=cycle_id,

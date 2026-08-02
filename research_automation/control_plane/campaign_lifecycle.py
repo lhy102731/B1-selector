@@ -426,34 +426,34 @@ class OperationalCampaignLifecycle:
     def activate(self) -> CampaignSnapshot:
         self._journal._authorize()
 
-        def activate_campaign(connection) -> CampaignSnapshot:
-            snapshot = self._replay_campaign(self._campaign_events(connection))
-            if snapshot.status is CampaignStatus.ACTIVE:
-                return snapshot
-            if snapshot.status is not CampaignStatus.CREATED:
-                raise CampaignStateConflictError(
-                    "Campaign is not in the expected CREATED state"
-                )
-            event = self._journal._append_in_transaction(
-                connection,
-                event_id=self._campaign_event_id(CampaignStatus.ACTIVE.value),
-                cycle_id=None,
-                aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
-                aggregate_id=self._journal._campaign_id,
-                event_type=_CAMPAIGN_TRANSITIONED,
-                payload={
-                    "from_status": CampaignStatus.CREATED.value,
-                    "to_status": CampaignStatus.ACTIVE.value,
-                },
-            )
-            return CampaignSnapshot(
-                self._journal._campaign_id,
-                CampaignStatus.ACTIVE,
-                event.sequence,
-            )
-
         return _SqliteUnitOfWork(stores._operational_spec())._write(
-            activate_campaign
+            self._activate_in_transaction
+        )
+
+    def _activate_in_transaction(self, connection) -> CampaignSnapshot:
+        snapshot = self._replay_campaign(self._campaign_events(connection))
+        if snapshot.status is CampaignStatus.ACTIVE:
+            return snapshot
+        if snapshot.status is not CampaignStatus.CREATED:
+            raise CampaignStateConflictError(
+                "Campaign is not in the expected CREATED state"
+            )
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=self._campaign_event_id(CampaignStatus.ACTIVE.value),
+            cycle_id=None,
+            aggregate_type=_CAMPAIGN_AGGREGATE_TYPE,
+            aggregate_id=self._journal._campaign_id,
+            event_type=_CAMPAIGN_TRANSITIONED,
+            payload={
+                "from_status": CampaignStatus.CREATED.value,
+                "to_status": CampaignStatus.ACTIVE.value,
+            },
+        )
+        return CampaignSnapshot(
+            self._journal._campaign_id,
+            CampaignStatus.ACTIVE,
+            event.sequence,
         )
 
     def open_cycle(self, *, cycle_id: str, cycle_number: int) -> CycleSnapshot:

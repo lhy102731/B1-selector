@@ -825,6 +825,10 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 )
 
             self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.CREATED,
+            )
+            self.assertEqual(
                 controller.cycle_budget_snapshot().reserved_cycle_ids,
                 (),
             )
