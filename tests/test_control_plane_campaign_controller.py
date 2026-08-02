@@ -5,6 +5,7 @@ from dataclasses import replace
 from threading import Barrier, Event
 import hashlib
 import json
+import sys
 import sqlite3
 import unittest
 from unittest.mock import patch
@@ -2705,6 +2706,11 @@ class OperationalCampaignControllerTests(unittest.TestCase):
     def test_large_integer_output_blocks_campaign_during_first_logical_call(
         self,
     ) -> None:
+        if not (
+            hasattr(sys, "get_int_max_str_digits")
+            and hasattr(sys, "set_int_max_str_digits")
+        ):
+            self.skipTest("CPython integer digit-limit API is unavailable")
         campaign_id = "campaign-controller-large-integer-output"
         protocol = _protocol()
         execution_spec = compile_execution_spec(
@@ -2767,17 +2773,22 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 acquisition_id="execute-large-integer-output",
             )
             provider = _LargeIntegerOutputBoundFakeProvider()
-            with self.assertRaisesRegex(
-                RosterDriftError,
-                "REQUIRED_MEMBER_RESPONSE_INVALID",
-            ):
-                controller.invoke_member_json(
-                    execution=execution,
-                    member_id=member.member_id,
-                    provider=provider,
-                    prompt=prompt,
-                    limits=_FAKE_CALL_LIMITS,
-                )
+            original_limit = sys.get_int_max_str_digits()
+            try:
+                sys.set_int_max_str_digits(0)
+                with self.assertRaisesRegex(
+                    RosterDriftError,
+                    "REQUIRED_MEMBER_RESPONSE_INVALID",
+                ):
+                    controller.invoke_member_json(
+                        execution=execution,
+                        member_id=member.member_id,
+                        provider=provider,
+                        prompt=prompt,
+                        limits=_FAKE_CALL_LIMITS,
+                    )
+            finally:
+                sys.set_int_max_str_digits(original_limit)
 
             self.assertEqual(provider.call_count, _FAKE_CALL_LIMITS.max_attempts)
             self.assertEqual(
@@ -2793,6 +2804,30 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 json.loads(campaign_events[-1].payload_json)["reason_code"],
                 "REQUIRED_MEMBER_RESPONSE_INVALID",
             )
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=task.task_id,
+            ).list_attempts()
+            self.assertEqual(len(attempts), _FAKE_CALL_LIMITS.max_attempts)
+            self.assertTrue(
+                all(
+                    attempt.final_outcome is InvocationOutcome.INVALID_JSON
+                    for attempt in attempts
+                )
+            )
+            replay_provider = _BoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+            self.assertEqual(replay_provider.call_count, 0)
 
     def test_in_doubt_member_blocks_other_provider_calls(self) -> None:
         campaign_id = "campaign-controller-cross-member-in-doubt"

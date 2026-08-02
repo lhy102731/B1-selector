@@ -22,6 +22,8 @@ _MAX_RAW_USAGE_COLLECTION_ITEMS = 256
 _MAX_RAW_USAGE_PREFIX_UNITS = 4096
 _MAX_RAW_USAGE_INT_BITS = 512
 _MAX_MODEL_OUTPUT_BYTES = 48 * 1024
+_MAX_MODEL_OUTPUT_INT_BITS = _MAX_RAW_USAGE_INT_BITS
+_MAX_MODEL_OUTPUT_INT_DECIMAL_DIGITS = 155
 _MAX_MODEL_OUTPUT_DEPTH = 32
 _MAX_MODEL_OUTPUT_NODES = 4096
 _MAX_REPORTED_TEXT_CHARS = 128
@@ -328,6 +330,20 @@ def _raw_usage_sha256(raw_usage: object) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _parse_bounded_model_integer(value: str) -> int:
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > _MAX_MODEL_OUTPUT_INT_DECIMAL_DIGITS:
+        raise _ModelOutputBoundsError(
+            "provider response integer exceeds the bounded size"
+        )
+    parsed = int(value)
+    if parsed.bit_length() > _MAX_MODEL_OUTPUT_INT_BITS:
+        raise _ModelOutputBoundsError(
+            "provider response integer exceeds the bounded size"
+        )
+    return parsed
+
+
 def _require_bounded_model_output(value: object) -> None:
     stack: list[tuple[object, int]] = [(value, 1)]
     nodes = 0
@@ -363,7 +379,7 @@ def _parse_bounded_model_output(
         raise _ModelOutputBoundsError(
             "provider response exceeds the bounded size"
         )
-    parsed = json.loads(output_text)
+    parsed = json.loads(output_text, parse_int=_parse_bounded_model_integer)
     _require_bounded_model_output(parsed)
     canonical_output = json.dumps(
         parsed,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import unittest
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
@@ -515,6 +516,11 @@ class ModelInvocationTests(unittest.TestCase):
     def test_excessive_json_integer_digits_are_terminal_invalid_json(
         self,
     ) -> None:
+        if not (
+            hasattr(sys, "get_int_max_str_digits")
+            and hasattr(sys, "set_int_max_str_digits")
+        ):
+            self.skipTest("CPython integer digit-limit API is unavailable")
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
             provider=_OutputTextProvider("9" * 5_000),
@@ -524,12 +530,17 @@ class ModelInvocationTests(unittest.TestCase):
             request_model="fake-request-model",
         )
 
-        with self.assertRaises(InvalidModelResponseError):
-            invocation.invoke_json(
-                {"prompt": "offline-only"},
-                call_id="call-output-integer-digits",
-                attempt_id="attempt-001",
-            )
+        original_limit = sys.get_int_max_str_digits()
+        try:
+            sys.set_int_max_str_digits(0)
+            with self.assertRaises(InvalidModelResponseError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-output-integer-digits",
+                    attempt_id="attempt-001",
+                )
+        finally:
+            sys.set_int_max_str_digits(original_limit)
 
         self.assertEqual(
             journal.events,
@@ -545,6 +556,58 @@ class ModelInvocationTests(unittest.TestCase):
                 ),
             ],
         )
+
+    def test_json_integer_bounds_allow_512_bits_and_reject_larger_values(
+        self,
+    ) -> None:
+        for label, output_text, expected in (
+            ("one", "1", 1),
+            ("512-bit-power", str(1 << 511), 1 << 511),
+            ("512-bit-maximum", str((1 << 512) - 1), (1 << 512) - 1),
+        ):
+            with self.subTest(label=label):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OutputTextProvider(output_text),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-request-model",
+                )
+
+                self.assertEqual(
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-output-integer-{label}",
+                        attempt_id="attempt-001",
+                    ),
+                    expected,
+                )
+                self.assertEqual(journal.events[-1][1][-1], InvocationOutcome.SUCCESS)
+
+        for label, output_text in (
+            ("positive-513-bit", str(1 << 512)),
+            ("negative-513-bit", str(-(1 << 512))),
+        ):
+            with self.subTest(label=label):
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=_OutputTextProvider(output_text),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-request-model",
+                )
+
+                with self.assertRaises(InvalidModelResponseError):
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-output-integer-{label}",
+                        attempt_id="attempt-001",
+                    )
+                self.assertEqual(
+                    journal.events[-1][1][-1], InvocationOutcome.INVALID_JSON
+                )
 
     def test_excessive_output_nesting_is_terminal_invalid_json(self) -> None:
         journal = _RecordingUsageJournal()
