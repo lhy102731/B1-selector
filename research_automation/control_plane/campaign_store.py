@@ -1700,7 +1700,10 @@ class OperationalUsageJournal:
         ]
         if len(usage_events) != 1:
             raise CampaignJournalError("usage must be recorded before final outcome")
-        envelope = _parse_envelope(usage_events[0].payload())
+        try:
+            envelope = _parse_envelope(usage_events[0].payload())
+        except (KeyError, TypeError, ValueError) as error:
+            raise CampaignJournalError("model usage payload is invalid") from error
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
         if envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:

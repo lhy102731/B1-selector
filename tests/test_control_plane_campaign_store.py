@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ from research_automation.control_plane.campaign import (
     UsageStatus,
 )
 from research_automation.control_plane.campaign_store import (
+    _event_integrity_sha256,
     CampaignExecutionMode,
     CampaignLearningCommitSink,
     DryRunIsolationError,
@@ -179,6 +181,73 @@ def _authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
                 )
             finally:
                 stores_module._expected_schema_sha256.cache_clear()
+
+
+def _campaign_full_rows(
+    root: Path,
+    *,
+    campaign_id: str,
+    namespace: str = "formal",
+) -> tuple[tuple[object, ...], ...]:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        return tuple(
+            connection.execute(
+                "SELECT event_id, namespace, campaign_id, cycle_id, "
+                "aggregate_type, aggregate_id, event_type, payload_json, "
+                "payload_sha256, occurred_at, sequence "
+                "FROM campaign_events WHERE namespace = ? AND campaign_id = ? "
+                "ORDER BY sequence",
+                (namespace, campaign_id),
+            ).fetchall()
+        )
+    finally:
+        connection.close()
+
+
+def _rewrite_campaign_event_payload(
+    root: Path,
+    *,
+    event_id: str,
+    payload: dict[str, object],
+) -> None:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        row = connection.execute(
+            "SELECT event_id, namespace, campaign_id, cycle_id, aggregate_type, "
+            "aggregate_id, event_type, occurred_at, sequence "
+            "FROM campaign_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            raise AssertionError("campaign event does not exist")
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        payload_sha256 = _event_integrity_sha256(
+            event_id=row[0],
+            namespace=row[1],
+            campaign_id=row[2],
+            cycle_id=row[3],
+            aggregate_type=row[4],
+            aggregate_id=row[5],
+            event_type=row[6],
+            payload_json=payload_json,
+            occurred_at=row[7],
+            sequence=row[8],
+        )
+        connection.execute(
+            "UPDATE campaign_events SET payload_json = ?, payload_sha256 = ? "
+            "WHERE event_id = ?",
+            (payload_json, payload_sha256, event_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 def _complete_cycle(
@@ -2052,6 +2121,96 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    def test_finish_normalizes_currencyless_usage_recovery_error(self) -> None:
+        campaign_id = "campaign-usage-currencyless-finish"
+        cycle_id = "cycle-001"
+        call_id = "call-currencyless-finish"
+        attempt_id = "call-currencyless-finish-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id=cycle_id,
+            )
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            payload = json.loads(usage_row[7])
+            self.assertEqual(payload.pop("currency"), "USD")
+            _rewrite_campaign_event_payload(
+                root,
+                event_id=usage_row[0],
+                payload=payload,
+            )
+
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+            count_before = len(rows_before)
+            hashes_before = tuple((row[0], row[8]) for row in rows_before)
+            rewritten_usage_row = next(
+                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            self.assertEqual(
+                rewritten_usage_row[8],
+                _event_integrity_sha256(
+                    event_id=rewritten_usage_row[0],
+                    namespace=rewritten_usage_row[1],
+                    campaign_id=rewritten_usage_row[2],
+                    cycle_id=rewritten_usage_row[3],
+                    aggregate_type=rewritten_usage_row[4],
+                    aggregate_id=rewritten_usage_row[5],
+                    event_type=rewritten_usage_row[6],
+                    payload_json=rewritten_usage_row[7],
+                    occurred_at=rewritten_usage_row[9],
+                    sequence=rewritten_usage_row[10],
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage payload is invalid$",
+            ):
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                )
+
+            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
+            self.assertEqual(rows_after, rows_before)
+            self.assertEqual(len(rows_after), count_before)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after),
+                hashes_before,
+            )
+            self.assertNotIn(
+                "MODEL_USAGE_FINISHED",
+                {row[6] for row in rows_after},
+            )
+
     def test_call_attempts_replay_in_persisted_order(self) -> None:
         with _authorized_campaign("campaign-usage-list-001") as (_, _, journal):
             usage = OperationalUsageJournal(
