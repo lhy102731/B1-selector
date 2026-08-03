@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1675,18 +1676,20 @@ class OperationalUsageJournal:
         call_id: str,
         attempt_id: str,
         outcome: InvocationOutcome,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> InvocationOutcome:
         if not isinstance(outcome, InvocationOutcome):
             raise TypeError("outcome must be an InvocationOutcome")
         if outcome is InvocationOutcome.RESPONSE_RECEIVED:
             raise ValueError("outcome must be a final outcome")
         self._journal._authorize()
-        _SqliteUnitOfWork(stores._operational_spec())._write(
+        return _SqliteUnitOfWork(stores._operational_spec())._write(
             lambda connection: self._finish_in_transaction(
                 connection,
                 call_id=call_id,
                 attempt_id=attempt_id,
                 outcome=outcome,
+                deadline=deadline,
             )
         )
 
@@ -1697,7 +1700,8 @@ class OperationalUsageJournal:
         call_id: str,
         attempt_id: str,
         outcome: InvocationOutcome,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> InvocationOutcome:
         aggregate_id = _attempt_id(self._cycle_id, call_id, attempt_id)
         events = self._events_in_transaction(connection, aggregate_id)
         if len(events) == 2:
@@ -1706,11 +1710,15 @@ class OperationalUsageJournal:
                 call_id=call_id,
                 attempt_id=attempt_id,
             )
-            if recorded.final_outcome is not outcome:
+            self._validate_response_candidate(recorded.envelope, outcome)
+            if (
+                recorded.final_outcome is not InvocationOutcome.TIMEOUT
+                and recorded.final_outcome is not outcome
+            ):
                 raise CampaignJournalError(
                     "model finish conflicts with the persisted final outcome"
                 )
-            return
+            return recorded.final_outcome
         if len(events) != 1:
             raise CampaignJournalError(
                 "model attempt journal is incomplete or ambiguous"
@@ -1750,6 +1758,38 @@ class OperationalUsageJournal:
         envelope = self._validated_usage_envelope(usage_event)
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
+        self._validate_response_candidate(envelope, outcome)
+        actual = (
+            InvocationOutcome.TIMEOUT
+            if deadline is not None and time.monotonic() >= deadline
+            else outcome
+        )
+        self._journal._append_in_transaction(
+            connection,
+            event_id=_event_id(
+                self._journal._namespace,
+                self._journal._campaign_id,
+                self._cycle_id,
+                aggregate_id,
+                "finish",
+            ),
+            cycle_id=self._cycle_id,
+            aggregate_type="MODEL_ATTEMPT",
+            aggregate_id=aggregate_id,
+            event_type="MODEL_USAGE_FINISHED",
+            payload={
+                "call_id": call_id,
+                "attempt_id": attempt_id,
+                "outcome": actual.value,
+            },
+        )
+        return actual
+
+    @staticmethod
+    def _validate_response_candidate(
+        envelope: UsageEnvelope,
+        outcome: InvocationOutcome,
+    ) -> None:
         if envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:
             raise CampaignJournalError(
                 "terminal usage cannot accept a later finish event"
@@ -1769,25 +1809,6 @@ class OperationalUsageJournal:
             raise CampaignJournalError(
                 "model streaming outcome does not match recorded usage"
             )
-        self._journal._append_in_transaction(
-            connection,
-            event_id=_event_id(
-                self._journal._namespace,
-                self._journal._campaign_id,
-                self._cycle_id,
-                aggregate_id,
-                "finish",
-            ),
-            cycle_id=self._cycle_id,
-            aggregate_type="MODEL_ATTEMPT",
-            aggregate_id=aggregate_id,
-            event_type="MODEL_USAGE_FINISHED",
-            payload={
-                "call_id": call_id,
-                "attempt_id": attempt_id,
-                "outcome": outcome.value,
-            },
-        )
 
     def read_attempt(self, *, call_id: str, attempt_id: str) -> RecordedModelAttempt:
         self._journal._authorize()
@@ -1975,12 +1996,15 @@ class OperationalUsageJournal:
                 InvocationOutcome.EMPTY_OUTPUT,
                 InvocationOutcome.INVALID_JSON,
                 InvocationOutcome.STREAMING_DISABLED,
+                InvocationOutcome.TIMEOUT,
             }:
                 raise CampaignJournalError(
                     "model finish outcome cannot follow a provider response"
                 )
-            if envelope.streamed != (
-                final_outcome is InvocationOutcome.STREAMING_DISABLED
+            if (
+                final_outcome is not InvocationOutcome.TIMEOUT
+                and envelope.streamed
+                != (final_outcome is InvocationOutcome.STREAMING_DISABLED)
             ):
                 raise CampaignJournalError(
                     "model streaming outcome does not match recorded usage"

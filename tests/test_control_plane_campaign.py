@@ -1033,8 +1033,12 @@ class _StreamingThenSuccessProvider:
 
 
 class _RecordingUsageJournal:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: _ControlledClock | None = None) -> None:
         self.events: list[tuple[str, object]] = []
+        self.finish_calls: list[
+            tuple[str, str, InvocationOutcome, float | None, InvocationOutcome]
+        ] = []
+        self._clock = clock
 
     def begin(self, envelope: UsageEnvelope) -> None:
         self.events.append(("begin", envelope))
@@ -1045,13 +1049,25 @@ class _RecordingUsageJournal:
         call_id: str,
         attempt_id: str,
         outcome: InvocationOutcome,
-    ) -> None:
-        self.events.append(("finish", (call_id, attempt_id, outcome)))
+        deadline: float | None = None,
+    ) -> InvocationOutcome:
+        actual = (
+            InvocationOutcome.TIMEOUT
+            if deadline is not None
+            and self._clock is not None
+            and self._clock.monotonic() >= deadline
+            else outcome
+        )
+        self.finish_calls.append(
+            (call_id, attempt_id, outcome, deadline, actual)
+        )
+        self.events.append(("finish", (call_id, attempt_id, actual)))
+        return actual
 
 
 class _DeadlineAdvancingUsageJournal(_RecordingUsageJournal):
     def __init__(self, clock: _ControlledClock, *, deadline: float) -> None:
-        super().__init__()
+        super().__init__(clock=clock)
         self._clock = clock
         self._deadline = deadline
 
@@ -3108,10 +3124,14 @@ class ModelInvocationTests(unittest.TestCase):
                 attempt_id: str,
                 deadline: float | None = None,
             ) -> object:
-                del request, call_id, attempt_id
                 self.override_calls += 1
                 self.deadlines.append(deadline)
-                return {"source": "override"}
+                return super().invoke_json(
+                    request,
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    deadline=deadline,
+                )
 
         provider = CountingProvider()
         attempt = PublicOverrideInvocation(provider)
@@ -3128,9 +3148,22 @@ class ModelInvocationTests(unittest.TestCase):
             )
 
         self.assertEqual(attempt.override_calls, 1)
-        self.assertEqual(provider.call_count, 0)
+        self.assertEqual(provider.call_count, 1)
         self.assertEqual(attempt.deadlines, [90.1])
-        self.assertEqual(result, {"source": "override"})
+        self.assertEqual(result, {"source": "base"})
+        self.assertEqual(
+            [event[0] for event in journal.events],
+            ["begin", "finish"],
+        )
+        self.assertEqual(
+            journal.events[0][1].outcome,
+            InvocationOutcome.RESPONSE_RECEIVED,
+        )
+        self.assertEqual(
+            journal.events[1][1][2],
+            InvocationOutcome.SUCCESS,
+        )
+        self.assertEqual(journal.finish_calls[0][3], 90.1)
 
     def test_retries_reuse_one_absolute_monotonic_deadline(self) -> None:
         clock = _ControlledClock(now=100.0)
@@ -3398,11 +3431,498 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(outcomes, [InvocationOutcome.TIMEOUT])
         self.assertNotIn(InvocationOutcome.SUCCESS, outcomes)
 
+    def test_usage_begin_deadline_crossing_selects_timeout_for_every_response(
+        self,
+    ) -> None:
+        deadline = 500.1
+        scenarios = (
+            (
+                "streamed",
+                ProviderResponse(
+                    output_text='{"status":"partial"}',
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={"input_tokens": 4, "output_tokens": 2},
+                    streamed=True,
+                ),
+                48 * 1024,
+                InvocationOutcome.STREAMING_DISABLED,
+            ),
+            (
+                "overflow",
+                ProviderResponse(
+                    output_text="x" * 32,
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={"input_tokens": 4, "output_tokens": 2},
+                ),
+                8,
+                InvocationOutcome.INVALID_JSON,
+            ),
+            (
+                "empty",
+                ProviderResponse(
+                    output_text="   ",
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={"input_tokens": 4, "output_tokens": 2},
+                ),
+                48 * 1024,
+                InvocationOutcome.EMPTY_OUTPUT,
+            ),
+            (
+                "parse-error",
+                ProviderResponse(
+                    output_text="{not-json",
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={"input_tokens": 4, "output_tokens": 2},
+                ),
+                48 * 1024,
+                InvocationOutcome.INVALID_JSON,
+            ),
+            (
+                "success",
+                ProviderResponse(
+                    output_text='{"ok":1}',
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={"input_tokens": 4, "output_tokens": 2},
+                ),
+                48 * 1024,
+                InvocationOutcome.SUCCESS,
+            ),
+        )
+
+        for name, response, max_output_bytes, candidate in scenarios:
+            with self.subTest(name=name):
+                clock = _ControlledClock(now=500.0)
+                journal = _DeadlineAdvancingUsageJournal(
+                    clock,
+                    deadline=deadline,
+                )
+
+                class CountingProvider:
+                    def __init__(self) -> None:
+                        self.call_count = 0
+
+                    def invoke(self, request: object) -> ProviderResponse:
+                        del request
+                        self.call_count += 1
+                        return response
+
+                provider = CountingProvider()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                        max_output_bytes=max_output_bytes,
+                    ),
+                    max_attempts=3,
+                    max_wall_time_ms=100,
+                )
+
+                with patch.object(campaign_module, "time", clock):
+                    with self.assertRaises(ModelInvocationTimeoutError):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-begin-deadline-{name}",
+                        )
+
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(
+                    [event[0] for event in journal.events],
+                    ["begin", "finish"],
+                )
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(
+                    envelope.outcome,
+                    InvocationOutcome.RESPONSE_RECEIVED,
+                )
+                self.assertEqual(
+                    journal.events[1][1][2],
+                    InvocationOutcome.TIMEOUT,
+                )
+                self.assertEqual(
+                    journal.finish_calls[0][2:],
+                    (candidate, deadline, InvocationOutcome.TIMEOUT),
+                )
+
+    def test_parse_deadline_crossing_prefers_timeout_and_preserves_parse_cause(
+        self,
+    ) -> None:
+        original_parse = campaign_module._parse_bounded_model_output
+        deadline = 525.1
+
+        for name, output_text, expected_candidate in (
+            ("success", '{"ok":1}', InvocationOutcome.SUCCESS),
+            ("parse-error", "{not-json", InvocationOutcome.INVALID_JSON),
+        ):
+            with self.subTest(name=name):
+                clock = _ControlledClock(now=525.0)
+                journal = _RecordingUsageJournal(clock=clock)
+
+                class CountingProvider:
+                    def __init__(self) -> None:
+                        self.call_count = 0
+
+                    def invoke(self, request: object) -> ProviderResponse:
+                        del request
+                        self.call_count += 1
+                        return ProviderResponse(
+                            output_text=output_text,
+                            request_model="fake-primary-model",
+                            response_model="fake-primary-model",
+                            raw_usage={"input_tokens": 3, "output_tokens": 1},
+                        )
+
+                provider = CountingProvider()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                    ),
+                    max_attempts=3,
+                    max_wall_time_ms=100,
+                )
+
+                def parse_then_cross(
+                    text: str,
+                    *,
+                    max_output_bytes: int,
+                ) -> object:
+                    try:
+                        return original_parse(
+                            text,
+                            max_output_bytes=max_output_bytes,
+                        )
+                    finally:
+                        clock.now = deadline
+
+                with patch.object(campaign_module, "time", clock), patch.object(
+                    campaign_module,
+                    "_parse_bounded_model_output",
+                    side_effect=parse_then_cross,
+                ):
+                    with self.assertRaises(ModelInvocationTimeoutError) as caught:
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-parse-deadline-{name}",
+                        )
+
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(
+                    [event[0] for event in journal.events],
+                    ["begin", "finish"],
+                )
+                self.assertEqual(
+                    journal.finish_calls[0][2:],
+                    (
+                        expected_candidate,
+                        deadline,
+                        InvocationOutcome.TIMEOUT,
+                    ),
+                )
+                if name == "parse-error":
+                    self.assertIsInstance(
+                        caught.exception.__cause__,
+                        json.JSONDecodeError,
+                    )
+
+    def test_valid_snapshot_keeps_known_usage_when_deadline_crosses_before_finish(
+        self,
+    ) -> None:
+        deadline = 550.1
+        original_execute = campaign_module._InlineProviderExecutor.execute
+
+        for phase in ("executor_return", "usage_begin"):
+            with self.subTest(phase=phase):
+                clock = _ControlledClock(now=550.0)
+                journal = (
+                    _DeadlineAdvancingUsageJournal(clock, deadline=deadline)
+                    if phase == "usage_begin"
+                    else _RecordingUsageJournal(clock=clock)
+                )
+
+                class CountingProvider:
+                    def __init__(self) -> None:
+                        self.call_count = 0
+
+                    def invoke(self, request: object) -> ProviderResponse:
+                        del request
+                        self.call_count += 1
+                        return ProviderResponse(
+                            output_text='{"ok":1}',
+                            request_model="fake-primary-model",
+                            response_model="fake-response-model",
+                            raw_usage={
+                                "input_tokens": 7,
+                                "output_tokens": 2,
+                                "total_tokens": 9,
+                                "reported_cost": "0.01",
+                                "currency": "USD",
+                            },
+                        )
+
+                provider = CountingProvider()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                    ),
+                    max_attempts=2,
+                    max_wall_time_ms=100,
+                )
+
+                def execute_then_maybe_cross(
+                    executor: object,
+                    bound_provider: object,
+                    request: object,
+                    *,
+                    deadline: float | None,
+                    max_output_bytes: int,
+                ) -> object:
+                    snapshot = original_execute(
+                        executor,
+                        bound_provider,
+                        request,
+                        deadline=deadline,
+                        max_output_bytes=max_output_bytes,
+                    )
+                    if phase == "executor_return":
+                        clock.now = 550.1
+                    return snapshot
+
+                with patch.object(campaign_module, "time", clock), patch.object(
+                    campaign_module._InlineProviderExecutor,
+                    "execute",
+                    new=execute_then_maybe_cross,
+                ):
+                    with self.assertRaises(ModelInvocationTimeoutError):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-known-usage-{phase}",
+                        )
+
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(
+                    [event[0] for event in journal.events],
+                    ["begin", "finish"],
+                )
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
+                self.assertEqual(envelope.response_model, "fake-response-model")
+                self.assertEqual(envelope.total_tokens, 9)
+                self.assertEqual(envelope.reported_cost, "0.01")
+                self.assertEqual(
+                    envelope.outcome,
+                    InvocationOutcome.RESPONSE_RECEIVED,
+                )
+                self.assertEqual(
+                    journal.events[1][1][2],
+                    InvocationOutcome.TIMEOUT,
+                )
+
+    def test_usage_finish_actual_outcome_controls_public_result_without_retry(
+        self,
+    ) -> None:
+        class InvalidActualJournal(_RecordingUsageJournal):
+            def finish(
+                self,
+                *,
+                call_id: str,
+                attempt_id: str,
+                outcome: InvocationOutcome,
+                deadline: float | None = None,
+            ) -> InvocationOutcome:
+                super().finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=outcome,
+                    deadline=deadline,
+                )
+                return InvocationOutcome.EXCEPTION
+
+        class CountingProvider:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            def invoke(self, request: object) -> ProviderResponse:
+                del request
+                self.call_count += 1
+                return ProviderResponse(
+                    output_text='{"ok":1}',
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={},
+                )
+
+        provider = CountingProvider()
+        journal = InvalidActualJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+        )
+
+        with self.assertRaisesRegex(TypeError, "usage journal.*outcome"):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-invalid-journal-actual",
+            )
+
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(len(journal.finish_calls), 1)
+
+    def test_usage_journal_errors_propagate_once_without_provider_retry(self) -> None:
+        class JournalFailure(RuntimeError):
+            pass
+
+        for phase in ("begin", "finish"):
+            with self.subTest(phase=phase):
+                failure = JournalFailure(f"{phase} failed")
+
+                class FailingJournal(_RecordingUsageJournal):
+                    def begin(self, envelope: UsageEnvelope) -> None:
+                        if phase == "begin":
+                            raise failure
+                        super().begin(envelope)
+
+                    def finish(
+                        self,
+                        *,
+                        call_id: str,
+                        attempt_id: str,
+                        outcome: InvocationOutcome,
+                        deadline: float | None = None,
+                    ) -> InvocationOutcome:
+                        if phase == "finish":
+                            self.finish_calls.append(
+                                (
+                                    call_id,
+                                    attempt_id,
+                                    outcome,
+                                    deadline,
+                                    outcome,
+                                )
+                            )
+                            raise failure
+                        return super().finish(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            outcome=outcome,
+                            deadline=deadline,
+                        )
+
+                class CountingProvider:
+                    def __init__(self) -> None:
+                        self.call_count = 0
+
+                    def invoke(self, request: object) -> ProviderResponse:
+                        del request
+                        self.call_count += 1
+                        return ProviderResponse(
+                            output_text='{"ok":1}',
+                            request_model="fake-primary-model",
+                            response_model="fake-primary-model",
+                            raw_usage={},
+                        )
+
+                provider = CountingProvider()
+                journal = FailingJournal()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                    ),
+                    max_attempts=3,
+                )
+
+                with self.assertRaises(JournalFailure) as caught:
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-journal-{phase}-error",
+                    )
+
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(
+                    len(journal.finish_calls),
+                    0 if phase == "begin" else 1,
+                )
+
+    def test_retrying_preserves_success_linearized_before_tail_deadline(self) -> None:
+        deadline = 575.1
+        clock = _ControlledClock(now=575.0)
+
+        class TailCrossingJournal(_RecordingUsageJournal):
+            def finish(
+                self,
+                *,
+                call_id: str,
+                attempt_id: str,
+                outcome: InvocationOutcome,
+                deadline: float | None = None,
+            ) -> InvocationOutcome:
+                actual = super().finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=outcome,
+                    deadline=deadline,
+                )
+                clock.now = 575.1
+                return actual
+
+        provider = _OutputTextProvider('{"ok":1}')
+        journal = TailCrossingJournal(clock=clock)
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+            max_wall_time_ms=100,
+        )
+
+        with patch.object(campaign_module, "time", clock):
+            result = invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-success-before-tail-deadline",
+            )
+
+        self.assertEqual(result, {"ok": 1})
+        self.assertEqual(
+            journal.finish_calls[0][2:],
+            (InvocationOutcome.SUCCESS, deadline, InvocationOutcome.SUCCESS),
+        )
+
     def test_public_attempt_final_fence_rejects_late_result_without_retry(
         self,
     ) -> None:
         clock = _ControlledClock(now=400.0)
-        journal = _RecordingUsageJournal()
+        journal = _RecordingUsageJournal(clock=clock)
         provider = _ClockAdvancingSuccessProvider(
             clock,
             advance_seconds=0.0,

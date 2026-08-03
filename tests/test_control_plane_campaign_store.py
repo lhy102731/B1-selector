@@ -12,6 +12,7 @@ from threading import Barrier
 import unittest
 from unittest.mock import patch
 
+from research_automation.control_plane import campaign_store as campaign_store_module
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.campaign import (
     InvalidModelResponseError,
@@ -75,6 +76,14 @@ _COMPLETE_CYCLE_TRANSITIONS = (
     ),
     (CycleStatus.NEXT_CYCLE_DECIDED, CycleStatus.COMPLETED),
 )
+
+
+class _ControlledClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
 
 
 class _InvalidJsonProvider:
@@ -2329,6 +2338,35 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    @staticmethod
+    def _reported_response_envelope(
+        *,
+        call_id: str,
+        attempt_id: str,
+        streamed: bool = False,
+    ) -> UsageEnvelope:
+        return UsageEnvelope(
+            provider="fake-provider",
+            profile="offline",
+            request_model="fake-model",
+            response_model="fake-response-model",
+            call_id=call_id,
+            attempt_id=attempt_id,
+            usage_status=UsageStatus.REPORTED,
+            input_tokens=7,
+            output_tokens=2,
+            total_tokens=9,
+            cache_read_tokens=1,
+            cache_write_tokens=None,
+            reasoning_tokens=None,
+            reported_cost="0.01",
+            currency="USD",
+            fallback=False,
+            streamed=streamed,
+            outcome=InvocationOutcome.RESPONSE_RECEIVED,
+            raw_usage_sha256="4" * 64,
+        )
+
     def _seed_reported_usd_usage_attempt(
         self,
         *,
@@ -2424,6 +2462,247 @@ class OperationalUsageJournalTests(unittest.TestCase):
             {row[6] for row in rows_after},
         )
         return rewritten_usage_row
+
+    def test_response_timeout_finish_replays_with_usage_for_streamed_and_plain(
+        self,
+    ) -> None:
+        for streamed, candidate in (
+            (False, InvocationOutcome.SUCCESS),
+            (True, InvocationOutcome.STREAMING_DISABLED),
+        ):
+            with self.subTest(streamed=streamed):
+                suffix = "streamed" if streamed else "plain"
+                campaign_id = f"campaign-response-timeout-{suffix}"
+                call_id = f"call-response-timeout-{suffix}"
+                attempt_id = f"{call_id}-attempt-001"
+                clock = _ControlledClock(now=10.0)
+                with _authorized_campaign(campaign_id) as (root, grant, journal):
+                    usage = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id="cycle-001",
+                    )
+                    usage.begin(
+                        self._reported_response_envelope(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            streamed=streamed,
+                        )
+                    )
+
+                    if streamed:
+                        with patch.object(
+                            campaign_store_module,
+                            "time",
+                            clock,
+                            create=True,
+                        ):
+                            with self.assertRaisesRegex(
+                                CampaignJournalError,
+                                "streaming outcome",
+                            ):
+                                usage.finish(
+                                    call_id=call_id,
+                                    attempt_id=attempt_id,
+                                    outcome=InvocationOutcome.SUCCESS,
+                                    deadline=10.0,
+                                )
+
+                    with patch.object(
+                        campaign_store_module,
+                        "time",
+                        clock,
+                        create=True,
+                    ):
+                        actual = usage.finish(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            outcome=candidate,
+                            deadline=10.0,
+                        )
+
+                    self.assertEqual(actual, InvocationOutcome.TIMEOUT)
+                    rows_after_first_finish = _campaign_full_rows(
+                        root,
+                        campaign_id=campaign_id,
+                    )
+                    self.assertEqual(
+                        [row[6] for row in rows_after_first_finish],
+                        ["MODEL_USAGE_RECORDED", "MODEL_USAGE_FINISHED"],
+                    )
+
+                    replay = usage.finish(
+                        call_id=call_id,
+                        attempt_id=attempt_id,
+                        outcome=candidate,
+                    )
+                    self.assertEqual(replay, InvocationOutcome.TIMEOUT)
+                    self.assertEqual(
+                        _campaign_full_rows(root, campaign_id=campaign_id),
+                        rows_after_first_finish,
+                    )
+
+                    reopened = OperationalUsageJournal(
+                        journal=OperationalCampaignJournal(
+                            root_secret=ROOT_SECRET,
+                            grant=grant,
+                            namespace="formal",
+                            campaign_id=campaign_id,
+                            clock=lambda: NOW,
+                        ),
+                        cycle_id="cycle-001",
+                    )
+                    recorded = reopened.read_attempt(
+                        call_id=call_id,
+                        attempt_id=attempt_id,
+                    )
+                    self.assertEqual(
+                        recorded.final_outcome,
+                        InvocationOutcome.TIMEOUT,
+                    )
+                    self.assertEqual(recorded.envelope.total_tokens, 9)
+                    self.assertEqual(recorded.envelope.reported_cost, "0.01")
+                    self.assertEqual(recorded.envelope.currency, "USD")
+                    self.assertEqual(recorded.envelope.streamed, streamed)
+
+    def test_finish_selects_candidate_only_before_exact_deadline(self) -> None:
+        for now, expected in (
+            (9.9, InvocationOutcome.SUCCESS),
+            (10.0, InvocationOutcome.TIMEOUT),
+            (10.1, InvocationOutcome.TIMEOUT),
+        ):
+            with self.subTest(now=now):
+                suffix = str(now).replace(".", "-")
+                campaign_id = f"campaign-finish-deadline-{suffix}"
+                call_id = f"call-finish-deadline-{suffix}"
+                attempt_id = f"{call_id}-attempt-001"
+                clock = _ControlledClock(now=now)
+                with _authorized_campaign(campaign_id) as (_, _, journal):
+                    usage = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id="cycle-001",
+                    )
+                    usage.begin(
+                        self._reported_response_envelope(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                        )
+                    )
+
+                    with patch.object(
+                        campaign_store_module,
+                        "time",
+                        clock,
+                        create=True,
+                    ):
+                        actual = usage.finish(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            outcome=InvocationOutcome.SUCCESS,
+                            deadline=10.0,
+                        )
+
+                    self.assertEqual(actual, expected)
+                    self.assertEqual(
+                        usage.read_attempt(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                        ).final_outcome,
+                        expected,
+                    )
+
+    def test_finish_keeps_success_when_append_and_commit_cross_deadline(self) -> None:
+        campaign_id = "campaign-finish-tail-deadline"
+        call_id = "call-finish-tail-deadline"
+        attempt_id = f"{call_id}-attempt-001"
+        clock = _ControlledClock(now=19.9)
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            usage.begin(
+                self._reported_response_envelope(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                )
+            )
+            original_append = OperationalCampaignJournal._append_in_transaction
+
+            def append_then_cross(
+                active_journal: OperationalCampaignJournal,
+                connection: object,
+                **kwargs: object,
+            ) -> object:
+                event = original_append(
+                    active_journal,
+                    connection,
+                    **kwargs,
+                )
+                if (
+                    active_journal is journal
+                    and kwargs.get("event_type") == "MODEL_USAGE_FINISHED"
+                ):
+                    clock.now = 20.0
+                return event
+
+            with patch.object(
+                campaign_store_module,
+                "time",
+                clock,
+                create=True,
+            ), patch.object(
+                OperationalCampaignJournal,
+                "_append_in_transaction",
+                new=append_then_cross,
+            ):
+                actual = usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                    deadline=20.0,
+                )
+
+            self.assertEqual(clock.now, 20.0)
+            self.assertEqual(actual, InvocationOutcome.SUCCESS)
+            rows_after_finish = _campaign_full_rows(
+                root,
+                campaign_id=campaign_id,
+            )
+            replay = usage.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.SUCCESS,
+                deadline=0.0,
+            )
+            self.assertEqual(replay, InvocationOutcome.SUCCESS)
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_after_finish,
+            )
+            with self.assertRaisesRegex(CampaignJournalError, "conflicts"):
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.INVALID_JSON,
+                )
+
+            reopened = OperationalUsageJournal(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                ),
+                cycle_id="cycle-001",
+            )
+            self.assertEqual(
+                reopened.read_attempt(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                ).final_outcome,
+                InvocationOutcome.SUCCESS,
+            )
 
     def test_finish_normalizes_malformed_usage_json_without_writing(self) -> None:
         campaign_id = "campaign-usage-malformed-json-finish"

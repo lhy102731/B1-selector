@@ -215,7 +215,8 @@ class UsageJournal(Protocol):
         call_id: str,
         attempt_id: str,
         outcome: InvocationOutcome,
-    ) -> None: ...
+        deadline: float | None = None,
+    ) -> InvocationOutcome: ...
 
 
 def _usage_get(raw_usage: Mapping[str, object], field: str) -> object:
@@ -638,8 +639,8 @@ def _snapshot_provider_response(
 class _InlineProviderExecutor:
     """Default direct execution for test-only, cooperative adapters.
 
-    Inline execution cannot preempt a running provider.  It only rejects work
-    after control returns and the caller's unchanged absolute deadline expired.
+    Inline execution fences at entry and on the return side, but cannot preempt
+    a provider while its synchronous ``invoke`` call is running.
     """
 
     __slots__ = ()
@@ -1307,7 +1308,13 @@ class SpawnedProviderExecutor:
 
 
 class ModelInvocation:
-    """Invoke one provider attempt and account for it before parsing output."""
+    """Invoke one provider attempt and account for it before parsing output.
+
+    A public ``invoke_json`` override must preserve the attempt's atomic
+    contract: before returning or raising an ordinary invocation error, it must
+    complete exactly one terminal usage outcome.  Tail latency after that
+    outcome is linearized must not rewrite it.
+    """
 
     __slots__ = (
         "_provider",
@@ -1378,8 +1385,6 @@ class ModelInvocation:
                 deadline=deadline,
                 max_output_bytes=self._max_output_bytes,
             )
-            if deadline is not None:
-                _raise_if_provider_deadline_expired(deadline)
             if type(response) is not _ProviderResponseSnapshot:
                 raise _ProviderExecutorProtocolError(
                     "provider executor returned an invalid snapshot"
@@ -1451,17 +1456,19 @@ class ModelInvocation:
             )
         )
         if response.streamed:
-            self._usage_journal.finish(
+            self._commit_response_terminal(
                 call_id=call_id,
                 attempt_id=attempt_id,
-                outcome=InvocationOutcome.STREAMING_DISABLED,
+                candidate=InvocationOutcome.STREAMING_DISABLED,
+                deadline=deadline,
             )
             raise StreamingDisabledError("streaming usage accounting is not enabled")
         if response.output_overflow:
-            self._usage_journal.finish(
+            self._commit_response_terminal(
                 call_id=call_id,
                 attempt_id=attempt_id,
-                outcome=InvocationOutcome.INVALID_JSON,
+                candidate=InvocationOutcome.INVALID_JSON,
+                deadline=deadline,
             )
             raise InvalidModelResponseError("provider response is not valid JSON")
         if (
@@ -1469,10 +1476,11 @@ class ModelInvocation:
             or not response.output_text
             or response.output_text.isspace()
         ):
-            self._usage_journal.finish(
+            self._commit_response_terminal(
                 call_id=call_id,
                 attempt_id=attempt_id,
-                outcome=InvocationOutcome.EMPTY_OUTPUT,
+                candidate=InvocationOutcome.EMPTY_OUTPUT,
+                deadline=deadline,
             )
             raise InvalidModelResponseError("provider response is empty")
         try:
@@ -1487,30 +1495,45 @@ class ModelInvocation:
             ValueError,
             _ModelOutputBoundsError,
         ) as error:
-            self._usage_journal.finish(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.INVALID_JSON,
-            )
-            raise InvalidModelResponseError("provider response is not valid JSON") from error
-        try:
-            if deadline is not None and time.monotonic() >= deadline:
-                raise _ModelInvocationDeadlineExceeded(
-                    "logical invocation deadline expired"
+            try:
+                self._commit_response_terminal(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    candidate=InvocationOutcome.INVALID_JSON,
+                    deadline=deadline,
                 )
-        except _ModelInvocationDeadlineExceeded:
-            self._usage_journal.finish(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.TIMEOUT,
-            )
-            raise
-        self._usage_journal.finish(
+            except _ModelInvocationDeadlineExceeded as deadline_error:
+                raise deadline_error from error
+            raise InvalidModelResponseError("provider response is not valid JSON") from error
+        self._commit_response_terminal(
             call_id=call_id,
             attempt_id=attempt_id,
-            outcome=InvocationOutcome.SUCCESS,
+            candidate=InvocationOutcome.SUCCESS,
+            deadline=deadline,
         )
         return parsed
+
+    def _commit_response_terminal(
+        self,
+        *,
+        call_id: str,
+        attempt_id: str,
+        candidate: InvocationOutcome,
+        deadline: float | None,
+    ) -> InvocationOutcome:
+        actual = self._usage_journal.finish(
+            call_id=call_id,
+            attempt_id=attempt_id,
+            outcome=candidate,
+            deadline=deadline,
+        )
+        if actual is candidate:
+            return actual
+        if actual is InvocationOutcome.TIMEOUT:
+            raise _ModelInvocationDeadlineExceeded(
+                "logical invocation deadline expired"
+            )
+        raise TypeError("usage journal returned an invalid terminal outcome")
 
     def _record_unknown_outcome(
         self,

@@ -413,26 +413,28 @@ class _FencedOperationalUsageJournal:
         call_id: str,
         attempt_id: str,
         outcome: InvocationOutcome,
-    ) -> None:
+        deadline: float | None = None,
+    ) -> InvocationOutcome:
         if not isinstance(outcome, InvocationOutcome):
             raise TypeError("outcome must be an InvocationOutcome")
         if outcome is InvocationOutcome.RESPONSE_RECEIVED:
             raise ValueError("outcome must be a final outcome")
         self._delegate._journal._authorize()
 
-        def finish(connection) -> None:
+        def finish(connection) -> InvocationOutcome:
             self._controller._require_active_execution_in_transaction(
                 connection,
                 self._execution,
             )
-            self._delegate._finish_in_transaction(
+            return self._delegate._finish_in_transaction(
                 connection,
                 call_id=call_id,
                 attempt_id=attempt_id,
                 outcome=outcome,
+                deadline=deadline,
             )
 
-        _SqliteUnitOfWork(stores._operational_spec())._write(finish)
+        return _SqliteUnitOfWork(stores._operational_spec())._write(finish)
 
 
 def _stable_id(domain: bytes, *parts: str) -> str:
