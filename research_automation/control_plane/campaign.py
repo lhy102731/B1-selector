@@ -11,7 +11,7 @@ import pickle
 import re
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import Enum
 from multiprocessing.reduction import ForkingPickler
@@ -88,6 +88,10 @@ class _ProviderExecutorTimeout(TimeoutError):
 
 class _ProviderExecutorError(RuntimeError):
     """Internal bounded provider or worker failure signal."""
+
+
+class _ProviderFrameOverflowError(ValueError):
+    """Internal signal that a valid worker frame exceeded its byte bound."""
 
 
 @dataclass(frozen=True)
@@ -753,8 +757,22 @@ def _provider_frame(tag: str, snapshot: _ProviderResponseSnapshot | None = None)
         allow_nan=False,
     ).encode("ascii")
     if len(payload) > _MAX_PROVIDER_FRAME_BYTES:
-        raise ValueError("provider worker frame exceeds the byte bound")
+        raise _ProviderFrameOverflowError(
+            "provider worker frame exceeds the byte bound"
+        )
     return payload
+
+
+def _bounded_response_frame(snapshot: _ProviderResponseSnapshot) -> bytes:
+    try:
+        return _provider_frame("response", snapshot)
+    except _ProviderFrameOverflowError:
+        if snapshot.output_text is None:
+            raise
+        return _provider_frame(
+            "response",
+            replace(snapshot, output_text=None, output_overflow=True),
+        )
 
 
 def _spawned_provider_worker(
@@ -785,7 +803,7 @@ def _spawned_provider_worker(
                 response,
                 max_output_bytes=max_output_bytes,
             )
-            frame = _provider_frame("response", snapshot)
+            frame = _bounded_response_frame(snapshot)
         except Exception:
             frame = _provider_frame("invalid_response")
         send_connection.send_bytes(frame)
@@ -906,20 +924,6 @@ def _close_process(process: object) -> None:
         pass
 
 
-def _reap_worker_by_deadline(process: object, *, deadline: float) -> None:
-    process.join(max(0.0, deadline - time.monotonic()))
-    if process.is_alive():
-        try:
-            _terminate_and_reap_worker(
-                process,
-                join_timeout=_WORKER_REAP_JOIN_SECONDS,
-            )
-        finally:
-            _close_process(process)
-        raise _ProviderExecutorTimeout("provider invocation timed out")
-    _close_process(process)
-
-
 class SpawnedProviderExecutor:
     """Run exactly one provider attempt in a directly reaped spawn process."""
 
@@ -977,28 +981,38 @@ class SpawnedProviderExecutor:
             if started:
                 send_connection.close()
 
+        worker_reaped = False
         try:
             remaining = max(0.0, deadline - time.monotonic())
-            if not receive_connection.poll(remaining):
-                try:
-                    _terminate_and_reap_worker(
-                        worker,
-                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
-                    )
-                finally:
-                    _close_process(worker)
+            try:
+                ready = receive_connection.poll(remaining)
+            except Exception as error:
+                raise _ProviderExecutorError(
+                    "provider worker protocol failed"
+                ) from error
+            if not ready:
                 raise _ProviderExecutorTimeout("provider invocation timed out")
             try:
                 frame = receive_connection.recv_bytes(
                     maxlength=_MAX_PROVIDER_FRAME_BYTES
                 )
             except (EOFError, OSError) as error:
-                _reap_worker_by_deadline(worker, deadline=deadline)
                 raise _ProviderExecutorError("provider worker protocol failed") from error
-            _reap_worker_by_deadline(worker, deadline=deadline)
-            return _decode_provider_frame(frame)
+            worker.join(max(0.0, deadline - time.monotonic()))
+            if worker.is_alive():
+                raise _ProviderExecutorTimeout("provider invocation timed out")
+            worker_reaped = True
         finally:
-            receive_connection.close()
+            try:
+                if not worker_reaped:
+                    _terminate_and_reap_worker(
+                        worker,
+                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
+                    )
+            finally:
+                _close_process(worker)
+                receive_connection.close()
+        return _decode_provider_frame(frame)
 
 
 class ModelInvocation:

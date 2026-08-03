@@ -92,6 +92,33 @@ class _OversizedSpawnOutputProvider:
         )
 
 
+_ESCAPED_FRAME_OVERFLOW_USAGE = {
+    "input_tokens": 101,
+    "output_tokens": 202,
+    "total_tokens": 303,
+    "cache_read_tokens": 11,
+    "cache_write_tokens": 12,
+    "reasoning_tokens": 13,
+    "reported_cost": "0.0125",
+    "currency": "USD",
+}
+
+
+class _EscapedFrameOverflowProvider:
+    def __init__(self, marker_path: str) -> None:
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        Path(self._marker_path).write_text(str(os.getpid()), encoding="ascii")
+        return ProviderResponse(
+            output_text="\x01" * 30_000,
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage=_ESCAPED_FRAME_OVERFLOW_USAGE,
+            fallback=True,
+        )
+
+
 class _OversizedPickleProvider:
     def __init__(self) -> None:
         self.payload = b"x" * (512 * 1024)
@@ -162,6 +189,70 @@ class _StartFailureContext:
         return self.receive, self.send
 
     def Process(self, *args: object, **kwargs: object) -> _StartFailureProcess:
+        return self.process
+
+
+class _PollFailurePipeEnd:
+    def __init__(self, actions: list[object], name: str) -> None:
+        self._actions = actions
+        self._name = name
+        self.closed = False
+
+    def poll(self, timeout: float) -> bool:
+        self._actions.append(("receive.poll", timeout))
+        raise OSError("synthetic poll failure")
+
+    def close(self) -> None:
+        self._actions.append(f"{self._name}.close")
+        self.closed = True
+
+
+class _PollFailureProcess:
+    pid = 12345
+
+    def __init__(self, actions: list[object]) -> None:
+        self._actions = actions
+        self._alive = False
+        self.closed = False
+
+    def start(self) -> None:
+        self._actions.append("process.start")
+        self._alive = True
+
+    def terminate(self) -> None:
+        self._actions.append("process.terminate")
+
+    def join(self, timeout: float | None = None) -> None:
+        self._actions.append(("process.join", timeout))
+
+    def is_alive(self) -> bool:
+        self._actions.append("process.is_alive")
+        return self._alive
+
+    def kill(self) -> None:
+        self._actions.append("process.kill")
+        self._alive = False
+
+    def close(self) -> None:
+        self._actions.append("process.close")
+        self.closed = True
+
+
+class _PollFailureContext:
+    def __init__(self) -> None:
+        self.actions: list[object] = []
+        self.receive = _PollFailurePipeEnd(self.actions, "receive")
+        self.send = _PollFailurePipeEnd(self.actions, "send")
+        self.process = _PollFailureProcess(self.actions)
+
+    def Pipe(
+        self, *, duplex: bool
+    ) -> tuple[_PollFailurePipeEnd, _PollFailurePipeEnd]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        return self.receive, self.send
+
+    def Process(self, *args: object, **kwargs: object) -> _PollFailureProcess:
         return self.process
 
 
@@ -701,6 +792,59 @@ class ModelInvocationTests(unittest.TestCase):
                 ),
             )
 
+    def test_spawned_escaped_frame_overflow_preserves_reported_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "escaped-frame-overflow-child.pid"
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=_EscapedFrameOverflowProvider(str(marker)),
+                provider_executor=SpawnedProviderExecutor(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+
+            with self.assertRaises(InvalidModelResponseError):
+                invocation.invoke_json(
+                    {"prompt": "escaped-frame-overflow"},
+                    call_id="call-spawn-escaped-frame-overflow",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+            child_pid = int(marker.read_text(encoding="ascii"))
+            self.assertFalse(
+                any(child.pid == child_pid for child in multiprocessing.active_children())
+            )
+            envelope = journal.events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
+            self.assertEqual(envelope.request_model, "fake-request-model")
+            self.assertEqual(envelope.response_model, "fake-response-model")
+            self.assertEqual(envelope.input_tokens, 101)
+            self.assertEqual(envelope.output_tokens, 202)
+            self.assertEqual(envelope.total_tokens, 303)
+            self.assertEqual(envelope.cache_read_tokens, 11)
+            self.assertEqual(envelope.cache_write_tokens, 12)
+            self.assertEqual(envelope.reasoning_tokens, 13)
+            self.assertEqual(envelope.reported_cost, "0.0125")
+            self.assertEqual(envelope.currency, "USD")
+            self.assertTrue(envelope.fallback)
+            self.assertFalse(envelope.streamed)
+            self.assertEqual(
+                envelope.raw_usage_sha256,
+                campaign_module._raw_usage_sha256(_ESCAPED_FRAME_OVERFLOW_USAGE),
+            )
+            self.assertEqual(
+                journal.events[1][1],
+                (
+                    "call-spawn-escaped-frame-overflow",
+                    "attempt-001",
+                    InvocationOutcome.INVALID_JSON,
+                ),
+            )
+
     def test_spawned_executor_rejects_non_json_request_without_process_start(
         self,
     ) -> None:
@@ -820,6 +964,53 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
         self.assertTrue(context.process.closed)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_poll_failure_reaps_and_closes_every_worker_resource(self) -> None:
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ChildPidProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-spawn-poll-failure",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+        poll_timeout = context.actions[2][1]
+        self.assertGreater(poll_timeout, 0.0)
+        self.assertEqual(
+            context.actions,
+            [
+                "process.start",
+                "send.close",
+                ("receive.poll", poll_timeout),
+                "process.terminate",
+                ("process.join", 0.5),
+                "process.is_alive",
+                "process.kill",
+                ("process.join", 0.5),
+                "process.is_alive",
+                "process.close",
+                "receive.close",
+            ],
+        )
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
