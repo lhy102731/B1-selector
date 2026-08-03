@@ -5285,6 +5285,44 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
 
+    def test_persistent_parent_send_close_failure_has_one_bounded_retry(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        def fail_send_close() -> None:
+            context.send.close_calls += 1
+            context.actions.append("send.close")
+            raise OSError("synthetic persistent parent send close failure")
+
+        context.send.close = fail_send_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-persistent-parent-send-close-failure",
+                )
+
+        self.assertEqual(context.send.close_calls, 2)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.EXCEPTION)
+
     def test_partial_start_failure_with_pid_reaps_and_closes_worker(self) -> None:
         deadline = 10.0
         clock = _ControlledClock(now=9.0)
