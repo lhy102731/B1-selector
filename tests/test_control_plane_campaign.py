@@ -1637,6 +1637,518 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
 
+    def test_cleanup_terminate_interrupt_is_deferred_until_everything_is_closed(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = KeyboardInterrupt("synthetic cleanup terminate interruption")
+
+        def interrupt_terminate() -> None:
+            context.actions.append("process.terminate")
+            raise interrupt
+
+        context.process.terminate = interrupt_terminate  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-terminate-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(context.actions.count("process.start"), 1)
+        self.assertIn("process.kill", context.actions)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_initial_join_interrupt_is_deferred_until_worker_is_reaped(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = SystemExit(17)
+        join_calls = 0
+
+        def interrupt_initial_join(timeout: float | None = None) -> None:
+            nonlocal join_calls
+            context.actions.append(("process.join", timeout))
+            join_calls += 1
+            if join_calls == 1:
+                raise interrupt
+
+        context.process.join = interrupt_initial_join  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(SystemExit) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-initial-join-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(join_calls, 2)
+        self.assertIn("process.kill", context.actions)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_initial_liveness_interrupt_still_forces_kill(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = KeyboardInterrupt("synthetic initial liveness interruption")
+        is_alive_calls = 0
+
+        def interrupt_initial_is_alive() -> bool:
+            nonlocal is_alive_calls
+            context.actions.append("process.is_alive")
+            is_alive_calls += 1
+            if is_alive_calls == 1:
+                raise interrupt
+            return context.process._alive
+
+        context.process.is_alive = (  # type: ignore[method-assign]
+            interrupt_initial_is_alive
+        )
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-initial-liveness-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(is_alive_calls, 2)
+        self.assertIn("process.kill", context.actions)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_kill_interrupt_retries_kill_before_propagating(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = SystemExit(23)
+        kill_calls = 0
+
+        def interrupt_initial_kill() -> None:
+            nonlocal kill_calls
+            context.actions.append("process.kill")
+            kill_calls += 1
+            if kill_calls == 1:
+                raise interrupt
+            context.process._alive = False
+
+        context.process.kill = interrupt_initial_kill  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(SystemExit) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-kill-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(kill_calls, 2)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_post_kill_join_interrupt_still_checks_reaped_state(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = KeyboardInterrupt("synthetic post-kill join interruption")
+        join_calls = 0
+
+        def interrupt_post_kill_join(timeout: float | None = None) -> None:
+            nonlocal join_calls
+            context.actions.append(("process.join", timeout))
+            join_calls += 1
+            if join_calls == 2:
+                raise interrupt
+
+        context.process.join = (  # type: ignore[method-assign]
+            interrupt_post_kill_join
+        )
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-post-kill-join-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(join_calls, 2)
+        self.assertEqual(context.actions.count("process.is_alive"), 2)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_final_liveness_interrupt_conservatively_retries_kill(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = SystemExit(29)
+        kill_calls = 0
+        is_alive_calls = 0
+
+        def delayed_kill() -> None:
+            nonlocal kill_calls
+            context.actions.append("process.kill")
+            kill_calls += 1
+            if kill_calls == 2:
+                context.process._alive = False
+
+        def interrupt_final_is_alive() -> bool:
+            nonlocal is_alive_calls
+            context.actions.append("process.is_alive")
+            is_alive_calls += 1
+            if is_alive_calls == 2:
+                raise interrupt
+            return context.process._alive
+
+        context.process.kill = delayed_kill  # type: ignore[method-assign]
+        context.process.is_alive = (  # type: ignore[method-assign]
+            interrupt_final_is_alive
+        )
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(SystemExit) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-final-liveness-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(kill_calls, 2)
+        self.assertEqual(is_alive_calls, 3)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_worker_close_interrupt_does_not_skip_pipe_cleanup(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PollFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = KeyboardInterrupt("synthetic worker close interruption")
+        process_close_calls = 0
+
+        def interrupt_process_close() -> None:
+            nonlocal process_close_calls
+            context.actions.append("process.close")
+            process_close_calls += 1
+            clock.now = deadline
+            raise interrupt
+
+        context.process.close = interrupt_process_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-worker-close-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(process_close_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_receive_close_interrupt_does_not_skip_send_retry(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(
+            clock=clock,
+            deadline=deadline,
+            fail_first_send_close=True,
+        )
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = SystemExit(31)
+        receive_close_calls = 0
+
+        def interrupt_receive_close() -> None:
+            nonlocal receive_close_calls
+            context.actions.append("receive.close")
+            receive_close_calls += 1
+            raise interrupt
+
+        context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(SystemExit) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-receive-close-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(receive_close_calls, 1)
+        self.assertEqual(context.send.close_calls, 2)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_primary_interrupt_wins_over_send_cleanup_interrupt(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+        primary_interrupt = KeyboardInterrupt("synthetic start interruption")
+        cleanup_interrupt = SystemExit(37)
+        send_close_calls = 0
+
+        def interrupt_start_after_pid() -> None:
+            context.actions.append("process.start")
+            context.process.pid = 12345
+            context.process._alive = True
+            raise primary_interrupt
+
+        def interrupt_send_close() -> None:
+            nonlocal send_close_calls
+            context.actions.append("send.close")
+            send_close_calls += 1
+            raise cleanup_interrupt
+
+        context.process.start = interrupt_start_after_pid  # type: ignore[method-assign]
+        context.send.close = interrupt_send_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-primary-wins-over-send-cleanup-interrupt",
+                    attempt_id="attempt-001",
+                    deadline=deadline,
+                )
+
+        self.assertIs(caught.exception, primary_interrupt)
+        self.assertEqual(send_close_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_cleanup_pid_probe_interrupt_conservatively_reaps_worker(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+        primary_interrupt = KeyboardInterrupt("synthetic partial start interruption")
+        cleanup_interrupt = SystemExit(41)
+
+        class PidProbeInterruptProcess(_LifecycleFenceProcess):
+            @property
+            def pid(self) -> int:
+                raise cleanup_interrupt
+
+            def start(self) -> None:
+                self._actions.append("process.start")
+                self._alive = True
+                raise primary_interrupt
+
+        context.process = PidProbeInterruptProcess(
+            actions=context.actions,
+            clock=clock,
+            deadline=deadline,
+            cross_deadline_at=None,
+        )
+        context.receive.process = context.process
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-cleanup-pid-probe-interrupt",
+                    attempt_id="attempt-001",
+                    deadline=deadline,
+                )
+
+        self.assertIs(caught.exception, primary_interrupt)
+        self.assertGreaterEqual(context.process.terminate_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_pipe_deadline_cleanup_interrupt_wins_after_both_ends_are_tried(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _PipeDeadlineFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = KeyboardInterrupt("synthetic pipe deadline cleanup interruption")
+        receive_close_calls = 0
+
+        def interrupt_receive_close() -> None:
+            nonlocal receive_close_calls
+            receive_close_calls += 1
+            raise interrupt
+
+        context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module, "time", clock):
+            with self.assertRaises(KeyboardInterrupt) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-pipe-deadline-cleanup-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(receive_close_calls, 1)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(context.process_calls, 0)
+        self.assertEqual(journal.events, [])
+
+    def test_process_construction_cleanup_interrupt_wins_after_both_pipe_closes(
+        self,
+    ) -> None:
+        context = _ProcessConstructionFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+        interrupt = SystemExit(43)
+        receive_close_calls = 0
+
+        def interrupt_receive_close() -> None:
+            nonlocal receive_close_calls
+            receive_close_calls += 1
+            raise interrupt
+
+        context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-process-construction-cleanup-interrupt",
+                )
+
+        self.assertIs(caught.exception, interrupt)
+        self.assertEqual(context.process_calls, 1)
+        self.assertEqual(receive_close_calls, 1)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
     def test_spawn_failure_closes_both_pipe_ends_and_process_handle(self) -> None:
         context = _StartFailureContext()
         journal = _RecordingUsageJournal()

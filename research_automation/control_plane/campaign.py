@@ -1021,50 +1021,93 @@ def _decode_provider_frame(frame: bytes) -> _ProviderResponseSnapshot:
         ) from error
 
 
+def _defer_cleanup_failure(
+    error: BaseException,
+    first_interrupt: BaseException | None,
+    first_error: Exception | None,
+) -> tuple[BaseException | None, Exception | None]:
+    if isinstance(error, Exception):
+        if first_error is None:
+            first_error = error
+    elif first_interrupt is None:
+        first_interrupt = error
+    return first_interrupt, first_error
+
+
 def _terminate_and_reap_worker(process: object, *, join_timeout: float) -> None:
+    first_interrupt: BaseException | None = None
     first_error: Exception | None = None
     try:
         process.terminate()
-    except Exception as error:
-        first_error = error
+    except BaseException as error:
+        first_interrupt, first_error = _defer_cleanup_failure(
+            error, first_interrupt, first_error
+        )
     try:
         process.join(join_timeout)
-    except Exception as error:
-        if first_error is None:
-            first_error = error
+    except BaseException as error:
+        first_interrupt, first_error = _defer_cleanup_failure(
+            error, first_interrupt, first_error
+        )
     try:
         worker_alive = process.is_alive()
-    except Exception as error:
-        if first_error is None:
-            first_error = error
+    except BaseException as error:
+        first_interrupt, first_error = _defer_cleanup_failure(
+            error, first_interrupt, first_error
+        )
         worker_alive = True
     if worker_alive:
         try:
             process.kill()
-        except Exception as error:
-            if first_error is None:
-                first_error = error
+        except BaseException as error:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                error, first_interrupt, first_error
+            )
         try:
             process.join(join_timeout)
-        except Exception as error:
-            if first_error is None:
-                first_error = error
+        except BaseException as error:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                error, first_interrupt, first_error
+            )
     try:
         worker_alive = process.is_alive()
-    except Exception as error:
-        if first_error is None:
-            first_error = error
+    except BaseException as error:
+        first_interrupt, first_error = _defer_cleanup_failure(
+            error, first_interrupt, first_error
+        )
         worker_alive = True
+    if worker_alive:
+        try:
+            process.kill()
+        except BaseException as error:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                error, first_interrupt, first_error
+            )
+        try:
+            process.join(join_timeout)
+        except BaseException as error:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                error, first_interrupt, first_error
+            )
+        try:
+            worker_alive = process.is_alive()
+        except BaseException as error:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                error, first_interrupt, first_error
+            )
+            worker_alive = True
+    if first_interrupt is not None:
+        raise first_interrupt
     if first_error is not None:
         raise first_error
     if worker_alive:
         raise RuntimeError("spawned provider worker survived kill escalation")
 
 
-def _best_effort_close(resource: object) -> Exception | None:
+def _best_effort_close(resource: object) -> BaseException | None:
     try:
         resource.close()
-    except Exception as error:
+    except BaseException as error:
         return error
     return None
 
@@ -1154,11 +1197,16 @@ class SpawnedProviderExecutor:
         try:
             _raise_if_provider_deadline_expired(deadline)
         except _ProviderExecutorDeadlineExceeded as error:
+            cleanup_interrupt: BaseException | None = None
             cleanup_error: Exception | None = None
             for connection in (receive_connection, send_connection):
                 close_error = _best_effort_close(connection)
-                if cleanup_error is None and close_error is not None:
-                    cleanup_error = close_error
+                if close_error is not None:
+                    cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                        close_error, cleanup_interrupt, cleanup_error
+                    )
+            if cleanup_interrupt is not None:
+                raise cleanup_interrupt
             if cleanup_error is not None:
                 raise error from cleanup_error
             raise
@@ -1173,13 +1221,18 @@ class SpawnedProviderExecutor:
                 ),
             )
         except BaseException as error:
+            cleanup_interrupt: BaseException | None = None
             cleanup_error: Exception | None = None
             for connection in (receive_connection, send_connection):
                 close_error = _best_effort_close(connection)
-                if cleanup_error is None and close_error is not None:
-                    cleanup_error = close_error
+                if close_error is not None:
+                    cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                        close_error, cleanup_interrupt, cleanup_error
+                    )
             if not isinstance(error, Exception):
                 raise
+            if cleanup_interrupt is not None:
+                raise cleanup_interrupt
             if time.monotonic() >= deadline:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
@@ -1295,31 +1348,46 @@ class SpawnedProviderExecutor:
             failure = error
             failure_traceback = error.__traceback__
 
+        cleanup_interrupt: BaseException | None = None
         cleanup_error: Exception | None = None
-        worker_may_have_started = (
-            worker_started or getattr(worker, "pid", None) is not None
-        )
+        worker_may_have_started = worker_started
+        if not worker_may_have_started:
+            try:
+                worker_may_have_started = getattr(worker, "pid", None) is not None
+            except BaseException as error:
+                worker_may_have_started = True
+                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                    error, cleanup_interrupt, cleanup_error
+                )
         if worker_may_have_started and not worker_reaped:
             try:
                 _terminate_and_reap_worker(
                     worker,
                     join_timeout=_WORKER_REAP_JOIN_SECONDS,
                 )
-            except Exception as error:
-                cleanup_error = error
+            except BaseException as error:
+                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                    error, cleanup_interrupt, cleanup_error
+                )
         for resource in (worker, receive_connection):
             close_error = _best_effort_close(resource)
-            if cleanup_error is None and close_error is not None:
-                cleanup_error = close_error
+            if close_error is not None:
+                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                    close_error, cleanup_interrupt, cleanup_error
+                )
         if not send_connection_closed:
             close_error = _best_effort_close(send_connection)
-            if cleanup_error is None and close_error is not None:
-                cleanup_error = close_error
+            if close_error is not None:
+                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
+                    close_error, cleanup_interrupt, cleanup_error
+                )
 
         # Control-flow interrupts win after cleanup, including if cleanup
         # crosses the deadline.  They are never provider retry signals.
         if failure is not None and not isinstance(failure, Exception):
             raise failure.with_traceback(failure_traceback)
+        if cleanup_interrupt is not None:
+            raise cleanup_interrupt
         if time.monotonic() >= deadline:
             deadline_error = _ProviderExecutorDeadlineExceeded(
                 "provider invocation deadline expired"
