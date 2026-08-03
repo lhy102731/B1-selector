@@ -1158,8 +1158,14 @@ class SpawnedProviderExecutor:
     """Run a bound trusted fake provider in a directly reaped spawn process.
 
     P6 providers must be trusted, spawn-picklable fakes and must not create
-    descendant processes.  Bounded serialization is a one-time preflight, not
-    an isolation boundary.  Cleanup guarantees apply only to the direct worker.
+    descendant processes.  Bounded serialization is a synchronous one-time
+    configuration preflight before the logical-call deadline, not an isolation
+    boundary; trusted serialization hooks must therefore terminate without
+    external cancellation.  Every execute call unpickles the same frozen
+    provider snapshot into a fresh worker, so mutable in-process provider state
+    is not carried across retry attempts.  Retry-dependent fake behavior must
+    therefore be stateless or use explicit bounded external state.  Cleanup
+    guarantees apply only to the direct worker.
     """
 
     __slots__ = ("_provider", "_provider_pickle")
@@ -1756,15 +1762,20 @@ class RetryingModelInvocation:
         )
         for logical_attempt in retrying:
             with logical_attempt:
+                attempt_number = logical_attempt.retry_state.attempt_number
+                attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
                 if (
                     absolute_deadline is not None
                     and time.monotonic() >= absolute_deadline
                 ):
+                    self._attempt._record_unknown_outcome(
+                        call_id=call_id,
+                        attempt_id=attempt_id,
+                        outcome=InvocationOutcome.TIMEOUT,
+                    )
                     raise _ModelInvocationDeadlineExceeded(
                         "logical invocation deadline expired"
                     )
-                attempt_number = logical_attempt.retry_state.attempt_number
-                attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
                 output = self._attempt.invoke_json(
                     request,
                     call_id=call_id,

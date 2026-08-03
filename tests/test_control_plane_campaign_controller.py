@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from decimal import Context, Inexact, Rounded, localcontext
 from threading import Barrier, Event
@@ -96,9 +96,37 @@ from tests.test_control_plane_evidence_learning import (
 from tests.test_foundations_protocols import _approval, _protocol
 
 
-_PROVIDER_CALL_COUNTER_DIRECTORY = tempfile.TemporaryDirectory(
-    prefix="control-plane-provider-calls-"
-)
+_PROVIDER_CALL_COUNTER_PATHS: set[Path] = set()
+
+
+def _new_provider_call_counter_path() -> str:
+    descriptor, raw_path = tempfile.mkstemp(
+        prefix="control-plane-provider-call-",
+        suffix=".sqlite3",
+    )
+    os.close(descriptor)
+    path = Path(raw_path)
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE provider_call_counter ("
+            "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), "
+            "value INTEGER NOT NULL CHECK (value >= 0))"
+        )
+        connection.execute(
+            "INSERT INTO provider_call_counter (singleton, value) VALUES (1, 0)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    _PROVIDER_CALL_COUNTER_PATHS.add(path)
+    return str(path)
+
+
+def tearDownModule() -> None:
+    for path in tuple(_PROVIDER_CALL_COUNTER_PATHS):
+        path.unlink(missing_ok=True)
+    _PROVIDER_CALL_COUNTER_PATHS.clear()
 
 
 class _BoundFakeProvider:
@@ -109,29 +137,55 @@ class _BoundFakeProvider:
     capability_sha256 = "3" * 64
 
     def __init__(self, *, timeouts_before_success: int = 0) -> None:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="ascii",
-            dir=_PROVIDER_CALL_COUNTER_DIRECTORY.name,
-            delete=False,
-        ) as counter:
-            counter.write("0")
-            self._call_count_path = counter.name
+        self._call_count_path = _new_provider_call_counter_path()
         self.last_request: object | None = None
         self._timeouts_before_success = timeouts_before_success
+        self._last_call_count = 0
 
     @property
     def call_count(self) -> int:
-        return int(Path(self._call_count_path).read_text(encoding="ascii"))
+        connection = sqlite3.connect(self._call_count_path, timeout=30)
+        try:
+            row = connection.execute(
+                "SELECT value FROM provider_call_counter WHERE singleton = 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise AssertionError("provider call counter is missing")
+        return int(row[0])
 
-    @call_count.setter
-    def call_count(self, value: int) -> None:
-        Path(self._call_count_path).write_text(str(value), encoding="ascii")
+    def _increment_call_count(self) -> int:
+        connection = sqlite3.connect(
+            self._call_count_path,
+            timeout=30,
+            isolation_level=None,
+        )
+        try:
+            connection.execute("PRAGMA busy_timeout = 30000")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE provider_call_counter SET value = value + 1 "
+                "WHERE singleton = 1"
+            )
+            row = connection.execute(
+                "SELECT value FROM provider_call_counter WHERE singleton = 1"
+            ).fetchone()
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        if row is None:
+            raise AssertionError("provider call counter is missing")
+        self._last_call_count = int(row[0])
+        return self._last_call_count
 
     def invoke(self, request: object) -> ProviderResponse:
-        self.call_count += 1
+        call_count = self._increment_call_count()
         self.last_request = request
-        if self.call_count <= self._timeouts_before_success:
+        if call_count <= self._timeouts_before_success:
             raise TimeoutError("synthetic provider timeout")
         return ProviderResponse(
             output_text='{"status":"ok","source":"synthetic"}',
@@ -145,6 +199,10 @@ class _BoundFakeProvider:
                 "currency": "USD",
             },
         )
+
+
+def _increment_bound_fake_provider_counter(provider: _BoundFakeProvider) -> int:
+    return provider._increment_call_count()
 
 
 class _ProcessMarkerBoundFakeProvider(_BoundFakeProvider):
@@ -165,6 +223,63 @@ class _UnpicklableBoundFakeProvider(_BoundFakeProvider):
     def __reduce_ex__(self, protocol: int) -> object:
         del protocol
         self.reduce_calls += 1
+        raise TypeError("synthetic provider serialization failure")
+
+
+class _RestoredSerializationProbeProvider:
+    provider_name = "fake-provider"
+    profile = "offline-local"
+    model = "deterministic-reviewer"
+    config_sha256 = "2" * 64
+    capability_sha256 = "3" * 64
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        return ProviderResponse(
+            output_text='{"status":"ok","source":"synthetic"}',
+            request_model=self.model,
+            response_model=self.model,
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "reported_cost": "0.02",
+                "currency": "USD",
+            },
+        )
+
+
+class _BlockingSerializationBoundFakeProvider(
+    _RestoredSerializationProbeProvider
+):
+    def __init__(self, started: Event, release: Event) -> None:
+        self._started = started
+        self._release = release
+        self.reduce_calls = 0
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        self.reduce_calls += 1
+        self._started.set()
+        if not self._release.wait(timeout=5):
+            raise TimeoutError("synthetic provider serialization was not released")
+        return (_RestoredSerializationProbeProvider, ())
+
+
+class _BlockingFailingSerializationBoundFakeProvider(
+    _RestoredSerializationProbeProvider
+):
+    def __init__(self, started: Event, release: Event) -> None:
+        self._started = started
+        self._release = release
+        self.reduce_calls = 0
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        self.reduce_calls += 1
+        self._started.set()
+        if not self._release.wait(timeout=5):
+            raise TimeoutError("synthetic provider serialization was not released")
         raise TypeError("synthetic provider serialization failure")
 
 
@@ -225,7 +340,7 @@ class _MissingCurrencyBoundFakeProvider(_BoundFakeProvider):
 
 class _EvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
     def invoke(self, request: object) -> ProviderResponse:
-        self.call_count += 1
+        self._increment_call_count()
         self.last_request = request
         return ProviderResponse(
             output_text=(
@@ -280,7 +395,7 @@ class _MixedCurrencyRetryEvidenceArtifactBoundFakeProvider(
 
     def invoke(self, request: object) -> ProviderResponse:
         response = super().invoke(request)
-        if self.call_count == 1:
+        if self._last_call_count == 1:
             return replace(
                 response,
                 output_text="{",
@@ -319,12 +434,14 @@ class _CanonicalCurrencyRetryEvidenceArtifactBoundFakeProvider(
         response = super().invoke(request)
         return replace(
             response,
-            output_text="{" if self.call_count == 1 else response.output_text,
+            output_text=(
+                "{" if self._last_call_count == 1 else response.output_text
+            ),
             raw_usage={
                 **response.raw_usage,
                 "reported_cost": (
                     self._first_reported_cost
-                    if self.call_count == 1
+                    if self._last_call_count == 1
                     else self._success_reported_cost
                 ),
                 "currency": "USD",
@@ -377,7 +494,7 @@ class _NonObjectEvidenceArtifactBoundFakeProvider(
 
 class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
     def invoke(self, request: object) -> ProviderResponse:
-        self.call_count += 1
+        self._increment_call_count()
         self.last_request = request
         return ProviderResponse(
             output_text=(
@@ -411,7 +528,7 @@ class _AuthorityEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
         self._artifact = artifact
 
     def invoke(self, request: object) -> ProviderResponse:
-        self.call_count += 1
+        self._increment_call_count()
         self.last_request = request
         return ProviderResponse(
             output_text=json.dumps(
@@ -876,6 +993,39 @@ def _rewrite_campaign_event_payload(root, event, payload) -> None:
 
 
 class OperationalCampaignControllerTests(unittest.TestCase):
+    def test_bound_fake_provider_counter_is_atomic_under_concurrency(
+        self,
+    ) -> None:
+        provider = _BoundFakeProvider()
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            observed = tuple(
+                pool.map(
+                    lambda _index: provider._increment_call_count(),
+                    range(64),
+                )
+            )
+
+        self.assertEqual(sorted(observed), list(range(1, 65)))
+        self.assertEqual(provider.call_count, 64)
+
+    def test_bound_fake_provider_counter_is_atomic_across_spawn_processes(
+        self,
+    ) -> None:
+        provider = _BoundFakeProvider()
+        with ProcessPoolExecutor(
+            max_workers=8,
+            mp_context=multiprocessing.get_context("spawn"),
+        ) as pool:
+            observed = tuple(
+                pool.map(
+                    _increment_bound_fake_provider_counter,
+                    [provider] * 32,
+                )
+            )
+
+        self.assertEqual(sorted(observed), list(range(1, 33)))
+        self.assertEqual(provider.call_count, 32)
+
     def test_model_call_limits_require_positive_wall_time(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -1000,6 +1150,224 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(
                 controller.cycle_snapshot("cycle-001").status,
                 CycleStatus.EXECUTING,
+            )
+
+    def test_provider_serialization_does_not_hold_the_operational_writer_lock(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-spawn-preflight-writer-lock"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            serialization_started = Event()
+            release_serialization = Event()
+            provider = _BlockingSerializationBoundFakeProvider(
+                serialization_started,
+                release_serialization,
+            )
+            lease_journal = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=OperationalCampaignLifecycle(journal=journal),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 211, 61_000)
+                ),
+                monotonic_ns=lambda: 2_000_000,
+            )
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(
+                    controller.invoke_member_json,
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+                try:
+                    self.assertTrue(serialization_started.wait(timeout=2))
+                    lease_journal.heartbeat(
+                        lease=execution.lease,
+                        heartbeat_id="heartbeat-during-provider-preflight",
+                    )
+                finally:
+                    release_serialization.set()
+
+                completed = future.result(timeout=5)
+
+            self.assertEqual(provider.reduce_calls, 1)
+            self.assertEqual(
+                completed.output,
+                {"source": "synthetic", "status": "ok"},
+            )
+            self.assertEqual(
+                tuple(
+                    event.event_type
+                    for event in journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=controller._member_call_id(
+                            "cycle-001",
+                            member.member_id,
+                        ),
+                    )
+                ),
+                (
+                    "OPERATIONAL_MODEL_CALL_STARTED",
+                    "OPERATIONAL_MODEL_CALL_COMPLETED",
+                ),
+            )
+
+    def test_completed_concurrent_call_wins_over_stale_serialization_failure(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-spawn-preflight-race"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            serialization_started = Event()
+            release_serialization = Event()
+            stale_provider = _BlockingFailingSerializationBoundFakeProvider(
+                serialization_started,
+                release_serialization,
+            )
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                stale_future = pool.submit(
+                    controller.invoke_member_json,
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=stale_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+                try:
+                    self.assertTrue(serialization_started.wait(timeout=2))
+                    completed = controller.invoke_member_json(
+                        execution=execution,
+                        member_id=member.member_id,
+                        provider=_BoundFakeProvider(),
+                        prompt=prompt,
+                        limits=limits,
+                    )
+                finally:
+                    release_serialization.set()
+
+                replayed = stale_future.result(timeout=5)
+
+            self.assertEqual(stale_provider.reduce_calls, 1)
+            self.assertEqual(replayed, completed)
+            self.assertEqual(
+                tuple(
+                    event.event_type
+                    for event in journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=controller._member_call_id(
+                            "cycle-001",
+                            member.member_id,
+                        ),
+                    )
+                ),
+                (
+                    "OPERATIONAL_MODEL_CALL_STARTED",
+                    "OPERATIONAL_MODEL_CALL_COMPLETED",
+                ),
+            )
+
+    def test_stale_false_probe_retries_preflight_once_before_start(self) -> None:
+        campaign_id = "campaign-controller-spawn-preflight-stale-probe"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            serialization_started = Event()
+            release_serialization = Event()
+            release_serialization.set()
+            provider = _BlockingSerializationBoundFakeProvider(
+                serialization_started,
+                release_serialization,
+            )
+            original_probe = getattr(
+                OperationalCampaignController,
+                "_model_call_provider_preflight_required_in_transaction",
+            )
+            probe_calls = 0
+
+            def stale_once(controller_self, connection, **kwargs):
+                nonlocal probe_calls
+                probe_calls += 1
+                if controller_self is controller and probe_calls == 1:
+                    return False
+                return original_probe(controller_self, connection, **kwargs)
+
+            with patch.object(
+                OperationalCampaignController,
+                "_model_call_provider_preflight_required_in_transaction",
+                new=stale_once,
+            ):
+                completed = controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            self.assertEqual(probe_calls, 2)
+            self.assertTrue(serialization_started.is_set())
+            self.assertEqual(provider.reduce_calls, 1)
+            self.assertEqual(
+                completed.output,
+                {"source": "synthetic", "status": "ok"},
+            )
+            self.assertEqual(
+                tuple(
+                    event.event_type
+                    for event in journal.list_events(
+                        cycle_id="cycle-001",
+                        aggregate_type="OPERATIONAL_MODEL_CALL",
+                        aggregate_id=controller._member_call_id(
+                            "cycle-001",
+                            member.member_id,
+                        ),
+                    )
+                ),
+                (
+                    "OPERATIONAL_MODEL_CALL_STARTED",
+                    "OPERATIONAL_MODEL_CALL_COMPLETED",
+                ),
             )
 
     def test_completed_model_call_replays_before_provider_serialization(self) -> None:
@@ -1230,6 +1598,138 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     aggregate_id=call_id,
                 ),
                 call_events,
+            )
+
+    def test_pre_attempt_deadline_timeout_is_durable_and_blocks_replay(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-pre-attempt-timeout"
+        max_wall_time_ms = 1
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+                max_wall_time_ms=max_wall_time_ms,
+                max_attempts=1,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=max_wall_time_ms,
+                max_attempts=1,
+            )
+            provider = _BoundFakeProvider()
+            monotonic_values = iter((100.0, 100.001))
+
+            def monotonic() -> float:
+                return next(monotonic_values, 100.001)
+
+            with patch(
+                "research_automation.control_plane.campaign.time.monotonic",
+                side_effect=monotonic,
+            ):
+                with self.assertRaisesRegex(
+                    RosterDriftError,
+                    "REQUIRED_MEMBER_RESPONSE_INVALID",
+                ):
+                    controller.invoke_member_json(
+                        execution=execution,
+                        member_id=member.member_id,
+                        provider=provider,
+                        prompt=prompt,
+                        limits=limits,
+                    )
+
+            self.assertEqual(provider.call_count, 0)
+            call_id = controller._member_call_id("cycle-001", member.member_id)
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts(call_id=call_id)
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(
+                attempts[0].envelope.attempt_id,
+                f"{call_id}-attempt-001",
+            )
+            self.assertEqual(
+                attempts[0].envelope.usage_status,
+                UsageStatus.UNKNOWN,
+            )
+            self.assertEqual(
+                attempts[0].final_outcome,
+                InvocationOutcome.TIMEOUT,
+            )
+            call_events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=call_id,
+            )
+            self.assertEqual(
+                tuple(event.event_type for event in call_events),
+                ("OPERATIONAL_MODEL_CALL_STARTED",),
+            )
+            campaign = controller.campaign_snapshot()
+            self.assertEqual(campaign.status, CampaignStatus.BLOCKED)
+            self.assertEqual(
+                campaign.block_reason_code,
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+            events_before_replay = _campaign_event_rows(root, campaign_id)
+
+            replay_provider = _UnpicklableBoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+            self.assertEqual(replay_provider.reduce_calls, 0)
+
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=max_wall_time_ms,
+                    max_tool_attempts=1,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 212, 62_000)
+                ),
+                monotonic_ns=lambda: 1_000_000,
+            )
+            reopened_provider = _UnpicklableBoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                reopened.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=reopened_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+            self.assertEqual(reopened_provider.reduce_calls, 0)
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                events_before_replay,
             )
 
     def test_usd_is_bound_through_the_operational_no_learning_path(self) -> None:

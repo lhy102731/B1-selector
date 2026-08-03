@@ -934,6 +934,26 @@ class _SpawnTimeoutThenSuccessProvider:
         )
 
 
+class _InMemoryTimeoutThenSuccessSpawnProvider:
+    def __init__(self, observed_counts_path: str) -> None:
+        self.call_count = 0
+        self.observed_counts_path = observed_counts_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        self.call_count += 1
+        with Path(self.observed_counts_path).open("a", encoding="ascii") as output:
+            output.write(f"{self.call_count}\n")
+        if self.call_count == 1:
+            raise TimeoutError("fresh provider snapshot timed out")
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        )
+
+
 class _ExceptionThenSuccessProvider:
     def __init__(self) -> None:
         self.call_count = 0
@@ -3635,6 +3655,42 @@ class ModelInvocationTests(unittest.TestCase):
                 max_attempts=1,
             )
 
+    def test_spawned_retries_use_fresh_provider_snapshots(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            observed_counts = Path(temp_dir) / "observed-counts.txt"
+            journal = _RecordingUsageJournal()
+            invocation = RetryingModelInvocation(
+                attempt=_spawned_invocation(
+                    _InMemoryTimeoutThenSuccessSpawnProvider(
+                        str(observed_counts)
+                    ),
+                    journal,
+                ),
+                max_attempts=2,
+                max_wall_time_ms=5_000,
+            )
+
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-fresh-provider-snapshots",
+                )
+
+            self.assertEqual(
+                observed_counts.read_text(encoding="ascii").splitlines(),
+                ["1", "1"],
+            )
+            begin_events = [
+                event for event in journal.events if event[0] == "begin"
+            ]
+            self.assertEqual(len(begin_events), 2)
+            self.assertTrue(
+                all(
+                    event[1].outcome is InvocationOutcome.TIMEOUT
+                    for event in begin_events
+                )
+            )
+
     def test_retrying_invocation_honors_public_attempt_override(self) -> None:
         clock = _ControlledClock(now=90.0)
         journal = _RecordingUsageJournal()
@@ -3826,6 +3882,55 @@ class ModelInvocationTests(unittest.TestCase):
         begin_events = [event for event in journal.events if event[0] == "begin"]
         self.assertEqual(len(begin_events), 1)
         self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.TIMEOUT)
+
+    def test_deadline_expired_between_attempts_records_terminal_attempt(
+        self,
+    ) -> None:
+        clock = _ControlledClock(now=225.0)
+        deadline = 225.02
+        provider = _ExceptionThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+            max_wall_time_ms=20,
+        )
+
+        def cross_deadline(_retry_state: object) -> float:
+            clock.now = deadline
+            return 0.0
+
+        with patch.object(campaign_module, "time", clock), patch.object(
+            campaign_module,
+            "wait_none",
+            return_value=cross_deadline,
+        ):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-deadline-between-attempts",
+                )
+
+        self.assertEqual(provider.call_count, 1)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 2)
+        self.assertEqual(
+            [event[1].attempt_id for event in begin_events],
+            [
+                "call-deadline-between-attempts-attempt-001",
+                "call-deadline-between-attempts-attempt-002",
+            ],
+        )
+        self.assertEqual(
+            [event[1].outcome for event in begin_events],
+            [InvocationOutcome.EXCEPTION, InvocationOutcome.TIMEOUT],
+        )
 
     def test_inline_expired_before_provider_never_invokes_provider(self) -> None:
         deadline = 250.0

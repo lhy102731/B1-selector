@@ -126,6 +126,7 @@ _MAX_OPERATIONAL_REQUEST_BYTES = 128 * 1024
 _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
 _MODEL_CALL_IN_DOUBT_RESULT = object()
 _MODEL_CALL_BUDGET_EXCEEDED_RESULT = object()
+_MODEL_CALL_PREFLIGHT_REQUIRED_RESULT = object()
 
 
 def _bounded_limits(
@@ -1035,21 +1036,46 @@ class OperationalCampaignController:
             ),
             "call_limits": limits.to_payload(),
         }
-        replay, provider_executor = _SqliteUnitOfWork(
-            stores._operational_spec()
-        )._write(
-            lambda connection: self._begin_model_call_in_transaction(
-                connection,
-                execution=execution,
-                cycle_id=cycle_id,
-                call_id=call_id,
-                fixed_identity=fixed_identity,
-                usage=usage,
-                provider_executor_factory=lambda: SpawnedProviderExecutor(
-                    provider
-                ),
+        while True:
+            preflight_required = _SqliteUnitOfWork(
+                stores._operational_spec()
+            )._read(
+                lambda connection: (
+                    self._model_call_provider_preflight_required_in_transaction(
+                        connection,
+                        execution=execution,
+                        cycle_id=cycle_id,
+                        call_id=call_id,
+                        fixed_identity=fixed_identity,
+                        usage=usage,
+                    )
+                )
             )
-        )
+            preflight_executor = None
+            preflight_error: Exception | None = None
+            if preflight_required:
+                try:
+                    preflight_executor = SpawnedProviderExecutor(provider)
+                except Exception as error:
+                    preflight_error = error
+            replay, provider_executor = _SqliteUnitOfWork(
+                stores._operational_spec()
+            )._write(
+                lambda connection: self._begin_model_call_in_transaction(
+                    connection,
+                    execution=execution,
+                    cycle_id=cycle_id,
+                    call_id=call_id,
+                    fixed_identity=fixed_identity,
+                    usage=usage,
+                    provider_executor=preflight_executor,
+                )
+            )
+            if replay is _MODEL_CALL_PREFLIGHT_REQUIRED_RESULT:
+                if preflight_error is not None:
+                    raise preflight_error
+                continue
+            break
         if replay is _MODEL_CALL_IN_DOUBT_RESULT:
             raise CampaignJournalError(
                 "operational model call is incomplete and in doubt"
@@ -5549,7 +5575,7 @@ class OperationalCampaignController:
         call_id: str,
         fixed_identity: dict[str, object],
         usage: OperationalUsageJournal,
-        provider_executor_factory: Callable[[], SpawnedProviderExecutor],
+        provider_executor: SpawnedProviderExecutor | None,
     ) -> tuple[
         ExecutedOperationalModelCall | object | None,
         SpawnedProviderExecutor | None,
@@ -5643,11 +5669,11 @@ class OperationalCampaignController:
             call_id=call_id,
             call_limits=fixed_identity["call_limits"],
         )
-        provider_executor = provider_executor_factory()
+        if provider_executor is None:
+            return _MODEL_CALL_PREFLIGHT_REQUIRED_RESULT, None
         if type(provider_executor) is not SpawnedProviderExecutor:
             raise TypeError(
-                "provider_executor_factory must return an exact "
-                "SpawnedProviderExecutor"
+                "provider_executor must be an exact SpawnedProviderExecutor"
             )
         self._journal._append_in_transaction(
             connection,
@@ -5659,6 +5685,47 @@ class OperationalCampaignController:
             payload=start_payload,
         )
         return None, provider_executor
+
+    def _model_call_provider_preflight_required_in_transaction(
+        self,
+        connection,
+        *,
+        execution: ExecutingOperationalCycle,
+        cycle_id: str,
+        call_id: str,
+        fixed_identity: dict[str, object],
+        usage: OperationalUsageJournal,
+    ) -> bool:
+        self._require_active_execution_in_transaction(connection, execution)
+        self._require_model_attempt_inventory_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            usage=usage,
+        )
+        if (
+            self._other_in_doubt_model_call_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                requested_call_id=call_id,
+                requested_identity=fixed_identity,
+                usage=usage,
+            )
+            is not None
+        ):
+            return False
+        if self._model_call_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+        ):
+            return False
+        self._require_model_call_allocation_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            call_id=call_id,
+            call_limits=fixed_identity["call_limits"],
+        )
+        return True
 
     def _require_model_attempt_inventory_in_transaction(
         self,
