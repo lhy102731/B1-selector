@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
+from pathlib import Path
 import sys
+import tempfile
+import time
 import unittest
+from unittest.mock import patch
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from decimal import Decimal
 
+from research_automation.control_plane import campaign as campaign_module
 from research_automation.control_plane.campaign import (
     InvalidModelResponseError,
     InvocationOutcome,
@@ -15,6 +22,7 @@ from research_automation.control_plane.campaign import (
     ModelInvocation,
     ProviderResponse,
     RetryingModelInvocation,
+    SpawnedProviderExecutor,
     StreamingDisabledError,
     UsageEnvelope,
     UsageStatus,
@@ -33,6 +41,128 @@ class _FakeProvider:
                 "total_tokens": 22,
             },
         )
+
+
+class _ChildPidProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text=json.dumps({"pid": os.getpid(), "request": request}),
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "opaque": lambda: None,
+            },
+        )
+
+
+class _HangingProvider:
+    def __init__(self, marker_path: str) -> None:
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        Path(self._marker_path).write_text(str(os.getpid()), encoding="ascii")
+        while True:
+            time.sleep(0.05)
+
+
+class _SpawnExceptionProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        raise RuntimeError("provider detail must not cross the process boundary")
+
+
+class _AbruptExitProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        raise SystemExit(7)
+
+
+class _OversizedSpawnOutputProvider:
+    def __init__(self, marker_path: str) -> None:
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        Path(self._marker_path).write_text(str(os.getpid()), encoding="ascii")
+        return ProviderResponse(
+            output_text=json.dumps({"payload": "x" * (64 * 1024)}),
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={"input_tokens": 2, "output_tokens": 20},
+        )
+
+
+class _OversizedPickleProvider:
+    def __init__(self) -> None:
+        self.payload = b"x" * (512 * 1024)
+
+    def invoke(self, request: object) -> ProviderResponse:
+        raise AssertionError("oversized provider must not be started")
+
+
+class _NoProcessContext:
+    def __init__(self) -> None:
+        self.process_calls = 0
+
+    def Process(self, *args: object, **kwargs: object) -> object:
+        self.process_calls += 1
+        raise AssertionError("request/provider preflight must happen before Process")
+
+
+class _EscalationProcess:
+    def __init__(self) -> None:
+        self.actions: list[object] = []
+        self._killed = False
+
+    def terminate(self) -> None:
+        self.actions.append("terminate")
+
+    def join(self, timeout: float | None = None) -> None:
+        self.actions.append(("join", timeout))
+
+    def is_alive(self) -> bool:
+        self.actions.append("is_alive")
+        return not self._killed
+
+    def kill(self) -> None:
+        self.actions.append("kill")
+        self._killed = True
+
+
+class _ClosablePipeEnd:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StartFailureProcess:
+    pid = None
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def start(self) -> None:
+        raise OSError("synthetic spawn failure")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StartFailureContext:
+    def __init__(self) -> None:
+        self.receive = _ClosablePipeEnd()
+        self.send = _ClosablePipeEnd()
+        self.process = _StartFailureProcess()
+
+    def Pipe(self, *, duplex: bool) -> tuple[_ClosablePipeEnd, _ClosablePipeEnd]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        return self.receive, self.send
+
+    def Process(self, *args: object, **kwargs: object) -> _StartFailureProcess:
+        return self.process
 
 
 class _OutputTextProvider:
@@ -370,6 +500,330 @@ class _RecordingUsageJournal:
 
 
 class ModelInvocationTests(unittest.TestCase):
+    def test_spawned_executor_runs_provider_in_child_and_reaps_it(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ChildPidProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-spawn-success",
+            attempt_id="attempt-001",
+            deadline=time.monotonic() + 10.0,
+        )
+
+        self.assertNotEqual(result["pid"], os.getpid())
+        self.assertEqual(result["request"], {"prompt": "offline-only"})
+        self.assertFalse(
+            any(child.pid == result["pid"] for child in multiprocessing.active_children())
+        )
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
+        self.assertEqual(envelope.total_tokens, 10)
+
+    def test_spawned_executor_hard_deadline_reaps_hanging_child_and_accounts_timeout(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "hanging-child.pid"
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=_HangingProvider(str(marker)),
+                provider_executor=SpawnedProviderExecutor(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+            started = time.monotonic()
+
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "hang"},
+                    call_id="call-spawn-timeout",
+                    attempt_id="attempt-001",
+                    deadline=started + 5.0,
+                )
+
+            self.assertLess(time.monotonic() - started, 8.0)
+            child_pid = int(marker.read_text(encoding="ascii"))
+            self.assertNotEqual(child_pid, os.getpid())
+            self.assertFalse(
+                any(child.pid == child_pid for child in multiprocessing.active_children())
+            )
+            envelope = journal.events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+            self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_spawned_provider_exception_is_reaped_and_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_SpawnExceptionProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError) as raised:
+            invocation.invoke_json(
+                {"prompt": "explode"},
+                call_id="call-spawn-exception",
+                attempt_id="attempt-001",
+                deadline=time.monotonic() + 10.0,
+            )
+
+        self.assertNotIn("provider detail", str(raised.exception))
+        self.assertFalse(multiprocessing.active_children())
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_provider_timeout_tag_is_reaped_and_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_TimeoutProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationTimeoutError):
+            invocation.invoke_json(
+                {"prompt": "timeout"},
+                call_id="call-spawn-provider-timeout",
+                attempt_id="attempt-001",
+                deadline=time.monotonic() + 10.0,
+            )
+
+        self.assertFalse(multiprocessing.active_children())
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_spawned_invalid_response_is_reaped_and_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_MalformedResponseProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "invalid-response"},
+                call_id="call-spawn-invalid-response",
+                attempt_id="attempt-001",
+                deadline=time.monotonic() + 10.0,
+            )
+
+        self.assertFalse(multiprocessing.active_children())
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_worker_eof_is_reaped_and_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_AbruptExitProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "abrupt-exit"},
+                call_id="call-spawn-eof",
+                attempt_id="attempt-001",
+                deadline=time.monotonic() + 10.0,
+            )
+
+        self.assertFalse(multiprocessing.active_children())
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_oversized_output_is_accounted_then_fails_without_live_child(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "oversized-child.pid"
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=_OversizedSpawnOutputProvider(str(marker)),
+                provider_executor=SpawnedProviderExecutor(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+
+            with self.assertRaises(InvalidModelResponseError):
+                invocation.invoke_json(
+                    {"prompt": "oversized"},
+                    call_id="call-spawn-overflow",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+            child_pid = int(marker.read_text(encoding="ascii"))
+            self.assertFalse(
+                any(child.pid == child_pid for child in multiprocessing.active_children())
+            )
+            envelope = journal.events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
+            self.assertEqual(envelope.input_tokens, 2)
+            self.assertEqual(
+                journal.events[1][1],
+                (
+                    "call-spawn-overflow",
+                    "attempt-001",
+                    InvocationOutcome.INVALID_JSON,
+                ),
+            )
+
+    def test_spawned_executor_rejects_non_json_request_without_process_start(
+        self,
+    ) -> None:
+        context = _NoProcessContext()
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ChildPidProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"not-json": object()},
+                    call_id="call-spawn-request-reject",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+        self.assertEqual(context.process_calls, 0)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_executor_rejects_oversized_provider_pickle_without_start(
+        self,
+    ) -> None:
+        context = _NoProcessContext()
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_OversizedPickleProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-spawn-pickle-reject",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+        self.assertEqual(context.process_calls, 0)
+
+    def test_spawned_executor_rejects_unbounded_json_without_process_start(
+        self,
+    ) -> None:
+        context = _NoProcessContext()
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ChildPidProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "x" * (256 * 1024 + 1)},
+                    call_id="call-spawn-request-overflow",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+        self.assertEqual(context.process_calls, 0)
+
+    def test_deadline_cleanup_escalates_terminate_join_kill_join(self) -> None:
+        process = _EscalationProcess()
+
+        campaign_module._terminate_and_reap_worker(process, join_timeout=0.25)
+
+        self.assertEqual(
+            process.actions,
+            [
+                "terminate",
+                ("join", 0.25),
+                "is_alive",
+                "kill",
+                ("join", 0.25),
+                "is_alive",
+            ],
+        )
+
+    def test_spawn_failure_closes_both_pipe_ends_and_process_handle(self) -> None:
+        context = _StartFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = ModelInvocation(
+            provider=_ChildPidProvider(),
+            provider_executor=SpawnedProviderExecutor(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-spawn-start-failure",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                )
+
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertTrue(context.process.closed)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
     def test_raw_utf8_output_exact_limit_succeeds_and_next_byte_rejects(self) -> None:
         escaped_as = r"\u0061" * 1_000
         cjk_character = chr(0x4E2D)

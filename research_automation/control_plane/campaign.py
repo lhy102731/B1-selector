@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
+import multiprocessing
+import pickle
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from multiprocessing.reduction import ForkingPickler
 from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
 from typing import Protocol
 
@@ -27,6 +32,15 @@ _MAX_MODEL_OUTPUT_INT_DECIMAL_DIGITS = 155
 _MAX_MODEL_OUTPUT_DEPTH = 32
 _MAX_MODEL_OUTPUT_NODES = 4096
 _MAX_REPORTED_TEXT_CHARS = 128
+_MAX_PROVIDER_REQUEST_BYTES = 256 * 1024
+_MAX_PROVIDER_REQUEST_DEPTH = 32
+_MAX_PROVIDER_REQUEST_NODES = 8192
+_MAX_PROVIDER_COLLECTION_ITEMS = 4096
+_MAX_PROVIDER_PICKLE_BYTES = 256 * 1024
+_MAX_PROVIDER_FRAME_BYTES = 160 * 1024
+_MAX_SPAWNED_OUTPUT_BYTES = _MAX_MODEL_OUTPUT_BYTES
+_WORKER_REAP_JOIN_SECONDS = 0.5
+_PROVIDER_PROTOCOL_VERSION = 1
 _CONTROL_PLANE_IDENTIFIER_RE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z"
 )
@@ -68,6 +82,14 @@ class _ModelOutputBoundsError(ValueError):
     """Raised when parsed model JSON exceeds a bounded output contract."""
 
 
+class _ProviderExecutorTimeout(TimeoutError):
+    """Internal signal that the one-attempt executor reached its deadline."""
+
+
+class _ProviderExecutorError(RuntimeError):
+    """Internal bounded provider or worker failure signal."""
+
+
 @dataclass(frozen=True)
 class ProviderResponse:
     output_text: str | None
@@ -77,6 +99,26 @@ class ProviderResponse:
     usage_status: UsageStatus | None = None
     fallback: bool = False
     streamed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _ProviderResponseSnapshot:
+    output_text: str | None
+    output_overflow: bool
+    request_model: str
+    response_model: str
+    usage_status: UsageStatus
+    input_tokens: int | None
+    output_tokens: int | None
+    total_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    reasoning_tokens: int | None
+    reported_cost: str | None
+    currency: str | None
+    fallback: bool
+    streamed: bool
+    raw_usage_sha256: str
 
 
 @dataclass(frozen=True)
@@ -112,6 +154,17 @@ class LogicalInvocationResult:
 
 class ModelProvider(Protocol):
     def invoke(self, request: object) -> ProviderResponse: ...
+
+
+class ProviderExecutor(Protocol):
+    def execute(
+        self,
+        provider: ModelProvider,
+        request: object,
+        *,
+        deadline: float | None,
+        max_output_bytes: int,
+    ) -> _ProviderResponseSnapshot: ...
 
 
 class UsageJournal(Protocol):
@@ -445,11 +498,515 @@ def _reported_cost(raw_usage: Mapping[str, object]) -> str | None:
     return candidate
 
 
+def _snapshot_provider_response(
+    response: object,
+    *,
+    max_output_bytes: int,
+) -> _ProviderResponseSnapshot:
+    if not isinstance(response, ProviderResponse):
+        raise TypeError("provider returned an invalid response object")
+    if type(response.fallback) is not bool or type(response.streamed) is not bool:
+        raise TypeError("provider response flags are invalid")
+    if (
+        type(response.response_model) is not str
+        or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.response_model) is None
+    ):
+        raise TypeError("provider response model is invalid")
+    if (
+        type(response.request_model) is not str
+        or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.request_model) is None
+    ):
+        raise TypeError("provider request model is invalid")
+    if response.output_text is not None and type(response.output_text) is not str:
+        raise TypeError("provider response output is invalid")
+
+    raw_usage_source = response.raw_usage
+    raw_usage = raw_usage_source if isinstance(raw_usage_source, Mapping) else {}
+    values = {
+        field: _reported_token(raw_usage, field)
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+        )
+    }
+    known_component_tokens = sum(
+        int(values[field])
+        for field in ("input_tokens", "output_tokens")
+        if values[field] is not None
+    )
+    if (
+        values["total_tokens"] is not None
+        and values["total_tokens"] < known_component_tokens
+    ):
+        values["total_tokens"] = known_component_tokens
+    reported_cost = _reported_cost(raw_usage)
+    currency = _reported_text(raw_usage, "currency")
+    status_hint = response.usage_status
+    if status_hint is not None and not isinstance(status_hint, UsageStatus):
+        status_hint = None
+    has_known_usage = (
+        any(value is not None for value in values.values())
+        or reported_cost is not None
+    )
+    if not has_known_usage:
+        status = UsageStatus.UNKNOWN
+        values = {field: None for field in values}
+        reported_cost = None
+        currency = None
+    elif status_hint is UsageStatus.ESTIMATED:
+        status = UsageStatus.ESTIMATED
+    else:
+        status = UsageStatus.REPORTED
+
+    output_text = response.output_text
+    output_overflow = False
+    if output_text is not None:
+        if len(output_text) > max_output_bytes:
+            output_overflow = True
+        else:
+            try:
+                encoded_output = output_text.encode("utf-8", errors="strict")
+                output_overflow = len(encoded_output) > max_output_bytes
+            except UnicodeError:
+                pass
+    if output_overflow:
+        output_text = None
+
+    return _ProviderResponseSnapshot(
+        output_text=output_text,
+        output_overflow=output_overflow,
+        request_model=response.request_model,
+        response_model=response.response_model,
+        usage_status=status,
+        input_tokens=values["input_tokens"],
+        output_tokens=values["output_tokens"],
+        total_tokens=values["total_tokens"],
+        cache_read_tokens=values["cache_read_tokens"],
+        cache_write_tokens=values["cache_write_tokens"],
+        reasoning_tokens=values["reasoning_tokens"],
+        reported_cost=reported_cost,
+        currency=currency,
+        fallback=response.fallback,
+        streamed=response.streamed,
+        raw_usage_sha256=_raw_usage_sha256(raw_usage_source),
+    )
+
+
+class InlineProviderExecutor:
+    """Execute directly; this remains the default for existing unit adapters."""
+
+    __slots__ = ()
+
+    def execute(
+        self,
+        provider: ModelProvider,
+        request: object,
+        *,
+        deadline: float | None,
+        max_output_bytes: int,
+    ) -> _ProviderResponseSnapshot:
+        del deadline
+        return _snapshot_provider_response(
+            provider.invoke(request),
+            max_output_bytes=max_output_bytes,
+        )
+
+
+def _validate_json_request(
+    value: object,
+    *,
+    depth: int,
+    active: set[int],
+    remaining_nodes: list[int],
+) -> None:
+    if remaining_nodes[0] <= 0:
+        raise ValueError("provider request exceeds the node bound")
+    remaining_nodes[0] -= 1
+    if depth > _MAX_PROVIDER_REQUEST_DEPTH:
+        raise ValueError("provider request exceeds the depth bound")
+    if value is None or type(value) is bool:
+        return
+    if type(value) is int:
+        if value.bit_length() > _MAX_RAW_USAGE_INT_BITS:
+            raise ValueError("provider request integer exceeds the size bound")
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("provider request contains a non-finite float")
+        return
+    if type(value) is str:
+        if len(value) > _MAX_PROVIDER_REQUEST_BYTES:
+            raise ValueError("provider request string exceeds the size bound")
+        return
+    if type(value) not in (dict, list):
+        raise TypeError("provider request must contain only strict JSON values")
+    if len(value) > _MAX_PROVIDER_COLLECTION_ITEMS:
+        raise ValueError("provider request collection exceeds the item bound")
+    identity = id(value)
+    if identity in active:
+        raise ValueError("provider request contains a cycle")
+    active.add(identity)
+    try:
+        if type(value) is dict:
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise TypeError("provider request object keys must be strings")
+                _validate_json_request(
+                    key,
+                    depth=depth + 1,
+                    active=active,
+                    remaining_nodes=remaining_nodes,
+                )
+                _validate_json_request(
+                    item,
+                    depth=depth + 1,
+                    active=active,
+                    remaining_nodes=remaining_nodes,
+                )
+        else:
+            for item in value:
+                _validate_json_request(
+                    item,
+                    depth=depth + 1,
+                    active=active,
+                    remaining_nodes=remaining_nodes,
+                )
+    finally:
+        active.remove(identity)
+
+
+def _canonical_request_bytes(request: object) -> bytes:
+    _validate_json_request(
+        request,
+        depth=1,
+        active=set(),
+        remaining_nodes=[_MAX_PROVIDER_REQUEST_NODES],
+    )
+    try:
+        payload = json.dumps(
+            request,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8", errors="strict")
+    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
+        raise ValueError("provider request is not strict JSON") from error
+    if len(payload) > _MAX_PROVIDER_REQUEST_BYTES:
+        raise ValueError("provider request exceeds the byte bound")
+    return payload
+
+
+class _BoundedPickleBuffer(io.BytesIO):
+    def write(self, data: bytes) -> int:
+        if self.tell() + len(data) > _MAX_PROVIDER_PICKLE_BYTES:
+            raise ValueError("provider spawn pickle exceeds the byte bound")
+        return super().write(data)
+
+
+def _bounded_provider_pickle(provider: ModelProvider) -> bytes:
+    buffer = _BoundedPickleBuffer()
+    try:
+        ForkingPickler(buffer, pickle.HIGHEST_PROTOCOL).dump(provider)
+    except Exception as error:
+        raise ValueError("provider is not spawn-picklable within bounds") from error
+    payload = buffer.getvalue()
+    if len(payload) > _MAX_PROVIDER_PICKLE_BYTES:
+        raise ValueError("provider spawn pickle exceeds the byte bound")
+    return payload
+
+
+def _snapshot_payload(snapshot: _ProviderResponseSnapshot) -> dict[str, object]:
+    return {
+        "output_text": snapshot.output_text,
+        "output_overflow": snapshot.output_overflow,
+        "request_model": snapshot.request_model,
+        "response_model": snapshot.response_model,
+        "usage_status": snapshot.usage_status.value,
+        "input_tokens": snapshot.input_tokens,
+        "output_tokens": snapshot.output_tokens,
+        "total_tokens": snapshot.total_tokens,
+        "cache_read_tokens": snapshot.cache_read_tokens,
+        "cache_write_tokens": snapshot.cache_write_tokens,
+        "reasoning_tokens": snapshot.reasoning_tokens,
+        "reported_cost": snapshot.reported_cost,
+        "currency": snapshot.currency,
+        "fallback": snapshot.fallback,
+        "streamed": snapshot.streamed,
+        "raw_usage_sha256": snapshot.raw_usage_sha256,
+    }
+
+
+def _provider_frame(tag: str, snapshot: _ProviderResponseSnapshot | None = None) -> bytes:
+    frame: dict[str, object] = {"v": _PROVIDER_PROTOCOL_VERSION, "tag": tag}
+    if snapshot is not None:
+        frame["snapshot"] = _snapshot_payload(snapshot)
+    payload = json.dumps(
+        frame,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    if len(payload) > _MAX_PROVIDER_FRAME_BYTES:
+        raise ValueError("provider worker frame exceeds the byte bound")
+    return payload
+
+
+def _spawned_provider_worker(
+    provider_pickle: bytes,
+    request_bytes: bytes,
+    send_connection: object,
+    max_output_bytes: int,
+) -> None:
+    """Module-level spawn target; only bounded tagged bytes leave the child."""
+
+    try:
+        try:
+            provider = pickle.loads(provider_pickle)
+            request = json.loads(request_bytes)
+        except Exception:
+            send_connection.send_bytes(_provider_frame("protocol_error"))
+            return
+        try:
+            response = provider.invoke(request)
+        except TimeoutError:
+            send_connection.send_bytes(_provider_frame("provider_timeout"))
+            return
+        except Exception:
+            send_connection.send_bytes(_provider_frame("provider_exception"))
+            return
+        try:
+            snapshot = _snapshot_provider_response(
+                response,
+                max_output_bytes=max_output_bytes,
+            )
+            frame = _provider_frame("response", snapshot)
+        except Exception:
+            frame = _provider_frame("invalid_response")
+        send_connection.send_bytes(frame)
+    except Exception:
+        try:
+            send_connection.send_bytes(_provider_frame("protocol_error"))
+        except Exception:
+            pass
+    finally:
+        try:
+            send_connection.close()
+        except Exception:
+            pass
+
+
+def _bounded_token_snapshot(value: object) -> int | None:
+    if value is None:
+        return None
+    if (
+        type(value) is not int
+        or value < 0
+        or value.bit_length() > _MAX_RAW_USAGE_INT_BITS
+    ):
+        raise ValueError("invalid token field in provider worker frame")
+    return value
+
+
+def _decode_provider_frame(frame: bytes) -> _ProviderResponseSnapshot:
+    try:
+        decoded = json.loads(frame.decode("ascii", errors="strict"))
+    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise _ProviderExecutorError("provider worker protocol failed") from error
+    if type(decoded) is not dict or decoded.get("v") != _PROVIDER_PROTOCOL_VERSION:
+        raise _ProviderExecutorError("provider worker protocol failed")
+    tag = decoded.get("tag")
+    if tag == "provider_timeout":
+        raise _ProviderExecutorTimeout("provider invocation timed out")
+    if tag in {"provider_exception", "invalid_response", "protocol_error"}:
+        raise _ProviderExecutorError("provider invocation failed")
+    if tag != "response" or type(decoded.get("snapshot")) is not dict:
+        raise _ProviderExecutorError("provider worker protocol failed")
+    snapshot = decoded["snapshot"]
+    try:
+        output_text = snapshot["output_text"]
+        output_overflow = snapshot["output_overflow"]
+        request_model = snapshot["request_model"]
+        response_model = snapshot["response_model"]
+        fallback = snapshot["fallback"]
+        streamed = snapshot["streamed"]
+        raw_usage_sha256 = snapshot["raw_usage_sha256"]
+        if output_text is not None and type(output_text) is not str:
+            raise ValueError("invalid output")
+        if type(output_overflow) is not bool:
+            raise ValueError("invalid overflow marker")
+        if (
+            type(request_model) is not str
+            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(request_model) is None
+            or type(response_model) is not str
+            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response_model) is None
+        ):
+            raise ValueError("invalid model identifier")
+        if type(fallback) is not bool or type(streamed) is not bool:
+            raise ValueError("invalid flags")
+        if (
+            type(raw_usage_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", raw_usage_sha256) is None
+        ):
+            raise ValueError("invalid usage hash")
+        usage_status = UsageStatus(snapshot["usage_status"])
+        reported_cost = snapshot["reported_cost"]
+        currency = snapshot["currency"]
+        if reported_cost is not None:
+            normalized_cost = _reported_cost({"reported_cost": reported_cost})
+            if type(reported_cost) is not str or normalized_cost is None:
+                raise ValueError("invalid reported cost")
+        if currency is not None and (
+            type(currency) is not str
+            or not currency
+            or len(currency) > _MAX_REPORTED_TEXT_CHARS
+        ):
+            raise ValueError("invalid currency")
+        return _ProviderResponseSnapshot(
+            output_text=output_text,
+            output_overflow=output_overflow,
+            request_model=request_model,
+            response_model=response_model,
+            usage_status=usage_status,
+            input_tokens=_bounded_token_snapshot(snapshot["input_tokens"]),
+            output_tokens=_bounded_token_snapshot(snapshot["output_tokens"]),
+            total_tokens=_bounded_token_snapshot(snapshot["total_tokens"]),
+            cache_read_tokens=_bounded_token_snapshot(snapshot["cache_read_tokens"]),
+            cache_write_tokens=_bounded_token_snapshot(snapshot["cache_write_tokens"]),
+            reasoning_tokens=_bounded_token_snapshot(snapshot["reasoning_tokens"]),
+            reported_cost=reported_cost,
+            currency=currency,
+            fallback=fallback,
+            streamed=streamed,
+            raw_usage_sha256=raw_usage_sha256,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise _ProviderExecutorError("provider worker protocol failed") from error
+
+
+def _terminate_and_reap_worker(process: object, *, join_timeout: float) -> None:
+    process.terminate()
+    process.join(join_timeout)
+    if process.is_alive():
+        process.kill()
+        process.join(join_timeout)
+    if process.is_alive():
+        raise RuntimeError("spawned provider worker survived kill escalation")
+
+
+def _close_process(process: object) -> None:
+    try:
+        process.close()
+    except (AttributeError, ValueError):
+        pass
+
+
+def _reap_worker_by_deadline(process: object, *, deadline: float) -> None:
+    process.join(max(0.0, deadline - time.monotonic()))
+    if process.is_alive():
+        try:
+            _terminate_and_reap_worker(
+                process,
+                join_timeout=_WORKER_REAP_JOIN_SECONDS,
+            )
+        finally:
+            _close_process(process)
+        raise _ProviderExecutorTimeout("provider invocation timed out")
+    _close_process(process)
+
+
+class SpawnedProviderExecutor:
+    """Run exactly one provider attempt in a directly reaped spawn process."""
+
+    __slots__ = ()
+
+    def execute(
+        self,
+        provider: ModelProvider,
+        request: object,
+        *,
+        deadline: float | None,
+        max_output_bytes: int,
+    ) -> _ProviderResponseSnapshot:
+        context = multiprocessing.get_context("spawn")
+        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+            raise ValueError("SpawnedProviderExecutor requires a finite deadline")
+        request_bytes = _canonical_request_bytes(request)
+        provider_pickle = _bounded_provider_pickle(provider)
+        if time.monotonic() >= deadline:
+            raise _ProviderExecutorTimeout("provider invocation timed out")
+        receive_connection, send_connection = context.Pipe(duplex=False)
+        try:
+            worker = context.Process(
+                target=_spawned_provider_worker,
+                args=(
+                    provider_pickle,
+                    request_bytes,
+                    send_connection,
+                    min(max_output_bytes, _MAX_SPAWNED_OUTPUT_BYTES),
+                ),
+            )
+        except Exception as error:
+            receive_connection.close()
+            send_connection.close()
+            raise _ProviderExecutorError("provider worker failed to construct") from error
+        started = False
+        try:
+            worker.start()
+            started = True
+        except Exception as error:
+            receive_connection.close()
+            send_connection.close()
+            if getattr(worker, "pid", None) is not None:
+                try:
+                    _terminate_and_reap_worker(
+                        worker,
+                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
+                    )
+                finally:
+                    _close_process(worker)
+            else:
+                _close_process(worker)
+            raise _ProviderExecutorError("provider worker failed to start") from error
+        finally:
+            if started:
+                send_connection.close()
+
+        try:
+            remaining = max(0.0, deadline - time.monotonic())
+            if not receive_connection.poll(remaining):
+                try:
+                    _terminate_and_reap_worker(
+                        worker,
+                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
+                    )
+                finally:
+                    _close_process(worker)
+                raise _ProviderExecutorTimeout("provider invocation timed out")
+            try:
+                frame = receive_connection.recv_bytes(
+                    maxlength=_MAX_PROVIDER_FRAME_BYTES
+                )
+            except (EOFError, OSError) as error:
+                _reap_worker_by_deadline(worker, deadline=deadline)
+                raise _ProviderExecutorError("provider worker protocol failed") from error
+            _reap_worker_by_deadline(worker, deadline=deadline)
+            return _decode_provider_frame(frame)
+        finally:
+            receive_connection.close()
+
+
 class ModelInvocation:
     """Invoke one provider attempt and account for it before parsing output."""
 
     __slots__ = (
         "_provider",
+        "_provider_executor",
         "_usage_journal",
         "_provider_name",
         "_profile",
@@ -461,6 +1018,7 @@ class ModelInvocation:
         self,
         *,
         provider: ModelProvider,
+        provider_executor: ProviderExecutor | None = None,
         usage_journal: UsageJournal,
         provider_name: str,
         profile: str,
@@ -470,6 +1028,11 @@ class ModelInvocation:
         if type(max_output_bytes) is not int or max_output_bytes < 1:
             raise ValueError("max_output_bytes must be a positive integer")
         self._provider = provider
+        self._provider_executor = (
+            InlineProviderExecutor()
+            if provider_executor is None
+            else provider_executor
+        )
         self._usage_journal = usage_journal
         self._provider_name = provider_name
         self._profile = profile
@@ -482,9 +1045,15 @@ class ModelInvocation:
         *,
         call_id: str,
         attempt_id: str,
+        deadline: float | None = None,
     ) -> object:
         try:
-            response = self._provider.invoke(request)
+            response = self._provider_executor.execute(
+                self._provider,
+                request,
+                deadline=deadline,
+                max_output_bytes=self._max_output_bytes,
+            )
         except TimeoutError as error:
             self._record_unknown_outcome(
                 call_id=call_id,
@@ -499,98 +1068,6 @@ class ModelInvocation:
                 outcome=InvocationOutcome.EXCEPTION,
             )
             raise ModelInvocationProviderError("provider invocation failed") from error
-        if not isinstance(response, ProviderResponse):
-            error = TypeError("provider returned an invalid response object")
-            self._record_unknown_outcome(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.EXCEPTION,
-            )
-            raise ModelInvocationProviderError("provider invocation failed") from error
-        if (
-            type(response.fallback) is not bool
-            or type(response.streamed) is not bool
-        ):
-            error = TypeError("provider response flags are invalid")
-            self._record_unknown_outcome(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.EXCEPTION,
-            )
-            raise ModelInvocationProviderError("provider invocation failed") from error
-        if (
-            type(response.response_model) is not str
-            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.response_model)
-            is None
-        ):
-            error = TypeError("provider response model is invalid")
-            self._record_unknown_outcome(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.EXCEPTION,
-            )
-            raise ModelInvocationProviderError("provider invocation failed") from error
-        if (
-            type(response.request_model) is not str
-            or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(response.request_model)
-            is None
-        ):
-            error = TypeError("provider request model is invalid")
-            self._record_unknown_outcome(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.EXCEPTION,
-            )
-            raise ModelInvocationProviderError("provider invocation failed") from error
-        if response.output_text is not None and type(response.output_text) is not str:
-            error = TypeError("provider response output is invalid")
-            self._record_unknown_outcome(
-                call_id=call_id,
-                attempt_id=attempt_id,
-                outcome=InvocationOutcome.EXCEPTION,
-            )
-            raise ModelInvocationProviderError("provider invocation failed") from error
-        raw_usage_source = response.raw_usage
-        raw_usage = raw_usage_source if isinstance(raw_usage_source, Mapping) else {}
-        values = {
-            field: _reported_token(raw_usage, field)
-            for field in (
-                "input_tokens",
-                "output_tokens",
-                "total_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-                "reasoning_tokens",
-            )
-        }
-        known_component_tokens = sum(
-            int(values[field])
-            for field in ("input_tokens", "output_tokens")
-            if values[field] is not None
-        )
-        if (
-            values["total_tokens"] is not None
-            and values["total_tokens"] < known_component_tokens
-        ):
-            values["total_tokens"] = known_component_tokens
-        reported_cost = _reported_cost(raw_usage)
-        currency = _reported_text(raw_usage, "currency")
-        status_hint = response.usage_status
-        if status_hint is not None and not isinstance(status_hint, UsageStatus):
-            status_hint = None
-        has_known_usage = (
-            any(value is not None for value in values.values())
-            or reported_cost is not None
-        )
-        if not has_known_usage:
-            status = UsageStatus.UNKNOWN
-            values = {field: None for field in values}
-            reported_cost = None
-            currency = None
-        elif status_hint is UsageStatus.ESTIMATED:
-            status = UsageStatus.ESTIMATED
-        else:
-            status = UsageStatus.REPORTED
         self._usage_journal.begin(
             UsageEnvelope(
                 provider=self._provider_name,
@@ -599,19 +1076,19 @@ class ModelInvocation:
                 response_model=response.response_model,
                 call_id=call_id,
                 attempt_id=attempt_id,
-                usage_status=status,
-                input_tokens=values["input_tokens"],
-                output_tokens=values["output_tokens"],
-                total_tokens=values["total_tokens"],
-                cache_read_tokens=values["cache_read_tokens"],
-                cache_write_tokens=values["cache_write_tokens"],
-                reasoning_tokens=values["reasoning_tokens"],
-                reported_cost=reported_cost,
-                currency=currency,
+                usage_status=response.usage_status,
+                input_tokens=response.input_tokens,
+                output_tokens=response.output_tokens,
+                total_tokens=response.total_tokens,
+                cache_read_tokens=response.cache_read_tokens,
+                cache_write_tokens=response.cache_write_tokens,
+                reasoning_tokens=response.reasoning_tokens,
+                reported_cost=response.reported_cost,
+                currency=response.currency,
                 fallback=response.fallback,
                 streamed=response.streamed,
                 outcome=InvocationOutcome.RESPONSE_RECEIVED,
-                raw_usage_sha256=_raw_usage_sha256(raw_usage_source),
+                raw_usage_sha256=response.raw_usage_sha256,
             )
         )
         if response.streamed:
@@ -621,6 +1098,13 @@ class ModelInvocation:
                 outcome=InvocationOutcome.STREAMING_DISABLED,
             )
             raise StreamingDisabledError("streaming usage accounting is not enabled")
+        if response.output_overflow:
+            self._usage_journal.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.INVALID_JSON,
+            )
+            raise InvalidModelResponseError("provider response is not valid JSON")
         if (
             response.output_text is None
             or not response.output_text
@@ -745,6 +1229,7 @@ class RetryingModelInvocation:
 
 
 __all__ = [
+    "InlineProviderExecutor",
     "InvalidModelResponseError",
     "InvocationOutcome",
     "LogicalInvocationResult",
@@ -752,8 +1237,10 @@ __all__ = [
     "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",
     "ProviderResponse",
+    "ProviderExecutor",
     "RetryingModelInvocation",
     "StreamingDisabledError",
+    "SpawnedProviderExecutor",
     "UsageEnvelope",
     "UsageJournal",
     "UsageStatus",
