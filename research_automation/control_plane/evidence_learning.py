@@ -665,7 +665,6 @@ class LearningCommitService:
             self.rebuild_ledger()
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"{digest}.json"
-        _durable_create_only(path, raw)
         connection = sqlite3.connect(journal, timeout=30)
         try:
             connection.execute(
@@ -686,6 +685,11 @@ class LearningCommitService:
             )
             connection.commit()
             connection.execute("BEGIN IMMEDIATE")
+            orphan_hashes = self.rebuild_ledger()["orphan_packet_hashes"]
+            if orphan_hashes and orphan_hashes != [digest]:
+                raise ValueError(
+                    "unresolved learning packet orphan blocks commit"
+                )
             existing = connection.execute(
                 "SELECT sequence FROM learning_commit_events WHERE packet_hash = ?",
                 (digest,),
@@ -735,6 +739,7 @@ class LearningCommitService:
                     raise ValueError(
                         "Learning Commit Authority order is not append-only"
                     )
+                _durable_create_only(path, raw)
                 event_payload = {
                     "schema_version": "control_plane.learning_commit_event.v2",
                     "sequence": next_sequence,

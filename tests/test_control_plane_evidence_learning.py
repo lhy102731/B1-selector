@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event, get_ident
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -687,6 +688,42 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
             self.assertEqual(ledger["packet_hashes"], [packet_hash])
             self.assertEqual(ledger["orphan_packet_hashes"], [])
 
+    def test_nonempty_incomplete_journal_fails_without_mutation(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report, binding, _, _, _ = self._authority_fixture(root)
+            journal = root / "research_state/control_plane/learning_commit.sqlite3"
+            journal.parent.mkdir(parents=True, exist_ok=True)
+            connection = sqlite3.connect(journal)
+            connection.execute("CREATE TABLE unexpected_state (value TEXT)")
+            connection.execute("INSERT INTO unexpected_state VALUES ('frozen')")
+            connection.commit()
+            connection.close()
+            original = journal.read_bytes()
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "learning commit journal is invalid",
+                ):
+                    LearningCommitService(repository_root=root).commit(report)
+
+            self.assertEqual(original, journal.read_bytes())
+            self.assertFalse(
+                (
+                    root
+                    / "research_state/control_plane/learning_packets"
+                ).exists()
+            )
+
     def test_populated_v1_journal_remains_legacy_unaudited_before_v2_append(self):
         from research_automation.control_plane.evidence_learning import LearningCommitService
 
@@ -1231,6 +1268,244 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
                 packet_hash = service.commit(report)
             (root / "research_state/control_plane/learning_commit.sqlite3").unlink()
             self.assertEqual(service.rebuild_ledger()["orphan_packet_hashes"], [packet_hash])
+
+    def test_preledger_orphan_blocks_later_commit_until_exact_retry(self):
+        from research_automation.control_plane import evidence_learning as module
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+        from research_automation.control_plane.task_reports import (
+            task_report_v2_payload_sha256,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_report, first_binding, _, _, _ = self._authority_fixture(root)
+            second_report = deepcopy(first_report)
+            second_report["ticket_id"] = "ticket-learning-002"
+            second_report["idempotency_key"] = "p4-learning-commit-002"
+            second_report["completed_at"] = "2026-07-30T08:02:00Z"
+            second_report["report_payload_sha256"] = (
+                task_report_v2_payload_sha256(second_report)
+            )
+            second_binding = SimpleNamespace(
+                ticket_id=second_report["ticket_id"],
+                report_payload_sha256=second_report["report_payload_sha256"],
+                actor_id=first_binding.actor_id,
+                allowed_side_effects=first_binding.allowed_side_effects,
+                ticket_state="SUCCEEDED",
+                terminal_evidence_ref=first_binding.terminal_evidence_ref,
+            )
+            bindings = {
+                first_report["ticket_id"]: first_binding,
+                second_report["ticket_id"]: second_binding,
+            }
+            service = LearningCommitService(repository_root=root)
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=lambda report: bindings[report["ticket_id"]],
+            ):
+                first_hash = service.expected_packet_hash(first_report)
+                second_hash = service.expected_packet_hash(second_report)
+                with patch.object(
+                    module,
+                    "_event_sha256",
+                    side_effect=RuntimeError("synthetic pre-ledger crash"),
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "synthetic pre-ledger crash",
+                    ):
+                        service.commit(first_report)
+
+                self.assertEqual(
+                    [first_hash],
+                    service.rebuild_ledger()["orphan_packet_hashes"],
+                )
+                with self.assertRaisesRegex(ValueError, "orphan"):
+                    service.commit(second_report)
+                self.assertFalse(
+                    (
+                        root
+                        / "research_state/control_plane/learning_packets"
+                        / f"{second_hash}.json"
+                    ).exists()
+                )
+
+                self.assertEqual(first_hash, service.commit(first_report))
+                self.assertEqual(second_hash, service.commit(second_report))
+
+                ledger = service.rebuild_ledger()
+            self.assertEqual(
+                [first_hash, second_hash],
+                ledger["packet_hashes"],
+            )
+            self.assertEqual([], ledger["orphan_packet_hashes"])
+
+    def test_concurrent_commit_cannot_publish_past_preledger_orphan(self):
+        from research_automation.control_plane import evidence_learning as module
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+        from research_automation.control_plane.task_reports import (
+            task_report_v2_payload_sha256,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_report, first_binding, _, _, _ = self._authority_fixture(root)
+            second_report = deepcopy(first_report)
+            second_report["ticket_id"] = "ticket-learning-002"
+            second_report["idempotency_key"] = "p4-learning-commit-002"
+            second_report["completed_at"] = "2026-07-30T08:02:00Z"
+            second_report["report_payload_sha256"] = (
+                task_report_v2_payload_sha256(second_report)
+            )
+            second_binding = SimpleNamespace(
+                ticket_id=second_report["ticket_id"],
+                report_payload_sha256=second_report["report_payload_sha256"],
+                actor_id=first_binding.actor_id,
+                allowed_side_effects=first_binding.allowed_side_effects,
+                ticket_state="SUCCEEDED",
+                terminal_evidence_ref=first_binding.terminal_evidence_ref,
+            )
+            bindings = {
+                first_report["ticket_id"]: first_binding,
+                second_report["ticket_id"]: second_binding,
+            }
+            service = LearningCommitService(repository_root=root)
+            first_at_event = Event()
+            release_first = Event()
+            second_write_attempted = Event()
+            second_thread_id = []
+            original_event_sha256 = module._event_sha256
+            original_connect = module.sqlite3.connect
+
+            def event_sha256(payload):
+                if payload["packet_hash"] == first_hash:
+                    first_at_event.set()
+                    if not release_first.wait(5):
+                        raise AssertionError("timed out releasing first commit")
+                    raise RuntimeError("synthetic concurrent pre-ledger crash")
+                return original_event_sha256(payload)
+
+            class ConnectionProxy:
+                def __init__(self, delegate):
+                    self._delegate = delegate
+
+                def execute(self, statement, *args, **kwargs):
+                    if (
+                        second_thread_id
+                        and get_ident() == second_thread_id[0]
+                        and "INSERT OR IGNORE INTO learning_commit_head"
+                        in statement
+                    ):
+                        second_write_attempted.set()
+                    return self._delegate.execute(statement, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._delegate, name)
+
+            def connect(*args, **kwargs):
+                return ConnectionProxy(original_connect(*args, **kwargs))
+
+            def commit_second():
+                second_thread_id.append(get_ident())
+                return service.commit(second_report)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=lambda report: bindings[report["ticket_id"]],
+            ):
+                first_hash = service.expected_packet_hash(first_report)
+                second_hash = service.expected_packet_hash(second_report)
+                with ThreadPoolExecutor(max_workers=2) as pool, patch.object(
+                    module,
+                    "_event_sha256",
+                    side_effect=event_sha256,
+                ), patch.object(module.sqlite3, "connect", side_effect=connect):
+                    first = pool.submit(service.commit, first_report)
+                    self.assertTrue(first_at_event.wait(5))
+                    second = pool.submit(commit_second)
+                    try:
+                        self.assertTrue(second_write_attempted.wait(5))
+                        self.assertFalse(
+                            (
+                                root
+                                / "research_state/control_plane/learning_packets"
+                                / f"{second_hash}.json"
+                            ).exists()
+                        )
+                    finally:
+                        release_first.set()
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "synthetic concurrent pre-ledger crash",
+                    ):
+                        first.result(timeout=5)
+                    with self.assertRaisesRegex(ValueError, "orphan"):
+                        second.result(timeout=5)
+
+                self.assertEqual(first_hash, service.commit(first_report))
+                self.assertEqual(second_hash, service.commit(second_report))
+                ledger = service.rebuild_ledger()
+
+            self.assertEqual([first_hash, second_hash], ledger["packet_hashes"])
+            self.assertEqual([], ledger["orphan_packet_hashes"])
+
+    def test_out_of_order_rejection_does_not_publish_orphan_packet(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+        from research_automation.control_plane.task_reports import (
+            task_report_v2_payload_sha256,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            older_report, older_binding, _, _, _ = self._authority_fixture(root)
+            newer_report = deepcopy(older_report)
+            newer_report["ticket_id"] = "ticket-learning-002"
+            newer_report["idempotency_key"] = "p4-learning-commit-002"
+            newer_report["completed_at"] = "2026-07-30T08:02:00Z"
+            newer_report["report_payload_sha256"] = (
+                task_report_v2_payload_sha256(newer_report)
+            )
+            newer_binding = SimpleNamespace(
+                ticket_id=newer_report["ticket_id"],
+                report_payload_sha256=newer_report["report_payload_sha256"],
+                actor_id=older_binding.actor_id,
+                allowed_side_effects=older_binding.allowed_side_effects,
+                ticket_state="SUCCEEDED",
+                terminal_evidence_ref=older_binding.terminal_evidence_ref,
+            )
+            bindings = {
+                older_report["ticket_id"]: older_binding,
+                newer_report["ticket_id"]: newer_binding,
+            }
+            service = LearningCommitService(repository_root=root)
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=lambda report: bindings[report["ticket_id"]],
+            ):
+                older_hash = service.expected_packet_hash(older_report)
+                newer_hash = service.commit(newer_report)
+                with self.assertRaisesRegex(ValueError, "append-only"):
+                    service.commit(older_report)
+                ledger = service.rebuild_ledger()
+
+            self.assertFalse(
+                (
+                    root
+                    / "research_state/control_plane/learning_packets"
+                    / f"{older_hash}.json"
+                ).exists()
+            )
+            self.assertEqual([newer_hash], ledger["packet_hashes"])
+            self.assertEqual([], ledger["orphan_packet_hashes"])
 
     def test_recomputed_journal_tamper_fails_authority_anchor(self):
         from research_automation.control_plane.evidence_learning import (
