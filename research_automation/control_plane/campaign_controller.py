@@ -36,6 +36,7 @@ from .campaign import (
     StreamingDisabledError,
     UsageEnvelope,
     UsageStatus,
+    _is_usage_journal_error,
 )
 from .campaign_context import (
     CycleContextReceipt,
@@ -1069,6 +1070,8 @@ class OperationalCampaignController:
             ModelInvocationTimeoutError,
             StreamingDisabledError,
         ) as error:
+            if _is_usage_journal_error(error):
+                raise
             failed_attempts = usage.list_attempts(call_id=call_id)
             if failed_attempts:
                 try:

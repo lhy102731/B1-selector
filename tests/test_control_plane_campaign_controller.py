@@ -11,6 +11,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from research_automation.control_plane import campaign_controller as campaign_controller_module
 from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
     CycleReservationLimits,
@@ -23,10 +24,14 @@ from research_automation.control_plane.campaign_controller import (
     operational_prompt_sha256,
 )
 from research_automation.control_plane.campaign import (
+    InvalidModelResponseError,
     InvocationOutcome,
+    ModelInvocationProviderError,
+    ModelInvocationTimeoutError,
     ProviderResponse,
     UsageEnvelope,
     UsageStatus,
+    _is_usage_journal_error,
 )
 from research_automation.control_plane.evidence_learning import (
     EvidenceAdapter,
@@ -4596,6 +4601,112 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             ),
                         )
                     self.assertEqual(replay_provider.call_count, 0)
+
+    def test_finish_journal_typed_errors_bypass_controller_compensation(
+        self,
+    ) -> None:
+        error_types = (
+            InvalidModelResponseError,
+            ModelInvocationProviderError,
+            ModelInvocationTimeoutError,
+        )
+        for error_type in error_types:
+            with self.subTest(error_type=error_type.__name__):
+                campaign_id = (
+                    "campaign-controller-finish-journal-origin-"
+                    f"{error_type.__name__.lower()}"
+                )
+                failure = error_type("synthetic usage journal finish failure")
+                provider = _BoundFakeProvider()
+                compensation_calls = {"list_attempts": 0, "verify_response": 0}
+                original_list_attempts = OperationalUsageJournal.list_attempts
+
+                def tracked_list_attempts(journal, *args, **kwargs):
+                    compensation_calls["list_attempts"] += 1
+                    return original_list_attempts(journal, *args, **kwargs)
+
+                def tracked_verify_response(*args, **kwargs):
+                    compensation_calls["verify_response"] += 1
+                    return None
+
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    with patch.object(
+                        campaign_controller_module._FencedOperationalUsageJournal,
+                        "finish",
+                        autospec=True,
+                        side_effect=failure,
+                    ) as finish, patch.object(
+                        OperationalUsageJournal,
+                        "list_attempts",
+                        new=tracked_list_attempts,
+                    ), patch.object(
+                        OperationalRosterJournal,
+                        "verify_response",
+                        new=tracked_verify_response,
+                    ):
+                        with self.assertRaises(Exception) as raised:
+                            _completed_evidence_model_call(
+                                root,
+                                journal,
+                                campaign_id=campaign_id,
+                                provider=provider,
+                            )
+
+                self.assertIs(raised.exception, failure)
+                self.assertTrue(_is_usage_journal_error(failure))
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(finish.call_count, 1)
+                self.assertEqual(compensation_calls["list_attempts"], 0)
+                self.assertEqual(compensation_calls["verify_response"], 0)
+
+    def test_begin_journal_typed_error_bypasses_controller_compensation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-begin-journal-origin-invalid-response"
+        failure = InvalidModelResponseError(
+            "synthetic usage journal begin failure"
+        )
+        provider = _BoundFakeProvider()
+        compensation_calls = {"list_attempts": 0, "verify_response": 0}
+        original_list_attempts = OperationalUsageJournal.list_attempts
+
+        def tracked_list_attempts(journal, *args, **kwargs):
+            compensation_calls["list_attempts"] += 1
+            return original_list_attempts(journal, *args, **kwargs)
+
+        def tracked_verify_response(*args, **kwargs):
+            compensation_calls["verify_response"] += 1
+            return None
+
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            with patch.object(
+                campaign_controller_module._FencedOperationalUsageJournal,
+                "begin",
+                autospec=True,
+                side_effect=failure,
+            ) as begin, patch.object(
+                OperationalUsageJournal,
+                "list_attempts",
+                new=tracked_list_attempts,
+            ), patch.object(
+                OperationalRosterJournal,
+                "verify_response",
+                new=tracked_verify_response,
+            ):
+                with self.assertRaises(Exception) as raised:
+                    _completed_evidence_model_call(
+                        root,
+                        journal,
+                        campaign_id=campaign_id,
+                        provider=provider,
+                    )
+
+        self.assertIs(raised.exception, failure)
+        self.assertTrue(_is_usage_journal_error(failure))
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(begin.call_count, 1)
+        self.assertEqual(compensation_calls["list_attempts"], 0)
+        self.assertEqual(compensation_calls["verify_response"], 0)
 
     def test_mid_call_crash_is_fenced_without_second_provider_call(self) -> None:
         campaign_id = "campaign-controller-021"
