@@ -12,6 +12,8 @@ from pathlib import Path
 
 from research_automation.foundations.protocols import (
     ExecutionSpec,
+    ProtocolDefinition,
+    protocol_sha256,
     require_protocol_conformant,
 )
 from research_automation.task_queue import ExperimentTask
@@ -3752,6 +3754,37 @@ class OperationalCampaignController:
         ):
             raise CampaignJournalError(
                 "operational evidence is not Learning eligible"
+            )
+        policy = self._freeze._replay_policy(
+            self._freeze._policy_events(connection)
+        )
+        frozen = self._freeze._replay_freeze(
+            self._freeze._freeze_events(connection, cycle_id)
+        )
+        self._freeze._require_complete_freeze_order(
+            connection,
+            policy,
+            frozen,
+        )
+        try:
+            executed_protocol = ProtocolDefinition.model_validate_json(
+                _canonical_json_text(
+                    artifact.get("executed_protocol"),
+                    "runner executed protocol",
+                ),
+                strict=True,
+            )
+            executed_protocol_sha256 = protocol_sha256(executed_protocol)
+        except (TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "runner protocol conflicts with frozen Cycle"
+            ) from error
+        if (
+            executed_protocol_sha256
+            != frozen.executed_protocol_sha256
+        ):
+            raise CampaignJournalError(
+                "runner protocol conflicts with frozen Cycle"
             )
         events = self._learning_commit_events_in_transaction(
             connection,

@@ -170,7 +170,11 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
         with _authorized_campaign(campaign_id) as (root, _, journal):
             report, binding, artifact, expected_evidence, _ = (
                 evidence_fixtures.EvidenceLearningVerticalSliceTests()
-                ._authority_fixture(root, claim=claim)
+                ._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_protocol().model_dump(mode="json"),
+                )
             )
             authority_reader = patch(
                 "research_automation.control_plane.evidence_learning."
@@ -357,7 +361,9 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 member_id=second_member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol={"label": "synthetic-only"},
+                    approved_protocol=(
+                        _protocol().model_dump(mode="json")
+                    ),
                 ),
             )
             second_settlement = recovered.settle_cycle_without_learning(

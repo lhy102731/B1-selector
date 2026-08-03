@@ -34,14 +34,18 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
             "status": "VERIFIED",
         }
 
-    def _authority_fixture(self, root, *, claim=None):
+    def _authority_fixture(self, root, *, claim=None, protocol=None):
         from research_automation.control_plane.contracts import SideEffect
         from research_automation.control_plane.evidence_learning import EvidenceAdapter
         from research_automation.control_plane import evidence_learning as module
         from research_automation.control_plane.task_reports import build_task_report_v2
 
         claim = {"kind": "NEGATIVE"} if claim is None else claim
-        protocol = {"label": "signal-day", "embargo_days": 5}
+        protocol = (
+            {"label": "signal-day", "embargo_days": 5}
+            if protocol is None
+            else protocol
+        )
         artifact = {
             "schema_version": "runner.artifact.v1",
             "runner": "fixture-runner",
