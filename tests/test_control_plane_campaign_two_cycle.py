@@ -361,9 +361,7 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 member_id=second_member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=(
-                        _protocol().model_dump(mode="json")
-                    ),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             second_settlement = recovered.settle_cycle_without_learning(

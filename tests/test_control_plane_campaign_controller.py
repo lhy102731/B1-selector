@@ -79,6 +79,7 @@ from research_automation.control_plane.campaign_roster import (
 from research_automation.control_plane.task_reports import build_task_report_v2
 from research_automation.foundations.protocols import (
     MaterialProtocolChangeError,
+    ProtocolDefinition,
     compile_execution_spec,
 )
 from research_automation.task_queue import ExperimentTask
@@ -101,6 +102,15 @@ _PROVIDER_CALL_COUNTER_PATHS: set[Path] = set()
 
 def _synthetic_protocol() -> dict[str, object]:
     return _protocol().model_dump(mode="json")
+
+
+def _synthetic_protocol_with_notes(notes: str) -> dict[str, object]:
+    payload = _synthetic_protocol()
+    payload["metadata"]["notes"] = notes
+    return ProtocolDefinition.model_validate_json(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        strict=True,
+    ).model_dump(mode="json")
 
 
 def _new_provider_call_counter_path() -> str:
@@ -347,21 +357,15 @@ class _EvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
         self._increment_call_count()
         self.last_request = request
         return ProviderResponse(
-            output_text=json.dumps(
-                {
-                    "access_event_ids": [],
-                    "artifact_refs": [],
-                    "claim": None,
-                    "executed_protocol": _synthetic_protocol(),
-                    "protocol_conformance": "CONFORMING",
-                    "runner": "fixture-runner",
-                    "runner_version": "1.0.0",
-                    "schema_version": "runner.artifact.v1",
-                    "status": "COMPLETED",
-                    "taint_refs": [],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+            output_text=(
+                '{"access_event_ids":[],"artifact_refs":[],'
+                '"claim":null,"executed_protocol":'
+                '{"label":"synthetic-only"},'
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED","taint_refs":[]}'
             ),
             request_model=self.model,
             response_model=self.model,
@@ -481,21 +485,16 @@ class _TaintedEvidenceArtifactBoundFakeProvider(
     def invoke(self, request: object) -> ProviderResponse:
         return replace(
             super().invoke(request),
-            output_text=json.dumps(
-                {
-                    "access_event_ids": ["event:synthetic-tainted"],
-                    "artifact_refs": [],
-                    "claim": None,
-                    "executed_protocol": _synthetic_protocol(),
-                    "protocol_conformance": "CONFORMING",
-                    "runner": "fixture-runner",
-                    "runner_version": "1.0.0",
-                    "schema_version": "runner.artifact.v1",
-                    "status": "COMPLETED",
-                    "taint_refs": ["taint:synthetic-test"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+            output_text=(
+                '{"access_event_ids":["event:synthetic-tainted"],'
+                '"artifact_refs":[],"claim":null,'
+                '"executed_protocol":{"label":"synthetic-only"},'
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED",'
+                '"taint_refs":["taint:synthetic-test"]}'
             ),
         )
 
@@ -512,29 +511,24 @@ class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
         self._increment_call_count()
         self.last_request = request
         return ProviderResponse(
-            output_text=json.dumps(
-                {
-                    "access_event_ids": ["event:synthetic-eligible"],
-                    "artifact_refs": [
-                        {
-                            "ref": "fixtures/result.json",
-                            "sha256": "e" * 64,
-                        }
-                    ],
-                    "claim": {
-                        "kind": "NEGATIVE",
-                        "summary": "Synthetic eligible finding.",
-                    },
-                    "executed_protocol": _synthetic_protocol(),
-                    "protocol_conformance": "CONFORMING",
-                    "runner": "fixture-runner",
-                    "runner_version": "1.0.0",
-                    "schema_version": "runner.artifact.v1",
-                    "status": "COMPLETED",
-                    "taint_refs": [],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+            output_text=(
+                '{"access_event_ids":["event:synthetic-eligible"],'
+                '"artifact_refs":[{"ref":"fixtures/result.json",'
+                '"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],'
+                '"claim":{"kind":"NEGATIVE",'
+                '"summary":"Synthetic eligible finding."},'
+                '"executed_protocol":'
+                + json.dumps(
+                    _synthetic_protocol(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + ','
+                '"protocol_conformance":"CONFORMING",'
+                '"runner":"fixture-runner",'
+                '"runner_version":"1.0.0",'
+                '"schema_version":"runner.artifact.v1",'
+                '"status":"COMPLETED","taint_refs":[]}'
             ),
             request_model=self.model,
             response_model=self.model,
@@ -545,6 +539,23 @@ class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
                 "reported_cost": "0.02",
                 "currency": "USD",
             },
+        )
+
+
+class _MissingExecutedProtocolEligibleFakeProvider(
+    _EligibleEvidenceArtifactBoundFakeProvider
+):
+    def invoke(self, request: object) -> ProviderResponse:
+        response = super().invoke(request)
+        artifact = json.loads(response.output_text)
+        artifact.pop("executed_protocol")
+        return replace(
+            response,
+            output_text=json.dumps(
+                artifact,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         )
 
 
@@ -836,7 +847,7 @@ def _completed_no_material_information_gain(
         member_id=member.member_id,
         evidence_adapter=EvidenceAdapter(
             known_runners={"fixture-runner": "1.0.0"},
-            approved_protocol=_synthetic_protocol(),
+            approved_protocol={"label": "synthetic-only"},
         ),
     )
     settlement = controller.settle_cycle_without_learning(
@@ -1891,7 +1902,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settlement = controller.settle_cycle_without_learning(
@@ -1965,7 +1976,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         member_id=member.member_id,
                         evidence_adapter=EvidenceAdapter(
                             known_runners={"fixture-runner": "1.0.0"},
-                            approved_protocol=_synthetic_protocol(),
+                            approved_protocol={"label": "synthetic-only"},
                         ),
                     )
                     settlement = controller.settle_cycle_without_learning(
@@ -2036,7 +2047,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settlement = controller.settle_cycle_without_learning(
@@ -2405,7 +2416,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             self.assertEqual(
@@ -3482,7 +3493,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             self.assertFalse(evidence.evidence.promotion_eligible)
@@ -7900,7 +7911,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -7932,7 +7943,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             adapter = EvidenceAdapter(
                 known_runners={"fixture-runner": "1.0.0"},
-                approved_protocol=_synthetic_protocol(),
+                approved_protocol={"label": "synthetic-only"},
             )
             first = controller.record_model_evidence(
                 execution=execution,
@@ -7989,7 +8000,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             adapter = EvidenceAdapter(
                 known_runners={"fixture-runner": "1.0.0"},
-                approved_protocol=_synthetic_protocol(),
+                approved_protocol={"label": "synthetic-only"},
             )
             original = controller.record_model_evidence(
                 execution=execution,
@@ -8051,7 +8062,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -8067,7 +8078,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             "fixture-runner": "1.0.0",
                             "unused-runner": "9.9.9",
                         },
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8112,7 +8123,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             adapter = EvidenceAdapter(
                 known_runners={"fixture-runner": "1.0.0"},
-                approved_protocol=_synthetic_protocol(),
+                approved_protocol={"label": "synthetic-only"},
             )
 
             with self.assertRaisesRegex(
@@ -8171,7 +8182,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8210,7 +8221,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8267,7 +8278,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8342,7 +8353,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8379,7 +8390,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8405,7 +8416,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -8437,7 +8448,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -8471,7 +8482,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=_UnboundEvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8492,7 +8503,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             adapter = EvidenceAdapter(
                 known_runners={"fixture-runner": "1.0.0"},
-                approved_protocol=_synthetic_protocol(),
+                approved_protocol={"label": "synthetic-only"},
             )
             with patch.object(
                 OperationalCampaignLifecycle,
@@ -8566,7 +8577,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     member_id=member.member_id,
                     evidence_adapter=EvidenceAdapter(
                         known_runners={"fixture-runner": "1.0.0"},
-                        approved_protocol=_synthetic_protocol(),
+                        approved_protocol={"label": "synthetic-only"},
                     ),
                 )
 
@@ -8633,7 +8644,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
     def test_authority_bound_learning_packet_advances_the_cycle(self) -> None:
         campaign_id = "campaign-controller-learning-authority"
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            protocol = _protocol().model_dump(mode="json")
+            protocol = _synthetic_protocol()
             report, binding, artifact, expected_evidence, _ = (
                 EvidenceLearningVerticalSliceTests()._authority_fixture(
                     root,
@@ -8687,93 +8698,197 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 CycleStatus.LEARNING_COMMITTED,
             )
 
-    def test_learning_commit_rejects_authority_protocol_not_bound_to_frozen_cycle_before_intent(
+    def _record_protocol_binding_evidence(
+        self, root, journal, campaign_id, provider, claim, protocol
+    ):
+        controller, execution, member, _ = _completed_evidence_model_call(
+            root, journal, campaign_id=campaign_id, provider=provider
+        )
+        adapter_kwargs = (
+            {"approved_protocol": protocol}
+            if protocol is not None
+            else {}
+        )
+        evidence = controller.record_model_evidence(
+            execution=execution,
+            member_id=member.member_id,
+            evidence_adapter=EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_claim=claim,
+                **adapter_kwargs,
+            ),
+        )
+        return controller, execution, evidence
+
+    def _assert_protocol_binding_rejected(
+        self,
+        root,
+        journal,
+        controller,
+        execution,
+        evidence,
+        report,
+        intent_count=0,
+    ):
+        service = LearningCommitService(repository_root=root)
+        with patch.object(
+            LearningCommitService,
+            "expected_packet_hash",
+            side_effect=AssertionError("protocol binding reached packet hash"),
+        ), patch.object(
+            LearningCommitService,
+            "commit",
+            side_effect=AssertionError("protocol binding reached commit"),
+        ), self.assertRaisesRegex(
+            CampaignJournalError,
+            "runner protocol conflicts with frozen Cycle",
+        ):
+            controller.commit_learning(
+                execution=execution,
+                evidence_receipt=evidence,
+                authority_task_report=report,
+                learning_commit_sink=CampaignLearningCommitSink(
+                    journal=journal,
+                    service=service,
+                ),
+            )
+        intents = journal.list_events(
+            cycle_id="cycle-001",
+            aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+            aggregate_id="cycle-001",
+        )
+        self.assertEqual(len(intents), intent_count)
+        self.assertEqual(
+            journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                aggregate_id="cycle-001",
+            ),
+            (),
+        )
+        for path in (
+            "research_state/control_plane/learning_commit.sqlite3",
+            "research_state/control_plane/learning_packets",
+        ):
+            self.assertFalse((root / path).exists())
+        self.assertEqual(
+            controller.cycle_snapshot("cycle-001").status,
+            CycleStatus.EVIDENCE_READY,
+        )
+        return intents
+
+    def test_learning_commit_rejects_valid_different_protocol_before_intent(
         self,
     ) -> None:
         campaign_id = "campaign-controller-learning-protocol-mismatch"
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            report, binding, artifact, _, _ = (
-                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            protocol = _synthetic_protocol_with_notes(
+                "valid protocol from another frozen generation"
             )
-            controller, execution, member, _ = (
-                _completed_evidence_model_call(
-                    root,
-                    journal,
-                    campaign_id=campaign_id,
-                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
-                        artifact
-                    ),
+            report, _, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(
+                    root, protocol=protocol
                 )
             )
-            evidence = controller.record_model_evidence(
-                execution=execution,
-                member_id=member.member_id,
-                evidence_adapter=EvidenceAdapter(
-                    known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=artifact["executed_protocol"],
-                    approved_claim=artifact["claim"],
-                ),
+            controller, execution, evidence = (
+                self._record_protocol_binding_evidence(
+                    root,
+                    journal,
+                    campaign_id,
+                    _AuthorityEvidenceArtifactBoundFakeProvider(artifact),
+                    artifact["claim"],
+                    protocol,
+                )
             )
-            service = LearningCommitService(repository_root=root)
+            self._assert_protocol_binding_rejected(
+                root, journal, controller, execution, evidence, report
+            )
 
-            with patch(
-                "research_automation.control_plane.evidence_learning."
-                "AuthorityReader.verify_task_report_binding",
-                return_value=binding,
-            ), patch.object(
-                LearningCommitService,
-                "expected_packet_hash",
-                side_effect=AssertionError("protocol mismatch reached intent"),
-            ), patch.object(
-                LearningCommitService,
-                "commit",
-                side_effect=AssertionError("protocol mismatch reached commit"),
-            ):
-                with self.assertRaisesRegex(
-                    CampaignJournalError,
-                    "runner protocol conflicts with frozen Cycle",
-                ):
-                    controller.commit_learning(
-                        execution=execution,
-                        evidence_receipt=evidence,
-                        authority_task_report=report,
-                        learning_commit_sink=CampaignLearningCommitSink(
-                            journal=journal,
-                            service=service,
-                        ),
-                    )
+    def test_learning_commit_rejects_missing_executed_protocol_before_intent(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-protocol-missing"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, evidence = (
+                self._record_protocol_binding_evidence(
+                    root,
+                    journal,
+                    campaign_id,
+                    _MissingExecutedProtocolEligibleFakeProvider(),
+                    claim,
+                    None,
+                )
+            )
+            self.assertTrue(evidence.evidence.promotion_eligible)
+            self._assert_protocol_binding_rejected(
+                root,
+                journal,
+                controller,
+                execution,
+                evidence,
+                {"synthetic": "terminal-report"},
+            )
 
+    def test_learning_commit_existing_intent_cannot_bypass_protocol_binding(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-protocol-intent-replay"
+        report = {"synthetic": "terminal-report"}
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            protocol = _synthetic_protocol_with_notes(
+                "valid replay protocol from another frozen generation"
+            )
+            _, _, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(
+                    root, protocol=protocol
+                )
+            )
+            controller, execution, evidence = (
+                self._record_protocol_binding_evidence(
+                    root,
+                    journal,
+                    campaign_id,
+                    _AuthorityEvidenceArtifactBoundFakeProvider(artifact),
+                    artifact["claim"],
+                    protocol,
+                )
+            )
+            authority_hash = _controller_sha256(
+                b"control_plane.operational_learning_task_report.v1",
+                report,
+                "Authority TaskReport",
+            )
+            intent_payload = controller._learning_commit_intent_payload(
+                cycle_id="cycle-001",
+                evidence_receipt=evidence,
+                authority_task_report_sha256=authority_hash,
+                packet_hash="f" * 64,
+            )
+            journal.append(
+                event_id=controller._learning_commit_intent_event_id("cycle-001"),
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                aggregate_id="cycle-001",
+                event_type="OPERATIONAL_LEARNING_COMMIT_INTENT_RECORDED",
+                payload=intent_payload,
+            )
+            intents = self._assert_protocol_binding_rejected(
+                root,
+                journal,
+                controller,
+                execution,
+                evidence,
+                report,
+                intent_count=1,
+            )
+            stored_intent = intents[0].payload()
             self.assertEqual(
-                journal.list_events(
-                    cycle_id="cycle-001",
-                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
-                    aggregate_id="cycle-001",
-                ),
-                (),
-            )
-            self.assertEqual(
-                journal.list_events(
-                    cycle_id="cycle-001",
-                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
-                    aggregate_id="cycle-001",
-                ),
-                (),
-            )
-            self.assertFalse(
-                (
-                    root
-                    / "research_state/control_plane/learning_commit.sqlite3"
-                ).exists()
-            )
-            self.assertFalse(
-                (
-                    root
-                    / "research_state/control_plane/learning_packets"
-                ).exists()
-            )
-            self.assertEqual(
-                controller.cycle_snapshot("cycle-001").status,
-                CycleStatus.EVIDENCE_READY,
+                {key: stored_intent[key] for key in intent_payload},
+                intent_payload,
             )
 
     def test_learning_sink_from_another_repository_is_rejected_before_write(
@@ -8903,7 +9018,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             service = LearningCommitService(repository_root=root)
@@ -10045,7 +10160,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -10108,7 +10223,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -10150,7 +10265,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -10193,7 +10308,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
 
@@ -10283,7 +10398,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             advance = (
@@ -10359,7 +10474,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             recovery_identity = _FakeProcessIdentityProvider(
@@ -10970,7 +11085,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11295,7 +11410,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11350,7 +11465,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11400,7 +11515,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11458,7 +11573,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11561,7 +11676,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11631,7 +11746,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11701,7 +11816,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -11747,7 +11862,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 member_id=member.member_id,
                 evidence_adapter=EvidenceAdapter(
                     known_runners={"fixture-runner": "1.0.0"},
-                    approved_protocol=_synthetic_protocol(),
+                    approved_protocol={"label": "synthetic-only"},
                 ),
             )
             settled = controller.settle_cycle_without_learning(
@@ -12209,7 +12324,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         member_id=member.member_id,
                         evidence_adapter=EvidenceAdapter(
                             known_runners={"fixture-runner": "1.0.0"},
-                            approved_protocol=_synthetic_protocol(),
+                            approved_protocol={"label": "synthetic-only"},
                         ),
                     )
                     settlement = controller.settle_cycle_without_learning(
