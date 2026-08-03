@@ -1650,9 +1650,16 @@ class OperationalUsageJournal:
         )
 
     @staticmethod
-    def _validated_usage_envelope(usage_event: CampaignEvent) -> UsageEnvelope:
+    def _usage_payload(usage_event: CampaignEvent) -> dict[str, object]:
         try:
-            usage_payload = _event_domain_payload(usage_event)
+            return _event_domain_payload(usage_event)
+        except (KeyError, TypeError, ValueError) as error:
+            raise CampaignJournalError("model usage payload is invalid") from error
+
+    @staticmethod
+    def _validated_usage_envelope(usage_event: CampaignEvent) -> UsageEnvelope:
+        usage_payload = OperationalUsageJournal._usage_payload(usage_event)
+        try:
             envelope = _parse_envelope(usage_payload)
             observed_usage_json, _ = _payload(usage_payload)
             expected_usage_json, _ = _payload(_envelope_payload(envelope))
@@ -1836,14 +1843,14 @@ class OperationalUsageJournal:
             events = self._events_in_transaction(connection, aggregate_id)
             if not events:
                 raise CampaignJournalError("model attempt stream is missing")
-            envelope = self._validated_usage_envelope(events[0])
+            usage_payload = self._usage_payload(events[0])
             try:
                 stored_call_id = _identifier(
-                    envelope.call_id,
+                    usage_payload.get("call_id"),
                     "stored call_id",
                 )
                 stored_attempt_id = _identifier(
-                    envelope.attempt_id,
+                    usage_payload.get("attempt_id"),
                     "stored attempt_id",
                 )
             except (TypeError, ValueError) as error:
