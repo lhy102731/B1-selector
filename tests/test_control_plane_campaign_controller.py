@@ -507,6 +507,14 @@ class _NonObjectEvidenceArtifactBoundFakeProvider(
 
 
 class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self, *, executed_protocol=None) -> None:
+        super().__init__()
+        self._executed_protocol = (
+            _synthetic_protocol()
+            if executed_protocol is None
+            else executed_protocol
+        )
+
     def invoke(self, request: object) -> ProviderResponse:
         self._increment_call_count()
         self.last_request = request
@@ -519,7 +527,7 @@ class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
                 '"summary":"Synthetic eligible finding."},'
                 '"executed_protocol":'
                 + json.dumps(
-                    _synthetic_protocol(),
+                    self._executed_protocol,
                     sort_keys=True,
                     separators=(",", ":"),
                 )
@@ -8833,6 +8841,29 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 {"synthetic": "terminal-report"},
             )
 
+    def test_learning_commit_rejects_malformed_executed_protocol_before_intent(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-protocol-malformed"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, _, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(root)
+            )
+            controller, execution, evidence = (
+                self._record_protocol_binding_evidence(
+                    root,
+                    journal,
+                    campaign_id,
+                    _AuthorityEvidenceArtifactBoundFakeProvider(artifact),
+                    artifact["claim"],
+                    artifact["executed_protocol"],
+                )
+            )
+            self.assertTrue(evidence.evidence.promotion_eligible)
+            self._assert_protocol_binding_rejected(
+                root, journal, controller, execution, evidence, report
+            )
+
     def test_learning_commit_existing_intent_cannot_bypass_protocol_binding(
         self,
     ) -> None:
@@ -11601,6 +11632,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
     def test_non_promoted_material_keeps_its_information_gain_status(
         self,
     ) -> None:
+        legacy_protocol = {"label": "synthetic-only"}
         cases = (
             (
                 "MATERIAL_UNAPPROVED",
@@ -11628,7 +11660,9 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             journal,
                             campaign_id=campaign_id,
                             provider=(
-                                _EligibleEvidenceArtifactBoundFakeProvider()
+                                _EligibleEvidenceArtifactBoundFakeProvider(
+                                    executed_protocol=legacy_protocol
+                                )
                             ),
                         )
                     )
@@ -11637,7 +11671,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         member_id=member.member_id,
                         evidence_adapter=EvidenceAdapter(
                             known_runners={"fixture-runner": "1.0.0"},
-                            approved_protocol=_synthetic_protocol(),
+                            approved_protocol=legacy_protocol,
                             approved_claim=approved_claim,
                         ),
                     )
