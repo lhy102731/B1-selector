@@ -1867,6 +1867,99 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             cycle_status_before,
         )
 
+    def _rewrite_cycle_settlement_as_authentic_currencyless_v1(
+        self,
+        *,
+        root,
+        journal,
+        campaign_id: str,
+        cycle_id: str,
+        current_schema: str,
+        legacy_schema: str,
+        manifest_domain: bytes,
+    ) -> None:
+        rows_before = _campaign_event_rows(root, campaign_id)
+        settlement_events = journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+            aggregate_id=cycle_id,
+        )
+        self.assertEqual(len(settlement_events), 1)
+        current_event = settlement_events[0]
+        self.assertEqual(
+            current_event.event_type,
+            "OPERATIONAL_CYCLE_SETTLEMENT_RECORDED",
+        )
+        current_payload = current_event.payload()
+        self.assertEqual(current_payload["schema_version"], current_schema)
+        self.assertEqual(current_payload["currency"], "USD")
+
+        legacy_payload = dict(current_payload)
+        authority_grant_id = legacy_payload.pop("_authority_grant_id")
+        legacy_payload["schema_version"] = legacy_schema
+        self.assertEqual(legacy_payload.pop("currency"), "USD")
+        legacy_identity = {
+            key: value
+            for key, value in legacy_payload.items()
+            if key != "manifest_sha256"
+        }
+        legacy_payload["manifest_sha256"] = _controller_sha256(
+            manifest_domain,
+            legacy_identity,
+            "legacy operational Cycle settlement",
+        )
+        legacy_payload["_authority_grant_id"] = authority_grant_id
+        _rewrite_campaign_event_payload(root, current_event, legacy_payload)
+
+        rewritten_events = journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="OPERATIONAL_CYCLE_SETTLEMENT",
+            aggregate_id=cycle_id,
+        )
+        self.assertEqual(len(rewritten_events), 1)
+        rewritten_event = rewritten_events[0]
+        rewritten_payload = rewritten_event.payload()
+        rewritten_identity = {
+            key: value
+            for key, value in rewritten_payload.items()
+            if key not in {"manifest_sha256", "_authority_grant_id"}
+        }
+        self.assertEqual(rewritten_payload, legacy_payload)
+        self.assertEqual(rewritten_payload["schema_version"], legacy_schema)
+        self.assertNotIn("currency", rewritten_payload)
+        self.assertEqual(
+            rewritten_payload["manifest_sha256"],
+            _controller_sha256(
+                manifest_domain,
+                rewritten_identity,
+                "stored legacy operational Cycle settlement",
+            ),
+        )
+        self.assertEqual(
+            rewritten_event.payload_sha256,
+            _event_integrity_sha256(
+                event_id=rewritten_event.event_id,
+                namespace=rewritten_event.namespace,
+                campaign_id=rewritten_event.campaign_id,
+                cycle_id=rewritten_event.cycle_id,
+                aggregate_type=rewritten_event.aggregate_type,
+                aggregate_id=rewritten_event.aggregate_id,
+                event_type=rewritten_event.event_type,
+                payload_json=rewritten_event.payload_json,
+                occurred_at=rewritten_event.occurred_at.isoformat(),
+                sequence=rewritten_event.sequence,
+            ),
+        )
+
+        rows_after = _campaign_event_rows(root, campaign_id)
+        self.assertEqual(len(rows_after), len(rows_before))
+        for before, after in zip(rows_before, rows_after, strict=True):
+            if before[0] == current_event.event_id:
+                self.assertEqual(before[:7] + before[9:], after[:7] + after[9:])
+                self.assertNotEqual(before[7:9], after[7:9])
+            else:
+                self.assertEqual(after, before)
+
     def test_legacy_currencyless_model_call_start_replay_fails_closed_before_provider_without_writes(
         self,
     ) -> None:
@@ -2161,6 +2254,331 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(
                 reopened.cycle_snapshot(cycle_id).status,
                 CycleStatus.EXECUTING,
+            )
+
+    def test_authentic_legacy_learned_settlement_currency_conflict_fails_closed_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-legacy-learned-settlement-currency"
+        cycle_id = "cycle-001"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_EligibleEvidenceArtifactBoundFakeProvider(),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                    approved_claim=claim,
+                ),
+            )
+            self.assertTrue(evidence.evidence.promotion_eligible)
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ), patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ):
+                learning = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={
+                        "synthetic": "legacy-settlement-terminal-report"
+                    },
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+            settlement = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            self.assertEqual(settlement.currency, "USD")
+            self.assertEqual(
+                controller.cycle_snapshot(cycle_id).status,
+                CycleStatus.SETTLED,
+            )
+
+            call_events = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=usage.model_calls[0].call_id,
+            )
+            self.assertEqual(len(call_events), 2)
+            self.assertTrue(
+                all(
+                    event.payload()["schema_version"]
+                    == "control_plane.operational_model_call.v2"
+                    and event.payload()["call_limits"]["currency"] == "USD"
+                    for event in call_events
+                )
+            )
+            usage_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                usage_event.payload()["schema_version"],
+                "control_plane.operational_execution_usage.v2",
+            )
+            self.assertEqual(usage_event.payload()["currency"], "USD")
+            evidence_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                evidence_event.payload()["schema_version"],
+                "control_plane.operational_model_evidence.v1",
+            )
+            learning_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                learning_event.payload()["schema_version"],
+                "control_plane.operational_learning_commit.v1",
+            )
+            self._rewrite_cycle_settlement_as_authentic_currencyless_v1(
+                root=root,
+                journal=journal,
+                campaign_id=campaign_id,
+                cycle_id=cycle_id,
+                current_schema=(
+                    "control_plane.operational_cycle_settlement.v2"
+                ),
+                legacy_schema=(
+                    "control_plane.operational_cycle_settlement.v1"
+                ),
+                manifest_domain=(
+                    b"control_plane.operational_cycle_settlement.v1"
+                ),
+            )
+
+            del controller
+            replay_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=grant,
+                namespace="formal",
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+            reopened = OperationalCampaignController(
+                journal=replay_journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+            campaign_status_before = reopened.campaign_snapshot().status
+            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
+            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
+            self.assertEqual(cycle_status_before, CycleStatus.SETTLED)
+            rows_before_replay = _campaign_event_rows(root, campaign_id)
+            count_before_replay = len(rows_before_replay)
+            hashes_before_replay = tuple(
+                (row[0], row[8]) for row in rows_before_replay
+            )
+
+            with self.assertRaises(CampaignJournalError) as raised:
+                reopened.settle_cycle(
+                    execution=execution,
+                    execution_usage=usage,
+                    learning_commit_receipt=learning,
+                )
+            self.assertEqual(
+                str(raised.exception),
+                "operational Cycle settlement conflicts",
+            )
+
+            rows_after_replay = _campaign_event_rows(root, campaign_id)
+            self.assertEqual(rows_after_replay, rows_before_replay)
+            self.assertEqual(len(rows_after_replay), count_before_replay)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after_replay),
+                hashes_before_replay,
+            )
+            self.assertEqual(
+                reopened.campaign_snapshot().status,
+                campaign_status_before,
+            )
+            self.assertEqual(
+                reopened.cycle_snapshot(cycle_id).status,
+                cycle_status_before,
+            )
+
+    def test_authentic_legacy_no_learning_settlement_currency_conflict_fails_closed_without_writes(
+        self,
+    ) -> None:
+        campaign_id = (
+            "campaign-controller-legacy-no-learning-settlement-currency"
+        )
+        cycle_id = "cycle-001"
+
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            controller, execution, member, usage = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            self.assertFalse(evidence.evidence.promotion_eligible)
+            self.assertEqual(
+                evidence.evidence.verdict,
+                "NO_MATERIAL_FINDING",
+            )
+            settlement = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            self.assertEqual(settlement.currency, "USD")
+            self.assertEqual(
+                controller.cycle_snapshot(cycle_id).status,
+                CycleStatus.SETTLED,
+            )
+
+            call_events = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=usage.model_calls[0].call_id,
+            )
+            self.assertEqual(len(call_events), 2)
+            self.assertTrue(
+                all(
+                    event.payload()["schema_version"]
+                    == "control_plane.operational_model_call.v2"
+                    and event.payload()["call_limits"]["currency"] == "USD"
+                    for event in call_events
+                )
+            )
+            usage_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_EXECUTION_USAGE",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                usage_event.payload()["schema_version"],
+                "control_plane.operational_execution_usage.v2",
+            )
+            self.assertEqual(usage_event.payload()["currency"], "USD")
+            evidence_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_MODEL_EVIDENCE",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                evidence_event.payload()["schema_version"],
+                "control_plane.operational_model_evidence.v1",
+            )
+            disposition_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="OPERATIONAL_NO_LEARNING_DISPOSITION",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                disposition_event.payload()["schema_version"],
+                "control_plane.operational_no_learning_disposition.v1",
+            )
+            self._rewrite_cycle_settlement_as_authentic_currencyless_v1(
+                root=root,
+                journal=journal,
+                campaign_id=campaign_id,
+                cycle_id=cycle_id,
+                current_schema=(
+                    "control_plane.operational_no_learning_settlement.v2"
+                ),
+                legacy_schema=(
+                    "control_plane.operational_no_learning_settlement.v1"
+                ),
+                manifest_domain=(
+                    b"control_plane.operational_no_learning_settlement.v1"
+                ),
+            )
+
+            del controller
+            replay_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=grant,
+                namespace="formal",
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+            reopened = OperationalCampaignController(
+                journal=replay_journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 144, 44_000)
+                ),
+                monotonic_ns=lambda: 3_000_000,
+            )
+            campaign_status_before = reopened.campaign_snapshot().status
+            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
+            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
+            self.assertEqual(cycle_status_before, CycleStatus.SETTLED)
+            rows_before_replay = _campaign_event_rows(root, campaign_id)
+            count_before_replay = len(rows_before_replay)
+            hashes_before_replay = tuple(
+                (row[0], row[8]) for row in rows_before_replay
+            )
+
+            with self.assertRaises(CampaignJournalError) as raised:
+                reopened.settle_cycle_without_learning(
+                    execution=execution,
+                    execution_usage=usage,
+                    evidence_receipt=evidence,
+                )
+            self.assertEqual(
+                str(raised.exception),
+                "operational no-Learning settlement conflicts",
+            )
+
+            rows_after_replay = _campaign_event_rows(root, campaign_id)
+            self.assertEqual(rows_after_replay, rows_before_replay)
+            self.assertEqual(len(rows_after_replay), count_before_replay)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after_replay),
+                hashes_before_replay,
+            )
+            self.assertEqual(
+                reopened.campaign_snapshot().status,
+                campaign_status_before,
+            )
+            self.assertEqual(
+                reopened.cycle_snapshot(cycle_id).status,
+                cycle_status_before,
             )
 
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
