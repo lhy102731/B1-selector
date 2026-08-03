@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import json
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -81,28 +82,28 @@ def _execution_spec_and_member(prompt: object):
 
 class OfflineTwoCycleProofTests(unittest.TestCase):
     def setUp(self) -> None:
-        self._provider_call_counter_paths_before_test = set(
-            controller_fixtures._PROVIDER_CALL_COUNTER_PATHS
-        )
+        self._owned_provider_call_counter_paths: set[Path] = set()
         self.addCleanup(self._cleanup_owned_provider_call_counters)
 
+    def _new_owned_fake_provider(self, provider_class, *args, **kwargs):
+        provider = provider_class(*args, **kwargs)
+        self._owned_provider_call_counter_paths.add(
+            Path(provider._call_count_path)
+        )
+        return provider
+
     def _cleanup_owned_provider_call_counters(self) -> None:
-        owned_paths = (
-            set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS)
-            - self._provider_call_counter_paths_before_test
-        )
-        for path in owned_paths:
+        for path in self._owned_provider_call_counter_paths:
             path.unlink(missing_ok=True)
-        controller_fixtures._PROVIDER_CALL_COUNTER_PATHS.difference_update(
-            owned_paths
-        )
+            controller_fixtures._PROVIDER_CALL_COUNTER_PATHS.discard(path)
+        self._owned_provider_call_counter_paths.clear()
 
     def test_provider_call_counters_are_owned_by_test_instance(self) -> None:
         paths_before = set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS)
-        _EvidenceArtifactBoundFakeProvider()
-        owned_paths = (
-            set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS) - paths_before
+        provider = self._new_owned_fake_provider(
+            _EvidenceArtifactBoundFakeProvider
         )
+        owned_paths = {Path(provider._call_count_path)}
 
         self.assertEqual(len(owned_paths), 1)
         self.doCleanups()
@@ -112,6 +113,36 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             paths_before,
         )
         self.assertTrue(all(not path.exists() for path in owned_paths))
+
+    def test_cleanup_preserves_interleaved_provider_counter_owner(self) -> None:
+        owned_provider = self._new_owned_fake_provider(
+            _EvidenceArtifactBoundFakeProvider
+        )
+        owned_path = Path(owned_provider._call_count_path)
+        foreign_owner = OfflineTwoCycleProofTests(
+            "test_provider_call_counters_are_owned_by_test_instance"
+        )
+        foreign_owner.setUp()
+        foreign_provider = foreign_owner._new_owned_fake_provider(
+            _EvidenceArtifactBoundFakeProvider
+        )
+        foreign_path = Path(foreign_provider._call_count_path)
+
+        try:
+            self.doCleanups()
+
+            self.assertFalse(owned_path.exists())
+            self.assertNotIn(
+                owned_path,
+                controller_fixtures._PROVIDER_CALL_COUNTER_PATHS,
+            )
+            self.assertTrue(foreign_path.exists())
+            self.assertIn(
+                foreign_path,
+                controller_fixtures._PROVIDER_CALL_COUNTER_PATHS,
+            )
+        finally:
+            foreign_owner.doCleanups()
 
     def test_committed_cycle_one_learning_enters_recovered_cycle_two_context(
         self,
@@ -185,7 +216,10 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             controller.invoke_member_json(
                 execution=first_execution,
                 member_id=first_member.member_id,
-                provider=_AuthorityEvidenceArtifactBoundFakeProvider(artifact),
+                provider=self._new_owned_fake_provider(
+                    _AuthorityEvidenceArtifactBoundFakeProvider,
+                    artifact,
+                ),
                 prompt=first_prompt,
                 limits=_FAKE_CALL_LIMITS,
             )
@@ -309,7 +343,9 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             recovered.invoke_member_json(
                 execution=second_execution,
                 member_id=second_member.member_id,
-                provider=_EvidenceArtifactBoundFakeProvider(),
+                provider=self._new_owned_fake_provider(
+                    _EvidenceArtifactBoundFakeProvider
+                ),
                 prompt=second_prompt,
                 limits=_FAKE_CALL_LIMITS,
             )
