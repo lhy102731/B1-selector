@@ -1960,6 +1960,62 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             else:
                 self.assertEqual(after, before)
 
+    def _assert_currencyless_settlement_replay_conflict(
+        self,
+        *,
+        root,
+        grant,
+        campaign_id: str,
+        cycle_id: str,
+        replay,
+        expected_error: str,
+    ) -> None:
+        replay_journal = OperationalCampaignJournal(
+            root_secret=ROOT_SECRET,
+            grant=grant,
+            namespace="formal",
+            campaign_id=campaign_id,
+            clock=lambda: NOW,
+        )
+        reopened = OperationalCampaignController(
+            journal=replay_journal,
+            repository_root=root,
+            budget_limits=_FAKE_CAMPAIGN_LIMITS,
+            identity_provider=_FakeProcessIdentityProvider(
+                ProcessIdentity("host-controller", 144, 44_000)
+            ),
+            monotonic_ns=lambda: 3_000_000,
+        )
+        campaign_status_before = reopened.campaign_snapshot().status
+        cycle_status_before = reopened.cycle_snapshot(cycle_id).status
+        self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
+        self.assertEqual(cycle_status_before, CycleStatus.SETTLED)
+        rows_before_replay = _campaign_event_rows(root, campaign_id)
+        count_before_replay = len(rows_before_replay)
+        hashes_before_replay = tuple(
+            (row[0], row[8]) for row in rows_before_replay
+        )
+
+        with self.assertRaises(CampaignJournalError) as raised:
+            replay(reopened)
+        self.assertEqual(str(raised.exception), expected_error)
+
+        rows_after_replay = _campaign_event_rows(root, campaign_id)
+        self.assertEqual(rows_after_replay, rows_before_replay)
+        self.assertEqual(len(rows_after_replay), count_before_replay)
+        self.assertEqual(
+            tuple((row[0], row[8]) for row in rows_after_replay),
+            hashes_before_replay,
+        )
+        self.assertEqual(
+            reopened.campaign_snapshot().status,
+            campaign_status_before,
+        )
+        self.assertEqual(
+            reopened.cycle_snapshot(cycle_id).status,
+            cycle_status_before,
+        )
+
     def test_legacy_currencyless_model_call_start_replay_fails_closed_before_provider_without_writes(
         self,
     ) -> None:
@@ -2376,57 +2432,17 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
 
             del controller
-            replay_journal = OperationalCampaignJournal(
-                root_secret=ROOT_SECRET,
+            self._assert_currencyless_settlement_replay_conflict(
+                root=root,
                 grant=grant,
-                namespace="formal",
                 campaign_id=campaign_id,
-                clock=lambda: NOW,
-            )
-            reopened = OperationalCampaignController(
-                journal=replay_journal,
-                repository_root=root,
-                budget_limits=_FAKE_CAMPAIGN_LIMITS,
-                identity_provider=_FakeProcessIdentityProvider(
-                    ProcessIdentity("host-controller", 144, 44_000)
-                ),
-                monotonic_ns=lambda: 3_000_000,
-            )
-            campaign_status_before = reopened.campaign_snapshot().status
-            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
-            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
-            self.assertEqual(cycle_status_before, CycleStatus.SETTLED)
-            rows_before_replay = _campaign_event_rows(root, campaign_id)
-            count_before_replay = len(rows_before_replay)
-            hashes_before_replay = tuple(
-                (row[0], row[8]) for row in rows_before_replay
-            )
-
-            with self.assertRaises(CampaignJournalError) as raised:
-                reopened.settle_cycle(
+                cycle_id=cycle_id,
+                replay=lambda reopened: reopened.settle_cycle(
                     execution=execution,
                     execution_usage=usage,
                     learning_commit_receipt=learning,
-                )
-            self.assertEqual(
-                str(raised.exception),
-                "operational Cycle settlement conflicts",
-            )
-
-            rows_after_replay = _campaign_event_rows(root, campaign_id)
-            self.assertEqual(rows_after_replay, rows_before_replay)
-            self.assertEqual(len(rows_after_replay), count_before_replay)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after_replay),
-                hashes_before_replay,
-            )
-            self.assertEqual(
-                reopened.campaign_snapshot().status,
-                campaign_status_before,
-            )
-            self.assertEqual(
-                reopened.cycle_snapshot(cycle_id).status,
-                cycle_status_before,
+                ),
+                expected_error="operational Cycle settlement conflicts",
             )
 
     def test_authentic_legacy_no_learning_settlement_currency_conflict_fails_closed_without_writes(
@@ -2528,57 +2544,19 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
 
             del controller
-            replay_journal = OperationalCampaignJournal(
-                root_secret=ROOT_SECRET,
+            self._assert_currencyless_settlement_replay_conflict(
+                root=root,
                 grant=grant,
-                namespace="formal",
                 campaign_id=campaign_id,
-                clock=lambda: NOW,
-            )
-            reopened = OperationalCampaignController(
-                journal=replay_journal,
-                repository_root=root,
-                budget_limits=_FAKE_CAMPAIGN_LIMITS,
-                identity_provider=_FakeProcessIdentityProvider(
-                    ProcessIdentity("host-controller", 144, 44_000)
-                ),
-                monotonic_ns=lambda: 3_000_000,
-            )
-            campaign_status_before = reopened.campaign_snapshot().status
-            cycle_status_before = reopened.cycle_snapshot(cycle_id).status
-            self.assertEqual(campaign_status_before, CampaignStatus.ACTIVE)
-            self.assertEqual(cycle_status_before, CycleStatus.SETTLED)
-            rows_before_replay = _campaign_event_rows(root, campaign_id)
-            count_before_replay = len(rows_before_replay)
-            hashes_before_replay = tuple(
-                (row[0], row[8]) for row in rows_before_replay
-            )
-
-            with self.assertRaises(CampaignJournalError) as raised:
-                reopened.settle_cycle_without_learning(
+                cycle_id=cycle_id,
+                replay=lambda reopened: reopened.settle_cycle_without_learning(
                     execution=execution,
                     execution_usage=usage,
                     evidence_receipt=evidence,
-                )
-            self.assertEqual(
-                str(raised.exception),
-                "operational no-Learning settlement conflicts",
-            )
-
-            rows_after_replay = _campaign_event_rows(root, campaign_id)
-            self.assertEqual(rows_after_replay, rows_before_replay)
-            self.assertEqual(len(rows_after_replay), count_before_replay)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after_replay),
-                hashes_before_replay,
-            )
-            self.assertEqual(
-                reopened.campaign_snapshot().status,
-                campaign_status_before,
-            )
-            self.assertEqual(
-                reopened.cycle_snapshot(cycle_id).status,
-                cycle_status_before,
+                ),
+                expected_error=(
+                    "operational no-Learning settlement conflicts"
+                ),
             )
 
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
