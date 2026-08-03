@@ -2498,6 +2498,50 @@ class OperationalCampaignController:
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
 
+    @staticmethod
+    def _context_projection_prefix_length(
+        context: CycleContextReceipt,
+    ) -> int:
+        prefix_lengths: set[int] = set()
+        for role in context.roles:
+            messages = context.messages_for(role)
+            system_message = messages.get("system_message")
+            if not isinstance(system_message, Mapping):
+                raise ValueError("safe context system message is invalid")
+            content = system_message.get("content")
+            if not isinstance(content, str):
+                raise ValueError("safe context system message is invalid")
+            trusted_context = json.loads(content)
+            if not isinstance(trusted_context, Mapping):
+                raise ValueError("safe context payload is invalid")
+            learning_memory = trusted_context.get("learning_memory")
+            control_metadata = trusted_context.get("control_metadata")
+            if (
+                not isinstance(learning_memory, Mapping)
+                or not isinstance(control_metadata, Mapping)
+            ):
+                raise ValueError("safe context projection metadata is invalid")
+            selected_claims = learning_memory.get("claims")
+            excluded_claims = control_metadata.get("excluded_claims")
+            omitted_claim_count = control_metadata.get(
+                "omitted_claim_count"
+            )
+            if (
+                not isinstance(selected_claims, list)
+                or not isinstance(excluded_claims, list)
+                or type(omitted_claim_count) is not int
+                or omitted_claim_count < 0
+            ):
+                raise ValueError("safe context projection metadata is invalid")
+            prefix_lengths.add(
+                len(selected_claims)
+                + omitted_claim_count
+                + len(excluded_claims)
+            )
+        if len(prefix_lengths) != 1:
+            raise ValueError("safe context projection prefix is ambiguous")
+        return next(iter(prefix_lengths))
+
     def _classify_learning_information_gain(
         self,
         connection,
@@ -2505,67 +2549,110 @@ class OperationalCampaignController:
         cycle_id: str,
         packet_hash: str,
     ) -> tuple[str, bool, str | None]:
-        projection_input, current_projection_sha256 = (
-            _projection_input_snapshot(
-                CommittedLearningLedgerReader(
-                    self._context._repository_root
-                ).read_projection_input()
-            )
+        context = self._context._replay_context(
+            self._context._context_events(connection, cycle_id)
         )
-        matching_claims = [
-            claim
-            for claim in projection_input["claims"]
-            if claim.get("claim_id") == packet_hash
-        ]
-        matching_excluded = [
-            claim
-            for claim in projection_input["excluded_claims"]
-            if claim.get("claim_id") == packet_hash
-        ]
+
+        def packet_membership(
+            projection: Mapping[str, object],
+        ) -> tuple[str, Mapping[str, object]] | None:
+            claims = projection["claims"]
+            excluded_claims = projection["excluded_claims"]
+            if (
+                not isinstance(claims, list)
+                or not isinstance(excluded_claims, list)
+                or any(not isinstance(item, Mapping) for item in claims)
+                or any(
+                    not isinstance(item, Mapping)
+                    for item in excluded_claims
+                )
+            ):
+                raise ValueError("Learning packet projection is invalid")
+            matching_claims = [
+                claim
+                for claim in claims
+                if claim.get("claim_id") == packet_hash
+            ]
+            matching_excluded = [
+                claim
+                for claim in excluded_claims
+                if claim.get("claim_id") == packet_hash
+            ]
+            if len(matching_claims) + len(matching_excluded) > 1:
+                raise ValueError("Learning packet projection is ambiguous")
+            if matching_claims:
+                return "PROJECTABLE", matching_claims[0]
+            if matching_excluded:
+                return "EXCLUDED", matching_excluded[0]
+            return None
+
+        try:
+            baseline_prefix_length = (
+                self._context_projection_prefix_length(context)
+            )
+            (
+                packet_prefix_length,
+                baseline_projection,
+                packet_projection,
+            ) = CommittedLearningLedgerReader(
+                self._context._repository_root
+            ).read_projection_checkpoints(
+                baseline_prefix_length=baseline_prefix_length,
+                packet_hash=packet_hash,
+            )
+            frozen_baseline, baseline_sha256 = _projection_input_snapshot(
+                baseline_projection
+            )
+            frozen_packet_projection, _ = _projection_input_snapshot(
+                packet_projection
+            )
+            baseline_membership = packet_membership(frozen_baseline)
+            first_membership = packet_membership(
+                frozen_packet_projection
+            )
+        except (OSError, TypeError, ValueError) as error:
+            raise CampaignJournalError(
+                "Learning projection history is unavailable"
+            ) from error
         if (
-            not matching_claims
-            and len(matching_excluded) == 1
-            and matching_excluded[0].get("reason_codes")
-            == ["P5_PACKET_NOT_PROJECTABLE"]
+            baseline_sha256 != context.projection_input_sha256
+            or first_membership is None
+        ):
+            raise CampaignJournalError(
+                "Learning projection history conflicts"
+            )
+        if packet_prefix_length <= baseline_prefix_length:
+            if baseline_membership is None:
+                raise CampaignJournalError(
+                    "Learning projection history conflicts"
+                )
+            return (
+                "LEARNING_PACKET_NOT_NOVEL",
+                False,
+                "DUPLICATE_LEARNING_PACKET",
+            )
+        if baseline_membership is not None:
+            raise CampaignJournalError(
+                "Learning projection history conflicts"
+            )
+        membership_kind, membership = first_membership
+        if membership_kind == "PROJECTABLE":
+            return "ELIGIBLE_LEARNING_COMMITTED", True, None
+        reason_codes = membership.get("reason_codes")
+        if (
+            isinstance(reason_codes, list)
+            and len(reason_codes) == 1
+            and reason_codes[0]
+            in {"P5_PACKET_NOT_PROJECTABLE", "P5_PARENT_UNAVAILABLE"}
         ):
             return (
                 "LEARNING_PACKET_NOT_PROJECTABLE",
                 False,
-                "P5_PACKET_NOT_PROJECTABLE",
+                reason_codes[0],
             )
-        if len(matching_claims) != 1 or matching_excluded:
-            raise CampaignJournalError(
-                "committed Learning packet projection conflicts"
-            )
-        context = self._context._replay_context(
-            self._context._context_events(connection, cycle_id)
+        raise CampaignJournalError(
+            "Learning projection history conflicts"
         )
-        baseline_sha256 = context.projection_input_sha256
-        if current_projection_sha256 == baseline_sha256:
-            return (
-                "LEARNING_PACKET_NOT_NOVEL",
-                False,
-                "DUPLICATE_LEARNING_PACKET",
-            )
-        counterfactual_projection = {
-            "schema_version": projection_input["schema_version"],
-            "claims": [
-                claim
-                for claim in projection_input["claims"]
-                if claim.get("claim_id") != packet_hash
-            ],
-            "excluded_claims": projection_input["excluded_claims"],
-        }
-        _, counterfactual_sha256 = _projection_input_snapshot(
-            counterfactual_projection
-        )
-        if counterfactual_sha256 != baseline_sha256:
-            return (
-                "LEARNING_PACKET_NOT_NOVEL",
-                False,
-                "DUPLICATE_LEARNING_PACKET",
-            )
-        return "ELIGIBLE_LEARNING_COMMITTED", True, None
 
     def decide_next_cycle(
         self,

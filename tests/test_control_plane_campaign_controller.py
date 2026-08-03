@@ -779,11 +779,10 @@ def _completed_evidence_model_call(
     return controller, execution, member, usage
 
 
-def _completed_eligible_information_gain(
+def _settled_eligible_learning(
     root,
     journal,
     *,
-    test_case: unittest.TestCase,
     campaign_id: str,
     max_cycles: int = 2,
 ):
@@ -832,13 +831,51 @@ def _completed_eligible_information_gain(
         execution_usage=usage,
         learning_commit_receipt=learning,
     )
-    reader_patch = patch.object(
-        CommittedLearningLedgerReader,
-        "read_projection_input",
-        return_value=_projectable_learning_input(packet_hash),
+    return controller, execution, settlement, packet_hash
+
+
+def _completed_eligible_information_gain(
+    root,
+    journal,
+    *,
+    test_case: unittest.TestCase,
+    campaign_id: str,
+    max_cycles: int = 2,
+    foreign_packet_hash: str | None = None,
+):
+    controller, execution, settlement, packet_hash = (
+        _settled_eligible_learning(
+            root,
+            journal,
+            campaign_id=campaign_id,
+            max_cycles=max_cycles,
+        )
     )
-    reader_patch.start()
-    test_case.addCleanup(reader_patch.stop)
+    projection_history = [_projectable_learning_input()]
+    if foreign_packet_hash is not None:
+        projection_history.append(
+            _projectable_learning_input(foreign_packet_hash)
+        )
+    projection_history.append(
+        _projectable_learning_input(
+            *(
+                (packet_hash,)
+                if foreign_packet_hash is None
+                else (foreign_packet_hash, packet_hash)
+            )
+        )
+    )
+    checkpoint_patch = patch.object(
+        CommittedLearningLedgerReader,
+        "read_projection_checkpoints",
+        return_value=(
+            len(projection_history) - 1,
+            projection_history[0],
+            projection_history[-1],
+        ),
+    )
+    checkpoint_patch.start()
+    test_case.addCleanup(checkpoint_patch.stop)
     information_gain = controller.record_information_gain(
         execution=execution,
         settlement_receipt=settlement,
@@ -846,7 +883,9 @@ def _completed_eligible_information_gain(
     return controller, execution, information_gain
 
 
-def _projectable_learning_input(packet_hash: str) -> dict[str, object]:
+def _projectable_learning_input(
+    *packet_hashes: str,
+) -> dict[str, object]:
     return {
         "schema_version": "control_plane.committed_learning_input.v1",
         "claims": [
@@ -867,8 +906,25 @@ def _projectable_learning_input(packet_hash: str) -> dict[str, object]:
                 "directional_status": "avoid",
                 "universal_factor_rejection": False,
             }
+            for packet_hash in packet_hashes
         ],
         "excluded_claims": [],
+    }
+
+
+def _excluded_learning_input(
+    packet_hash: str,
+    reason_code: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": "control_plane.committed_learning_input.v1",
+        "claims": [],
+        "excluded_claims": [
+            {
+                "claim_id": packet_hash,
+                "reason_codes": [reason_code],
+            }
+        ],
     }
 
 
@@ -11090,13 +11146,17 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_usage=usage,
                 learning_commit_receipt=learning,
             )
-            reader_patch = patch.object(
+            checkpoint_patch = patch.object(
                 CommittedLearningLedgerReader,
-                "read_projection_input",
-                return_value=_projectable_learning_input(packet_hash),
+                "read_projection_checkpoints",
+                return_value=(
+                    1,
+                    _projectable_learning_input(),
+                    _projectable_learning_input(packet_hash),
+                ),
             )
-            reader_patch.start()
-            self.addCleanup(reader_patch.stop)
+            checkpoint_patch.start()
+            self.addCleanup(checkpoint_patch.stop)
 
             information_gain = controller.record_information_gain(
                 execution=execution,
@@ -11142,6 +11202,217 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         learning_commit_manifest_sha256="a" * 64,
                     ),
                 )
+
+    def test_foreign_learning_after_freeze_does_not_hide_new_information(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-information-gain-foreign-prefix"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            _, _, information_gain = _completed_eligible_information_gain(
+                root,
+                journal,
+                test_case=self,
+                campaign_id=campaign_id,
+                foreign_packet_hash="e" * 64,
+            )
+
+        self.assertEqual(
+            "ELIGIBLE_LEARNING_COMMITTED",
+            information_gain.information_gain_status,
+        )
+        self.assertTrue(information_gain.continuation_eligible)
+        self.assertIsNone(information_gain.disposition_reason)
+
+    def test_token_omitted_frozen_packet_is_still_known_information(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-information-gain-token-omitted"
+        packet_hash = "f" * 64
+        prior_hashes = tuple(f"{index:064x}" for index in range(20))
+        frozen_projection = _projectable_learning_input(
+            *prior_hashes,
+            packet_hash,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=frozen_projection,
+            ):
+                controller, execution, settlement, committed_packet_hash = (
+                    _settled_eligible_learning(
+                        root,
+                        journal,
+                        campaign_id=campaign_id,
+                    )
+                )
+            context = controller._context.snapshot(
+                cycle_id=execution.cycle.cycle_id,
+            )
+            trusted_context = json.loads(
+                context.messages_for(_protocol_member().role)["system_message"][
+                    "content"
+                ]
+            )
+            selected_ids = {
+                claim["claim_id"]
+                for claim in trusted_context["learning_memory"]["claims"]
+            }
+            self.assertEqual(packet_hash, committed_packet_hash)
+            self.assertNotIn(packet_hash, selected_ids)
+            self.assertGreater(
+                trusted_context["control_metadata"]["omitted_claim_count"],
+                0,
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_checkpoints",
+                return_value=(21, frozen_projection, frozen_projection),
+            ) as checkpoint_reader:
+                information_gain = controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settlement,
+                )
+            checkpoint_reader.assert_called_once_with(
+                baseline_prefix_length=21,
+                packet_hash=packet_hash,
+            )
+
+        self.assertEqual(
+            "LEARNING_PACKET_NOT_NOVEL",
+            information_gain.information_gain_status,
+        )
+        self.assertFalse(information_gain.continuation_eligible)
+        self.assertEqual(
+            "DUPLICATE_LEARNING_PACKET",
+            information_gain.disposition_reason,
+        )
+
+    def test_new_learning_stays_stable_after_foreign_tail_append(self) -> None:
+        campaign_id = "campaign-controller-information-gain-replay-tail"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, settlement, packet_hash = (
+                _settled_eligible_learning(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            checkpoint = (
+                1,
+                _projectable_learning_input(),
+                _projectable_learning_input(packet_hash),
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_checkpoints",
+                side_effect=(checkpoint, checkpoint),
+            ):
+                information_gain = controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settlement,
+                )
+                replayed = controller.record_information_gain(
+                    execution=execution,
+                )
+
+        self.assertEqual(replayed, information_gain)
+        self.assertEqual(
+            "ELIGIBLE_LEARNING_COMMITTED",
+            information_gain.information_gain_status,
+        )
+        self.assertTrue(information_gain.continuation_eligible)
+
+    def test_later_parent_commit_cannot_reclassify_cycle_learning(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-information-gain-parent-prefix"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, settlement, packet_hash = (
+                _settled_eligible_learning(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            checkpoint = (
+                1,
+                _projectable_learning_input(),
+                _excluded_learning_input(
+                    packet_hash,
+                    "P5_PARENT_UNAVAILABLE",
+                ),
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_checkpoints",
+                side_effect=(checkpoint, checkpoint),
+            ):
+                information_gain = controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settlement,
+                )
+                replayed = controller.record_information_gain(
+                    execution=execution,
+                )
+
+        self.assertEqual(replayed, information_gain)
+        self.assertEqual(
+            "LEARNING_PACKET_NOT_PROJECTABLE",
+            information_gain.information_gain_status,
+        )
+        self.assertFalse(information_gain.continuation_eligible)
+        self.assertEqual(
+            "P5_PARENT_UNAVAILABLE",
+            information_gain.disposition_reason,
+        )
+
+    def test_transient_projection_history_failure_rolls_back_for_retry(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-information-gain-history-retry"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, settlement, packet_hash = (
+                _settled_eligible_learning(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                )
+            )
+            checkpoint = (
+                1,
+                _projectable_learning_input(),
+                _projectable_learning_input(packet_hash),
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_checkpoints",
+                side_effect=(ValueError("transient Learning head"), checkpoint),
+            ):
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "projection history",
+                ):
+                    controller.record_information_gain(
+                        execution=execution,
+                        settlement_receipt=settlement,
+                    )
+                self.assertEqual(
+                    CycleStatus.SETTLED,
+                    controller.cycle_snapshot(execution.cycle.cycle_id).status,
+                )
+                information_gain = controller.record_information_gain(
+                    execution=execution,
+                    settlement_receipt=settlement,
+                )
+
+        self.assertEqual(
+            "ELIGIBLE_LEARNING_COMMITTED",
+            information_gain.information_gain_status,
+        )
+        self.assertTrue(information_gain.continuation_eligible)
+        self.assertIsNone(information_gain.disposition_reason)
 
     def test_no_material_settlement_records_no_information_gain(self) -> None:
         campaign_id = "campaign-controller-information-gain-no-material"

@@ -1007,6 +1007,119 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
             self.assertEqual(len(set(hashes)), 1)
             self.assertEqual(ledger["event_count"], 1)
 
+    def test_rebuild_reads_events_and_head_from_one_sqlite_snapshot(self):
+        from research_automation.control_plane import evidence_learning as module
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            packet = {
+                "schema_version": "control_plane.learning_packet.v1",
+                "claim": {"kind": "NEGATIVE"},
+                "evidence_refs": [],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+            packet_raw = canonical_bytes(packet)
+            packet_hash = hashlib.sha256(packet_raw).hexdigest()
+            (packet_dir / f"{packet_hash}.json").write_bytes(packet_raw)
+            event_payload = {
+                "schema_version": "control_plane.learning_commit_event.v1",
+                "sequence": 1,
+                "packet_hash": packet_hash,
+                "actor_id": "legacy-runner",
+                "previous_event_sha256": "0" * 64,
+            }
+            event_hash = hashlib.sha256(
+                b"control_plane.learning_commit_event.v1\0"
+                + canonical_bytes(event_payload)
+            ).hexdigest()
+            journal = root / "research_state/control_plane/learning_commit.sqlite3"
+            connection = sqlite3.connect(journal)
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(
+                "CREATE TABLE learning_commit_events ("
+                "sequence INTEGER PRIMARY KEY, packet_hash TEXT NOT NULL UNIQUE, "
+                "actor_id TEXT NOT NULL, previous_event_sha256 TEXT NOT NULL, "
+                "event_sha256 TEXT NOT NULL UNIQUE)"
+            )
+            connection.execute(
+                "CREATE TABLE learning_commit_head ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+                "head_sequence INTEGER NOT NULL, head_event_sha256 TEXT NOT NULL)"
+            )
+            connection.execute(
+                "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                ("0" * 64,),
+            )
+            connection.commit()
+            connection.close()
+
+            original_connect = module.sqlite3.connect
+            interleaved = False
+
+            def append_event() -> None:
+                nonlocal interleaved
+                writer = original_connect(journal, timeout=30)
+                try:
+                    writer.execute("BEGIN IMMEDIATE")
+                    writer.execute(
+                        "INSERT INTO learning_commit_events VALUES (?, ?, ?, ?, ?)",
+                        (
+                            1,
+                            packet_hash,
+                            "legacy-runner",
+                            "0" * 64,
+                            event_hash,
+                        ),
+                    )
+                    writer.execute(
+                        "UPDATE learning_commit_head SET head_sequence = 1, "
+                        "head_event_sha256 = ? WHERE singleton_id = 1",
+                        (event_hash,),
+                    )
+                    writer.commit()
+                    interleaved = True
+                finally:
+                    writer.close()
+
+            class InterleavingConnection:
+                def __init__(self, delegate) -> None:
+                    self._delegate = delegate
+                    self._triggered = False
+
+                def execute(self, statement, *args, **kwargs):
+                    if (
+                        not self._triggered
+                        and "SELECT head_sequence" in statement
+                    ):
+                        self._triggered = True
+                        append_event()
+                    return self._delegate.execute(statement, *args, **kwargs)
+
+                def close(self) -> None:
+                    self._delegate.close()
+
+            def connect(*args, **kwargs):
+                return InterleavingConnection(
+                    original_connect(*args, **kwargs)
+                )
+
+            service = LearningCommitService(repository_root=root)
+            with patch.object(module.sqlite3, "connect", connect):
+                ledger = service.rebuild_ledger()
+
+            self.assertTrue(interleaved)
+            self.assertEqual(0, ledger["event_count"])
+            self.assertEqual([packet_hash], ledger["orphan_packet_hashes"])
+            self.assertEqual(1, service.rebuild_ledger()["event_count"])
+
     def test_packet_publication_tolerates_transient_windows_read_denial(self):
         from research_automation.control_plane.evidence_learning import (
             LearningCommitService,

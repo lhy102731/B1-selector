@@ -1043,7 +1043,7 @@ class CommittedLearningLedgerReader:
             raise ValueError(f"committed {field_name} must be canonical JSON text")
         return parsed
 
-    def read_projection_input(self) -> dict[str, object]:
+    def _committed_packet_hashes(self) -> tuple[str, ...]:
         from .evidence_learning import LearningCommitService
 
         ledger = LearningCommitService(repository_root=self._root).rebuild_ledger()
@@ -1054,10 +1054,31 @@ class CommittedLearningLedgerReader:
             not _is_opaque_ref(item) for item in packet_hashes
         ):
             raise ValueError("committed Learning ledger packet hashes are invalid")
+        return tuple(packet_hashes)
+
+    def _projection_input_for(
+        self,
+        packet_hashes: Sequence[str],
+        *,
+        packet_projection_cache: (
+            dict[str, tuple[str, dict[str, object]]] | None
+        ) = None,
+    ) -> dict[str, object]:
         packet_dir = self._root / "research_state/control_plane/learning_packets"
+        projection_cache = (
+            {} if packet_projection_cache is None else packet_projection_cache
+        )
         claims: list[dict[str, object]] = []
         excluded_claims: list[dict[str, object]] = []
         for packet_hash in packet_hashes:
+            cached = projection_cache.get(packet_hash)
+            if cached is not None:
+                projection_kind, projection = cached
+                if projection_kind == "CLAIM":
+                    claims.append(deepcopy(projection))
+                else:
+                    excluded_claims.append(deepcopy(projection))
+                continue
             packet_path = packet_dir / f"{packet_hash}.json"
             try:
                 raw = packet_path.read_bytes()
@@ -1158,12 +1179,12 @@ class CommittedLearningLedgerReader:
                     )
                 )
             except (TypeError, ValueError):
-                excluded_claims.append(
-                    {
-                        "claim_id": packet_hash,
-                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
-                    }
-                )
+                projection = {
+                    "claim_id": packet_hash,
+                    "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                }
+                projection_cache[packet_hash] = ("EXCLUDED", projection)
+                excluded_claims.append(deepcopy(projection))
                 continue
             evidence_refs = packet.get("evidence_refs")
             if not isinstance(evidence_refs, list) or any(
@@ -1173,12 +1194,12 @@ class CommittedLearningLedgerReader:
             ):
                 raise ValueError("committed Learning evidence refs are invalid")
             if len(evidence_refs) > _MAX_CLAIM_REFS:
-                excluded_claims.append(
-                    {
-                        "claim_id": packet_hash,
-                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
-                    }
-                )
+                projection = {
+                    "claim_id": packet_hash,
+                    "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                }
+                projection_cache[packet_hash] = ("EXCLUDED", projection)
+                excluded_claims.append(deepcopy(projection))
                 continue
             evidence_ids = sorted(
                 _opaque_ref(
@@ -1204,46 +1225,61 @@ class CommittedLearningLedgerReader:
                 summary,
                 normalized_scope,
             )
-            claims.append(
-                {
-                    "claim_id": packet_hash,
-                    "kind": kind,
-                    "execution_identity": execution_identity,
-                    "semantic_identity": learning_semantic_identity(summary),
-                    "conclusion": conclusion,
-                    "scope": normalized_scope,
-                    "audit_grade": packet.get("audit_grade"),
-                    "evidence_grade": "UNSPECIFIED",
-                    "evidence_refs": evidence_ids,
-                    "taint_refs": taint_refs,
-                    "invalidation_codes": invalidation_codes,
-                    "reopen_predicates": reopen_predicates,
-                    "parent_claim_ids": parent_claim_ids,
-                    "directional_status": directional_status,
-                    "universal_factor_rejection": False,
-                }
-            )
+            projection = {
+                "claim_id": packet_hash,
+                "kind": kind,
+                "execution_identity": execution_identity,
+                "semantic_identity": learning_semantic_identity(summary),
+                "conclusion": conclusion,
+                "scope": normalized_scope,
+                "audit_grade": packet.get("audit_grade"),
+                "evidence_grade": "UNSPECIFIED",
+                "evidence_refs": evidence_ids,
+                "taint_refs": taint_refs,
+                "invalidation_codes": invalidation_codes,
+                "reopen_predicates": reopen_predicates,
+                "parent_claim_ids": parent_claim_ids,
+                "directional_status": directional_status,
+                "universal_factor_rejection": False,
+            }
+            projection_cache[packet_hash] = ("CLAIM", projection)
+            claims.append(deepcopy(projection))
         available_claim_ids = {claim["claim_id"] for claim in claims}
-        while True:
-            unavailable_children = [
-                claim
-                for claim in claims
-                if not set(claim["parent_claim_ids"]).issubset(available_claim_ids)
-            ]
-            if not unavailable_children:
-                break
-            unavailable_ids = {claim["claim_id"] for claim in unavailable_children}
-            claims = [
-                claim for claim in claims if claim["claim_id"] not in unavailable_ids
-            ]
-            available_claim_ids.difference_update(unavailable_ids)
+        children_by_parent: dict[str, list[str]] = {}
+        unavailable_queue: deque[str] = deque()
+        for claim in claims:
+            claim_id = str(claim["claim_id"])
+            for parent_id in claim["parent_claim_ids"]:
+                parent_ref = str(parent_id)
+                if parent_ref not in available_claim_ids:
+                    unavailable_queue.append(claim_id)
+                else:
+                    children_by_parent.setdefault(parent_ref, []).append(
+                        claim_id
+                    )
+        unavailable_ids: set[str] = set()
+        while unavailable_queue:
+            claim_id = unavailable_queue.popleft()
+            if claim_id in unavailable_ids:
+                continue
+            unavailable_ids.add(claim_id)
+            unavailable_queue.extend(
+                children_by_parent.get(claim_id, ())
+            )
+        if unavailable_ids:
             excluded_claims.extend(
                 {
-                    "claim_id": claim_id,
+                    "claim_id": claim["claim_id"],
                     "reason_codes": ["P5_PARENT_UNAVAILABLE"],
                 }
-                for claim_id in unavailable_ids
+                for claim in claims
+                if claim["claim_id"] in unavailable_ids
             )
+            claims = [
+                claim
+                for claim in claims
+                if claim["claim_id"] not in unavailable_ids
+            ]
         excluded_by_id = {
             excluded["claim_id"]: excluded for excluded in excluded_claims
         }
@@ -1256,6 +1292,53 @@ class CommittedLearningLedgerReader:
                 if packet_hash in excluded_by_id
             ],
         }
+
+    def read_projection_input(self) -> dict[str, object]:
+        return self._projection_input_for(self._committed_packet_hashes())
+
+    def read_projection_checkpoints(
+        self,
+        *,
+        baseline_prefix_length: int,
+        packet_hash: str,
+    ) -> tuple[int, dict[str, object], dict[str, object]]:
+        """Read the frozen and first-packet P5 prefixes from one ledger head."""
+
+        if (
+            type(baseline_prefix_length) is not int
+            or baseline_prefix_length < 0
+        ):
+            raise ValueError("baseline prefix length is invalid")
+        if not _is_opaque_ref(packet_hash):
+            raise ValueError("Learning packet hash is invalid")
+        packet_hashes = self._committed_packet_hashes()
+        if baseline_prefix_length > len(packet_hashes):
+            raise ValueError("baseline prefix length exceeds the Learning ledger")
+        packet_indexes = tuple(
+            index
+            for index, committed_hash in enumerate(packet_hashes)
+            if committed_hash == packet_hash
+        )
+        if len(packet_indexes) != 1:
+            raise ValueError("Learning packet prefix is unavailable or ambiguous")
+        packet_prefix_length = packet_indexes[0] + 1
+        packet_projection_cache: dict[
+            str,
+            tuple[str, dict[str, object]],
+        ] = {}
+        projections: dict[int, dict[str, object]] = {}
+        for prefix_length in sorted(
+            {baseline_prefix_length, packet_prefix_length}
+        ):
+            projections[prefix_length] = self._projection_input_for(
+                packet_hashes[:prefix_length],
+                packet_projection_cache=packet_projection_cache,
+            )
+        return (
+            packet_prefix_length,
+            projections[baseline_prefix_length],
+            projections[packet_prefix_length],
+        )
 
     def read_claims(self) -> list[dict[str, object]]:
         return list(self.read_projection_input()["claims"])

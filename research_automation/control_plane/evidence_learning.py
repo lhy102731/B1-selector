@@ -778,6 +778,7 @@ class LearningCommitService:
         if journal.exists():
             connection = sqlite3.connect(f"file:{journal.as_posix()}?mode=ro", uri=True)
             try:
+                connection.execute("BEGIN")
                 rows = connection.execute(
                     "SELECT sequence, packet_hash, actor_id, "
                     "previous_event_sha256, event_sha256 "

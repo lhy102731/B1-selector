@@ -2741,6 +2741,203 @@ class ContextAssemblerTests(unittest.TestCase):
 
 
 class LearningContextRouterTests(unittest.TestCase):
+    def test_parent_unavailability_propagation_is_linear(self) -> None:
+        import builtins
+        from research_automation.control_plane import memory as memory_module
+        from research_automation.control_plane.memory import (
+            CommittedLearningLedgerReader,
+        )
+
+        def packet(summary: str, parent: str) -> dict[str, object]:
+            return {
+                "schema_version": "control_plane.learning_packet.v2",
+                "authority_task_report": {"task_id": "p4-learning-commit"},
+                "claim": {
+                    "kind": "NEGATIVE",
+                    "summary": summary,
+                    "scope": json.dumps(
+                        scope(regime="bull"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "parent_lineage": [parent],
+                    "reopen_predicate": "[]",
+                    "future_usage_guidance": (
+                        '{"conclusion":"AVOID","directional_status":"avoid"}'
+                    ),
+                },
+                "evidence_refs": [],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+
+        packet_count = 32
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            packet_hashes: list[str] = []
+            parent_hash = "a" * 64
+            for index in range(packet_count):
+                raw = json.dumps(
+                    packet(f"child-{index}", parent_hash),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+                packet_hash = hashlib.sha256(raw).hexdigest()
+                (packet_dir / f"{packet_hash}.json").write_bytes(raw)
+                packet_hashes.append(packet_hash)
+                parent_hash = packet_hash
+
+            lineage_set_calls = 0
+
+            def counting_set(*args, **kwargs):
+                nonlocal lineage_set_calls
+                if (
+                    len(args) == 1
+                    and isinstance(args[0], list)
+                    and len(args[0]) == 1
+                    and isinstance(args[0][0], str)
+                    and len(args[0][0]) == 64
+                ):
+                    lineage_set_calls += 1
+                return builtins.set(*args, **kwargs)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "LearningCommitService.rebuild_ledger",
+                return_value={
+                    "schema_version": "control_plane.learning_ledger.v2",
+                    "packet_hashes": packet_hashes,
+                },
+            ), patch.object(
+                memory_module,
+                "set",
+                counting_set,
+                create=True,
+            ):
+                projection = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+
+        self.assertEqual([], projection["claims"])
+        self.assertEqual(packet_count, len(projection["excluded_claims"]))
+        self.assertTrue(
+            all(
+                excluded["reason_codes"] == ["P5_PARENT_UNAVAILABLE"]
+                for excluded in projection["excluded_claims"]
+            )
+        )
+        self.assertLessEqual(lineage_set_calls, packet_count)
+
+    def test_projection_checkpoints_preserve_parent_unavailable_prefix(
+        self,
+    ) -> None:
+        from research_automation.control_plane.memory import (
+            CommittedLearningLedgerReader,
+        )
+
+        def packet(summary: str, parents: list[str]) -> dict[str, object]:
+            return {
+                "schema_version": "control_plane.learning_packet.v2",
+                "authority_task_report": {"task_id": "p4-learning-commit"},
+                "claim": {
+                    "kind": "NEGATIVE",
+                    "summary": summary,
+                    "scope": json.dumps(
+                        scope(regime="bull"),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "parent_lineage": parents,
+                    "reopen_predicate": "[]",
+                    "future_usage_guidance": (
+                        '{"conclusion":"AVOID","directional_status":"avoid"}'
+                    ),
+                },
+                "evidence_refs": [],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            parent_raw = json.dumps(
+                packet("parent", []),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            parent_hash = hashlib.sha256(parent_raw).hexdigest()
+            child_raw = json.dumps(
+                packet("child", [parent_hash]),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+            child_hash = hashlib.sha256(child_raw).hexdigest()
+            (packet_dir / f"{parent_hash}.json").write_bytes(parent_raw)
+            (packet_dir / f"{child_hash}.json").write_bytes(child_raw)
+            original_read_bytes = Path.read_bytes
+            packet_reads: list[str] = []
+
+            def count_packet_reads(path: Path) -> bytes:
+                if path.parent == packet_dir:
+                    packet_reads.append(path.name)
+                return original_read_bytes(path)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "LearningCommitService.rebuild_ledger",
+                return_value={
+                    "schema_version": "control_plane.learning_ledger.v2",
+                    "packet_hashes": [child_hash, parent_hash],
+                },
+            ), patch.object(Path, "read_bytes", count_packet_reads):
+                reader = CommittedLearningLedgerReader(root)
+                with patch.object(
+                    reader,
+                    "_projection_input_for",
+                    wraps=reader._projection_input_for,
+                ) as projection_builder:
+                    (
+                        packet_prefix_length,
+                        baseline_projection,
+                        packet_projection,
+                    ) = reader.read_projection_checkpoints(
+                        baseline_prefix_length=2,
+                        packet_hash=child_hash,
+                    )
+
+        self.assertEqual(1, packet_prefix_length)
+        self.assertEqual([], packet_projection["claims"])
+        self.assertEqual(
+            [
+                {
+                    "claim_id": child_hash,
+                    "reason_codes": ["P5_PARENT_UNAVAILABLE"],
+                }
+            ],
+            packet_projection["excluded_claims"],
+        )
+        self.assertEqual(
+            [child_hash, parent_hash],
+            [
+                claim["claim_id"]
+                for claim in baseline_projection["claims"]
+            ],
+        )
+        self.assertEqual([], baseline_projection["excluded_claims"])
+        self.assertEqual(2, projection_builder.call_count)
+        self.assertEqual(
+            sorted((f"{child_hash}.json", f"{parent_hash}.json")),
+            sorted(packet_reads),
+        )
+
     def test_committed_ledger_reader_quarantines_oversized_evidence_refs(self) -> None:
         from research_automation.control_plane.memory import CommittedLearningLedgerReader
 
