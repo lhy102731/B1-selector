@@ -185,6 +185,60 @@ class _NoProcessContext:
         raise AssertionError("request/provider preflight must happen before Process")
 
 
+class _PipeFailureContext:
+    def __init__(
+        self,
+        *,
+        clock: "_ControlledClock | None" = None,
+        consume_seconds: float = 0.0,
+    ) -> None:
+        self._clock = clock
+        self._consume_seconds = consume_seconds
+        self.pipe_calls = 0
+        self.process_calls = 0
+
+    def Pipe(self, *, duplex: bool) -> tuple[object, object]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        self.pipe_calls += 1
+        if self._clock is not None:
+            self._clock.now += self._consume_seconds
+        raise OSError("synthetic pipe construction failure")
+
+    def Process(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        self.process_calls += 1
+        raise AssertionError("Process must not run after Pipe failure")
+
+
+class _ProcessConstructionFailureContext:
+    def __init__(
+        self,
+        *,
+        clock: "_ControlledClock | None" = None,
+        consume_seconds: float = 0.0,
+    ) -> None:
+        self._clock = clock
+        self._consume_seconds = consume_seconds
+        self.pipe_calls = 0
+        self.process_calls = 0
+        self.receive = _ClosablePipeEnd()
+        self.send = _ClosablePipeEnd()
+
+    def Pipe(self, *, duplex: bool) -> tuple[object, object]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        self.pipe_calls += 1
+        return self.receive, self.send
+
+    def Process(self, *args: object, **kwargs: object) -> object:
+        del args, kwargs
+        self.process_calls += 1
+        if self._clock is not None:
+            self._clock.now += self._consume_seconds
+        raise OSError("synthetic process construction failure")
+
+
 class _EscalationProcess:
     def __init__(self) -> None:
         self.actions: list[object] = []
@@ -2857,6 +2911,164 @@ class ModelInvocationTests(unittest.TestCase):
             )
 
         self.assertEqual(_active_child_pids() - baseline_pids, set())
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_fast_pipe_failure_is_terminal_and_accounted_once(self) -> None:
+        context = _PipeFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-fast-pipe-failure",
+                )
+
+        self.assertEqual(context.pipe_calls, 1)
+        self.assertEqual(context.process_calls, 0)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_pipe_failure_after_deadline_is_terminal_timeout(self) -> None:
+        clock = _ControlledClock(now=10.0)
+        context = _PipeFailureContext(clock=clock, consume_seconds=1.0)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-deadline-during-pipe-construction",
+                )
+
+        self.assertEqual(context.pipe_calls, 1)
+        self.assertEqual(context.process_calls, 0)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_process_failure_after_deadline_closes_pipes_and_times_out(self) -> None:
+        clock = _ControlledClock(now=20.0)
+        context = _ProcessConstructionFailureContext(
+            clock=clock,
+            consume_seconds=1.0,
+        )
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-deadline-during-process-construction",
+                )
+
+        self.assertEqual(context.pipe_calls, 1)
+        self.assertEqual(context.process_calls, 1)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_fast_process_construction_failure_is_terminal_protocol_error(self) -> None:
+        context = _ProcessConstructionFailureContext()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-fast-process-construction-failure",
+                )
+
+        self.assertEqual(context.pipe_calls, 1)
+        self.assertEqual(context.process_calls, 1)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_unexpected_executor_exception_is_terminal_and_accounted_once(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=_FakeProvider(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module._InlineProviderExecutor,
+            "execute",
+            side_effect=RuntimeError("undeclared executor failure"),
+        ) as execute:
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-terminal-unexpected-executor-failure",
+                )
+
+        self.assertEqual(execute.call_count, 1)
         begin_events = [event for event in journal.events if event[0] == "begin"]
         self.assertEqual(len(begin_events), 1)
         envelope = begin_events[0][1]

@@ -1035,7 +1035,16 @@ class SpawnedProviderExecutor:
             raise _ProviderExecutorDeadlineExceeded(
                 "provider invocation deadline expired"
             )
-        receive_connection, send_connection = context.Pipe(duplex=False)
+        try:
+            receive_connection, send_connection = context.Pipe(duplex=False)
+        except Exception as error:
+            if time.monotonic() >= deadline:
+                raise _ProviderExecutorDeadlineExceeded(
+                    "provider invocation deadline expired"
+                ) from error
+            raise _ProviderExecutorProtocolError(
+                "provider worker pipe failed to construct"
+            ) from error
         try:
             worker = context.Process(
                 target=_spawned_provider_worker,
@@ -1047,11 +1056,20 @@ class SpawnedProviderExecutor:
                 ),
             )
         except Exception as error:
-            receive_connection.close()
-            send_connection.close()
+            cleanup_error: Exception | None = None
+            for connection in (receive_connection, send_connection):
+                try:
+                    connection.close()
+                except Exception as close_error:
+                    if cleanup_error is None:
+                        cleanup_error = close_error
+            if time.monotonic() >= deadline:
+                raise _ProviderExecutorDeadlineExceeded(
+                    "provider invocation deadline expired"
+                ) from error
             raise _ProviderExecutorProtocolError(
                 "provider worker failed to construct"
-            ) from error
+            ) from (error if cleanup_error is None else cleanup_error)
         started = False
         if time.monotonic() >= deadline:
             receive_connection.close()
@@ -1217,6 +1235,13 @@ class ModelInvocation:
                 outcome=InvocationOutcome.TIMEOUT,
             )
             raise ModelInvocationTimeoutError("provider invocation timed out") from error
+        except _ProviderExecutorProviderError as error:
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise ModelInvocationProviderError("provider invocation failed") from error
         except _ProviderExecutorProtocolError as error:
             self._record_unknown_outcome(
                 call_id=call_id,
@@ -1232,7 +1257,9 @@ class ModelInvocation:
                 attempt_id=attempt_id,
                 outcome=InvocationOutcome.EXCEPTION,
             )
-            raise ModelInvocationProviderError("provider invocation failed") from error
+            raise _ModelInvocationExecutorProtocolError(
+                "provider executor protocol failed"
+            ) from error
         self._usage_journal.begin(
             UsageEnvelope(
                 provider=self._provider_name,
