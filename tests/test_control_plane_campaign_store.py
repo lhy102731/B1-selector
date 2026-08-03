@@ -250,6 +250,44 @@ def _rewrite_campaign_event_payload(
         connection.close()
 
 
+def _rewrite_campaign_event_raw_payload(
+    root: Path,
+    *,
+    event_id: str,
+    payload_json: str,
+) -> None:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        row = connection.execute(
+            "SELECT event_id, namespace, campaign_id, cycle_id, aggregate_type, "
+            "aggregate_id, event_type, occurred_at, sequence "
+            "FROM campaign_events WHERE event_id = ?",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            raise AssertionError("campaign event does not exist")
+        payload_sha256 = _event_integrity_sha256(
+            event_id=row[0],
+            namespace=row[1],
+            campaign_id=row[2],
+            cycle_id=row[3],
+            aggregate_type=row[4],
+            aggregate_id=row[5],
+            event_type=row[6],
+            payload_json=payload_json,
+            occurred_at=row[7],
+            sequence=row[8],
+        )
+        connection.execute(
+            "UPDATE campaign_events SET payload_json = ?, payload_sha256 = ? "
+            "WHERE event_id = ?",
+            (payload_json, payload_sha256, event_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _rewrite_campaign_event_id(
     root: Path,
     *,
@@ -2291,6 +2329,201 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    def test_finish_normalizes_malformed_usage_json_without_writing(self) -> None:
+        campaign_id = "campaign-usage-malformed-json-finish"
+        cycle_id = "cycle-001"
+        call_id = "call-malformed-json-finish"
+        attempt_id = "call-malformed-json-finish-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(journal=journal, cycle_id=cycle_id)
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=7,
+                    output_tokens=2,
+                    total_tokens=9,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            _rewrite_campaign_event_raw_payload(
+                root,
+                event_id=usage_row[0],
+                payload_json='{"broken":',
+            )
+
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+            count_before = len(rows_before)
+            hashes_before = tuple((row[0], row[8]) for row in rows_before)
+            rewritten_usage_row = next(
+                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            self.assertEqual(
+                rewritten_usage_row[8],
+                _event_integrity_sha256(
+                    event_id=rewritten_usage_row[0],
+                    namespace=rewritten_usage_row[1],
+                    campaign_id=rewritten_usage_row[2],
+                    cycle_id=rewritten_usage_row[3],
+                    aggregate_type=rewritten_usage_row[4],
+                    aggregate_id=rewritten_usage_row[5],
+                    event_type=rewritten_usage_row[6],
+                    payload_json=rewritten_usage_row[7],
+                    occurred_at=rewritten_usage_row[9],
+                    sequence=rewritten_usage_row[10],
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage payload is invalid$",
+            ):
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                )
+
+            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
+            self.assertEqual(rows_after, rows_before)
+            self.assertEqual(len(rows_after), count_before)
+            self.assertEqual(
+                tuple((row[0], row[8]) for row in rows_after),
+                hashes_before,
+            )
+            self.assertNotIn(
+                "MODEL_USAGE_FINISHED",
+                {row[6] for row in rows_after},
+            )
+
+    def test_read_attempt_normalizes_malformed_usage_json_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-usage-malformed-json-read"
+        cycle_id = "cycle-001"
+        call_id = "call-malformed-json-read"
+        attempt_id = "call-malformed-json-read-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(journal=journal, cycle_id=cycle_id)
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=7,
+                    output_tokens=2,
+                    total_tokens=9,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            _rewrite_campaign_event_raw_payload(
+                root,
+                event_id=usage_row[0],
+                payload_json='{"broken":',
+            )
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage payload is invalid$",
+            ):
+                usage.read_attempt(call_id=call_id, attempt_id=attempt_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_list_attempts_normalizes_malformed_usage_json_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-usage-malformed-json-list"
+        cycle_id = "cycle-001"
+        call_id = "call-malformed-json-list"
+        attempt_id = "call-malformed-json-list-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(journal=journal, cycle_id=cycle_id)
+            usage.begin(
+                UsageEnvelope(
+                    provider="fake-provider",
+                    profile="offline",
+                    request_model="fake-model",
+                    response_model="fake-model",
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    usage_status=UsageStatus.REPORTED,
+                    input_tokens=7,
+                    output_tokens=2,
+                    total_tokens=9,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost="0.01",
+                    currency="USD",
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                    raw_usage_sha256="4" * 64,
+                )
+            )
+            usage_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_RECORDED"
+            )
+            _rewrite_campaign_event_raw_payload(
+                root,
+                event_id=usage_row[0],
+                payload_json='{"broken":',
+            )
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "^model usage payload is invalid$",
+            ):
+                usage.list_attempts(call_id=call_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
     def test_finish_rejects_usage_event_id_alias_without_writing(self) -> None:
         campaign_id = "campaign-usage-event-id-alias-finish"
         cycle_id = "cycle-001"

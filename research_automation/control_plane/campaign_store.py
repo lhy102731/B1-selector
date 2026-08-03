@@ -1649,6 +1649,19 @@ class OperationalUsageJournal:
             payload=payload,
         )
 
+    @staticmethod
+    def _validated_usage_envelope(usage_event: CampaignEvent) -> UsageEnvelope:
+        try:
+            usage_payload = _event_domain_payload(usage_event)
+            envelope = _parse_envelope(usage_payload)
+            observed_usage_json, _ = _payload(usage_payload)
+            expected_usage_json, _ = _payload(_envelope_payload(envelope))
+        except (KeyError, TypeError, ValueError) as error:
+            raise CampaignJournalError("model usage payload is invalid") from error
+        if observed_usage_json != expected_usage_json:
+            raise CampaignJournalError("model usage payload is not canonical")
+        return envelope
+
     def finish(
         self,
         *,
@@ -1727,15 +1740,7 @@ class OperationalUsageJournal:
         )
         if observed_usage_envelope != expected_usage_envelope:
             raise CampaignJournalError("model usage event envelope is invalid")
-        usage_payload = _event_domain_payload(usage_event)
-        try:
-            envelope = _parse_envelope(usage_payload)
-            observed_usage_json, _ = _payload(usage_payload)
-            expected_usage_json, _ = _payload(_envelope_payload(envelope))
-        except (KeyError, TypeError, ValueError) as error:
-            raise CampaignJournalError("model usage payload is invalid") from error
-        if observed_usage_json != expected_usage_json:
-            raise CampaignJournalError("model usage payload is not canonical")
+        envelope = self._validated_usage_envelope(usage_event)
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
         if envelope.outcome is not InvocationOutcome.RESPONSE_RECEIVED:
@@ -1831,14 +1836,14 @@ class OperationalUsageJournal:
             events = self._events_in_transaction(connection, aggregate_id)
             if not events:
                 raise CampaignJournalError("model attempt stream is missing")
-            payload = _event_domain_payload(events[0])
+            envelope = self._validated_usage_envelope(events[0])
             try:
                 stored_call_id = _identifier(
-                    payload.get("call_id"),
+                    envelope.call_id,
                     "stored call_id",
                 )
                 stored_attempt_id = _identifier(
-                    payload.get("attempt_id"),
+                    envelope.attempt_id,
                     "stored attempt_id",
                 )
             except (TypeError, ValueError) as error:
@@ -1902,15 +1907,7 @@ class OperationalUsageJournal:
         )
         if observed_usage_envelope != expected_usage_envelope:
             raise CampaignJournalError("model usage event envelope is invalid")
-        usage_payload = _event_domain_payload(usage_event)
-        try:
-            envelope = _parse_envelope(usage_payload)
-            observed_usage_json, _ = _payload(usage_payload)
-            expected_usage_json, _ = _payload(_envelope_payload(envelope))
-        except (KeyError, TypeError, ValueError) as error:
-            raise CampaignJournalError("model usage payload is invalid") from error
-        if observed_usage_json != expected_usage_json:
-            raise CampaignJournalError("model usage payload is not canonical")
+        envelope = self._validated_usage_envelope(usage_event)
         if envelope.call_id != call_id or envelope.attempt_id != attempt_id:
             raise CampaignJournalError("recorded usage identity does not match attempt")
         if len(events) == 2:
