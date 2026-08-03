@@ -58,6 +58,55 @@ class _ChildPidProvider:
         )
 
 
+class _CountingReduceProvider:
+    reduce_calls = 0
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        type(self).reduce_calls += 1
+        return (type(self), ())
+
+    def invoke(self, request: object) -> ProviderResponse:
+        return ProviderResponse(
+            output_text=json.dumps({"request": request}),
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
+class _InvocationMarkerProvider:
+    def __init__(self, marker_path: str) -> None:
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        Path(self._marker_path).write_text("invoked", encoding="ascii")
+        return ProviderResponse(
+            output_text=json.dumps({"request": request}),
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
+class _RequestSemanticsProvider:
+    def invoke(self, request: object) -> ProviderResponse:
+        assert type(request) is dict
+        request_object = request
+        return ProviderResponse(
+            output_text=json.dumps(
+                {
+                    "request": request_object,
+                    "shared_identity": request_object["left"]
+                    is request_object["right"],
+                }
+            ),
+            request_model="fake-request-model",
+            response_model="fake-response-model",
+            raw_usage={},
+        )
+
+
 class _HangingProvider:
     def __init__(self, marker_path: str) -> None:
         self._marker_path = marker_path
@@ -590,17 +639,230 @@ class _RecordingUsageJournal:
         self.events.append(("finish", (call_id, attempt_id, outcome)))
 
 
+def _spawned_invocation(
+    provider: object,
+    journal: _RecordingUsageJournal,
+) -> ModelInvocation:
+    return ModelInvocation(
+        provider=provider,
+        provider_executor=SpawnedProviderExecutor(provider),
+        usage_journal=journal,
+        provider_name="fake",
+        profile="offline",
+        request_model="fake-request-model",
+    )
+
+
+def _active_child_pids() -> set[int]:
+    return {
+        child.pid
+        for child in multiprocessing.active_children()
+        if child.pid is not None
+    }
+
+
 class ModelInvocationTests(unittest.TestCase):
-    def test_spawned_executor_runs_provider_in_child_and_reaps_it(self) -> None:
+    def test_model_invocation_rejects_arbitrary_provider_executor(self) -> None:
+        class ArbitraryExecutor:
+            def execute(self, *args: object, **kwargs: object) -> object:
+                raise AssertionError("arbitrary executor must never be called")
+
+        with self.assertRaisesRegex(
+            TypeError,
+            "provider_executor must be an exact SpawnedProviderExecutor",
+        ):
+            ModelInvocation(
+                provider=_ChildPidProvider(),
+                provider_executor=ArbitraryExecutor(),
+                usage_journal=_RecordingUsageJournal(),
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+
+        self.assertFalse(hasattr(campaign_module, "ProviderExecutor"))
+        self.assertFalse(hasattr(campaign_module, "InlineProviderExecutor"))
+        self.assertNotIn("ProviderExecutor", campaign_module.__all__)
+        self.assertNotIn("InlineProviderExecutor", campaign_module.__all__)
+
+        bound_provider = _ChildPidProvider()
+        with self.assertRaisesRegex(ValueError, "exact provider"):
+            ModelInvocation(
+                provider=_ChildPidProvider(),
+                provider_executor=SpawnedProviderExecutor(bound_provider),
+                usage_journal=_RecordingUsageJournal(),
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+
+    def test_spawned_executor_binds_and_serializes_provider_once_at_construction(
+        self,
+    ) -> None:
+        baseline_pids = _active_child_pids()
+        provider = _CountingReduceProvider()
+        _CountingReduceProvider.reduce_calls = 0
+        executor = SpawnedProviderExecutor(provider)
+
+        self.assertEqual(_CountingReduceProvider.reduce_calls, 1)
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
+        invocation = ModelInvocation(
+            provider=provider,
+            provider_executor=executor,
+            usage_journal=_RecordingUsageJournal(),
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-request-model",
+        )
+
+        for index in range(2):
+            self.assertEqual(
+                invocation.invoke_json(
+                    {"index": index},
+                    call_id=f"call-cached-provider-{index}",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() + 10.0,
+                ),
+                {"request": {"index": index}},
+            )
+
+        self.assertEqual(_CountingReduceProvider.reduce_calls, 1)
+
+    def test_model_invocation_rejects_output_limit_above_universal_ceiling(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(ValueError, "universal 48 KiB ceiling"):
+            ModelInvocation(
+                provider=_ChildPidProvider(),
+                usage_journal=_RecordingUsageJournal(),
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+                max_output_bytes=(48 * 1024) + 1,
+            )
+
+    def test_inline_and_spawn_reject_non_strict_json_before_attempt_or_usage(
+        self,
+    ) -> None:
+        cyclic: list[object] = []
+        cyclic.append(cyclic)
+        invalid_requests = (
+            ("tuple", {"value": (1, 2)}),
+            ("custom", {"value": object()}),
+            ("nonfinite", {"value": float("nan")}),
+            ("cyclic", cyclic),
+            ("oversized", {"value": "x" * (256 * 1024 + 1)}),
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for executor_kind in ("inline", "spawn"):
+                for name, request in invalid_requests:
+                    with self.subTest(executor=executor_kind, request=name):
+                        marker = Path(temp_dir) / f"{executor_kind}-{name}.marker"
+                        provider = _InvocationMarkerProvider(str(marker))
+                        journal = _RecordingUsageJournal()
+                        executor = (
+                            None
+                            if executor_kind == "inline"
+                            else SpawnedProviderExecutor(provider)
+                        )
+                        invocation = ModelInvocation(
+                            provider=provider,
+                            provider_executor=executor,
+                            usage_journal=journal,
+                            provider_name="fake",
+                            profile="offline",
+                            request_model="fake-request-model",
+                        )
+
+                        with self.assertRaises((TypeError, ValueError)):
+                            invocation.invoke_json(
+                                request,
+                                call_id=f"call-{executor_kind}-{name}",
+                                attempt_id="attempt-001",
+                                deadline=time.monotonic() + 10.0,
+                            )
+
+                        self.assertFalse(marker.exists())
+                        self.assertEqual(journal.events, [])
+
+    def test_inline_and_spawn_receive_the_same_json_round_tripped_value(self) -> None:
+        baseline_pids = _active_child_pids()
+        shared_list = ["same-input-object"]
+        request = {"left": shared_list, "right": shared_list}
+        results: list[object] = []
+
+        for executor_kind in ("inline", "spawn"):
+            with self.subTest(executor=executor_kind):
+                provider = _RequestSemanticsProvider()
+                journal = _RecordingUsageJournal()
+                invocation = (
+                    ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-request-model",
+                    )
+                    if executor_kind == "inline"
+                    else _spawned_invocation(provider, journal)
+                )
+                results.append(
+                    invocation.invoke_json(
+                        request,
+                        call_id=f"call-json-round-trip-{executor_kind}",
+                        attempt_id="attempt-001",
+                        deadline=time.monotonic() + 10.0,
+                    )
+                )
+
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(
+            results[0],
+            {
+                "request": {
+                    "left": ["same-input-object"],
+                    "right": ["same-input-object"],
+                },
+                "shared_identity": False,
+            },
+        )
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
+
+    def test_invalid_executor_snapshot_is_accounted_and_raised_as_provider_error(
+        self,
+    ) -> None:
         journal = _RecordingUsageJournal()
         invocation = ModelInvocation(
             provider=_ChildPidProvider(),
-            provider_executor=SpawnedProviderExecutor(),
             usage_journal=journal,
             provider_name="fake",
             profile="offline",
             request_model="fake-request-model",
         )
+
+        with patch.object(
+            campaign_module._InlineProviderExecutor,
+            "execute",
+            return_value=object(),
+        ):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-invalid-executor-snapshot",
+                    attempt_id="attempt-001",
+                )
+
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_spawned_executor_runs_provider_in_child_and_reaps_it(self) -> None:
+        baseline_pids = _active_child_pids()
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
 
         result = invocation.invoke_json(
             {"prompt": "offline-only"},
@@ -614,6 +876,7 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertFalse(
             any(child.pid == result["pid"] for child in multiprocessing.active_children())
         )
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
@@ -623,15 +886,11 @@ class ModelInvocationTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            baseline_pids = _active_child_pids()
             marker = Path(temp_dir) / "hanging-child.pid"
             journal = _RecordingUsageJournal()
-            invocation = ModelInvocation(
-                provider=_HangingProvider(str(marker)),
-                provider_executor=SpawnedProviderExecutor(),
-                usage_journal=journal,
-                provider_name="fake",
-                profile="offline",
-                request_model="fake-request-model",
+            invocation = _spawned_invocation(
+                _HangingProvider(str(marker)), journal
             )
             started = time.monotonic()
 
@@ -649,21 +908,16 @@ class ModelInvocationTests(unittest.TestCase):
             self.assertFalse(
                 any(child.pid == child_pid for child in multiprocessing.active_children())
             )
+            self.assertEqual(_active_child_pids() - baseline_pids, set())
             envelope = journal.events[0][1]
             self.assertIsInstance(envelope, UsageEnvelope)
             self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
             self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
 
     def test_spawned_provider_exception_is_reaped_and_accounted(self) -> None:
+        baseline_pids = _active_child_pids()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_SpawnExceptionProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_SpawnExceptionProvider(), journal)
 
         with self.assertRaises(ModelInvocationProviderError) as raised:
             invocation.invoke_json(
@@ -674,22 +928,16 @@ class ModelInvocationTests(unittest.TestCase):
             )
 
         self.assertNotIn("provider detail", str(raised.exception))
-        self.assertFalse(multiprocessing.active_children())
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
 
     def test_spawned_provider_timeout_tag_is_reaped_and_accounted(self) -> None:
+        baseline_pids = _active_child_pids()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_TimeoutProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_TimeoutProvider(), journal)
 
         with self.assertRaises(ModelInvocationTimeoutError):
             invocation.invoke_json(
@@ -699,21 +947,15 @@ class ModelInvocationTests(unittest.TestCase):
                 deadline=time.monotonic() + 10.0,
             )
 
-        self.assertFalse(multiprocessing.active_children())
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
 
     def test_spawned_invalid_response_is_reaped_and_accounted(self) -> None:
+        baseline_pids = _active_child_pids()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_MalformedResponseProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_MalformedResponseProvider(), journal)
 
         with self.assertRaises(ModelInvocationProviderError):
             invocation.invoke_json(
@@ -723,21 +965,15 @@ class ModelInvocationTests(unittest.TestCase):
                 deadline=time.monotonic() + 10.0,
             )
 
-        self.assertFalse(multiprocessing.active_children())
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
 
     def test_spawned_worker_eof_is_reaped_and_accounted(self) -> None:
+        baseline_pids = _active_child_pids()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_AbruptExitProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_AbruptExitProvider(), journal)
 
         with self.assertRaises(ModelInvocationProviderError):
             invocation.invoke_json(
@@ -747,7 +983,7 @@ class ModelInvocationTests(unittest.TestCase):
                 deadline=time.monotonic() + 10.0,
             )
 
-        self.assertFalse(multiprocessing.active_children())
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
         envelope = journal.events[0][1]
         self.assertIsInstance(envelope, UsageEnvelope)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
@@ -756,15 +992,11 @@ class ModelInvocationTests(unittest.TestCase):
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            baseline_pids = _active_child_pids()
             marker = Path(temp_dir) / "oversized-child.pid"
             journal = _RecordingUsageJournal()
-            invocation = ModelInvocation(
-                provider=_OversizedSpawnOutputProvider(str(marker)),
-                provider_executor=SpawnedProviderExecutor(),
-                usage_journal=journal,
-                provider_name="fake",
-                profile="offline",
-                request_model="fake-request-model",
+            invocation = _spawned_invocation(
+                _OversizedSpawnOutputProvider(str(marker)), journal
             )
 
             with self.assertRaises(InvalidModelResponseError):
@@ -779,6 +1011,7 @@ class ModelInvocationTests(unittest.TestCase):
             self.assertFalse(
                 any(child.pid == child_pid for child in multiprocessing.active_children())
             )
+            self.assertEqual(_active_child_pids() - baseline_pids, set())
             envelope = journal.events[0][1]
             self.assertIsInstance(envelope, UsageEnvelope)
             self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
@@ -794,15 +1027,11 @@ class ModelInvocationTests(unittest.TestCase):
 
     def test_spawned_escaped_frame_overflow_preserves_reported_usage(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
+            baseline_pids = _active_child_pids()
             marker = Path(temp_dir) / "escaped-frame-overflow-child.pid"
             journal = _RecordingUsageJournal()
-            invocation = ModelInvocation(
-                provider=_EscapedFrameOverflowProvider(str(marker)),
-                provider_executor=SpawnedProviderExecutor(),
-                usage_journal=journal,
-                provider_name="fake",
-                profile="offline",
-                request_model="fake-request-model",
+            invocation = _spawned_invocation(
+                _EscapedFrameOverflowProvider(str(marker)), journal
             )
 
             with self.assertRaises(InvalidModelResponseError):
@@ -817,6 +1046,7 @@ class ModelInvocationTests(unittest.TestCase):
             self.assertFalse(
                 any(child.pid == child_pid for child in multiprocessing.active_children())
             )
+            self.assertEqual(_active_child_pids() - baseline_pids, set())
             envelope = journal.events[0][1]
             self.assertIsInstance(envelope, UsageEnvelope)
             self.assertEqual(envelope.usage_status, UsageStatus.REPORTED)
@@ -850,17 +1080,10 @@ class ModelInvocationTests(unittest.TestCase):
     ) -> None:
         context = _NoProcessContext()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_ChildPidProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
 
         with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
-            with self.assertRaises(ModelInvocationProviderError):
+            with self.assertRaises((TypeError, ValueError)):
                 invocation.invoke_json(
                     {"not-json": object()},
                     call_id="call-spawn-request-reject",
@@ -869,51 +1092,40 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertEqual(context.process_calls, 0)
-        envelope = journal.events[0][1]
-        self.assertIsInstance(envelope, UsageEnvelope)
-        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+        self.assertEqual(journal.events, [])
 
     def test_spawned_executor_rejects_oversized_provider_pickle_without_start(
         self,
     ) -> None:
         context = _NoProcessContext()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_OversizedPickleProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        provider = _OversizedPickleProvider()
 
-        with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
-            with self.assertRaises(ModelInvocationProviderError):
-                invocation.invoke_json(
-                    {"prompt": "offline-only"},
-                    call_id="call-spawn-pickle-reject",
-                    attempt_id="attempt-001",
-                    deadline=time.monotonic() + 10.0,
+        with patch.object(
+            campaign_module.multiprocessing, "get_context", return_value=context
+        ):
+            with self.assertRaises(ValueError):
+                ModelInvocation(
+                    provider=provider,
+                    provider_executor=SpawnedProviderExecutor(provider),
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-request-model",
                 )
 
         self.assertEqual(context.process_calls, 0)
+        self.assertEqual(journal.events, [])
 
     def test_spawned_executor_rejects_unbounded_json_without_process_start(
         self,
     ) -> None:
         context = _NoProcessContext()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_ChildPidProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
 
         with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
-            with self.assertRaises(ModelInvocationProviderError):
+            with self.assertRaises((TypeError, ValueError)):
                 invocation.invoke_json(
                     {"prompt": "x" * (256 * 1024 + 1)},
                     call_id="call-spawn-request-overflow",
@@ -922,6 +1134,7 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertEqual(context.process_calls, 0)
+        self.assertEqual(journal.events, [])
 
     def test_deadline_cleanup_escalates_terminate_join_kill_join(self) -> None:
         process = _EscalationProcess()
@@ -943,14 +1156,7 @@ class ModelInvocationTests(unittest.TestCase):
     def test_spawn_failure_closes_both_pipe_ends_and_process_handle(self) -> None:
         context = _StartFailureContext()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_ChildPidProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
 
         with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
             with self.assertRaises(ModelInvocationProviderError):
@@ -971,14 +1177,7 @@ class ModelInvocationTests(unittest.TestCase):
     def test_spawned_poll_failure_reaps_and_closes_every_worker_resource(self) -> None:
         context = _PollFailureContext()
         journal = _RecordingUsageJournal()
-        invocation = ModelInvocation(
-            provider=_ChildPidProvider(),
-            provider_executor=SpawnedProviderExecutor(),
-            usage_journal=journal,
-            provider_name="fake",
-            profile="offline",
-            request_model="fake-request-model",
-        )
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
 
         with patch.object(campaign_module.multiprocessing, "get_context", return_value=context):
             with self.assertRaises(ModelInvocationProviderError):

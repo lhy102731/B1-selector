@@ -38,7 +38,6 @@ _MAX_PROVIDER_REQUEST_NODES = 8192
 _MAX_PROVIDER_COLLECTION_ITEMS = 4096
 _MAX_PROVIDER_PICKLE_BYTES = 256 * 1024
 _MAX_PROVIDER_FRAME_BYTES = 160 * 1024
-_MAX_SPAWNED_OUTPUT_BYTES = _MAX_MODEL_OUTPUT_BYTES
 _WORKER_REAP_JOIN_SECONDS = 0.5
 _PROVIDER_PROTOCOL_VERSION = 1
 _CONTROL_PLANE_IDENTIFIER_RE = re.compile(
@@ -86,8 +85,20 @@ class _ProviderExecutorTimeout(TimeoutError):
     """Internal signal that the one-attempt executor reached its deadline."""
 
 
+class _ProviderExecutorConfigurationError(ValueError):
+    """Internal signal for deterministic executor/preflight configuration."""
+
+
 class _ProviderExecutorError(RuntimeError):
-    """Internal bounded provider or worker failure signal."""
+    """Base class for failures occurring after a provider attempt starts."""
+
+
+class _ProviderExecutorProtocolError(_ProviderExecutorError):
+    """Internal signal for a malformed or failed worker protocol."""
+
+
+class _ProviderExecutorProviderError(_ProviderExecutorError):
+    """Internal signal for an exception raised by the provider attempt."""
 
 
 class _ProviderFrameOverflowError(ValueError):
@@ -125,6 +136,12 @@ class _ProviderResponseSnapshot:
     raw_usage_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class _CanonicalJsonRequest:
+    value: object
+    payload: bytes
+
+
 @dataclass(frozen=True)
 class UsageEnvelope:
     provider: str
@@ -158,17 +175,6 @@ class LogicalInvocationResult:
 
 class ModelProvider(Protocol):
     def invoke(self, request: object) -> ProviderResponse: ...
-
-
-class ProviderExecutor(Protocol):
-    def execute(
-        self,
-        provider: ModelProvider,
-        request: object,
-        *,
-        deadline: float | None,
-        max_output_bytes: int,
-    ) -> _ProviderResponseSnapshot: ...
 
 
 class UsageJournal(Protocol):
@@ -600,7 +606,7 @@ def _snapshot_provider_response(
     )
 
 
-class InlineProviderExecutor:
+class _InlineProviderExecutor:
     """Execute directly; this remains the default for existing unit adapters."""
 
     __slots__ = ()
@@ -608,16 +614,31 @@ class InlineProviderExecutor:
     def execute(
         self,
         provider: ModelProvider,
-        request: object,
+        request: _CanonicalJsonRequest,
         *,
         deadline: float | None,
         max_output_bytes: int,
     ) -> _ProviderResponseSnapshot:
         del deadline
-        return _snapshot_provider_response(
-            provider.invoke(request),
-            max_output_bytes=max_output_bytes,
-        )
+        try:
+            response = provider.invoke(request.value)
+        except TimeoutError as error:
+            raise _ProviderExecutorTimeout(
+                "provider invocation timed out"
+            ) from error
+        except Exception as error:
+            raise _ProviderExecutorProviderError(
+                "provider invocation failed"
+            ) from error
+        try:
+            return _snapshot_provider_response(
+                response,
+                max_output_bytes=max_output_bytes,
+            )
+        except Exception as error:
+            raise _ProviderExecutorProtocolError(
+                "provider returned an invalid response"
+            ) from error
 
 
 def _validate_json_request(
@@ -705,6 +726,11 @@ def _canonical_request_bytes(request: object) -> bytes:
     return payload
 
 
+def _canonical_json_request(request: object) -> _CanonicalJsonRequest:
+    payload = _canonical_request_bytes(request)
+    return _CanonicalJsonRequest(value=json.loads(payload), payload=payload)
+
+
 class _BoundedPickleBuffer(io.BytesIO):
     def write(self, data: bytes) -> int:
         if self.tell() + len(data) > _MAX_PROVIDER_PICKLE_BYTES:
@@ -717,10 +743,14 @@ def _bounded_provider_pickle(provider: ModelProvider) -> bytes:
     try:
         ForkingPickler(buffer, pickle.HIGHEST_PROTOCOL).dump(provider)
     except Exception as error:
-        raise ValueError("provider is not spawn-picklable within bounds") from error
+        raise _ProviderExecutorConfigurationError(
+            "provider is not spawn-picklable within bounds"
+        ) from error
     payload = buffer.getvalue()
     if len(payload) > _MAX_PROVIDER_PICKLE_BYTES:
-        raise ValueError("provider spawn pickle exceeds the byte bound")
+        raise _ProviderExecutorConfigurationError(
+            "provider spawn pickle exceeds the byte bound"
+        )
     return payload
 
 
@@ -835,16 +865,20 @@ def _decode_provider_frame(frame: bytes) -> _ProviderResponseSnapshot:
     try:
         decoded = json.loads(frame.decode("ascii", errors="strict"))
     except (UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise _ProviderExecutorError("provider worker protocol failed") from error
+        raise _ProviderExecutorProtocolError(
+            "provider worker protocol failed"
+        ) from error
     if type(decoded) is not dict or decoded.get("v") != _PROVIDER_PROTOCOL_VERSION:
-        raise _ProviderExecutorError("provider worker protocol failed")
+        raise _ProviderExecutorProtocolError("provider worker protocol failed")
     tag = decoded.get("tag")
     if tag == "provider_timeout":
         raise _ProviderExecutorTimeout("provider invocation timed out")
-    if tag in {"provider_exception", "invalid_response", "protocol_error"}:
-        raise _ProviderExecutorError("provider invocation failed")
+    if tag == "provider_exception":
+        raise _ProviderExecutorProviderError("provider invocation failed")
+    if tag in {"invalid_response", "protocol_error"}:
+        raise _ProviderExecutorProtocolError("provider worker protocol failed")
     if tag != "response" or type(decoded.get("snapshot")) is not dict:
-        raise _ProviderExecutorError("provider worker protocol failed")
+        raise _ProviderExecutorProtocolError("provider worker protocol failed")
     snapshot = decoded["snapshot"]
     try:
         output_text = snapshot["output_text"]
@@ -904,7 +938,9 @@ def _decode_provider_frame(frame: bytes) -> _ProviderResponseSnapshot:
             raw_usage_sha256=raw_usage_sha256,
         )
     except (KeyError, TypeError, ValueError) as error:
-        raise _ProviderExecutorError("provider worker protocol failed") from error
+        raise _ProviderExecutorProtocolError(
+            "provider worker protocol failed"
+        ) from error
 
 
 def _terminate_and_reap_worker(process: object, *, join_timeout: float) -> None:
@@ -925,23 +961,47 @@ def _close_process(process: object) -> None:
 
 
 class SpawnedProviderExecutor:
-    """Run exactly one provider attempt in a directly reaped spawn process."""
+    """Run a bound trusted fake provider in a directly reaped spawn process.
 
-    __slots__ = ()
+    P6 providers must be trusted, spawn-picklable fakes and must not create
+    descendant processes.  Bounded serialization is a one-time preflight, not
+    an isolation boundary.  Cleanup guarantees apply only to the direct worker.
+    """
+
+    __slots__ = ("_provider", "_provider_pickle")
+
+    def __init__(self, provider: ModelProvider) -> None:
+        self._provider = provider
+        self._provider_pickle = _bounded_provider_pickle(provider)
 
     def execute(
         self,
         provider: ModelProvider,
-        request: object,
+        request: _CanonicalJsonRequest,
         *,
         deadline: float | None,
         max_output_bytes: int,
     ) -> _ProviderResponseSnapshot:
-        context = multiprocessing.get_context("spawn")
+        if provider is not self._provider:
+            raise _ProviderExecutorConfigurationError(
+                "SpawnedProviderExecutor requires its bound provider identity"
+            )
+        if type(request) is not _CanonicalJsonRequest:
+            raise _ProviderExecutorConfigurationError(
+                "SpawnedProviderExecutor requires a canonical JSON request"
+            )
+        if (
+            type(max_output_bytes) is not int
+            or not 1 <= max_output_bytes <= _MAX_MODEL_OUTPUT_BYTES
+        ):
+            raise _ProviderExecutorConfigurationError(
+                "SpawnedProviderExecutor requires the universal output bound"
+            )
         if type(deadline) not in (int, float) or not math.isfinite(deadline):
-            raise ValueError("SpawnedProviderExecutor requires a finite deadline")
-        request_bytes = _canonical_request_bytes(request)
-        provider_pickle = _bounded_provider_pickle(provider)
+            raise _ProviderExecutorConfigurationError(
+                "SpawnedProviderExecutor requires a finite deadline"
+            )
+        context = multiprocessing.get_context("spawn")
         if time.monotonic() >= deadline:
             raise _ProviderExecutorTimeout("provider invocation timed out")
         receive_connection, send_connection = context.Pipe(duplex=False)
@@ -949,16 +1009,18 @@ class SpawnedProviderExecutor:
             worker = context.Process(
                 target=_spawned_provider_worker,
                 args=(
-                    provider_pickle,
-                    request_bytes,
+                    self._provider_pickle,
+                    request.payload,
                     send_connection,
-                    min(max_output_bytes, _MAX_SPAWNED_OUTPUT_BYTES),
+                    max_output_bytes,
                 ),
             )
         except Exception as error:
             receive_connection.close()
             send_connection.close()
-            raise _ProviderExecutorError("provider worker failed to construct") from error
+            raise _ProviderExecutorProtocolError(
+                "provider worker failed to construct"
+            ) from error
         started = False
         try:
             worker.start()
@@ -976,7 +1038,9 @@ class SpawnedProviderExecutor:
                     _close_process(worker)
             else:
                 _close_process(worker)
-            raise _ProviderExecutorError("provider worker failed to start") from error
+            raise _ProviderExecutorProtocolError(
+                "provider worker failed to start"
+            ) from error
         finally:
             if started:
                 send_connection.close()
@@ -987,7 +1051,7 @@ class SpawnedProviderExecutor:
             try:
                 ready = receive_connection.poll(remaining)
             except Exception as error:
-                raise _ProviderExecutorError(
+                raise _ProviderExecutorProtocolError(
                     "provider worker protocol failed"
                 ) from error
             if not ready:
@@ -997,7 +1061,9 @@ class SpawnedProviderExecutor:
                     maxlength=_MAX_PROVIDER_FRAME_BYTES
                 )
             except (EOFError, OSError) as error:
-                raise _ProviderExecutorError("provider worker protocol failed") from error
+                raise _ProviderExecutorProtocolError(
+                    "provider worker protocol failed"
+                ) from error
             worker.join(max(0.0, deadline - time.monotonic()))
             if worker.is_alive():
                 raise _ProviderExecutorTimeout("provider invocation timed out")
@@ -1032,7 +1098,7 @@ class ModelInvocation:
         self,
         *,
         provider: ModelProvider,
-        provider_executor: ProviderExecutor | None = None,
+        provider_executor: SpawnedProviderExecutor | None = None,
         usage_journal: UsageJournal,
         provider_name: str,
         profile: str,
@@ -1041,9 +1107,27 @@ class ModelInvocation:
     ) -> None:
         if type(max_output_bytes) is not int or max_output_bytes < 1:
             raise ValueError("max_output_bytes must be a positive integer")
+        if max_output_bytes > _MAX_MODEL_OUTPUT_BYTES:
+            raise ValueError(
+                "max_output_bytes exceeds the universal 48 KiB ceiling"
+            )
+        if (
+            provider_executor is not None
+            and type(provider_executor) is not SpawnedProviderExecutor
+        ):
+            raise TypeError(
+                "provider_executor must be an exact SpawnedProviderExecutor"
+            )
+        if (
+            provider_executor is not None
+            and provider_executor._provider is not provider
+        ):
+            raise ValueError(
+                "SpawnedProviderExecutor must be bound to the exact provider"
+            )
         self._provider = provider
         self._provider_executor = (
-            InlineProviderExecutor()
+            _InlineProviderExecutor()
             if provider_executor is None
             else provider_executor
         )
@@ -1061,13 +1145,20 @@ class ModelInvocation:
         attempt_id: str,
         deadline: float | None = None,
     ) -> object:
+        canonical_request = _canonical_json_request(request)
         try:
             response = self._provider_executor.execute(
                 self._provider,
-                request,
+                canonical_request,
                 deadline=deadline,
                 max_output_bytes=self._max_output_bytes,
             )
+            if type(response) is not _ProviderResponseSnapshot:
+                raise _ProviderExecutorProtocolError(
+                    "provider executor returned an invalid snapshot"
+                )
+        except _ProviderExecutorConfigurationError:
+            raise
         except TimeoutError as error:
             self._record_unknown_outcome(
                 call_id=call_id,
@@ -1243,7 +1334,6 @@ class RetryingModelInvocation:
 
 
 __all__ = [
-    "InlineProviderExecutor",
     "InvalidModelResponseError",
     "InvocationOutcome",
     "LogicalInvocationResult",
@@ -1251,7 +1341,6 @@ __all__ = [
     "ModelInvocationProviderError",
     "ModelInvocationTimeoutError",
     "ProviderResponse",
-    "ProviderExecutor",
     "RetryingModelInvocation",
     "StreamingDisabledError",
     "SpawnedProviderExecutor",
