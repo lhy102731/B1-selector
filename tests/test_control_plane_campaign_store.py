@@ -2329,6 +2329,102 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
 
 class OperationalUsageJournalTests(unittest.TestCase):
+    def _seed_reported_usd_usage_attempt(
+        self,
+        *,
+        root: Path,
+        campaign_id: str,
+        journal: OperationalCampaignJournal,
+        cycle_id: str,
+        call_id: str,
+        attempt_id: str,
+    ) -> tuple[OperationalUsageJournal, tuple[object, ...]]:
+        usage = OperationalUsageJournal(
+            journal=journal,
+            cycle_id=cycle_id,
+        )
+        usage.begin(
+            UsageEnvelope(
+                provider="fake-provider",
+                profile="offline",
+                request_model="fake-model",
+                response_model="fake-model",
+                call_id=call_id,
+                attempt_id=attempt_id,
+                usage_status=UsageStatus.REPORTED,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                cache_read_tokens=None,
+                cache_write_tokens=None,
+                reasoning_tokens=None,
+                reported_cost="0.01",
+                currency="USD",
+                fallback=False,
+                streamed=False,
+                outcome=InvocationOutcome.RESPONSE_RECEIVED,
+                raw_usage_sha256="4" * 64,
+            )
+        )
+        usage_row = next(
+            row
+            for row in _campaign_full_rows(root, campaign_id=campaign_id)
+            if row[6] == "MODEL_USAGE_RECORDED"
+        )
+        return usage, usage_row
+
+    def _assert_public_finish_recovery_fails_without_writing(
+        self,
+        *,
+        root: Path,
+        campaign_id: str,
+        usage: OperationalUsageJournal,
+        call_id: str,
+        attempt_id: str,
+        error_regex: str,
+    ) -> tuple[object, ...]:
+        rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+        count_before = len(rows_before)
+        hashes_before = tuple((row[0], row[8]) for row in rows_before)
+        rewritten_usage_row = next(
+            row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
+        )
+        self.assertEqual(
+            rewritten_usage_row[8],
+            _event_integrity_sha256(
+                event_id=rewritten_usage_row[0],
+                namespace=rewritten_usage_row[1],
+                campaign_id=rewritten_usage_row[2],
+                cycle_id=rewritten_usage_row[3],
+                aggregate_type=rewritten_usage_row[4],
+                aggregate_id=rewritten_usage_row[5],
+                event_type=rewritten_usage_row[6],
+                payload_json=rewritten_usage_row[7],
+                occurred_at=rewritten_usage_row[9],
+                sequence=rewritten_usage_row[10],
+            ),
+        )
+
+        with self.assertRaisesRegex(CampaignJournalError, error_regex):
+            usage.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.SUCCESS,
+            )
+
+        rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
+        self.assertEqual(rows_after, rows_before)
+        self.assertEqual(len(rows_after), count_before)
+        self.assertEqual(
+            tuple((row[0], row[8]) for row in rows_after),
+            hashes_before,
+        )
+        self.assertNotIn(
+            "MODEL_USAGE_FINISHED",
+            {row[6] for row in rows_after},
+        )
+        return rewritten_usage_row
+
     def test_finish_normalizes_malformed_usage_json_without_writing(self) -> None:
         campaign_id = "campaign-usage-malformed-json-finish"
         cycle_id = "cycle-001"
@@ -2619,37 +2715,13 @@ class OperationalUsageJournalTests(unittest.TestCase):
         call_id = "call-event-id-alias-finish"
         attempt_id = "call-event-id-alias-finish-attempt-001"
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            usage = OperationalUsageJournal(
+            usage, usage_row = self._seed_reported_usd_usage_attempt(
+                root=root,
+                campaign_id=campaign_id,
                 journal=journal,
                 cycle_id=cycle_id,
-            )
-            usage.begin(
-                UsageEnvelope(
-                    provider="fake-provider",
-                    profile="offline",
-                    request_model="fake-model",
-                    response_model="fake-model",
-                    call_id=call_id,
-                    attempt_id=attempt_id,
-                    usage_status=UsageStatus.REPORTED,
-                    input_tokens=None,
-                    output_tokens=None,
-                    total_tokens=None,
-                    cache_read_tokens=None,
-                    cache_write_tokens=None,
-                    reasoning_tokens=None,
-                    reported_cost="0.01",
-                    currency="USD",
-                    fallback=False,
-                    streamed=False,
-                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
-                    raw_usage_sha256="4" * 64,
-                )
-            )
-            usage_row = next(
-                row
-                for row in _campaign_full_rows(root, campaign_id=campaign_id)
-                if row[6] == "MODEL_USAGE_RECORDED"
+                call_id=call_id,
+                attempt_id=attempt_id,
             )
             replacement_event_id = "legacy-usage-event-alias"
             self.assertNotEqual(usage_row[0], replacement_event_id)
@@ -2659,50 +2731,17 @@ class OperationalUsageJournalTests(unittest.TestCase):
                 replacement_event_id=replacement_event_id,
             )
 
-            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
-            count_before = len(rows_before)
-            hashes_before = tuple((row[0], row[8]) for row in rows_before)
-            rewritten_usage_row = next(
-                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
-            )
-            self.assertEqual(rewritten_usage_row[0], replacement_event_id)
-            self.assertEqual(
-                rewritten_usage_row[8],
-                _event_integrity_sha256(
-                    event_id=rewritten_usage_row[0],
-                    namespace=rewritten_usage_row[1],
-                    campaign_id=rewritten_usage_row[2],
-                    cycle_id=rewritten_usage_row[3],
-                    aggregate_type=rewritten_usage_row[4],
-                    aggregate_id=rewritten_usage_row[5],
-                    event_type=rewritten_usage_row[6],
-                    payload_json=rewritten_usage_row[7],
-                    occurred_at=rewritten_usage_row[9],
-                    sequence=rewritten_usage_row[10],
-                ),
-            )
-
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "^model usage event envelope is invalid$",
-            ):
-                usage.finish(
+            rewritten_usage_row = (
+                self._assert_public_finish_recovery_fails_without_writing(
+                    root=root,
+                    campaign_id=campaign_id,
+                    usage=usage,
                     call_id=call_id,
                     attempt_id=attempt_id,
-                    outcome=InvocationOutcome.SUCCESS,
+                    error_regex="^model usage event envelope is invalid$",
                 )
-
-            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
-            self.assertEqual(rows_after, rows_before)
-            self.assertEqual(len(rows_after), count_before)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after),
-                hashes_before,
             )
-            self.assertNotIn(
-                "MODEL_USAGE_FINISHED",
-                {row[6] for row in rows_after},
-            )
+            self.assertEqual(rewritten_usage_row[0], replacement_event_id)
 
     def test_finish_rejects_noncanonical_usage_payload_without_writing(self) -> None:
         campaign_id = "campaign-usage-noncanonical-finish"
@@ -2710,37 +2749,13 @@ class OperationalUsageJournalTests(unittest.TestCase):
         call_id = "call-noncanonical-finish"
         attempt_id = "call-noncanonical-finish-attempt-001"
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            usage = OperationalUsageJournal(
+            usage, usage_row = self._seed_reported_usd_usage_attempt(
+                root=root,
+                campaign_id=campaign_id,
                 journal=journal,
                 cycle_id=cycle_id,
-            )
-            usage.begin(
-                UsageEnvelope(
-                    provider="fake-provider",
-                    profile="offline",
-                    request_model="fake-model",
-                    response_model="fake-model",
-                    call_id=call_id,
-                    attempt_id=attempt_id,
-                    usage_status=UsageStatus.REPORTED,
-                    input_tokens=None,
-                    output_tokens=None,
-                    total_tokens=None,
-                    cache_read_tokens=None,
-                    cache_write_tokens=None,
-                    reasoning_tokens=None,
-                    reported_cost="0.01",
-                    currency="USD",
-                    fallback=False,
-                    streamed=False,
-                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
-                    raw_usage_sha256="4" * 64,
-                )
-            )
-            usage_row = next(
-                row
-                for row in _campaign_full_rows(root, campaign_id=campaign_id)
-                if row[6] == "MODEL_USAGE_RECORDED"
+                call_id=call_id,
+                attempt_id=attempt_id,
             )
             payload = json.loads(usage_row[7])
             self.assertIn("_authority_grant_id", payload)
@@ -2751,48 +2766,19 @@ class OperationalUsageJournalTests(unittest.TestCase):
                 payload=payload,
             )
 
-            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
-            count_before = len(rows_before)
-            hashes_before = tuple((row[0], row[8]) for row in rows_before)
-            rewritten_usage_row = next(
-                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
-            )
-            self.assertEqual(
-                rewritten_usage_row[8],
-                _event_integrity_sha256(
-                    event_id=rewritten_usage_row[0],
-                    namespace=rewritten_usage_row[1],
-                    campaign_id=rewritten_usage_row[2],
-                    cycle_id=rewritten_usage_row[3],
-                    aggregate_type=rewritten_usage_row[4],
-                    aggregate_id=rewritten_usage_row[5],
-                    event_type=rewritten_usage_row[6],
-                    payload_json=rewritten_usage_row[7],
-                    occurred_at=rewritten_usage_row[9],
-                    sequence=rewritten_usage_row[10],
-                ),
-            )
-
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "^model usage payload is not canonical$",
-            ):
-                usage.finish(
+            rewritten_usage_row = (
+                self._assert_public_finish_recovery_fails_without_writing(
+                    root=root,
+                    campaign_id=campaign_id,
+                    usage=usage,
                     call_id=call_id,
                     attempt_id=attempt_id,
-                    outcome=InvocationOutcome.SUCCESS,
+                    error_regex="^model usage payload is not canonical$",
                 )
-
-            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
-            self.assertEqual(rows_after, rows_before)
-            self.assertEqual(len(rows_after), count_before)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after),
-                hashes_before,
             )
-            self.assertNotIn(
-                "MODEL_USAGE_FINISHED",
-                {row[6] for row in rows_after},
+            self.assertEqual(
+                json.loads(rewritten_usage_row[7])["legacy_extra_field"],
+                "unexpected",
             )
 
     def test_finish_normalizes_currencyless_usage_recovery_error(self) -> None:
@@ -2801,37 +2787,13 @@ class OperationalUsageJournalTests(unittest.TestCase):
         call_id = "call-currencyless-finish"
         attempt_id = "call-currencyless-finish-attempt-001"
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            usage = OperationalUsageJournal(
+            usage, usage_row = self._seed_reported_usd_usage_attempt(
+                root=root,
+                campaign_id=campaign_id,
                 journal=journal,
                 cycle_id=cycle_id,
-            )
-            usage.begin(
-                UsageEnvelope(
-                    provider="fake-provider",
-                    profile="offline",
-                    request_model="fake-model",
-                    response_model="fake-model",
-                    call_id=call_id,
-                    attempt_id=attempt_id,
-                    usage_status=UsageStatus.REPORTED,
-                    input_tokens=None,
-                    output_tokens=None,
-                    total_tokens=None,
-                    cache_read_tokens=None,
-                    cache_write_tokens=None,
-                    reasoning_tokens=None,
-                    reported_cost="0.01",
-                    currency="USD",
-                    fallback=False,
-                    streamed=False,
-                    outcome=InvocationOutcome.RESPONSE_RECEIVED,
-                    raw_usage_sha256="4" * 64,
-                )
-            )
-            usage_row = next(
-                row
-                for row in _campaign_full_rows(root, campaign_id=campaign_id)
-                if row[6] == "MODEL_USAGE_RECORDED"
+                call_id=call_id,
+                attempt_id=attempt_id,
             )
             payload = json.loads(usage_row[7])
             self.assertEqual(payload.pop("currency"), "USD")
@@ -2841,49 +2803,17 @@ class OperationalUsageJournalTests(unittest.TestCase):
                 payload=payload,
             )
 
-            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
-            count_before = len(rows_before)
-            hashes_before = tuple((row[0], row[8]) for row in rows_before)
-            rewritten_usage_row = next(
-                row for row in rows_before if row[6] == "MODEL_USAGE_RECORDED"
-            )
-            self.assertEqual(
-                rewritten_usage_row[8],
-                _event_integrity_sha256(
-                    event_id=rewritten_usage_row[0],
-                    namespace=rewritten_usage_row[1],
-                    campaign_id=rewritten_usage_row[2],
-                    cycle_id=rewritten_usage_row[3],
-                    aggregate_type=rewritten_usage_row[4],
-                    aggregate_id=rewritten_usage_row[5],
-                    event_type=rewritten_usage_row[6],
-                    payload_json=rewritten_usage_row[7],
-                    occurred_at=rewritten_usage_row[9],
-                    sequence=rewritten_usage_row[10],
-                ),
-            )
-
-            with self.assertRaisesRegex(
-                CampaignJournalError,
-                "^model usage payload is invalid$",
-            ):
-                usage.finish(
+            rewritten_usage_row = (
+                self._assert_public_finish_recovery_fails_without_writing(
+                    root=root,
+                    campaign_id=campaign_id,
+                    usage=usage,
                     call_id=call_id,
                     attempt_id=attempt_id,
-                    outcome=InvocationOutcome.SUCCESS,
+                    error_regex="^model usage payload is invalid$",
                 )
-
-            rows_after = _campaign_full_rows(root, campaign_id=campaign_id)
-            self.assertEqual(rows_after, rows_before)
-            self.assertEqual(len(rows_after), count_before)
-            self.assertEqual(
-                tuple((row[0], row[8]) for row in rows_after),
-                hashes_before,
             )
-            self.assertNotIn(
-                "MODEL_USAGE_FINISHED",
-                {row[6] for row in rows_after},
-            )
+            self.assertNotIn("currency", json.loads(rewritten_usage_row[7]))
 
     def test_currencyless_model_usage_replay_fails_closed_without_writes(
         self,
