@@ -213,6 +213,74 @@ class _ClosablePipeEnd:
         self.closed = True
 
 
+class _ControlledClock:
+    def __init__(self, now: float) -> None:
+        self.now = now
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _DeadlineFenceProcess:
+    pid = None
+
+    def __init__(self) -> None:
+        self.start_calls = 0
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.closed = False
+        self._alive = False
+
+    def start(self) -> None:
+        self.start_calls += 1
+        self.pid = 12345
+        self._alive = True
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self._alive = False
+
+    def join(self, timeout: float | None = None) -> None:
+        del timeout
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self._alive = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _DeadlineFenceReceive(_ClosablePipeEnd):
+    def poll(self, timeout: float) -> bool:
+        del timeout
+        return False
+
+
+class _DeadlineFenceContext:
+    def __init__(self, clock: _ControlledClock, deadline: float) -> None:
+        self._clock = clock
+        self._deadline = deadline
+        self.process_calls = 0
+        self.receive = _DeadlineFenceReceive()
+        self.send = _ClosablePipeEnd()
+        self.process = _DeadlineFenceProcess()
+
+    def Pipe(self, *, duplex: bool) -> tuple[object, object]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        return self.receive, self.send
+
+    def Process(self, *args: object, **kwargs: object) -> _DeadlineFenceProcess:
+        del args, kwargs
+        self.process_calls += 1
+        self._clock.now = self._deadline
+        return self.process
+
+
 class _StartFailureProcess:
     pid = None
 
@@ -2847,6 +2915,43 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(context.process_calls, 0)
         self.assertEqual(len(journal.events), 1)
         self.assertEqual(journal.events[0][1].outcome, InvocationOutcome.TIMEOUT)
+
+    def test_deadline_expiring_during_spawn_construction_does_not_start_child(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=deadline - 1.0)
+        context = _DeadlineFenceContext(clock, deadline)
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-deadline-during-spawn-construction",
+                    attempt_id="attempt-001",
+                    deadline=deadline,
+                )
+
+        self.assertEqual(context.process_calls, 1)
+        self.assertEqual(context.process.start_calls, 0)
+        self.assertEqual(context.process.terminate_calls, 0)
+        self.assertEqual(context.process.kill_calls, 0)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.call_id, "call-deadline-during-spawn-construction")
+        self.assertEqual(envelope.attempt_id, "attempt-001")
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
 
     def test_spawned_provider_timeout_retries_with_remaining_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

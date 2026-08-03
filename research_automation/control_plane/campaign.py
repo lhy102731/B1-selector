@@ -1053,6 +1053,13 @@ class SpawnedProviderExecutor:
                 "provider worker failed to construct"
             ) from error
         started = False
+        if time.monotonic() >= deadline:
+            receive_connection.close()
+            send_connection.close()
+            _close_process(worker)
+            raise _ProviderExecutorDeadlineExceeded(
+                "provider invocation deadline expired"
+            )
         try:
             worker.start()
             started = True
