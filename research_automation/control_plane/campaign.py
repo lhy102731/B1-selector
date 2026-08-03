@@ -10,7 +10,7 @@ import multiprocessing
 import pickle
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import Enum
@@ -652,6 +652,8 @@ class _InlineProviderExecutor:
         deadline: float | None,
         max_output_bytes: int,
     ) -> _ProviderResponseSnapshot:
+        if deadline is not None:
+            _raise_if_provider_deadline_expired(deadline)
         try:
             response = provider.invoke(request.value)
         except TimeoutError as error:
@@ -1368,23 +1370,6 @@ class ModelInvocation:
         attempt_id: str,
         deadline: float | None = None,
     ) -> object:
-        return self._invoke_json_with_final_fence(
-            request,
-            call_id=call_id,
-            attempt_id=attempt_id,
-            deadline=deadline,
-            final_deadline_fence=None,
-        )
-
-    def _invoke_json_with_final_fence(
-        self,
-        request: object,
-        *,
-        call_id: str,
-        attempt_id: str,
-        deadline: float | None,
-        final_deadline_fence: Callable[[], None] | None,
-    ) -> object:
         canonical_request = _canonical_json_request(request)
         try:
             response = self._provider_executor.execute(
@@ -1513,8 +1498,6 @@ class ModelInvocation:
                 raise _ModelInvocationDeadlineExceeded(
                     "logical invocation deadline expired"
                 )
-            if final_deadline_fence is not None:
-                final_deadline_fence()
         except _ModelInvocationDeadlineExceeded:
             self._usage_journal.finish(
                 call_id=call_id,
@@ -1626,21 +1609,11 @@ class RetryingModelInvocation:
                     )
                 attempt_number = logical_attempt.retry_state.attempt_number
                 attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
-                def final_deadline_fence() -> None:
-                    if (
-                        absolute_deadline is not None
-                        and time.monotonic() >= absolute_deadline
-                    ):
-                        raise _ModelInvocationDeadlineExceeded(
-                            "logical invocation deadline expired"
-                        )
-
-                output = self._attempt._invoke_json_with_final_fence(
+                output = self._attempt.invoke_json(
                     request,
                     call_id=call_id,
                     attempt_id=attempt_id,
                     deadline=absolute_deadline,
-                    final_deadline_fence=final_deadline_fence,
                 )
                 return LogicalInvocationResult(
                     output=output,

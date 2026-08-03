@@ -3070,6 +3070,68 @@ class ModelInvocationTests(unittest.TestCase):
                 max_attempts=1,
             )
 
+    def test_retrying_invocation_honors_public_attempt_override(self) -> None:
+        clock = _ControlledClock(now=90.0)
+        journal = _RecordingUsageJournal()
+
+        class CountingProvider:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            def invoke(self, request: object) -> ProviderResponse:
+                del request
+                self.call_count += 1
+                return ProviderResponse(
+                    output_text='{"source":"base"}',
+                    request_model="fake-primary-model",
+                    response_model="fake-primary-model",
+                    raw_usage={},
+                )
+
+        class PublicOverrideInvocation(ModelInvocation):
+            def __init__(self, provider: CountingProvider) -> None:
+                super().__init__(
+                    provider=provider,
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+                self.override_calls = 0
+                self.deadlines: list[float | None] = []
+
+            def invoke_json(
+                self,
+                request: object,
+                *,
+                call_id: str,
+                attempt_id: str,
+                deadline: float | None = None,
+            ) -> object:
+                del request, call_id, attempt_id
+                self.override_calls += 1
+                self.deadlines.append(deadline)
+                return {"source": "override"}
+
+        provider = CountingProvider()
+        attempt = PublicOverrideInvocation(provider)
+        invocation = RetryingModelInvocation(
+            attempt=attempt,
+            max_attempts=1,
+            max_wall_time_ms=100,
+        )
+
+        with patch.object(campaign_module, "time", clock):
+            result = invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-public-override",
+            )
+
+        self.assertEqual(attempt.override_calls, 1)
+        self.assertEqual(provider.call_count, 0)
+        self.assertEqual(attempt.deadlines, [90.1])
+        self.assertEqual(result, {"source": "override"})
+
     def test_retries_reuse_one_absolute_monotonic_deadline(self) -> None:
         clock = _ControlledClock(now=100.0)
         journal = _RecordingUsageJournal()
@@ -3093,9 +3155,8 @@ class ModelInvocationTests(unittest.TestCase):
             call_id: str,
             attempt_id: str,
             deadline: float | None = None,
-            final_deadline_fence: object = None,
         ) -> object:
-            del request, call_id, attempt_id, final_deadline_fence
+            del request, call_id, attempt_id
             deadlines.append(deadline)
             if len(deadlines) == 1:
                 raise ModelInvocationProviderError("retryable provider error")
@@ -3103,7 +3164,7 @@ class ModelInvocationTests(unittest.TestCase):
 
         with patch.object(campaign_module, "time", clock), patch.object(
             ModelInvocation,
-            "_invoke_json_with_final_fence",
+            "invoke_json",
             autospec=True,
             side_effect=invoke_attempt,
         ):
@@ -3183,6 +3244,56 @@ class ModelInvocationTests(unittest.TestCase):
         begin_events = [event for event in journal.events if event[0] == "begin"]
         self.assertEqual(len(begin_events), 1)
         self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.TIMEOUT)
+
+    def test_inline_expired_before_provider_never_invokes_provider(self) -> None:
+        deadline = 250.0
+        original_canonicalize = campaign_module._canonical_json_request
+
+        for scenario, start_time in (
+            ("preexpired", deadline),
+            ("canonicalization_crossed", deadline - 1.0),
+        ):
+            with self.subTest(scenario=scenario):
+                clock = _ControlledClock(now=start_time)
+                provider = _ClockAdvancingSuccessProvider(
+                    clock,
+                    advance_seconds=0.0,
+                )
+                journal = _RecordingUsageJournal()
+                invocation = ModelInvocation(
+                    provider=provider,
+                    usage_journal=journal,
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+
+                def canonicalize(request: object) -> object:
+                    canonical_request = original_canonicalize(request)
+                    if scenario == "canonicalization_crossed":
+                        clock.now = deadline
+                    return canonical_request
+
+                with patch.object(campaign_module, "time", clock), patch.object(
+                    campaign_module,
+                    "_canonical_json_request",
+                    side_effect=canonicalize,
+                ):
+                    with self.assertRaises(ModelInvocationTimeoutError):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-inline-{scenario}",
+                            attempt_id="attempt-001",
+                            deadline=deadline,
+                        )
+
+                self.assertEqual(provider.call_count, 0)
+                self.assertEqual(len(journal.events), 1)
+                event, envelope = journal.events[0]
+                self.assertEqual(event, "begin")
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+                self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
 
     def test_inline_late_success_is_rejected_once_at_the_shared_deadline(self) -> None:
         clock = _ControlledClock(now=300.0)
@@ -3287,14 +3398,18 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(outcomes, [InvocationOutcome.TIMEOUT])
         self.assertNotIn(InvocationOutcome.SUCCESS, outcomes)
 
-    def test_logical_final_fence_rejects_late_attempt_result_without_retry(
+    def test_public_attempt_final_fence_rejects_late_result_without_retry(
         self,
     ) -> None:
         clock = _ControlledClock(now=400.0)
         journal = _RecordingUsageJournal()
+        provider = _ClockAdvancingSuccessProvider(
+            clock,
+            advance_seconds=0.0,
+        )
         invocation = RetryingModelInvocation(
             attempt=ModelInvocation(
-                provider=_FakeProvider(),
+                provider=provider,
                 usage_journal=journal,
                 provider_name="fake",
                 profile="offline",
@@ -3303,37 +3418,49 @@ class ModelInvocationTests(unittest.TestCase):
             max_attempts=2,
             max_wall_time_ms=100,
         )
+        original_parse = campaign_module._parse_bounded_model_output
 
-        def return_after_deadline(
-            _attempt: ModelInvocation,
-            request: object,
+        def parse_after_deadline(
+            output_text: str,
             *,
-            call_id: str,
-            attempt_id: str,
-            deadline: float | None = None,
-            final_deadline_fence: object = None,
+            max_output_bytes: int,
         ) -> object:
-            del request, call_id, attempt_id
-            self.assertEqual(deadline, 400.1)
+            parsed = original_parse(
+                output_text,
+                max_output_bytes=max_output_bytes,
+            )
             clock.now = 400.1
-            self.assertIsNotNone(final_deadline_fence)
-            final_deadline_fence()  # type: ignore[operator]
-            raise AssertionError("deadline fence must reject the late result")
+            return parsed
 
         with patch.object(campaign_module, "time", clock), patch.object(
-            ModelInvocation,
-            "_invoke_json_with_final_fence",
-            autospec=True,
-            side_effect=return_after_deadline,
-        ) as invoke_attempt:
+            campaign_module,
+            "_parse_bounded_model_output",
+            side_effect=parse_after_deadline,
+        ) as parse_output:
             with self.assertRaises(ModelInvocationTimeoutError):
                 invocation.invoke_json(
                     {"prompt": "offline-only"},
-                    call_id="call-logical-final-fence",
+                    call_id="call-public-final-fence",
                 )
 
-        self.assertEqual(invoke_attempt.call_count, 1)
-        self.assertEqual(journal.events, [])
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(parse_output.call_count, 1)
+        self.assertEqual(len(journal.events), 2)
+        event, envelope = journal.events[0]
+        self.assertEqual(event, "begin")
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.outcome, InvocationOutcome.RESPONSE_RECEIVED)
+        self.assertEqual(
+            journal.events[1],
+            (
+                "finish",
+                (
+                    "call-public-final-fence",
+                    "call-public-final-fence-attempt-001",
+                    InvocationOutcome.TIMEOUT,
+                ),
+            ),
+        )
 
     def test_spawned_protocol_failure_is_accounted_once_without_retry(self) -> None:
         baseline_pids = _active_child_pids()
