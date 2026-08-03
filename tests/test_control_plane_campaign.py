@@ -3953,6 +3953,104 @@ class ModelInvocationTests(unittest.TestCase):
                         0 if phase == "begin" else 1,
                     )
 
+    def test_uncooperative_typed_journal_errors_preserve_identity_without_retry(
+        self,
+    ) -> None:
+        class MarkerWriteRejectingTimeoutError(ModelInvocationTimeoutError):
+            def __setattr__(self, name: str, value: object) -> None:
+                if name == campaign_module._USAGE_JOURNAL_ERROR_MARKER:
+                    raise AttributeError("ordinary marker writes are rejected")
+                super().__setattr__(name, value)
+
+        class MarkerReadRejectingInvalidResponseError(InvalidModelResponseError):
+            def __getattribute__(self, name: str) -> object:
+                if name == campaign_module._USAGE_JOURNAL_ERROR_MARKER:
+                    raise AttributeError("ordinary marker reads are rejected")
+                return super().__getattribute__(name)
+
+        cases = (
+            ("begin", MarkerWriteRejectingTimeoutError("journal begin failed")),
+            (
+                "finish",
+                MarkerReadRejectingInvalidResponseError("journal finish failed"),
+            ),
+        )
+        for phase, failure in cases:
+            with self.subTest(phase=phase, failure_type=type(failure).__name__):
+                class FailingJournal:
+                    def __init__(self) -> None:
+                        self.begin_count = 0
+                        self.finish_count = 0
+
+                    def begin(self, envelope: UsageEnvelope) -> None:
+                        del envelope
+                        self.begin_count += 1
+                        if phase == "begin":
+                            raise failure
+
+                    def finish(
+                        self,
+                        *,
+                        call_id: str,
+                        attempt_id: str,
+                        outcome: InvocationOutcome,
+                        deadline: float | None = None,
+                    ) -> InvocationOutcome:
+                        del call_id, attempt_id, deadline
+                        self.finish_count += 1
+                        if phase == "finish":
+                            raise failure
+                        return outcome
+
+                class CountingProvider:
+                    def __init__(self) -> None:
+                        self.call_count = 0
+
+                    def invoke(self, request: object) -> ProviderResponse:
+                        del request
+                        self.call_count += 1
+                        return ProviderResponse(
+                            output_text='{"ok":1}',
+                            request_model="fake-primary-model",
+                            response_model="fake-primary-model",
+                            raw_usage={},
+                        )
+
+                provider = CountingProvider()
+                journal = FailingJournal()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                    ),
+                    max_attempts=3,
+                )
+
+                with self.assertRaises(type(failure)) as caught:
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-uncooperative-journal-{phase}",
+                    )
+
+                self.assertIs(caught.exception, failure)
+                self.assertIs(type(caught.exception), type(failure))
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(journal.begin_count, 1)
+                self.assertEqual(
+                    journal.finish_count,
+                    0 if phase == "begin" else 1,
+                )
+
+        unmarked_provider_failure = MarkerReadRejectingInvalidResponseError(
+            "unmarked provider failure"
+        )
+        self.assertFalse(
+            campaign_module._is_usage_journal_error(unmarked_provider_failure)
+        )
+
     def test_retryable_typed_unknown_outcome_begin_error_is_not_retried(
         self,
     ) -> None:

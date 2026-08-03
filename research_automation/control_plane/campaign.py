@@ -85,18 +85,14 @@ class StreamingDisabledError(RuntimeError):
     """Raised when a provider returns an unsupported streamed response."""
 
 
-class _NonRetryableUsageJournalError(RuntimeError):
-    """Fallback when a journal exception cannot carry private provenance."""
-
-
 _USAGE_JOURNAL_ERROR_MARKER = "_control_plane_usage_journal_origin"
 
 
 def _is_usage_journal_error(error: BaseException) -> bool:
     try:
-        return getattr(error, _USAGE_JOURNAL_ERROR_MARKER, False) is True
-    except Exception:
-        return True
+        return object.__getattribute__(error, _USAGE_JOURNAL_ERROR_MARKER) is True
+    except AttributeError:
+        return False
 
 
 def _call_usage_journal(operation, /, *args: object, **kwargs: object) -> object:
@@ -104,13 +100,9 @@ def _call_usage_journal(operation, /, *args: object, **kwargs: object) -> object
         return operation(*args, **kwargs)
     except Exception as error:
         try:
-            setattr(error, _USAGE_JOURNAL_ERROR_MARKER, True)
-            if not _is_usage_journal_error(error):
-                raise AttributeError("journal provenance marker was not retained")
+            object.__setattr__(error, _USAGE_JOURNAL_ERROR_MARKER, True)
         except Exception:
-            raise _NonRetryableUsageJournalError(
-                "usage journal operation failed"
-            ) from error
+            pass
         raise
 
 
