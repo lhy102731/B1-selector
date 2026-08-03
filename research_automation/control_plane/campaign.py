@@ -10,7 +10,7 @@ import multiprocessing
 import pickle
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import Enum
@@ -636,7 +636,11 @@ def _snapshot_provider_response(
 
 
 class _InlineProviderExecutor:
-    """Execute directly; this remains the default for existing unit adapters."""
+    """Default direct execution for test-only, cooperative adapters.
+
+    Inline execution cannot preempt a running provider.  It only rejects work
+    after control returns and the caller's unchanged absolute deadline expired.
+    """
 
     __slots__ = ()
 
@@ -648,26 +652,33 @@ class _InlineProviderExecutor:
         deadline: float | None,
         max_output_bytes: int,
     ) -> _ProviderResponseSnapshot:
-        del deadline
         try:
             response = provider.invoke(request.value)
         except TimeoutError as error:
+            _raise_provider_deadline_if_expired_after_failure(deadline, error)
             raise _ProviderExecutorTimeout(
                 "provider invocation timed out"
             ) from error
         except Exception as error:
+            _raise_provider_deadline_if_expired_after_failure(deadline, error)
             raise _ProviderExecutorProviderError(
                 "provider invocation failed"
             ) from error
+        if deadline is not None:
+            _raise_if_provider_deadline_expired(deadline)
         try:
-            return _snapshot_provider_response(
+            snapshot = _snapshot_provider_response(
                 response,
                 max_output_bytes=max_output_bytes,
             )
         except Exception as error:
+            _raise_provider_deadline_if_expired_after_failure(deadline, error)
             raise _ProviderExecutorProtocolError(
                 "provider returned an invalid response"
             ) from error
+        if deadline is not None:
+            _raise_if_provider_deadline_expired(deadline)
+        return snapshot
 
 
 def _validate_json_request(
@@ -973,12 +984,42 @@ def _decode_provider_frame(frame: bytes) -> _ProviderResponseSnapshot:
 
 
 def _terminate_and_reap_worker(process: object, *, join_timeout: float) -> None:
-    process.terminate()
-    process.join(join_timeout)
-    if process.is_alive():
-        process.kill()
+    first_error: Exception | None = None
+    try:
+        process.terminate()
+    except Exception as error:
+        first_error = error
+    try:
         process.join(join_timeout)
-    if process.is_alive():
+    except Exception as error:
+        if first_error is None:
+            first_error = error
+    try:
+        worker_alive = process.is_alive()
+    except Exception as error:
+        if first_error is None:
+            first_error = error
+        worker_alive = True
+    if worker_alive:
+        try:
+            process.kill()
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+        try:
+            process.join(join_timeout)
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+    try:
+        worker_alive = process.is_alive()
+    except Exception as error:
+        if first_error is None:
+            first_error = error
+        worker_alive = True
+    if first_error is not None:
+        raise first_error
+    if worker_alive:
         raise RuntimeError("spawned provider worker survived kill escalation")
 
 
@@ -995,6 +1036,16 @@ def _raise_if_provider_deadline_expired(deadline: float) -> None:
         raise _ProviderExecutorDeadlineExceeded(
             "provider invocation deadline expired"
         )
+
+
+def _raise_provider_deadline_if_expired_after_failure(
+    deadline: float | None,
+    failure: Exception,
+) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise _ProviderExecutorDeadlineExceeded(
+            "provider invocation deadline expired"
+        ) from failure
 
 
 class SpawnedProviderExecutor:
@@ -1038,11 +1089,23 @@ class SpawnedProviderExecutor:
             raise _ProviderExecutorConfigurationError(
                 "SpawnedProviderExecutor requires a finite deadline"
             )
-        context = multiprocessing.get_context("spawn")
         _raise_if_provider_deadline_expired(deadline)
         try:
+            context = multiprocessing.get_context("spawn")
+        except Exception as error:
+            if time.monotonic() >= deadline:
+                raise _ProviderExecutorDeadlineExceeded(
+                    "provider invocation deadline expired"
+                ) from error
+            raise _ProviderExecutorProtocolError(
+                "provider worker context failed to construct"
+            ) from error
+        try:
+            _raise_if_provider_deadline_expired(deadline)
             receive_connection, send_connection = context.Pipe(duplex=False)
         except Exception as error:
+            if isinstance(error, _ProviderExecutorDeadlineExceeded):
+                raise
             if time.monotonic() >= deadline:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
@@ -1050,6 +1113,17 @@ class SpawnedProviderExecutor:
             raise _ProviderExecutorProtocolError(
                 "provider worker pipe failed to construct"
             ) from error
+        try:
+            _raise_if_provider_deadline_expired(deadline)
+        except _ProviderExecutorDeadlineExceeded as error:
+            cleanup_error: Exception | None = None
+            for connection in (receive_connection, send_connection):
+                close_error = _best_effort_close(connection)
+                if cleanup_error is None and close_error is not None:
+                    cleanup_error = close_error
+            if cleanup_error is not None:
+                raise error from cleanup_error
+            raise
         try:
             worker = context.Process(
                 target=_spawned_provider_worker,
@@ -1060,12 +1134,14 @@ class SpawnedProviderExecutor:
                     max_output_bytes,
                 ),
             )
-        except Exception as error:
+        except BaseException as error:
             cleanup_error: Exception | None = None
             for connection in (receive_connection, send_connection):
                 close_error = _best_effort_close(connection)
                 if cleanup_error is None and close_error is not None:
                     cleanup_error = close_error
+            if not isinstance(error, Exception):
+                raise
             if time.monotonic() >= deadline:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
@@ -1202,21 +1278,25 @@ class SpawnedProviderExecutor:
             if cleanup_error is None and close_error is not None:
                 cleanup_error = close_error
 
+        # Control-flow interrupts win after cleanup, including if cleanup
+        # crosses the deadline.  They are never provider retry signals.
+        if failure is not None and not isinstance(failure, Exception):
+            raise failure.with_traceback(failure_traceback)
         if time.monotonic() >= deadline:
             deadline_error = _ProviderExecutorDeadlineExceeded(
                 "provider invocation deadline expired"
             )
-            if failure is not None:
-                raise deadline_error from failure
             if cleanup_error is not None:
                 raise deadline_error from cleanup_error
+            if failure is not None:
+                raise deadline_error from failure
             raise deadline_error
-        if failure is not None:
-            raise failure.with_traceback(failure_traceback)
         if cleanup_error is not None:
             raise _ProviderExecutorProtocolError(
                 "provider worker cleanup failed"
             ) from cleanup_error
+        if failure is not None:
+            raise failure.with_traceback(failure_traceback)
         if result is None:
             raise _ProviderExecutorProtocolError(
                 "provider worker protocol failed"
@@ -1288,6 +1368,23 @@ class ModelInvocation:
         attempt_id: str,
         deadline: float | None = None,
     ) -> object:
+        return self._invoke_json_with_final_fence(
+            request,
+            call_id=call_id,
+            attempt_id=attempt_id,
+            deadline=deadline,
+            final_deadline_fence=None,
+        )
+
+    def _invoke_json_with_final_fence(
+        self,
+        request: object,
+        *,
+        call_id: str,
+        attempt_id: str,
+        deadline: float | None,
+        final_deadline_fence: Callable[[], None] | None,
+    ) -> object:
         canonical_request = _canonical_json_request(request)
         try:
             response = self._provider_executor.execute(
@@ -1296,6 +1393,8 @@ class ModelInvocation:
                 deadline=deadline,
                 max_output_bytes=self._max_output_bytes,
             )
+            if deadline is not None:
+                _raise_if_provider_deadline_expired(deadline)
             if type(response) is not _ProviderResponseSnapshot:
                 raise _ProviderExecutorProtocolError(
                     "provider executor returned an invalid snapshot"
@@ -1409,6 +1508,20 @@ class ModelInvocation:
                 outcome=InvocationOutcome.INVALID_JSON,
             )
             raise InvalidModelResponseError("provider response is not valid JSON") from error
+        try:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise _ModelInvocationDeadlineExceeded(
+                    "logical invocation deadline expired"
+                )
+            if final_deadline_fence is not None:
+                final_deadline_fence()
+        except _ModelInvocationDeadlineExceeded:
+            self._usage_journal.finish(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.TIMEOUT,
+            )
+            raise
         self._usage_journal.finish(
             call_id=call_id,
             attempt_id=attempt_id,
@@ -1513,11 +1626,21 @@ class RetryingModelInvocation:
                     )
                 attempt_number = logical_attempt.retry_state.attempt_number
                 attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
-                output = self._attempt.invoke_json(
+                def final_deadline_fence() -> None:
+                    if (
+                        absolute_deadline is not None
+                        and time.monotonic() >= absolute_deadline
+                    ):
+                        raise _ModelInvocationDeadlineExceeded(
+                            "logical invocation deadline expired"
+                        )
+
+                output = self._attempt._invoke_json_with_final_fence(
                     request,
                     call_id=call_id,
                     attempt_id=attempt_id,
                     deadline=absolute_deadline,
+                    final_deadline_fence=final_deadline_fence,
                 )
                 return LogicalInvocationResult(
                     output=output,
