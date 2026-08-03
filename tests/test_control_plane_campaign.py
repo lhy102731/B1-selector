@@ -600,6 +600,68 @@ class _TimeoutThenSuccessProvider:
         )
 
 
+class _SpawnTimeoutThenSuccessProvider:
+    def __init__(self, first_attempt_marker: str) -> None:
+        self.first_attempt_marker = first_attempt_marker
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        marker = Path(self.first_attempt_marker)
+        if not marker.exists():
+            marker.write_text(str(os.getpid()), encoding="ascii")
+            raise TimeoutError("first spawned provider attempt timed out")
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5},
+        )
+
+
+class _ExceptionThenSuccessProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        self.call_count += 1
+        if self.call_count == 1:
+            raise RuntimeError("first provider attempt failed")
+        return ProviderResponse(
+            output_text='{"status":"ok"}',
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={},
+        )
+
+
+class _InvalidJsonThenSuccessProvider:
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        self.call_count += 1
+        return ProviderResponse(
+            output_text=("{not-json" if self.call_count == 1 else '{"status":"ok"}'),
+            request_model="fake-primary-model",
+            response_model="fake-primary-model",
+            raw_usage={},
+        )
+
+
+class _SlowTimeoutProvider:
+    def __init__(self, delay_seconds: float) -> None:
+        self.delay_seconds = delay_seconds
+        self.call_count = 0
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        self.call_count += 1
+        time.sleep(self.delay_seconds)
+        raise TimeoutError("provider timed out after consuming the budget")
+
+
 class _StreamingThenSuccessProvider:
     def __init__(self) -> None:
         self.call_count = 0
@@ -2547,6 +2609,318 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(len(envelope.raw_usage_sha256), 64)
 
+    def test_retrying_invocation_accepts_positive_wall_time_budget(self) -> None:
+        journal = _RecordingUsageJournal()
+        attempt = ModelInvocation(
+            provider=_FakeProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        try:
+            invocation = RetryingModelInvocation(
+                attempt=attempt,
+                max_attempts=1,
+                max_wall_time_ms=100,
+            )
+        except TypeError as error:
+            self.fail(f"positive max_wall_time_ms was rejected: {error}")
+
+        self.assertIsInstance(invocation, RetryingModelInvocation)
+
+    def test_retrying_invocation_rejects_non_positive_integer_wall_time(self) -> None:
+        journal = _RecordingUsageJournal()
+        attempt = ModelInvocation(
+            provider=_FakeProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        for invalid in (0, -1, True, False, 1.5, "100"):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "max_wall_time_ms must be a positive integer",
+                ):
+                    RetryingModelInvocation(
+                        attempt=attempt,
+                        max_attempts=1,
+                        max_wall_time_ms=invalid,  # type: ignore[arg-type]
+                    )
+
+    def test_spawned_retrying_invocation_requires_wall_time_budget(self) -> None:
+        journal = _RecordingUsageJournal()
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "spawned provider retries require max_wall_time_ms",
+        ):
+            RetryingModelInvocation(
+                attempt=_spawned_invocation(_ChildPidProvider(), journal),
+                max_attempts=1,
+            )
+
+    def test_retries_reuse_one_absolute_monotonic_deadline(self) -> None:
+        journal = _RecordingUsageJournal()
+        deadlines: list[float | None] = []
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=_FakeProvider(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+            max_wall_time_ms=100,
+        )
+
+        def invoke_attempt(
+            _attempt: ModelInvocation,
+            request: object,
+            *,
+            call_id: str,
+            attempt_id: str,
+            deadline: float | None = None,
+        ) -> object:
+            del request, call_id, attempt_id
+            deadlines.append(deadline)
+            if len(deadlines) == 1:
+                raise ModelInvocationProviderError("retryable provider error")
+            return {"status": "ok"}
+
+        started = time.monotonic()
+        with patch.object(
+            ModelInvocation,
+            "invoke_json",
+            autospec=True,
+            side_effect=invoke_attempt,
+        ):
+            result = invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-shared-deadline",
+            )
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(len(deadlines), 2)
+        self.assertIsNotNone(deadlines[0])
+        self.assertEqual(deadlines[0], deadlines[1])
+        self.assertGreaterEqual(deadlines[0], started + 0.09)  # type: ignore[operator]
+        self.assertLess(deadlines[0], started + 0.5)  # type: ignore[operator]
+
+    def test_hard_deadline_is_terminal_without_phantom_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            baseline_pids = _active_child_pids()
+            marker = Path(temp_dir) / "logical-deadline-child.pid"
+            journal = _RecordingUsageJournal()
+            invocation = RetryingModelInvocation(
+                attempt=_spawned_invocation(
+                    _HangingProvider(str(marker)),
+                    journal,
+                ),
+                max_attempts=3,
+                max_wall_time_ms=1_000,
+            )
+            started = time.monotonic()
+
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "hang"},
+                    call_id="call-logical-deadline",
+                )
+
+            elapsed = time.monotonic() - started
+            self.assertLess(elapsed, 2.5)
+            child_pid = int(marker.read_text(encoding="ascii"))
+            self.assertFalse(
+                any(child.pid == child_pid for child in multiprocessing.active_children())
+            )
+            self.assertEqual(_active_child_pids() - baseline_pids, set())
+            begin_events = [event for event in journal.events if event[0] == "begin"]
+            self.assertEqual(len(begin_events), 1)
+            envelope = begin_events[0][1]
+            self.assertIsInstance(envelope, UsageEnvelope)
+            self.assertEqual(envelope.attempt_id, "call-logical-deadline-attempt-001")
+            self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_expired_budget_after_fast_timeout_prevents_next_attempt(self) -> None:
+        provider = _SlowTimeoutProvider(delay_seconds=0.05)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+            max_wall_time_ms=20,
+        )
+
+        with self.assertRaises(ModelInvocationTimeoutError):
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-expired-before-retry",
+            )
+
+        self.assertEqual(provider.call_count, 1)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.TIMEOUT)
+
+    def test_spawned_protocol_failure_is_accounted_once_without_retry(self) -> None:
+        baseline_pids = _active_child_pids()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_MalformedResponseProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=5_000,
+        )
+
+        with self.assertRaises(ModelInvocationProviderError):
+            invocation.invoke_json(
+                {"prompt": "malformed-response"},
+                call_id="call-terminal-protocol",
+            )
+
+        self.assertEqual(_active_child_pids() - baseline_pids, set())
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_executor_configuration_failure_is_not_retried_or_accounted(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=_FakeProvider(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module._InlineProviderExecutor,
+            "execute",
+            side_effect=campaign_module._ProviderExecutorConfigurationError(
+                "deterministic executor configuration failure"
+            ),
+        ) as execute:
+            with self.assertRaises(ValueError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-terminal-configuration",
+                )
+
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual(journal.events, [])
+
+    def test_preexpired_spawn_deadline_does_not_start_child(self) -> None:
+        context = _NoProcessContext()
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-preexpired-spawn",
+                    attempt_id="attempt-001",
+                    deadline=time.monotonic() - 1.0,
+                )
+
+        self.assertEqual(context.process_calls, 0)
+        self.assertEqual(len(journal.events), 1)
+        self.assertEqual(journal.events[0][1].outcome, InvocationOutcome.TIMEOUT)
+
+    def test_spawned_provider_timeout_retries_with_remaining_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            baseline_pids = _active_child_pids()
+            marker = Path(temp_dir) / "first-provider-timeout.pid"
+            journal = _RecordingUsageJournal()
+            invocation = RetryingModelInvocation(
+                attempt=_spawned_invocation(
+                    _SpawnTimeoutThenSuccessProvider(str(marker)),
+                    journal,
+                ),
+                max_attempts=2,
+                max_wall_time_ms=5_000,
+            )
+
+            result = invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-spawn-timeout-retry",
+            )
+
+            self.assertEqual(result, {"status": "ok"})
+            self.assertTrue(marker.exists())
+            self.assertEqual(_active_child_pids() - baseline_pids, set())
+            begin_events = [event for event in journal.events if event[0] == "begin"]
+            self.assertEqual(len(begin_events), 2)
+            self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.TIMEOUT)
+            self.assertEqual(begin_events[1][1].outcome, InvocationOutcome.RESPONSE_RECEIVED)
+
+    def test_provider_exception_retries_with_remaining_budget(self) -> None:
+        provider = _ExceptionThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+            max_wall_time_ms=1_000,
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-provider-exception-retry",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(provider.call_count, 2)
+
+    def test_invalid_json_retries_with_remaining_budget(self) -> None:
+        provider = _InvalidJsonThenSuccessProvider()
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=2,
+            max_wall_time_ms=1_000,
+        )
+
+        result = invocation.invoke_json(
+            {"prompt": "offline-only"},
+            call_id="call-invalid-json-retry",
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(provider.call_count, 2)
+
     def test_tenacity_owns_two_accounted_logical_attempts(self) -> None:
         provider = _TimeoutThenSuccessProvider()
         journal = _RecordingUsageJournal()
@@ -2559,6 +2933,7 @@ class ModelInvocationTests(unittest.TestCase):
                 request_model="fake-primary-model",
             ),
             max_attempts=2,
+            max_wall_time_ms=1_000,
         )
 
         result = invocation.invoke_json(
@@ -2616,6 +2991,7 @@ class ModelInvocationTests(unittest.TestCase):
                 request_model="fake-primary-model",
             ),
             max_attempts=3,
+            max_wall_time_ms=1_000,
         )
 
         with self.assertRaises(StreamingDisabledError):

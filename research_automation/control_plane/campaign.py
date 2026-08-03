@@ -15,7 +15,7 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import Enum
 from multiprocessing.reduction import ForkingPickler
-from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
+from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_none
 from typing import Protocol
 
 from .budget import _cost as _bounded_cost
@@ -69,12 +69,37 @@ class ModelInvocationTimeoutError(TimeoutError):
     """Raised after a timed-out provider attempt has been accounted for."""
 
 
+class _ModelInvocationDeadlineExceeded(ModelInvocationTimeoutError):
+    """Private terminal signal for an exhausted logical-call deadline."""
+
+
 class ModelInvocationProviderError(RuntimeError):
     """Raised after a provider exception has been accounted for."""
 
 
+class _ModelInvocationExecutorProtocolError(ModelInvocationProviderError):
+    """Private terminal signal for deterministic executor protocol failures."""
+
+
 class StreamingDisabledError(RuntimeError):
     """Raised when a provider returns an unsupported streamed response."""
+
+
+def _is_retryable_model_invocation_error(error: BaseException) -> bool:
+    return isinstance(
+        error,
+        (
+            InvalidModelResponseError,
+            ModelInvocationProviderError,
+            ModelInvocationTimeoutError,
+        ),
+    ) and not isinstance(
+        error,
+        (
+            _ModelInvocationDeadlineExceeded,
+            _ModelInvocationExecutorProtocolError,
+        ),
+    )
 
 
 class _ModelOutputBoundsError(ValueError):
@@ -82,7 +107,11 @@ class _ModelOutputBoundsError(ValueError):
 
 
 class _ProviderExecutorTimeout(TimeoutError):
-    """Internal signal that the one-attempt executor reached its deadline."""
+    """Internal signal that a provider reported its own fast timeout."""
+
+
+class _ProviderExecutorDeadlineExceeded(TimeoutError):
+    """Internal signal that the parent-enforced absolute deadline elapsed."""
 
 
 class _ProviderExecutorConfigurationError(ValueError):
@@ -1003,7 +1032,9 @@ class SpawnedProviderExecutor:
             )
         context = multiprocessing.get_context("spawn")
         if time.monotonic() >= deadline:
-            raise _ProviderExecutorTimeout("provider invocation timed out")
+            raise _ProviderExecutorDeadlineExceeded(
+                "provider invocation deadline expired"
+            )
         receive_connection, send_connection = context.Pipe(duplex=False)
         try:
             worker = context.Process(
@@ -1055,7 +1086,9 @@ class SpawnedProviderExecutor:
                     "provider worker protocol failed"
                 ) from error
             if not ready:
-                raise _ProviderExecutorTimeout("provider invocation timed out")
+                raise _ProviderExecutorDeadlineExceeded(
+                    "provider invocation deadline expired"
+                )
             try:
                 frame = receive_connection.recv_bytes(
                     maxlength=_MAX_PROVIDER_FRAME_BYTES
@@ -1066,7 +1099,9 @@ class SpawnedProviderExecutor:
                 ) from error
             worker.join(max(0.0, deadline - time.monotonic()))
             if worker.is_alive():
-                raise _ProviderExecutorTimeout("provider invocation timed out")
+                raise _ProviderExecutorDeadlineExceeded(
+                    "provider invocation deadline expired"
+                )
             worker_reaped = True
         finally:
             try:
@@ -1159,6 +1194,15 @@ class ModelInvocation:
                 )
         except _ProviderExecutorConfigurationError:
             raise
+        except _ProviderExecutorDeadlineExceeded as error:
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.TIMEOUT,
+            )
+            raise _ModelInvocationDeadlineExceeded(
+                "logical invocation deadline expired"
+            ) from error
         except TimeoutError as error:
             self._record_unknown_outcome(
                 call_id=call_id,
@@ -1166,6 +1210,15 @@ class ModelInvocation:
                 outcome=InvocationOutcome.TIMEOUT,
             )
             raise ModelInvocationTimeoutError("provider invocation timed out") from error
+        except _ProviderExecutorProtocolError as error:
+            self._record_unknown_outcome(
+                call_id=call_id,
+                attempt_id=attempt_id,
+                outcome=InvocationOutcome.EXCEPTION,
+            )
+            raise _ModelInvocationExecutorProtocolError(
+                "provider executor protocol failed"
+            ) from error
         except Exception as error:
             self._record_unknown_outcome(
                 call_id=call_id,
@@ -1281,15 +1334,33 @@ class ModelInvocation:
 class RetryingModelInvocation:
     """Run bounded logical attempts; provider adapters remain single-call only."""
 
-    __slots__ = ("_attempt", "_max_attempts")
+    __slots__ = ("_attempt", "_max_attempts", "_max_wall_time_ms")
 
-    def __init__(self, *, attempt: ModelInvocation, max_attempts: int) -> None:
+    def __init__(
+        self,
+        *,
+        attempt: ModelInvocation,
+        max_attempts: int,
+        max_wall_time_ms: int | None = None,
+    ) -> None:
         if not isinstance(attempt, ModelInvocation):
             raise TypeError("attempt must be a ModelInvocation")
         if type(max_attempts) is not int or not 1 <= max_attempts <= 100:
             raise ValueError("max_attempts must be an integer from 1 through 100")
+        if max_wall_time_ms is not None and (
+            type(max_wall_time_ms) is not int or max_wall_time_ms <= 0
+        ):
+            raise ValueError("max_wall_time_ms must be a positive integer")
+        if (
+            type(attempt._provider_executor) is SpawnedProviderExecutor
+            and max_wall_time_ms is None
+        ):
+            raise ValueError(
+                "spawned provider retries require max_wall_time_ms"
+            )
         self._attempt = attempt
         self._max_attempts = max_attempts
+        self._max_wall_time_ms = max_wall_time_ms
 
     def invoke_json(self, request: object, *, call_id: str) -> object:
         return self.invoke_json_with_receipt(
@@ -1303,26 +1374,33 @@ class RetryingModelInvocation:
         *,
         call_id: str,
     ) -> LogicalInvocationResult:
+        absolute_deadline = (
+            None
+            if self._max_wall_time_ms is None
+            else time.monotonic() + (self._max_wall_time_ms / 1000.0)
+        )
         retrying = Retrying(
             stop=stop_after_attempt(self._max_attempts),
             wait=wait_none(),
-            retry=retry_if_exception_type(
-                (
-                    InvalidModelResponseError,
-                    ModelInvocationProviderError,
-                    ModelInvocationTimeoutError,
-                )
-            ),
+            retry=retry_if_exception(_is_retryable_model_invocation_error),
             reraise=True,
         )
         for logical_attempt in retrying:
             with logical_attempt:
+                if (
+                    absolute_deadline is not None
+                    and time.monotonic() >= absolute_deadline
+                ):
+                    raise _ModelInvocationDeadlineExceeded(
+                        "logical invocation deadline expired"
+                    )
                 attempt_number = logical_attempt.retry_state.attempt_number
                 attempt_id = f"{call_id}-attempt-{attempt_number:03d}"
                 output = self._attempt.invoke_json(
                     request,
                     call_id=call_id,
                     attempt_id=attempt_id,
+                    deadline=absolute_deadline,
                 )
                 return LogicalInvocationResult(
                     output=output,
