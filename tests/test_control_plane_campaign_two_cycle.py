@@ -36,6 +36,7 @@ from tests.test_control_plane_campaign_controller import (
     _FAKE_CALL_LIMITS,
     _FakeMonotonicClock,
 )
+from tests import test_control_plane_campaign_controller as controller_fixtures
 from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
@@ -50,7 +51,7 @@ _BUDGET_LIMITS = CampaignBudgetLimits(
     max_input_tokens=200,
     max_output_tokens=100,
     max_cost="2",
-    max_wall_time_ms=200,
+    max_wall_time_ms=_FAKE_CALL_LIMITS.max_wall_time_ms * 2,
     max_tool_attempts=4,
 )
 _RESERVATION_LIMITS = CycleReservationLimits(
@@ -58,7 +59,7 @@ _RESERVATION_LIMITS = CycleReservationLimits(
     max_input_tokens=20,
     max_output_tokens=10,
     max_cost="0.1",
-    max_wall_time_ms=10,
+    max_wall_time_ms=_FAKE_CALL_LIMITS.max_wall_time_ms,
     max_tool_attempts=2,
 )
 
@@ -79,6 +80,39 @@ def _execution_spec_and_member(prompt: object):
 
 
 class OfflineTwoCycleProofTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._provider_call_counter_paths_before_test = set(
+            controller_fixtures._PROVIDER_CALL_COUNTER_PATHS
+        )
+        self.addCleanup(self._cleanup_owned_provider_call_counters)
+
+    def _cleanup_owned_provider_call_counters(self) -> None:
+        owned_paths = (
+            set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS)
+            - self._provider_call_counter_paths_before_test
+        )
+        for path in owned_paths:
+            path.unlink(missing_ok=True)
+        controller_fixtures._PROVIDER_CALL_COUNTER_PATHS.difference_update(
+            owned_paths
+        )
+
+    def test_provider_call_counters_are_owned_by_test_instance(self) -> None:
+        paths_before = set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS)
+        _EvidenceArtifactBoundFakeProvider()
+        owned_paths = (
+            set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS) - paths_before
+        )
+
+        self.assertEqual(len(owned_paths), 1)
+        self.doCleanups()
+
+        self.assertEqual(
+            controller_fixtures._PROVIDER_CALL_COUNTER_PATHS,
+            paths_before,
+        )
+        self.assertTrue(all(not path.exists() for path in owned_paths))
+
     def test_committed_cycle_one_learning_enters_recovered_cycle_two_context(
         self,
     ) -> None:
