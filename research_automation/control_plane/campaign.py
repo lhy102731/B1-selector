@@ -982,11 +982,19 @@ def _terminate_and_reap_worker(process: object, *, join_timeout: float) -> None:
         raise RuntimeError("spawned provider worker survived kill escalation")
 
 
-def _close_process(process: object) -> None:
+def _best_effort_close(resource: object) -> Exception | None:
     try:
-        process.close()
-    except (AttributeError, ValueError):
-        pass
+        resource.close()
+    except Exception as error:
+        return error
+    return None
+
+
+def _raise_if_provider_deadline_expired(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise _ProviderExecutorDeadlineExceeded(
+            "provider invocation deadline expired"
+        )
 
 
 class SpawnedProviderExecutor:
@@ -1031,10 +1039,7 @@ class SpawnedProviderExecutor:
                 "SpawnedProviderExecutor requires a finite deadline"
             )
         context = multiprocessing.get_context("spawn")
-        if time.monotonic() >= deadline:
-            raise _ProviderExecutorDeadlineExceeded(
-                "provider invocation deadline expired"
-            )
+        _raise_if_provider_deadline_expired(deadline)
         try:
             receive_connection, send_connection = context.Pipe(duplex=False)
         except Exception as error:
@@ -1058,11 +1063,9 @@ class SpawnedProviderExecutor:
         except Exception as error:
             cleanup_error: Exception | None = None
             for connection in (receive_connection, send_connection):
-                try:
-                    connection.close()
-                except Exception as close_error:
-                    if cleanup_error is None:
-                        cleanup_error = close_error
+                close_error = _best_effort_close(connection)
+                if cleanup_error is None and close_error is not None:
+                    cleanup_error = close_error
             if time.monotonic() >= deadline:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
@@ -1070,75 +1073,155 @@ class SpawnedProviderExecutor:
             raise _ProviderExecutorProtocolError(
                 "provider worker failed to construct"
             ) from (error if cleanup_error is None else cleanup_error)
-        started = False
-        if time.monotonic() >= deadline:
-            receive_connection.close()
-            send_connection.close()
-            _close_process(worker)
-            raise _ProviderExecutorDeadlineExceeded(
-                "provider invocation deadline expired"
-            )
-        try:
-            worker.start()
-            started = True
-        except Exception as error:
-            receive_connection.close()
-            send_connection.close()
-            if getattr(worker, "pid", None) is not None:
-                try:
-                    _terminate_and_reap_worker(
-                        worker,
-                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
-                    )
-                finally:
-                    _close_process(worker)
-            else:
-                _close_process(worker)
-            raise _ProviderExecutorProtocolError(
-                "provider worker failed to start"
-            ) from error
-        finally:
-            if started:
-                send_connection.close()
 
+        worker_started = False
         worker_reaped = False
+        send_connection_closed = False
+        result: _ProviderResponseSnapshot | None = None
+        failure: BaseException | None = None
+        failure_traceback = None
         try:
+            _raise_if_provider_deadline_expired(deadline)
+            try:
+                worker.start()
+                worker_started = True
+            except Exception as error:
+                worker_started = getattr(worker, "pid", None) is not None
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
+                raise _ProviderExecutorProtocolError(
+                    "provider worker failed to start"
+                ) from error
+            _raise_if_provider_deadline_expired(deadline)
+
+            try:
+                send_connection.close()
+                send_connection_closed = True
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
+                raise _ProviderExecutorProtocolError(
+                    "provider worker protocol failed"
+                ) from error
+            _raise_if_provider_deadline_expired(deadline)
+
             remaining = max(0.0, deadline - time.monotonic())
             try:
                 ready = receive_connection.poll(remaining)
             except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
                 raise _ProviderExecutorProtocolError(
                     "provider worker protocol failed"
                 ) from error
+            _raise_if_provider_deadline_expired(deadline)
             if not ready:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
                 )
+
             try:
                 frame = receive_connection.recv_bytes(
                     maxlength=_MAX_PROVIDER_FRAME_BYTES
                 )
             except (EOFError, OSError) as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
                 raise _ProviderExecutorProtocolError(
                     "provider worker protocol failed"
                 ) from error
-            worker.join(max(0.0, deadline - time.monotonic()))
-            if worker.is_alive():
+            _raise_if_provider_deadline_expired(deadline)
+
+            try:
+                worker.join(max(0.0, deadline - time.monotonic()))
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
+                raise _ProviderExecutorProtocolError(
+                    "provider worker protocol failed"
+                ) from error
+            _raise_if_provider_deadline_expired(deadline)
+            try:
+                worker_alive = worker.is_alive()
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
+                raise _ProviderExecutorProtocolError(
+                    "provider worker protocol failed"
+                ) from error
+            _raise_if_provider_deadline_expired(deadline)
+            if worker_alive:
                 raise _ProviderExecutorDeadlineExceeded(
                     "provider invocation deadline expired"
                 )
             worker_reaped = True
-        finally:
+
             try:
-                if not worker_reaped:
-                    _terminate_and_reap_worker(
-                        worker,
-                        join_timeout=_WORKER_REAP_JOIN_SECONDS,
-                    )
-            finally:
-                _close_process(worker)
-                receive_connection.close()
-        return _decode_provider_frame(frame)
+                result = _decode_provider_frame(frame)
+            except Exception as error:
+                if time.monotonic() >= deadline:
+                    raise _ProviderExecutorDeadlineExceeded(
+                        "provider invocation deadline expired"
+                    ) from error
+                raise
+            _raise_if_provider_deadline_expired(deadline)
+        except BaseException as error:
+            failure = error
+            failure_traceback = error.__traceback__
+
+        cleanup_error: Exception | None = None
+        worker_may_have_started = (
+            worker_started or getattr(worker, "pid", None) is not None
+        )
+        if worker_may_have_started and not worker_reaped:
+            try:
+                _terminate_and_reap_worker(
+                    worker,
+                    join_timeout=_WORKER_REAP_JOIN_SECONDS,
+                )
+            except Exception as error:
+                cleanup_error = error
+        for resource in (worker, receive_connection):
+            close_error = _best_effort_close(resource)
+            if cleanup_error is None and close_error is not None:
+                cleanup_error = close_error
+        if not send_connection_closed:
+            close_error = _best_effort_close(send_connection)
+            if cleanup_error is None and close_error is not None:
+                cleanup_error = close_error
+
+        if time.monotonic() >= deadline:
+            deadline_error = _ProviderExecutorDeadlineExceeded(
+                "provider invocation deadline expired"
+            )
+            if failure is not None:
+                raise deadline_error from failure
+            if cleanup_error is not None:
+                raise deadline_error from cleanup_error
+            raise deadline_error
+        if failure is not None:
+            raise failure.with_traceback(failure_traceback)
+        if cleanup_error is not None:
+            raise _ProviderExecutorProtocolError(
+                "provider worker cleanup failed"
+            ) from cleanup_error
+        if result is None:
+            raise _ProviderExecutorProtocolError(
+                "provider worker protocol failed"
+            )
+        return result
 
 
 class ModelInvocation:
@@ -1228,7 +1311,7 @@ class ModelInvocation:
             raise _ModelInvocationDeadlineExceeded(
                 "logical invocation deadline expired"
             ) from error
-        except TimeoutError as error:
+        except _ProviderExecutorTimeout as error:
             self._record_unknown_outcome(
                 call_id=call_id,
                 attempt_id=attempt_id,

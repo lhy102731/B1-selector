@@ -427,6 +427,160 @@ class _PollFailureContext:
         return self.process
 
 
+class _LifecycleFenceConnection:
+    def __init__(
+        self,
+        *,
+        actions: list[object],
+        name: str,
+        clock: _ControlledClock,
+        deadline: float,
+        cross_deadline_at: str | None,
+        frame: bytes | None = None,
+        fail_first_close: bool = False,
+    ) -> None:
+        self._actions = actions
+        self._name = name
+        self._clock = clock
+        self._deadline = deadline
+        self._cross_deadline_at = cross_deadline_at
+        self._frame = frame
+        self._fail_first_close = fail_first_close
+        self.process: _LifecycleFenceProcess | None = None
+        self.close_calls = 0
+        self.closed = False
+
+    def _cross_deadline(self, phase: str) -> None:
+        if self._cross_deadline_at == phase:
+            self._clock.now = self._deadline
+
+    def poll(self, timeout: float) -> bool:
+        self._actions.append(("receive.poll", timeout))
+        self._cross_deadline("poll")
+        return True
+
+    def recv_bytes(self, *, maxlength: int) -> bytes:
+        self._actions.append(("receive.recv_bytes", maxlength))
+        self._cross_deadline("recv")
+        if self._frame is None:
+            raise AssertionError("receive frame was not configured")
+        if self.process is not None:
+            self.process._alive = False
+        return self._frame
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self._actions.append(f"{self._name}.close")
+        if self._fail_first_close and self.close_calls == 1:
+            raise OSError("synthetic parent send close failure")
+        self._cross_deadline(f"{self._name}_close")
+        self.closed = True
+
+
+class _LifecycleFenceProcess:
+    pid = None
+
+    def __init__(
+        self,
+        *,
+        actions: list[object],
+        clock: _ControlledClock,
+        deadline: float,
+        cross_deadline_at: str | None,
+    ) -> None:
+        self._actions = actions
+        self._clock = clock
+        self._deadline = deadline
+        self._cross_deadline_at = cross_deadline_at
+        self._alive = False
+        self.closed = False
+        self.terminate_calls = 0
+        self.kill_calls = 0
+
+    def _cross_deadline(self, phase: str) -> None:
+        if self._cross_deadline_at == phase:
+            self._clock.now = self._deadline
+
+    def start(self) -> None:
+        self._actions.append("process.start")
+        self.pid = 12345
+        self._alive = True
+        self._cross_deadline("start")
+
+    def terminate(self) -> None:
+        self._actions.append("process.terminate")
+        self.terminate_calls += 1
+        self._alive = False
+
+    def join(self, timeout: float | None = None) -> None:
+        self._actions.append(("process.join", timeout))
+        self._cross_deadline("join")
+
+    def is_alive(self) -> bool:
+        self._actions.append("process.is_alive")
+        self._cross_deadline("is_alive")
+        return self._alive
+
+    def kill(self) -> None:
+        self._actions.append("process.kill")
+        self.kill_calls += 1
+        self._alive = False
+
+    def close(self) -> None:
+        self._actions.append("process.close")
+        self.closed = True
+
+
+class _LifecycleFenceContext:
+    def __init__(
+        self,
+        *,
+        clock: _ControlledClock,
+        deadline: float,
+        cross_deadline_at: str | None = None,
+        fail_first_send_close: bool = False,
+    ) -> None:
+        self.actions: list[object] = []
+        snapshot = campaign_module._snapshot_provider_response(
+            _ChildPidProvider().invoke({"prompt": "late-response"}),
+            max_output_bytes=campaign_module._MAX_MODEL_OUTPUT_BYTES,
+        )
+        self.receive = _LifecycleFenceConnection(
+            actions=self.actions,
+            name="receive",
+            clock=clock,
+            deadline=deadline,
+            cross_deadline_at=cross_deadline_at,
+            frame=campaign_module._bounded_response_frame(snapshot),
+        )
+        self.send = _LifecycleFenceConnection(
+            actions=self.actions,
+            name="send",
+            clock=clock,
+            deadline=deadline,
+            cross_deadline_at=cross_deadline_at,
+            fail_first_close=fail_first_send_close,
+        )
+        self.process = _LifecycleFenceProcess(
+            actions=self.actions,
+            clock=clock,
+            deadline=deadline,
+            cross_deadline_at=cross_deadline_at,
+        )
+        self.receive.process = self.process
+
+    def Pipe(
+        self, *, duplex: bool
+    ) -> tuple[_LifecycleFenceConnection, _LifecycleFenceConnection]:
+        if duplex:
+            raise AssertionError("spawn boundary pipe must be one-way")
+        return self.receive, self.send
+
+    def Process(self, *args: object, **kwargs: object) -> _LifecycleFenceProcess:
+        del args, kwargs
+        return self.process
+
+
 class _OutputTextProvider:
     def __init__(self, output_text: str) -> None:
         self._output_text = output_text
@@ -2961,7 +3115,11 @@ class ModelInvocationTests(unittest.TestCase):
             campaign_module.multiprocessing,
             "get_context",
             return_value=context,
-        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+        ), patch.object(
+            campaign_module.time,
+            "monotonic",
+            side_effect=clock.monotonic,
+        ):
             with self.assertRaises(ModelInvocationTimeoutError):
                 invocation.invoke_json(
                     {"prompt": "offline-only"},
@@ -3076,6 +3234,202 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
 
+    def test_raw_executor_timeout_is_terminal_protocol_error_without_retry(self) -> None:
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=_FakeProvider(),
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module._InlineProviderExecutor,
+            "execute",
+            side_effect=TimeoutError("undeclared executor timeout"),
+        ) as execute:
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-terminal-raw-executor-timeout",
+                )
+
+        self.assertEqual(execute.call_count, 1)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_parent_send_close_failure_reaps_worker_and_closes_all_resources(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(
+            clock=clock,
+            deadline=deadline,
+            fail_first_send_close=True,
+        )
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-parent-send-close-failure",
+                )
+
+        self.assertGreaterEqual(context.process.terminate_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertGreaterEqual(context.send.close_calls, 2)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
+    def test_partial_start_failure_with_pid_reaps_and_closes_worker(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        def fail_start_after_pid() -> None:
+            context.actions.append("process.start")
+            context.process.pid = 12345
+            context.process._alive = True
+            raise OSError("synthetic partial start failure")
+
+        context.process.start = fail_start_after_pid  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(
+            campaign_module.time,
+            "monotonic",
+            side_effect=clock.monotonic,
+        ):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-partial-start-failure",
+                )
+
+        self.assertGreaterEqual(context.process.terminate_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        self.assertEqual(begin_events[0][1].outcome, InvocationOutcome.EXCEPTION)
+
+    def test_partial_start_interrupt_with_pid_still_reaps_worker(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+
+        def interrupt_start_after_pid() -> None:
+            context.actions.append("process.start")
+            context.process.pid = 12345
+            context.process._alive = True
+            raise KeyboardInterrupt("synthetic partial start interruption")
+
+        context.process.start = interrupt_start_after_pid  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(
+            campaign_module.time,
+            "monotonic",
+            side_effect=clock.monotonic,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-partial-start-interrupt",
+                    attempt_id="attempt-001",
+                    deadline=deadline,
+                )
+
+        self.assertGreaterEqual(context.process.terminate_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(journal.events, [])
+
+    def test_final_process_close_error_does_not_skip_remaining_cleanup(self) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+        journal = _RecordingUsageJournal()
+        invocation = RetryingModelInvocation(
+            attempt=_spawned_invocation(_ChildPidProvider(), journal),
+            max_attempts=3,
+            max_wall_time_ms=1_000,
+        )
+
+        def fail_process_close() -> None:
+            context.actions.append("process.close")
+            raise OSError("synthetic final process close failure")
+
+        context.process.close = fail_process_close  # type: ignore[method-assign]
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(
+            campaign_module.time,
+            "monotonic",
+            side_effect=clock.monotonic,
+        ):
+            with self.assertRaises(ModelInvocationProviderError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-final-process-close-failure",
+                )
+
+        self.assertIn("process.close", context.actions)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertFalse(context.process._alive)
+        begin_events = [event for event in journal.events if event[0] == "begin"]
+        self.assertEqual(len(begin_events), 1)
+        envelope = begin_events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.EXCEPTION)
+
     def test_executor_configuration_failure_is_not_retried_or_accounted(self) -> None:
         journal = _RecordingUsageJournal()
         invocation = RetryingModelInvocation(
@@ -3164,6 +3518,141 @@ class ModelInvocationTests(unittest.TestCase):
         self.assertEqual(envelope.attempt_id, "attempt-001")
         self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
         self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_deadline_crossed_during_start_reaps_without_polling_or_receiving(
+        self,
+    ) -> None:
+        deadline = 10.0
+        clock = _ControlledClock(now=9.0)
+        context = _LifecycleFenceContext(
+            clock=clock,
+            deadline=deadline,
+            cross_deadline_at="start",
+        )
+        journal = _RecordingUsageJournal()
+        invocation = _spawned_invocation(_ChildPidProvider(), journal)
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ), patch.object(campaign_module.time, "monotonic", side_effect=clock.monotonic):
+            with self.assertRaises(ModelInvocationTimeoutError):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-deadline-during-start",
+                    attempt_id="attempt-001",
+                    deadline=deadline,
+                )
+
+        action_names = [
+            action[0] if type(action) is tuple else action
+            for action in context.actions
+        ]
+        self.assertNotIn("receive.poll", action_names)
+        self.assertNotIn(
+            "receive.recv_bytes",
+            action_names,
+        )
+        self.assertGreaterEqual(context.process.terminate_calls, 1)
+        self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
+        self.assertEqual(len(journal.events), 1)
+        envelope = journal.events[0][1]
+        self.assertIsInstance(envelope, UsageEnvelope)
+        self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+        self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_late_ready_response_is_rejected_after_each_blocking_phase(self) -> None:
+        for phase in ("send_close", "poll", "recv", "join", "is_alive"):
+            with self.subTest(phase=phase):
+                deadline = 10.0
+                clock = _ControlledClock(now=9.0)
+                context = _LifecycleFenceContext(
+                    clock=clock,
+                    deadline=deadline,
+                    cross_deadline_at=phase,
+                )
+                journal = _RecordingUsageJournal()
+                invocation = _spawned_invocation(_ChildPidProvider(), journal)
+
+                with patch.object(
+                    campaign_module.multiprocessing,
+                    "get_context",
+                    return_value=context,
+                ), patch.object(
+                    campaign_module.time,
+                    "monotonic",
+                    side_effect=clock.monotonic,
+                ):
+                    with self.assertRaises(ModelInvocationTimeoutError):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-deadline-during-{phase}",
+                            attempt_id="attempt-001",
+                            deadline=deadline,
+                        )
+
+                self.assertFalse(context.process._alive)
+                self.assertTrue(context.process.closed)
+                self.assertTrue(context.receive.closed)
+                self.assertTrue(context.send.closed)
+                self.assertEqual(len(journal.events), 1)
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+                self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_late_response_is_rejected_when_decode_crosses_deadline(self) -> None:
+        for decode_outcome in ("response", "protocol_error"):
+            with self.subTest(decode_outcome=decode_outcome):
+                deadline = 10.0
+                clock = _ControlledClock(now=9.0)
+                context = _LifecycleFenceContext(clock=clock, deadline=deadline)
+                journal = _RecordingUsageJournal()
+                invocation = _spawned_invocation(_ChildPidProvider(), journal)
+                decode_provider_frame = campaign_module._decode_provider_frame
+
+                def decode_after_deadline(frame: bytes) -> object:
+                    clock.now = deadline
+                    if decode_outcome == "protocol_error":
+                        raise campaign_module._ProviderExecutorProtocolError(
+                            "synthetic late decode failure"
+                        )
+                    return decode_provider_frame(frame)
+
+                with patch.object(
+                    campaign_module.multiprocessing,
+                    "get_context",
+                    return_value=context,
+                ), patch.object(
+                    campaign_module.time,
+                    "monotonic",
+                    side_effect=clock.monotonic,
+                ), patch.object(
+                    campaign_module,
+                    "_decode_provider_frame",
+                    side_effect=decode_after_deadline,
+                ):
+                    with self.assertRaises(ModelInvocationTimeoutError):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id="call-deadline-during-decode",
+                            attempt_id="attempt-001",
+                            deadline=deadline,
+                        )
+
+                self.assertFalse(context.process._alive)
+                self.assertTrue(context.process.closed)
+                self.assertTrue(context.receive.closed)
+                self.assertTrue(context.send.closed)
+                self.assertEqual(len(journal.events), 1)
+                envelope = journal.events[0][1]
+                self.assertIsInstance(envelope, UsageEnvelope)
+                self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
+                self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
 
     def test_spawned_provider_timeout_retries_with_remaining_budget(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
