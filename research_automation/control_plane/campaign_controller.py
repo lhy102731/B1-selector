@@ -70,7 +70,7 @@ from .campaign_lifecycle import (
     OperationalCampaignLifecycle,
     _CYCLE_TRANSITIONED,
 )
-from .memory import CommittedLearningLedgerReader
+from .memory import ClaimScope, CommittedLearningLedgerReader, ScopeMatch
 from .campaign_roster import (
     OperationalRosterJournal,
     RosterCompletion,
@@ -3949,6 +3949,59 @@ class OperationalCampaignController:
         ):
             raise CampaignJournalError(
                 "runner protocol conflicts with frozen Cycle"
+            )
+        try:
+            _, work_item = self._replay_work_item(
+                cycle_id=cycle_id,
+                events=self._work_item_events_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                ),
+            )
+            proposal = work_item.get("proposal")
+            if not isinstance(proposal, Mapping):
+                raise ValueError("stored Campaign proposal is invalid")
+            if (
+                _controller_sha256(
+                    b"control_plane.campaign_proposal.v1",
+                    proposal,
+                    "stored Campaign proposal",
+                )
+                != frozen.proposal_sha256
+            ):
+                raise ValueError(
+                    "stored Campaign proposal conflicts with frozen Cycle"
+                )
+            proposal_scope = ClaimScope.from_mapping(proposal.get("scope"))
+            claim = artifact.get("claim")
+            if not isinstance(claim, Mapping):
+                raise ValueError("runner claim is missing")
+            claim_scope_text = claim.get("scope")
+            if type(claim_scope_text) is not str:
+                raise ValueError("runner claim scope is missing")
+            claim_scope_value = json.loads(claim_scope_text)
+            if (
+                _canonical_json_text(claim_scope_value, "runner claim scope")
+                != claim_scope_text
+            ):
+                raise ValueError("runner claim scope is not canonical")
+            claim_scope = ClaimScope.from_mapping(claim_scope_value)
+        except (
+            TypeError,
+            ValueError,
+            UnicodeError,
+            RecursionError,
+            OverflowError,
+        ) as error:
+            raise CampaignJournalError(
+                "runner claim scope conflicts with frozen Cycle"
+            ) from error
+        if claim_scope.classify_proposal(proposal_scope) not in {
+            ScopeMatch.EXACT,
+            ScopeMatch.SUBSET,
+        }:
+            raise CampaignJournalError(
+                "runner claim scope conflicts with frozen Cycle"
             )
         events = self._learning_commit_events_in_transaction(
             connection,

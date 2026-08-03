@@ -41,7 +41,24 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
         from research_automation.control_plane import evidence_learning as module
         from research_automation.control_plane.task_reports import build_task_report_v2
 
-        claim = {"kind": "NEGATIVE"} if claim is None else claim
+        if claim is None:
+            claim = {
+                "kind": "NEGATIVE",
+                "scope": canonical_bytes(
+                    {
+                        "mechanisms": ["volume-contraction-rebound"],
+                        "usage_modes": ["factor-candidate"],
+                        "market_regimes": ["all"],
+                        "time_windows": [
+                            {"start": "2020-01-01", "end": "2026-12-31"}
+                        ],
+                        "universes": ["a-share"],
+                        "liquidity_buckets": ["production-minimum"],
+                        "label_protocol_families": ["rolling-forward-v1"],
+                        "generation_families": ["generation-1"],
+                    }
+                ).decode("utf-8"),
+            }
         protocol = (
             {"label": "signal-day", "embargo_days": 5}
             if protocol is None

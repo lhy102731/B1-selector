@@ -105,6 +105,14 @@ def _synthetic_protocol() -> dict[str, object]:
     return _protocol().model_dump(mode="json")
 
 
+def _synthetic_claim_scope_text(*, generation: str = "generation-1") -> str:
+    return json.dumps(
+        _scope(generation=generation),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _synthetic_protocol_with_notes(notes: str) -> dict[str, object]:
     payload = _synthetic_protocol()
     payload["metadata"]["notes"] = notes
@@ -525,7 +533,10 @@ class _EligibleEvidenceArtifactBoundFakeProvider(_BoundFakeProvider):
                 '"artifact_refs":[{"ref":"fixtures/result.json",'
                 '"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}],'
                 '"claim":{"kind":"NEGATIVE",'
-                '"summary":"Synthetic eligible finding."},'
+                '"summary":"Synthetic eligible finding.",'
+                '"scope":'
+                + json.dumps(_synthetic_claim_scope_text())
+                + '},'
                 '"executed_protocol":'
                 + json.dumps(
                     self._executed_protocol,
@@ -789,6 +800,7 @@ def _settled_eligible_learning(
     claim = {
         "kind": "NEGATIVE",
         "summary": "Synthetic eligible finding.",
+        "scope": _synthetic_claim_scope_text(),
     }
     packet_hash = "f" * 64
     controller, execution, member, usage = _completed_evidence_model_call(
@@ -3446,6 +3458,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
 
         with _authorized_campaign(campaign_id) as (root, grant, journal):
@@ -8690,6 +8703,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -8876,6 +8890,128 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         )
         return intents
 
+    def _assert_learning_scope_rejected(
+        self,
+        *,
+        campaign_id: str,
+        claim_scope: object,
+        include_scope: bool = True,
+        seed_intent: bool = False,
+    ) -> None:
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+        }
+        if include_scope:
+            claim["scope"] = claim_scope
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, _, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_synthetic_protocol(),
+                )
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            expected_intent_payload = None
+            if seed_intent:
+                expected_intent_payload = (
+                    controller._learning_commit_intent_payload(
+                        cycle_id="cycle-001",
+                        evidence_receipt=evidence,
+                        authority_task_report_sha256=_controller_sha256(
+                            b"control_plane.operational_learning_task_report.v1",
+                            report,
+                            "Authority TaskReport",
+                        ),
+                        packet_hash="f" * 64,
+                    )
+                )
+                journal.append(
+                    event_id=controller._learning_commit_intent_event_id(
+                        "cycle-001"
+                    ),
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                    aggregate_id="cycle-001",
+                    event_type="OPERATIONAL_LEARNING_COMMIT_INTENT_RECORDED",
+                    payload=expected_intent_payload,
+                )
+
+            service = LearningCommitService(repository_root=root)
+            with patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                side_effect=AssertionError("scope check reached packet hash"),
+            ) as expected_packet_hash, patch.object(
+                LearningCommitService,
+                "commit",
+                side_effect=AssertionError("scope check reached commit"),
+            ) as commit, self.assertRaisesRegex(
+                CampaignJournalError,
+                "runner claim scope conflicts",
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            intents = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                aggregate_id="cycle-001",
+            )
+            self.assertEqual(len(intents), int(seed_intent))
+            if expected_intent_payload is not None:
+                stored_intent = intents[0].payload()
+                self.assertEqual(
+                    {key: stored_intent[key] for key in expected_intent_payload},
+                    expected_intent_payload,
+                )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_commit.sqlite3").exists()
+            )
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_packets").exists()
+            )
+            self.assertEqual(expected_packet_hash.call_count, 0)
+            self.assertEqual(commit.call_count, 0)
+
     def test_learning_commit_rejects_valid_different_protocol_before_intent(
         self,
     ) -> None:
@@ -8903,6 +9039,266 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 root, journal, controller, execution, evidence, report
             )
 
+    def test_learning_commit_rejects_cross_generation_claim_scope_before_intent(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-scope-generation-mismatch"
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+            "scope": json.dumps(
+                _scope(generation="generation-2"),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_synthetic_protocol(),
+                )
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            caught = None
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ), patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                wraps=LearningCommitService.expected_packet_hash,
+            ) as expected_packet_hash, patch.object(
+                LearningCommitService,
+                "commit",
+                wraps=LearningCommitService.commit,
+            ) as commit:
+                try:
+                    controller.commit_learning(
+                        execution=execution,
+                        evidence_receipt=evidence,
+                        authority_task_report=report,
+                        learning_commit_sink=CampaignLearningCommitSink(
+                            journal=journal,
+                            service=service,
+                        ),
+                    )
+                except CampaignJournalError as error:
+                    caught = error
+
+            self.assertIsInstance(caught, CampaignJournalError)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EVIDENCE_READY,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT_INTENT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_LEARNING_COMMIT",
+                    aggregate_id="cycle-001",
+                ),
+                (),
+            )
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_commit.sqlite3").exists()
+            )
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_packets").exists()
+            )
+            self.assertEqual(expected_packet_hash.call_count, 0)
+            self.assertEqual(commit.call_count, 0)
+
+    def test_learning_commit_rejects_missing_claim_scope_before_intent(
+        self,
+    ) -> None:
+        self._assert_learning_scope_rejected(
+            campaign_id="campaign-controller-learning-scope-missing",
+            claim_scope=None,
+            include_scope=False,
+        )
+
+    def test_learning_commit_rejects_invalid_claim_scope_encodings(
+        self,
+    ) -> None:
+        scope = _scope(generation="generation-1")
+        cases = (
+            ("unparseable", "{"),
+            (
+                "noncanonical",
+                json.dumps(scope, sort_keys=True, indent=2),
+            ),
+            ("non-string", scope),
+        )
+        for label, claim_scope in cases:
+            with self.subTest(label=label):
+                self._assert_learning_scope_rejected(
+                    campaign_id=(
+                        "campaign-controller-learning-scope-encoding-"
+                        f"{label}"
+                    ),
+                    claim_scope=claim_scope,
+                )
+
+    def test_learning_commit_rejects_overflowing_claim_scope_before_intent(
+        self,
+    ) -> None:
+        overflowing_scope = _scope(generation="generation-1")
+        overflowing_scope["time_windows"] = [
+            {"start": "0001-01-01", "end": "9999-12-31"},
+            {"start": "9999-12-31", "end": "9999-12-31"},
+        ]
+        self._assert_learning_scope_rejected(
+            campaign_id="campaign-controller-learning-scope-overflow",
+            claim_scope=json.dumps(
+                overflowing_scope,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+
+    def test_learning_commit_rejects_expanded_and_overlapping_claim_scopes(
+        self,
+    ) -> None:
+        expanded_scope = _scope(generation="generation-1")
+        expanded_scope["generation_families"] = [
+            "generation-1",
+            "generation-2",
+        ]
+        overlapping_scope = _scope(generation="generation-1")
+        overlapping_scope["time_windows"] = [
+            {"start": "2019-01-01", "end": "2021-12-31"}
+        ]
+        for label, scope in (
+            ("expanded", expanded_scope),
+            ("overlap", overlapping_scope),
+        ):
+            with self.subTest(label=label):
+                self._assert_learning_scope_rejected(
+                    campaign_id=(
+                        "campaign-controller-learning-scope-relation-"
+                        f"{label}"
+                    ),
+                    claim_scope=json.dumps(
+                        scope,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                )
+
+    def test_learning_commit_existing_intent_cannot_bypass_claim_scope(
+        self,
+    ) -> None:
+        self._assert_learning_scope_rejected(
+            campaign_id="campaign-controller-learning-scope-intent-replay",
+            claim_scope=_synthetic_claim_scope_text(
+                generation="generation-2"
+            ),
+            seed_intent=True,
+        )
+
+    def test_learning_commit_allows_strict_subset_claim_scope(self) -> None:
+        campaign_id = "campaign-controller-learning-scope-subset"
+        subset_scope = _scope(generation="generation-1")
+        subset_scope["time_windows"] = [
+            {"start": "2022-01-01", "end": "2023-12-31"}
+        ]
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic eligible finding.",
+            "scope": json.dumps(
+                subset_scope,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                EvidenceLearningVerticalSliceTests()._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_synthetic_protocol(),
+                )
+            )
+            controller, execution, member, _ = (
+                _completed_evidence_model_call(
+                    root,
+                    journal,
+                    campaign_id=campaign_id,
+                    provider=_AuthorityEvidenceArtifactBoundFakeProvider(
+                        artifact
+                    ),
+                )
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            service = LearningCommitService(repository_root=root)
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ), patch.object(
+                LearningCommitService,
+                "expected_packet_hash",
+                return_value="f" * 64,
+            ) as expected_packet_hash, patch.object(
+                LearningCommitService,
+                "commit",
+                return_value="f" * 64,
+            ) as commit:
+                receipt = controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report=report,
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=service,
+                    ),
+                )
+
+            self.assertEqual(receipt.packet_hash, "f" * 64)
+            self.assertEqual(expected_packet_hash.call_count, 1)
+            self.assertEqual(commit.call_count, 1)
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.LEARNING_COMMITTED,
+            )
+
     def test_learning_commit_rejects_missing_executed_protocol_before_intent(
         self,
     ) -> None:
@@ -8910,6 +9306,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, evidence = (
@@ -9020,6 +9417,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9074,6 +9472,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9177,6 +9576,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9249,6 +9649,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9299,6 +9700,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9347,6 +9749,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9536,6 +9939,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         report = {"synthetic": "terminal-report"}
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -9595,6 +9999,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9664,6 +10069,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, _ = (
@@ -9958,6 +10364,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         recovered_owner = ProcessIdentity("host-controller", 148, 48_000)
         sink_entered = Event()
@@ -10056,6 +10463,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         report = {"synthetic": "terminal-report"}
         recovered_owner = ProcessIdentity("host-controller", 147, 47_000)
@@ -10149,6 +10557,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         report = {"synthetic": "terminal-report"}
         packet_hash = "f" * 64
@@ -10466,6 +10875,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, usage = (
@@ -10845,6 +11255,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, usage = (
@@ -10899,6 +11310,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         with _authorized_campaign(campaign_id) as (root, _, journal):
             controller, execution, member, usage = (
@@ -10989,6 +11401,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         recovered_owner = ProcessIdentity("host-controller", 149, 49_000)
         budget_limits = CampaignBudgetLimits(
@@ -11100,6 +11513,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         packet_hash = "f" * 64
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -11468,6 +11882,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         packet_hash = "f" * 64
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -11606,6 +12021,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
         claim = {
             "kind": "NEGATIVE",
             "summary": "Synthetic eligible finding.",
+            "scope": _synthetic_claim_scope_text(),
         }
         packet_hash = "f" * 64
         with _authorized_campaign(campaign_id) as (root, _, journal):

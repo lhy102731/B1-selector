@@ -235,7 +235,14 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 evidence_fixtures.EvidenceLearningVerticalSliceTests()
                 ._authority_fixture(
                     root,
-                    claim={"kind": "NEGATIVE"},
+                    claim={
+                        "kind": "NEGATIVE",
+                        "scope": json.dumps(
+                            claim_scope,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    },
                     protocol=_protocol().model_dump(mode="json"),
                 )
             )
