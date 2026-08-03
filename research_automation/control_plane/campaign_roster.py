@@ -798,10 +798,10 @@ class OperationalRosterJournal:
             or envelope.request_model != expected.model
         ):
             return "ROSTER_IDENTITY_DRIFT"
-        if envelope.response_model != expected.model or envelope.fallback:
-            return "RESPONSE_MODEL_DRIFT"
         if recorded.final_outcome is not InvocationOutcome.SUCCESS:
             return "REQUIRED_MEMBER_RESPONSE_INVALID"
+        if envelope.response_model != expected.model or envelope.fallback:
+            return "RESPONSE_MODEL_DRIFT"
         return None
 
     def _validate_drift(

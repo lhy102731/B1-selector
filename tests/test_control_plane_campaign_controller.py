@@ -6,8 +6,13 @@ from decimal import Context, Inexact, Rounded, localcontext
 from threading import Barrier, Event
 import hashlib
 import json
+import multiprocessing
+import os
+from pathlib import Path
 import sys
 import sqlite3
+import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -91,6 +96,11 @@ from tests.test_control_plane_evidence_learning import (
 from tests.test_foundations_protocols import _approval, _protocol
 
 
+_PROVIDER_CALL_COUNTER_DIRECTORY = tempfile.TemporaryDirectory(
+    prefix="control-plane-provider-calls-"
+)
+
+
 class _BoundFakeProvider:
     provider_name = "fake-provider"
     profile = "offline-local"
@@ -99,9 +109,24 @@ class _BoundFakeProvider:
     capability_sha256 = "3" * 64
 
     def __init__(self, *, timeouts_before_success: int = 0) -> None:
-        self.call_count = 0
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="ascii",
+            dir=_PROVIDER_CALL_COUNTER_DIRECTORY.name,
+            delete=False,
+        ) as counter:
+            counter.write("0")
+            self._call_count_path = counter.name
         self.last_request: object | None = None
         self._timeouts_before_success = timeouts_before_success
+
+    @property
+    def call_count(self) -> int:
+        return int(Path(self._call_count_path).read_text(encoding="ascii"))
+
+    @call_count.setter
+    def call_count(self, value: int) -> None:
+        Path(self._call_count_path).write_text(str(value), encoding="ascii")
 
     def invoke(self, request: object) -> ProviderResponse:
         self.call_count += 1
@@ -120,6 +145,39 @@ class _BoundFakeProvider:
                 "currency": "USD",
             },
         )
+
+
+class _ProcessMarkerBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self, marker_path: str) -> None:
+        super().__init__()
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        Path(self._marker_path).write_text(str(os.getpid()), encoding="ascii")
+        return super().invoke(request)
+
+
+class _UnpicklableBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reduce_calls = 0
+
+    def __reduce_ex__(self, protocol: int) -> object:
+        del protocol
+        self.reduce_calls += 1
+        raise TypeError("synthetic provider serialization failure")
+
+
+class _HangingProcessMarkerBoundFakeProvider(_BoundFakeProvider):
+    def __init__(self, marker_path: str) -> None:
+        super().__init__()
+        self._marker_path = marker_path
+
+    def invoke(self, request: object) -> ProviderResponse:
+        del request
+        Path(self._marker_path).write_text(str(os.getpid()), encoding="ascii")
+        while True:
+            time.sleep(0.05)
 
 
 class _InvalidJsonBoundFakeProvider(_BoundFakeProvider):
@@ -451,13 +509,18 @@ class _LeaseSwapMonotonicClock:
         return value
 
 
+_SPAWN_CALL_WALL_TIME_MS = 5_000
+_SPAWN_DOUBLE_CALL_WALL_TIME_MS = 10_000
+_SPAWN_CAMPAIGN_WALL_TIME_MS = 50_000
+
+
 _FAKE_CAMPAIGN_LIMITS = CampaignBudgetLimits(
     currency="USD",
     max_cycles=1,
     max_input_tokens=100,
     max_output_tokens=50,
     max_cost="1",
-    max_wall_time_ms=100,
+    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
     max_tool_attempts=2,
 )
 
@@ -467,7 +530,7 @@ _FAKE_CALL_LIMITS = OperationalModelCallLimits(
     max_input_tokens=20,
     max_output_tokens=10,
     max_cost="0.1",
-    max_wall_time_ms=10,
+    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
     max_attempts=2,
 )
 
@@ -514,7 +577,7 @@ def _completed_evidence_model_call(
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost=campaign_max_cost,
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         ),
         identity_provider=_FakeProcessIdentityProvider(owner),
@@ -534,7 +597,7 @@ def _completed_evidence_model_call(
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost=reservation_max_cost,
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
         ),
     )
@@ -684,11 +747,77 @@ def _prepare_synthetic_cycle(
                 max_input_tokens=20,
                 max_output_tokens=10,
                 max_cost="0.1",
-                max_wall_time_ms=10,
+                max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                 max_tool_attempts=1,
             )
         ),
     )
+
+
+def _prepare_model_call_execution(
+    root,
+    journal,
+    *,
+    campaign_id: str,
+    max_wall_time_ms: int = 5_000,
+    max_attempts: int = 2,
+):
+    protocol = _protocol()
+    execution_spec = compile_execution_spec(
+        protocol,
+        approved_protocol=protocol,
+        approval=_approval(protocol),
+        amendment=None,
+    )
+    prompt = {"instruction": "Return one bounded synthetic result"}
+    member = replace(
+        _protocol_member(),
+        prompt_sha256=operational_prompt_sha256(prompt),
+    )
+    controller = OperationalCampaignController(
+        journal=journal,
+        repository_root=root,
+        budget_limits=CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=max_wall_time_ms,
+            max_tool_attempts=max_attempts,
+        ),
+        identity_provider=_FakeProcessIdentityProvider(
+            ProcessIdentity("host-controller", 211, 61_000)
+        ),
+        monotonic_ns=lambda: 1_000_000,
+    )
+    controller.prepare_cycle(
+        task=ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "A fake provider executes in a bounded worker",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        ),
+        cycle_number=1,
+        execution_spec=execution_spec,
+        roster_members=(member,),
+        reservation_limits=CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=max_wall_time_ms,
+            max_tool_attempts=max_attempts,
+        ),
+    )
+    execution = controller.start_execution(
+        cycle_id="cycle-001",
+        acquisition_id=f"execute-{campaign_id}",
+    )
+    return controller, execution, member, prompt
 
 
 def _controller_event_id(domain: bytes, *parts: str) -> str:
@@ -747,6 +876,362 @@ def _rewrite_campaign_event_payload(root, event, payload) -> None:
 
 
 class OperationalCampaignControllerTests(unittest.TestCase):
+    def test_model_call_limits_require_positive_wall_time(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_wall_time_ms must be a positive integer",
+        ):
+            OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=0,
+                max_attempts=2,
+            )
+
+    def test_model_call_limits_reject_wall_time_that_overflows_deadline(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_wall_time_ms exceeds the finite deadline range",
+        ):
+            OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=10**400,
+                max_attempts=2,
+            )
+
+    def test_controller_executes_member_in_spawned_worker(self) -> None:
+        campaign_id = "campaign-controller-spawn-boundary"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            marker_path = root / "provider-worker.pid"
+
+            executed = controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=_ProcessMarkerBoundFakeProvider(str(marker_path)),
+                prompt=prompt,
+                limits=OperationalModelCallLimits(
+                    currency="USD",
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=5_000,
+                    max_attempts=1,
+                ),
+            )
+
+            self.assertEqual(
+                executed.output,
+                {"source": "synthetic", "status": "ok"},
+            )
+            self.assertNotEqual(
+                int(marker_path.read_text(encoding="ascii")),
+                os.getpid(),
+            )
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts()
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(
+                attempts[0].final_outcome,
+                InvocationOutcome.SUCCESS,
+            )
+
+    def test_unpicklable_provider_fails_before_model_call_start(self) -> None:
+        campaign_id = "campaign-controller-spawn-preflight-failure"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            provider = _UnpicklableBoundFakeProvider()
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            call_id = controller._member_call_id("cycle-001", member.member_id)
+
+            with self.assertRaisesRegex(ValueError, "not spawn-picklable"):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            self.assertEqual(provider.reduce_calls, 1)
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_MODEL_CALL",
+                    aggregate_id=call_id,
+                ),
+                (),
+            )
+            self.assertEqual(
+                OperationalUsageJournal(
+                    journal=journal,
+                    cycle_id="cycle-001",
+                ).list_attempts(),
+                (),
+            )
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.ACTIVE,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_completed_model_call_replays_before_provider_serialization(self) -> None:
+        campaign_id = "campaign-controller-spawn-completed-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            marker_path = root / "completed-provider.pid"
+            completed = controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=_ProcessMarkerBoundFakeProvider(str(marker_path)),
+                prompt=prompt,
+                limits=limits,
+            )
+            replay_provider = _UnpicklableBoundFakeProvider()
+
+            replayed = controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=replay_provider,
+                prompt=prompt,
+                limits=limits,
+            )
+
+            self.assertEqual(replayed, completed)
+            self.assertEqual(replay_provider.reduce_calls, 0)
+
+    def test_in_doubt_model_call_blocks_before_provider_serialization(self) -> None:
+        campaign_id = "campaign-controller-spawn-in-doubt-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=5_000,
+                max_attempts=1,
+            )
+            with patch(
+                "research_automation.control_plane.campaign_controller."
+                "RetryingModelInvocation.invoke_json_with_receipt",
+                side_effect=RuntimeError("synthetic mid-call crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "mid-call crash"):
+                    controller.invoke_member_json(
+                        execution=execution,
+                        member_id=member.member_id,
+                        provider=_BoundFakeProvider(),
+                        prompt=prompt,
+                        limits=limits,
+                    )
+            replay_provider = _UnpicklableBoundFakeProvider()
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "incomplete and in doubt",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            self.assertEqual(replay_provider.reduce_calls, 0)
+            call_events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=controller._member_call_id(
+                    "cycle-001",
+                    member.member_id,
+                ),
+            )
+            self.assertEqual(
+                tuple(event.event_type for event in call_events),
+                ("OPERATIONAL_MODEL_CALL_STARTED",),
+            )
+            self.assertEqual(
+                controller.campaign_snapshot().status,
+                CampaignStatus.BLOCKED,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_hanging_member_times_out_blocks_and_replays_without_provider(self) -> None:
+        campaign_id = "campaign-controller-spawn-timeout"
+        max_wall_time_ms = 2_000
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, member, prompt = _prepare_model_call_execution(
+                root,
+                journal,
+                campaign_id=campaign_id,
+                max_wall_time_ms=max_wall_time_ms,
+                max_attempts=1,
+            )
+            limits = OperationalModelCallLimits(
+                currency="USD",
+                max_input_tokens=20,
+                max_output_tokens=10,
+                max_cost="0.1",
+                max_wall_time_ms=max_wall_time_ms,
+                max_attempts=1,
+            )
+            marker_path = root / "hanging-provider.pid"
+
+            with self.assertRaisesRegex(
+                RosterDriftError,
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=_HangingProcessMarkerBoundFakeProvider(
+                        str(marker_path)
+                    ),
+                    prompt=prompt,
+                    limits=limits,
+                )
+
+            worker_pid = int(marker_path.read_text(encoding="ascii"))
+            self.assertNotEqual(worker_pid, os.getpid())
+            self.assertNotIn(
+                worker_pid,
+                tuple(
+                    child.pid
+                    for child in multiprocessing.active_children()
+                    if child.pid is not None
+                ),
+            )
+            attempts = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            ).list_attempts()
+            self.assertEqual(len(attempts), 1)
+            self.assertEqual(attempts[0].envelope.usage_status, UsageStatus.UNKNOWN)
+            self.assertEqual(
+                attempts[0].final_outcome,
+                InvocationOutcome.TIMEOUT,
+            )
+            call_id = controller._member_call_id("cycle-001", member.member_id)
+            call_events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="OPERATIONAL_MODEL_CALL",
+                aggregate_id=call_id,
+            )
+            self.assertEqual(
+                tuple(event.event_type for event in call_events),
+                ("OPERATIONAL_MODEL_CALL_STARTED",),
+            )
+            campaign = controller.campaign_snapshot()
+            self.assertEqual(campaign.status, CampaignStatus.BLOCKED)
+            self.assertEqual(
+                campaign.block_reason_code,
+                "REQUIRED_MEMBER_RESPONSE_INVALID",
+            )
+            self.assertEqual(
+                controller.cycle_snapshot("cycle-001").status,
+                CycleStatus.EXECUTING,
+            )
+            replay_provider = _UnpicklableBoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=replay_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+            self.assertEqual(replay_provider.reduce_calls, 0)
+
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=max_wall_time_ms,
+                    max_tool_attempts=1,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-controller", 211, 61_000)
+                ),
+                monotonic_ns=lambda: 1_000_000,
+            )
+            reopened_provider = _UnpicklableBoundFakeProvider()
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "execution receipt is stale",
+            ):
+                reopened.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=reopened_provider,
+                    prompt=prompt,
+                    limits=limits,
+                )
+            self.assertEqual(reopened_provider.reduce_calls, 0)
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id="cycle-001",
+                    aggregate_type="OPERATIONAL_MODEL_CALL",
+                    aggregate_id=call_id,
+                ),
+                call_events,
+            )
+
     def test_usd_is_bound_through_the_operational_no_learning_path(self) -> None:
         campaign_id = "campaign-controller-currency-001"
         cycle_id = "cycle-currency-001"
@@ -768,7 +1253,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         reservation_limits = CycleReservationLimits(
@@ -776,7 +1261,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         call_limits = OperationalModelCallLimits(
@@ -784,7 +1269,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_attempts=2,
         )
 
@@ -990,7 +1475,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     self.assertEqual(snapshot.reserved_input_tokens, 20)
                     self.assertEqual(snapshot.reserved_output_tokens, 10)
                     self.assertEqual(snapshot.reserved_cost, "0.1")
-                    self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+                    self.assertEqual(snapshot.reserved_wall_time_ms, _SPAWN_CALL_WALL_TIME_MS)
                     self.assertEqual(snapshot.reserved_tool_attempts, 2)
                     self.assertEqual(snapshot.reserved_data_exposures, 0)
                     self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
@@ -1063,7 +1548,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(snapshot.reserved_input_tokens, 20)
             self.assertEqual(snapshot.reserved_output_tokens, 10)
             self.assertEqual(snapshot.reserved_cost, "0.1")
-            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_wall_time_ms, _SPAWN_CALL_WALL_TIME_MS)
             self.assertEqual(snapshot.reserved_tool_attempts, 2)
             self.assertEqual(snapshot.spent_input_tokens, 0)
             self.assertEqual(snapshot.spent_output_tokens, 0)
@@ -1336,7 +1821,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost=max_cost,
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(
@@ -1417,7 +1902,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(snapshot.reserved_input_tokens, 20)
             self.assertEqual(snapshot.reserved_output_tokens, 10)
             self.assertEqual(snapshot.reserved_cost, "2e+128")
-            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_wall_time_ms, _SPAWN_CALL_WALL_TIME_MS)
             self.assertEqual(snapshot.reserved_tool_attempts, 2)
             self.assertEqual(snapshot.reserved_data_exposures, 0)
             self.assertEqual(snapshot.reserved_disk_growth_bytes, 0)
@@ -1555,7 +2040,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         max_input_tokens=20,
                         max_output_tokens=10,
                         max_cost="0.1",
-                        max_wall_time_ms=10,
+                        max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                         max_tool_attempts=1,
                     ),
                 )
@@ -4022,7 +4507,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -4038,7 +4523,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -4126,7 +4611,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -4142,7 +4627,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -4199,7 +4684,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -4299,7 +4784,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -4315,7 +4800,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -4409,7 +4894,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -4425,7 +4910,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -4523,7 +5008,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             max_input_tokens=100,
                             max_output_tokens=50,
                             max_cost="1",
-                            max_wall_time_ms=100,
+                            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                             max_tool_attempts=1,
                         ),
                         identity_provider=_FakeProcessIdentityProvider(
@@ -4541,7 +5026,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             max_input_tokens=20,
                             max_output_tokens=10,
                             max_cost="0.1",
-                            max_wall_time_ms=10,
+                            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                             max_tool_attempts=1,
                         ),
                     )
@@ -4561,7 +5046,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                                 max_input_tokens=20,
                                 max_output_tokens=10,
                                 max_cost="0.1",
-                                max_wall_time_ms=10,
+                                max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                                 max_attempts=1,
                             ),
                         )
@@ -4596,7 +5081,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                                 max_input_tokens=20,
                                 max_output_tokens=10,
                                 max_cost="0.1",
-                                max_wall_time_ms=10,
+                                max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                                 max_attempts=1,
                             ),
                         )
@@ -4738,7 +5223,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         reservation = CycleReservationLimits(
@@ -4746,7 +5231,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -4865,7 +5350,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
 
@@ -4891,7 +5376,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -4964,7 +5449,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
 
@@ -4990,7 +5475,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -5125,7 +5610,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -5146,7 +5631,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
-                    max_wall_time_ms=20,
+                    max_wall_time_ms=_SPAWN_DOUBLE_CALL_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
             )
@@ -5261,7 +5746,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -5281,7 +5766,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
-                    max_wall_time_ms=20,
+                    max_wall_time_ms=_SPAWN_DOUBLE_CALL_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
             )
@@ -5380,7 +5865,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
 
@@ -5402,7 +5887,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -5476,7 +5961,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         reservation_limits = CycleReservationLimits(
@@ -5484,7 +5969,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         barrier = Barrier(2)
@@ -5599,7 +6084,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         barrier = Barrier(2)
@@ -5622,7 +6107,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -5728,7 +6213,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         reservation_limits = CycleReservationLimits(
@@ -5736,7 +6221,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=20,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         barrier = Barrier(2)
@@ -5896,7 +6381,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -5912,7 +6397,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=40,
                     max_output_tokens=20,
                     max_cost="0.2",
-                    max_wall_time_ms=20,
+                    max_wall_time_ms=_SPAWN_DOUBLE_CALL_WALL_TIME_MS,
                     max_tool_attempts=4,
                 ),
             )
@@ -5940,7 +6425,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                                 max_input_tokens=21,
                                 max_output_tokens=10,
                                 max_cost="0.1",
-                                max_wall_time_ms=10,
+                                max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                                 max_attempts=2,
                             ),
                         )
@@ -6060,7 +6545,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             max_input_tokens=40,
                             max_output_tokens=20,
                             max_cost="1",
-                            max_wall_time_ms=20,
+                            max_wall_time_ms=_SPAWN_DOUBLE_CALL_WALL_TIME_MS,
                             max_tool_attempts=4,
                         ),
                         identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6082,7 +6567,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             max_input_tokens=40,
                             max_output_tokens=20,
                             max_cost="1",
-                            max_wall_time_ms=20,
+                            max_wall_time_ms=_SPAWN_DOUBLE_CALL_WALL_TIME_MS,
                             max_tool_attempts=4,
                         ),
                     )
@@ -6113,7 +6598,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                             max_cost=(
                                 "0.99999999999999999999999999995"
                             ),
-                            max_wall_time_ms=10,
+                            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                             max_attempts=2,
                         ),
                     )
@@ -6162,7 +6647,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                                 max_cost=(
                                     "0.00000000000000000000000000006"
                                 ),
-                                max_wall_time_ms=10,
+                                max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                                 max_attempts=2,
                             ),
                         )
@@ -6235,7 +6720,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6251,7 +6736,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6274,7 +6759,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         max_input_tokens=6,
                         max_output_tokens=10,
                         max_cost="0.1",
-                        max_wall_time_ms=10,
+                        max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                         max_attempts=2,
                     ),
                 )
@@ -6314,7 +6799,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=6,
             max_output_tokens=10,
             max_cost="0.1",
-            max_wall_time_ms=10,
+            max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_attempts=2,
         )
 
@@ -6328,7 +6813,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6344,7 +6829,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6419,7 +6904,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6439,7 +6924,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6463,7 +6948,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         max_input_tokens=6,
                         max_output_tokens=10,
                         max_cost="0.1",
-                        max_wall_time_ms=10,
+                        max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                         max_attempts=2,
                     ),
                 )
@@ -6518,7 +7003,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6538,7 +7023,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6629,7 +7114,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6649,7 +7134,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6706,7 +7191,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         barrier = Barrier(2)
@@ -6733,7 +7218,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6847,7 +7332,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -6867,7 +7352,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=20,
                     max_output_tokens=10,
                     max_cost="0.1",
-                    max_wall_time_ms=10,
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
             )
@@ -6937,7 +7422,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(
@@ -6965,7 +7450,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -7074,7 +7559,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -8712,7 +9197,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -9008,7 +9493,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(snapshot.reserved_input_tokens, 20)
             self.assertEqual(snapshot.reserved_output_tokens, 10)
             self.assertEqual(snapshot.reserved_cost, "0.1")
-            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_wall_time_ms, _SPAWN_CALL_WALL_TIME_MS)
             self.assertEqual(snapshot.reserved_tool_attempts, 2)
             self.assertEqual(snapshot.spent_input_tokens, 0)
             self.assertEqual(snapshot.spent_output_tokens, 0)
@@ -9227,7 +9712,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -9473,7 +9958,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(snapshot.reserved_input_tokens, 20)
             self.assertEqual(snapshot.reserved_output_tokens, 10)
             self.assertEqual(snapshot.reserved_cost, "0.1")
-            self.assertEqual(snapshot.reserved_wall_time_ms, 10)
+            self.assertEqual(snapshot.reserved_wall_time_ms, _SPAWN_CALL_WALL_TIME_MS)
             self.assertEqual(snapshot.reserved_tool_attempts, 2)
             self.assertEqual(snapshot.spent_input_tokens, 0)
             self.assertEqual(snapshot.spent_output_tokens, 0)
@@ -9638,7 +10123,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -10493,7 +10978,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -10926,7 +11411,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -10979,7 +11464,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     max_input_tokens=100,
                     max_output_tokens=50,
                     max_cost="1",
-                    max_wall_time_ms=100,
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
                     max_tool_attempts=2,
                 ),
                 identity_provider=_FakeProcessIdentityProvider(owner),
@@ -11226,7 +11711,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):
@@ -11292,7 +11777,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             max_input_tokens=100,
             max_output_tokens=50,
             max_cost="1",
-            max_wall_time_ms=100,
+            max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
         )
         with _authorized_campaign(campaign_id) as (root, _, journal):

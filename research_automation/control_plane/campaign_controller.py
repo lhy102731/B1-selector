@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from research_automation.foundations.protocols import (
@@ -33,6 +34,7 @@ from .campaign import (
     ModelInvocationProviderError,
     ModelInvocationTimeoutError,
     RetryingModelInvocation,
+    SpawnedProviderExecutor,
     StreamingDisabledError,
     UsageEnvelope,
     UsageStatus,
@@ -210,6 +212,16 @@ class OperationalModelCallLimits:
     max_attempts: int
 
     def __post_init__(self) -> None:
+        if type(self.max_wall_time_ms) is not int or self.max_wall_time_ms <= 0:
+            raise ValueError("max_wall_time_ms must be a positive integer")
+        try:
+            wall_time_seconds = self.max_wall_time_ms / 1000.0
+        except OverflowError as error:
+            raise ValueError(
+                "max_wall_time_ms exceeds the finite deadline range"
+            ) from error
+        if not math.isfinite(wall_time_seconds):
+            raise ValueError("max_wall_time_ms exceeds the finite deadline range")
         if type(self.max_attempts) is not int or not 1 <= self.max_attempts <= 100:
             raise ValueError(
                 "max_attempts must be an integer from 1 through 100"
@@ -1023,7 +1035,9 @@ class OperationalCampaignController:
             ),
             "call_limits": limits.to_payload(),
         }
-        replay = _SqliteUnitOfWork(stores._operational_spec())._write(
+        replay, provider_executor = _SqliteUnitOfWork(
+            stores._operational_spec()
+        )._write(
             lambda connection: self._begin_model_call_in_transaction(
                 connection,
                 execution=execution,
@@ -1031,6 +1045,9 @@ class OperationalCampaignController:
                 call_id=call_id,
                 fixed_identity=fixed_identity,
                 usage=usage,
+                provider_executor_factory=lambda: SpawnedProviderExecutor(
+                    provider
+                ),
             )
         )
         if replay is _MODEL_CALL_IN_DOUBT_RESULT:
@@ -1043,10 +1060,15 @@ class OperationalCampaignController:
             )
         if replay is not None:
             return replay
+        if type(provider_executor) is not SpawnedProviderExecutor:
+            raise CampaignJournalError(
+                "spawned provider executor preflight is missing"
+            )
         started_monotonic_ns = self._safe_monotonic_ns()
         invocation = RetryingModelInvocation(
             attempt=ModelInvocation(
                 provider=provider,
+                provider_executor=provider_executor,
                 usage_journal=_FencedOperationalUsageJournal(
                     controller=self,
                     execution=execution,
@@ -1058,6 +1080,7 @@ class OperationalCampaignController:
                 max_output_bytes=_MAX_OPERATIONAL_OUTPUT_BYTES,
             ),
             max_attempts=limits.max_attempts,
+            max_wall_time_ms=limits.max_wall_time_ms,
         )
         try:
             result = invocation.invoke_json_with_receipt(
@@ -5526,7 +5549,11 @@ class OperationalCampaignController:
         call_id: str,
         fixed_identity: dict[str, object],
         usage: OperationalUsageJournal,
-    ) -> ExecutedOperationalModelCall | object | None:
+        provider_executor_factory: Callable[[], SpawnedProviderExecutor],
+    ) -> tuple[
+        ExecutedOperationalModelCall | object | None,
+        SpawnedProviderExecutor | None,
+    ]:
         self._require_active_execution_in_transaction(connection, execution)
         self._require_model_attempt_inventory_in_transaction(
             connection,
@@ -5546,7 +5573,7 @@ class OperationalCampaignController:
                 reason_code="MODEL_CALL_IN_DOUBT",
                 source_ref=other_in_doubt.event_id,
             )
-            return _MODEL_CALL_IN_DOUBT_RESULT
+            return _MODEL_CALL_IN_DOUBT_RESULT, None
         events = self._model_call_events_in_transaction(
             connection,
             cycle_id=cycle_id,
@@ -5575,8 +5602,8 @@ class OperationalCampaignController:
                     reason_code="MODEL_CALL_BUDGET_EXCEEDED",
                     source_ref=events[-1].event_id,
                 )
-                return _MODEL_CALL_BUDGET_EXCEEDED_RESULT
-            return replay
+                return _MODEL_CALL_BUDGET_EXCEEDED_RESULT, None
+            return replay, None
         start_manifest_sha256 = _controller_sha256(
             b"control_plane.operational_model_call_start.v2",
             fixed_identity,
@@ -5609,13 +5636,19 @@ class OperationalCampaignController:
                 reason_code="MODEL_CALL_IN_DOUBT",
                 source_ref=events[0].event_id,
             )
-            return _MODEL_CALL_IN_DOUBT_RESULT
+            return _MODEL_CALL_IN_DOUBT_RESULT, None
         self._require_model_call_allocation_in_transaction(
             connection,
             cycle_id=cycle_id,
             call_id=call_id,
             call_limits=fixed_identity["call_limits"],
         )
+        provider_executor = provider_executor_factory()
+        if type(provider_executor) is not SpawnedProviderExecutor:
+            raise TypeError(
+                "provider_executor_factory must return an exact "
+                "SpawnedProviderExecutor"
+            )
         self._journal._append_in_transaction(
             connection,
             event_id=self._model_call_event_id(cycle_id, call_id, "start"),
@@ -5625,7 +5658,7 @@ class OperationalCampaignController:
             event_type=_MODEL_CALL_STARTED,
             payload=start_payload,
         )
-        return None
+        return None, provider_executor
 
     def _require_model_attempt_inventory_in_transaction(
         self,
