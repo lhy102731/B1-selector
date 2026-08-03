@@ -2529,7 +2529,6 @@ class OperationalUsageJournalTests(unittest.TestCase):
                         [row[6] for row in rows_after_first_finish],
                         ["MODEL_USAGE_RECORDED", "MODEL_USAGE_FINISHED"],
                     )
-
                     replay = usage.finish(
                         call_id=call_id,
                         attempt_id=attempt_id,
@@ -2539,6 +2538,35 @@ class OperationalUsageJournalTests(unittest.TestCase):
                     self.assertEqual(
                         _campaign_full_rows(root, campaign_id=campaign_id),
                         rows_after_first_finish,
+                    )
+
+                    conflicting_candidate = (
+                        InvocationOutcome.SUCCESS
+                        if streamed
+                        else InvocationOutcome.INVALID_JSON
+                    )
+                    with self.assertRaisesRegex(
+                        CampaignJournalError,
+                        "conflicts",
+                    ):
+                        usage.finish(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            outcome=conflicting_candidate,
+                        )
+                    self.assertEqual(
+                        _campaign_full_rows(root, campaign_id=campaign_id),
+                        rows_after_first_finish,
+                    )
+
+                    finish_payload = json.loads(rows_after_first_finish[1][7])
+                    self.assertEqual(
+                        finish_payload["candidate_outcome"],
+                        candidate.value,
+                    )
+                    self.assertEqual(
+                        finish_payload["outcome"],
+                        InvocationOutcome.TIMEOUT.value,
                     )
 
                     reopened = OperationalUsageJournal(
@@ -2563,6 +2591,189 @@ class OperationalUsageJournalTests(unittest.TestCase):
                     self.assertEqual(recorded.envelope.reported_cost, "0.01")
                     self.assertEqual(recorded.envelope.currency, "USD")
                     self.assertEqual(recorded.envelope.streamed, streamed)
+
+    def test_legacy_three_field_success_finish_payload_remains_readable(
+        self,
+    ) -> None:
+        campaign_id = "campaign-legacy-success-finish"
+        call_id = "call-legacy-success-finish"
+        attempt_id = f"{call_id}-attempt-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            usage.begin(
+                self._reported_response_envelope(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                )
+            )
+            self.assertEqual(
+                usage.finish(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                    outcome=InvocationOutcome.SUCCESS,
+                ),
+                InvocationOutcome.SUCCESS,
+            )
+            finish_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_FINISHED"
+            )
+            legacy_payload = json.loads(finish_row[7])
+            legacy_payload.pop("candidate_outcome", None)
+            _rewrite_campaign_event_payload(
+                root,
+                event_id=finish_row[0],
+                payload=legacy_payload,
+            )
+
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+            recorded = usage.read_attempt(
+                call_id=call_id,
+                attempt_id=attempt_id,
+            )
+
+            self.assertEqual(recorded.final_outcome, InvocationOutcome.SUCCESS)
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_legacy_three_field_timeout_finish_payload_is_rejected(
+        self,
+    ) -> None:
+        campaign_id = "campaign-legacy-timeout-finish"
+        call_id = "call-legacy-timeout-finish"
+        attempt_id = f"{call_id}-attempt-001"
+        clock = _ControlledClock(now=10.0)
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            usage = OperationalUsageJournal(
+                journal=journal,
+                cycle_id="cycle-001",
+            )
+            usage.begin(
+                self._reported_response_envelope(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                )
+            )
+            with patch.object(
+                campaign_store_module,
+                "time",
+                clock,
+                create=True,
+            ):
+                self.assertEqual(
+                    usage.finish(
+                        call_id=call_id,
+                        attempt_id=attempt_id,
+                        outcome=InvocationOutcome.SUCCESS,
+                        deadline=10.0,
+                    ),
+                    InvocationOutcome.TIMEOUT,
+                )
+            finish_row = next(
+                row
+                for row in _campaign_full_rows(root, campaign_id=campaign_id)
+                if row[6] == "MODEL_USAGE_FINISHED"
+            )
+            legacy_payload = json.loads(finish_row[7])
+            legacy_payload.pop("candidate_outcome")
+            _rewrite_campaign_event_payload(
+                root,
+                event_id=finish_row[0],
+                payload=legacy_payload,
+            )
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaises(CampaignJournalError):
+                usage.read_attempt(
+                    call_id=call_id,
+                    attempt_id=attempt_id,
+                )
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_tampered_finish_provenance_is_rejected_without_writes(self) -> None:
+        cases = (
+            (
+                "invalid-candidate",
+                InvocationOutcome.RESPONSE_RECEIVED,
+                InvocationOutcome.SUCCESS,
+                False,
+            ),
+            (
+                "actual-conflicts-with-candidate",
+                InvocationOutcome.SUCCESS,
+                InvocationOutcome.INVALID_JSON,
+                False,
+            ),
+            (
+                "stream-mismatch",
+                InvocationOutcome.STREAMING_DISABLED,
+                InvocationOutcome.STREAMING_DISABLED,
+                False,
+            ),
+        )
+        for suffix, candidate, actual, streamed in cases:
+            with self.subTest(case=suffix):
+                campaign_id = f"campaign-finish-provenance-{suffix}"
+                call_id = f"call-finish-provenance-{suffix}"
+                attempt_id = f"{call_id}-attempt-001"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    usage = OperationalUsageJournal(
+                        journal=journal,
+                        cycle_id="cycle-001",
+                    )
+                    usage.begin(
+                        self._reported_response_envelope(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                            streamed=streamed,
+                        )
+                    )
+                    usage.finish(
+                        call_id=call_id,
+                        attempt_id=attempt_id,
+                        outcome=InvocationOutcome.SUCCESS,
+                    )
+                    finish_row = next(
+                        row
+                        for row in _campaign_full_rows(
+                            root,
+                            campaign_id=campaign_id,
+                        )
+                        if row[6] == "MODEL_USAGE_FINISHED"
+                    )
+                    tampered_payload = json.loads(finish_row[7])
+                    tampered_payload["candidate_outcome"] = candidate.value
+                    tampered_payload["outcome"] = actual.value
+                    _rewrite_campaign_event_payload(
+                        root,
+                        event_id=finish_row[0],
+                        payload=tampered_payload,
+                    )
+                    rows_before = _campaign_full_rows(
+                        root,
+                        campaign_id=campaign_id,
+                    )
+
+                    with self.assertRaises(CampaignJournalError):
+                        usage.read_attempt(
+                            call_id=call_id,
+                            attempt_id=attempt_id,
+                        )
+
+                    self.assertEqual(
+                        _campaign_full_rows(root, campaign_id=campaign_id),
+                        rows_before,
+                    )
 
     def test_finish_selects_candidate_only_before_exact_deadline(self) -> None:
         for now, expected in (

@@ -85,7 +85,38 @@ class StreamingDisabledError(RuntimeError):
     """Raised when a provider returns an unsupported streamed response."""
 
 
+class _NonRetryableUsageJournalError(RuntimeError):
+    """Fallback when a journal exception cannot carry private provenance."""
+
+
+_USAGE_JOURNAL_ERROR_MARKER = "_control_plane_usage_journal_origin"
+
+
+def _is_usage_journal_error(error: BaseException) -> bool:
+    try:
+        return getattr(error, _USAGE_JOURNAL_ERROR_MARKER, False) is True
+    except Exception:
+        return True
+
+
+def _call_usage_journal(operation, /, *args: object, **kwargs: object) -> object:
+    try:
+        return operation(*args, **kwargs)
+    except Exception as error:
+        try:
+            setattr(error, _USAGE_JOURNAL_ERROR_MARKER, True)
+            if not _is_usage_journal_error(error):
+                raise AttributeError("journal provenance marker was not retained")
+        except Exception:
+            raise _NonRetryableUsageJournalError(
+                "usage journal operation failed"
+            ) from error
+        raise
+
+
 def _is_retryable_model_invocation_error(error: BaseException) -> bool:
+    if _is_usage_journal_error(error):
+        return False
     return isinstance(
         error,
         (
@@ -1432,7 +1463,8 @@ class ModelInvocation:
             raise _ModelInvocationExecutorProtocolError(
                 "provider executor protocol failed"
             ) from error
-        self._usage_journal.begin(
+        _call_usage_journal(
+            self._usage_journal.begin,
             UsageEnvelope(
                 provider=self._provider_name,
                 profile=self._profile,
@@ -1521,7 +1553,8 @@ class ModelInvocation:
         candidate: InvocationOutcome,
         deadline: float | None,
     ) -> InvocationOutcome:
-        actual = self._usage_journal.finish(
+        actual = _call_usage_journal(
+            self._usage_journal.finish,
             call_id=call_id,
             attempt_id=attempt_id,
             outcome=candidate,
@@ -1542,7 +1575,8 @@ class ModelInvocation:
         attempt_id: str,
         outcome: InvocationOutcome,
     ) -> None:
-        self._usage_journal.begin(
+        _call_usage_journal(
+            self._usage_journal.begin,
             UsageEnvelope(
                 provider=self._provider_name,
                 profile=self._profile,

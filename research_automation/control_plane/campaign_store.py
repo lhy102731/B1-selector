@@ -84,6 +84,12 @@ class RecordedModelAttempt:
     final_outcome: InvocationOutcome
 
 
+@dataclass(frozen=True)
+class _RecordedModelAttemptState:
+    recorded: RecordedModelAttempt
+    candidate_outcome: InvocationOutcome | None
+
+
 def _identifier(value: str, name: str) -> str:
     if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
         raise ValueError(f"{name} must be a bounded control-plane identifier")
@@ -1705,20 +1711,16 @@ class OperationalUsageJournal:
         aggregate_id = _attempt_id(self._cycle_id, call_id, attempt_id)
         events = self._events_in_transaction(connection, aggregate_id)
         if len(events) == 2:
-            recorded = self._read_attempt_in_transaction(
+            state = self._read_attempt_state_in_transaction(
                 connection,
                 call_id=call_id,
                 attempt_id=attempt_id,
             )
-            self._validate_response_candidate(recorded.envelope, outcome)
-            if (
-                recorded.final_outcome is not InvocationOutcome.TIMEOUT
-                and recorded.final_outcome is not outcome
-            ):
+            if state.candidate_outcome is not outcome:
                 raise CampaignJournalError(
                     "model finish conflicts with the persisted final outcome"
                 )
-            return recorded.final_outcome
+            return state.recorded.final_outcome
         if len(events) != 1:
             raise CampaignJournalError(
                 "model attempt journal is incomplete or ambiguous"
@@ -1780,6 +1782,7 @@ class OperationalUsageJournal:
             payload={
                 "call_id": call_id,
                 "attempt_id": attempt_id,
+                "candidate_outcome": outcome.value,
                 "outcome": actual.value,
             },
         )
@@ -1902,6 +1905,19 @@ class OperationalUsageJournal:
         call_id: str,
         attempt_id: str,
     ) -> RecordedModelAttempt:
+        return self._read_attempt_state_in_transaction(
+            connection,
+            call_id=call_id,
+            attempt_id=attempt_id,
+        ).recorded
+
+    def _read_attempt_state_in_transaction(
+        self,
+        connection,
+        *,
+        call_id: str,
+        attempt_id: str,
+    ) -> _RecordedModelAttemptState:
         aggregate_id = _attempt_id(self._cycle_id, call_id, attempt_id)
         events = self._events_in_transaction(connection, aggregate_id)
         if len(events) not in {1, 2}:
@@ -1970,55 +1986,67 @@ class OperationalUsageJournal:
             )
             if observed_finish_envelope != expected_finish_envelope:
                 raise CampaignJournalError("model finish event envelope is invalid")
-            finish_payload = _event_domain_payload(finish_event)
-            if set(finish_payload) != {"call_id", "attempt_id", "outcome"}:
-                raise CampaignJournalError("model finish payload is invalid")
-            try:
-                stored_call_id = _identifier(
-                    finish_payload["call_id"],
-                    "stored call_id",
-                )
-                stored_attempt_id = _identifier(
-                    finish_payload["attempt_id"],
-                    "stored attempt_id",
-                )
-                final_outcome = InvocationOutcome(finish_payload["outcome"])
-            except (TypeError, ValueError) as error:
-                raise CampaignJournalError("model finish payload is invalid") from error
-            if stored_call_id != call_id or stored_attempt_id != attempt_id:
-                raise CampaignJournalError(
-                    "final outcome identity does not match attempt"
-                )
-            if final_outcome is InvocationOutcome.RESPONSE_RECEIVED:
-                raise CampaignJournalError("model finish outcome is not terminal")
-            if final_outcome not in {
-                InvocationOutcome.SUCCESS,
-                InvocationOutcome.EMPTY_OUTPUT,
-                InvocationOutcome.INVALID_JSON,
-                InvocationOutcome.STREAMING_DISABLED,
-                InvocationOutcome.TIMEOUT,
-            }:
-                raise CampaignJournalError(
-                    "model finish outcome cannot follow a provider response"
-                )
-            if (
-                final_outcome is not InvocationOutcome.TIMEOUT
-                and envelope.streamed
-                != (final_outcome is InvocationOutcome.STREAMING_DISABLED)
-            ):
-                raise CampaignJournalError(
-                    "model streaming outcome does not match recorded usage"
-                )
+            candidate_outcome, final_outcome = self._validated_finish_payload(
+                finish_event,
+                envelope=envelope,
+                call_id=call_id,
+                attempt_id=attempt_id,
+            )
         elif envelope.outcome in {
             InvocationOutcome.TIMEOUT,
             InvocationOutcome.EXCEPTION,
         }:
             final_outcome = envelope.outcome
+            candidate_outcome = None
         else:
             raise CampaignJournalError(
                 "model attempt does not follow the persisted invocation FSM"
             )
-        return RecordedModelAttempt(envelope, final_outcome)
+        return _RecordedModelAttemptState(
+            recorded=RecordedModelAttempt(envelope, final_outcome),
+            candidate_outcome=candidate_outcome,
+        )
+
+    @classmethod
+    def _validated_finish_payload(
+        cls,
+        finish_event: CampaignEvent,
+        *,
+        envelope: UsageEnvelope,
+        call_id: str,
+        attempt_id: str,
+    ) -> tuple[InvocationOutcome, InvocationOutcome]:
+        finish_payload = _event_domain_payload(finish_event)
+        legacy_fields = {"call_id", "attempt_id", "outcome"}
+        current_fields = legacy_fields | {"candidate_outcome"}
+        payload_fields = set(finish_payload)
+        if payload_fields != legacy_fields and payload_fields != current_fields:
+            raise CampaignJournalError("model finish payload is invalid")
+        try:
+            stored_call_id = _identifier(
+                finish_payload["call_id"],
+                "stored call_id",
+            )
+            stored_attempt_id = _identifier(
+                finish_payload["attempt_id"],
+                "stored attempt_id",
+            )
+            final_outcome = InvocationOutcome(finish_payload["outcome"])
+            candidate_outcome = InvocationOutcome(
+                finish_payload.get("candidate_outcome", finish_payload["outcome"])
+            )
+        except (TypeError, ValueError) as error:
+            raise CampaignJournalError("model finish payload is invalid") from error
+        if stored_call_id != call_id or stored_attempt_id != attempt_id:
+            raise CampaignJournalError(
+                "final outcome identity does not match attempt"
+            )
+        cls._validate_response_candidate(envelope, candidate_outcome)
+        if final_outcome not in {candidate_outcome, InvocationOutcome.TIMEOUT}:
+            raise CampaignJournalError(
+                "model finish outcome conflicts with its candidate"
+            )
+        return candidate_outcome, final_outcome
 
     def _events(self, aggregate_id: str) -> tuple[CampaignEvent, ...]:
         return self._journal.list_events(

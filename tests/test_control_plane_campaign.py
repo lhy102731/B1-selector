@@ -3870,6 +3870,220 @@ class ModelInvocationTests(unittest.TestCase):
                     0 if phase == "begin" else 1,
                 )
 
+    def test_retryable_typed_journal_errors_are_never_provider_retries(
+        self,
+    ) -> None:
+        failure_types = (
+            InvalidModelResponseError,
+            ModelInvocationProviderError,
+            ModelInvocationTimeoutError,
+        )
+        for phase in ("begin", "finish"):
+            for failure_type in failure_types:
+                with self.subTest(phase=phase, failure_type=failure_type.__name__):
+                    failure = failure_type(f"journal {phase} failed")
+
+                    class FailingJournal:
+                        def __init__(self) -> None:
+                            self.begin_count = 0
+                            self.finish_count = 0
+
+                        def begin(self, envelope: UsageEnvelope) -> None:
+                            del envelope
+                            self.begin_count += 1
+                            if phase == "begin":
+                                raise failure
+
+                        def finish(
+                            self,
+                            *,
+                            call_id: str,
+                            attempt_id: str,
+                            outcome: InvocationOutcome,
+                            deadline: float | None = None,
+                        ) -> InvocationOutcome:
+                            del call_id, attempt_id, deadline
+                            self.finish_count += 1
+                            if phase == "finish":
+                                raise failure
+                            return outcome
+
+                    class CountingProvider:
+                        def __init__(self) -> None:
+                            self.call_count = 0
+
+                        def invoke(self, request: object) -> ProviderResponse:
+                            del request
+                            self.call_count += 1
+                            return ProviderResponse(
+                                output_text='{"ok":1}',
+                                request_model="fake-primary-model",
+                                response_model="fake-primary-model",
+                                raw_usage={},
+                            )
+
+                    provider = CountingProvider()
+                    journal = FailingJournal()
+                    invocation = RetryingModelInvocation(
+                        attempt=ModelInvocation(
+                            provider=provider,
+                            usage_journal=journal,
+                            provider_name="fake",
+                            profile="offline",
+                            request_model="fake-primary-model",
+                        ),
+                        max_attempts=3,
+                    )
+
+                    with self.assertRaises(failure_type) as caught:
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=(
+                                f"call-typed-journal-{phase}-"
+                                f"{failure_type.__name__}"
+                            ),
+                        )
+
+                    self.assertIs(caught.exception, failure)
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertEqual(provider.call_count, 1)
+                    self.assertEqual(journal.begin_count, 1)
+                    self.assertEqual(
+                        journal.finish_count,
+                        0 if phase == "begin" else 1,
+                    )
+
+    def test_retryable_typed_unknown_outcome_begin_error_is_not_retried(
+        self,
+    ) -> None:
+        failure = ModelInvocationProviderError(
+            "unknown outcome journal begin failed"
+        )
+
+        class FailingJournal:
+            def __init__(self) -> None:
+                self.begin_count = 0
+                self.finish_count = 0
+
+            def begin(self, envelope: UsageEnvelope) -> None:
+                del envelope
+                self.begin_count += 1
+                raise failure
+
+            def finish(self, **kwargs: object) -> InvocationOutcome:
+                del kwargs
+                self.finish_count += 1
+                raise AssertionError("unknown outcome must not call finish")
+
+        class CountingTimeoutProvider:
+            def __init__(self) -> None:
+                self.call_count = 0
+
+            def invoke(self, request: object) -> ProviderResponse:
+                del request
+                self.call_count += 1
+                raise TimeoutError("provider timed out")
+
+        provider = CountingTimeoutProvider()
+        journal = FailingJournal()
+        invocation = RetryingModelInvocation(
+            attempt=ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-primary-model",
+            ),
+            max_attempts=3,
+        )
+
+        with self.assertRaises(ModelInvocationProviderError) as caught:
+            invocation.invoke_json(
+                {"prompt": "offline-only"},
+                call_id="call-typed-journal-unknown-begin",
+            )
+
+        self.assertIs(caught.exception, failure)
+        self.assertIsNone(caught.exception.__cause__)
+        self.assertEqual(provider.call_count, 1)
+        self.assertEqual(journal.begin_count, 1)
+        self.assertEqual(journal.finish_count, 0)
+
+    def test_journal_control_flow_interrupts_propagate_without_retry(self) -> None:
+        for phase in ("begin", "finish"):
+            for interrupt_type in (KeyboardInterrupt, SystemExit):
+                with self.subTest(phase=phase, interrupt_type=interrupt_type.__name__):
+                    interrupt = interrupt_type(f"journal {phase} interrupted")
+
+                    class InterruptingJournal:
+                        def __init__(self) -> None:
+                            self.begin_count = 0
+                            self.finish_count = 0
+
+                        def begin(self, envelope: UsageEnvelope) -> None:
+                            del envelope
+                            self.begin_count += 1
+                            if phase == "begin":
+                                raise interrupt
+
+                        def finish(
+                            self,
+                            *,
+                            call_id: str,
+                            attempt_id: str,
+                            outcome: InvocationOutcome,
+                            deadline: float | None = None,
+                        ) -> InvocationOutcome:
+                            del call_id, attempt_id, deadline
+                            self.finish_count += 1
+                            if phase == "finish":
+                                raise interrupt
+                            return outcome
+
+                    class CountingProvider:
+                        def __init__(self) -> None:
+                            self.call_count = 0
+
+                        def invoke(self, request: object) -> ProviderResponse:
+                            del request
+                            self.call_count += 1
+                            return ProviderResponse(
+                                output_text='{"ok":1}',
+                                request_model="fake-primary-model",
+                                response_model="fake-primary-model",
+                                raw_usage={},
+                            )
+
+                    provider = CountingProvider()
+                    journal = InterruptingJournal()
+                    invocation = RetryingModelInvocation(
+                        attempt=ModelInvocation(
+                            provider=provider,
+                            usage_journal=journal,
+                            provider_name="fake",
+                            profile="offline",
+                            request_model="fake-primary-model",
+                        ),
+                        max_attempts=3,
+                    )
+
+                    with self.assertRaises(interrupt_type) as caught:
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=(
+                                f"call-journal-interrupt-{phase}-"
+                                f"{interrupt_type.__name__}"
+                            ),
+                        )
+
+                    self.assertIs(caught.exception, interrupt)
+                    self.assertEqual(provider.call_count, 1)
+                    self.assertEqual(journal.begin_count, 1)
+                    self.assertEqual(
+                        journal.finish_count,
+                        0 if phase == "begin" else 1,
+                    )
+
     def test_retrying_preserves_success_linearized_before_tail_deadline(self) -> None:
         deadline = 575.1
         clock = _ControlledClock(now=575.0)
