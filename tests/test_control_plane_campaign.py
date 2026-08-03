@@ -3953,6 +3953,162 @@ class ModelInvocationTests(unittest.TestCase):
                         0 if phase == "begin" else 1,
                     )
 
+    def test_class_only_journal_markers_do_not_suppress_provider_retries(
+        self,
+    ) -> None:
+        class ClassMarkedProviderError(ModelInvocationProviderError):
+            _control_plane_usage_journal_origin = True
+
+        class InheritedMarker:
+            _control_plane_usage_journal_origin = True
+
+        class InheritedMarkedProviderError(
+            InheritedMarker,
+            ModelInvocationProviderError,
+        ):
+            pass
+
+        class AlwaysFailingInvocation(ModelInvocation):
+            def __init__(self, failure: ModelInvocationProviderError) -> None:
+                super().__init__(
+                    provider=_OutputTextProvider('{"ok":1}'),
+                    usage_journal=_RecordingUsageJournal(),
+                    provider_name="fake",
+                    profile="offline",
+                    request_model="fake-primary-model",
+                )
+                self.failure = failure
+                self.call_count = 0
+
+            def invoke_json(
+                self,
+                request: object,
+                *,
+                call_id: str,
+                attempt_id: str,
+                deadline: float | None = None,
+            ) -> object:
+                del request, call_id, attempt_id, deadline
+                self.call_count += 1
+                raise self.failure
+
+        failures = (
+            ClassMarkedProviderError("class marker is not provenance"),
+            InheritedMarkedProviderError("inherited marker is not provenance"),
+        )
+        for failure in failures:
+            with self.subTest(failure_type=type(failure).__name__):
+                self.assertNotIn(
+                    campaign_module._USAGE_JOURNAL_ERROR_MARKER,
+                    failure.__dict__,
+                )
+                self.assertFalse(campaign_module._is_usage_journal_error(failure))
+                attempt = AlwaysFailingInvocation(failure)
+                invocation = RetryingModelInvocation(
+                    attempt=attempt,
+                    max_attempts=3,
+                )
+
+                with self.assertRaises(type(failure)) as caught:
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-class-marker-{type(failure).__name__}",
+                    )
+
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(attempt.call_count, 3)
+
+    def test_data_descriptors_cannot_block_journal_error_provenance(
+        self,
+    ) -> None:
+        class ExplodingMarkerDescriptor:
+            def __get__(self, instance: object, owner: type | None = None) -> object:
+                del instance, owner
+                raise RuntimeError("marker descriptor getter must not run")
+
+            def __set__(self, instance: object, value: object) -> None:
+                del instance, value
+                raise RuntimeError("marker descriptor setter must not run")
+
+        class DescriptorShieldedJournalError(ModelInvocationProviderError):
+            _control_plane_usage_journal_origin = ExplodingMarkerDescriptor()
+
+            @property
+            def __dict__(self) -> dict[str, object]:
+                raise RuntimeError("subclass __dict__ descriptor must not run")
+
+        for phase in ("begin", "finish"):
+            failure = DescriptorShieldedJournalError(f"journal {phase} failed")
+
+            class FailingJournal:
+                def __init__(self) -> None:
+                    self.begin_count = 0
+                    self.finish_count = 0
+
+                def begin(self, envelope: UsageEnvelope) -> None:
+                    del envelope
+                    self.begin_count += 1
+                    if phase == "begin":
+                        raise failure
+
+                def finish(
+                    self,
+                    *,
+                    call_id: str,
+                    attempt_id: str,
+                    outcome: InvocationOutcome,
+                    deadline: float | None = None,
+                ) -> InvocationOutcome:
+                    del call_id, attempt_id, deadline
+                    self.finish_count += 1
+                    if phase == "finish":
+                        raise failure
+                    return outcome
+
+            class CountingProvider:
+                def __init__(self) -> None:
+                    self.call_count = 0
+
+                def invoke(self, request: object) -> ProviderResponse:
+                    del request
+                    self.call_count += 1
+                    return ProviderResponse(
+                        output_text='{"ok":1}',
+                        request_model="fake-primary-model",
+                        response_model="fake-primary-model",
+                        raw_usage={},
+                    )
+
+            with self.subTest(phase=phase):
+                provider = CountingProvider()
+                journal = FailingJournal()
+                invocation = RetryingModelInvocation(
+                    attempt=ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-primary-model",
+                    ),
+                    max_attempts=3,
+                )
+
+                with self.assertRaises(DescriptorShieldedJournalError) as caught:
+                    invocation.invoke_json(
+                        {"prompt": "offline-only"},
+                        call_id=f"call-descriptor-journal-{phase}",
+                    )
+
+                self.assertIs(caught.exception, failure)
+                self.assertIs(type(caught.exception), DescriptorShieldedJournalError)
+                self.assertTrue(campaign_module._is_usage_journal_error(failure))
+                self.assertEqual(provider.call_count, 1)
+                self.assertEqual(journal.begin_count, 1)
+                self.assertEqual(
+                    journal.finish_count,
+                    0 if phase == "begin" else 1,
+                )
+
     def test_uncooperative_typed_journal_errors_preserve_identity_without_retry(
         self,
     ) -> None:

@@ -86,12 +86,22 @@ class StreamingDisabledError(RuntimeError):
 
 
 _USAGE_JOURNAL_ERROR_MARKER = "_control_plane_usage_journal_origin"
+_BASE_EXCEPTION_DICT_DESCRIPTOR = BaseException.__dict__["__dict__"]
+
+
+def _base_exception_instance_dict(error: BaseException) -> dict[str, object]:
+    return _BASE_EXCEPTION_DICT_DESCRIPTOR.__get__(error, type(error))
 
 
 def _is_usage_journal_error(error: BaseException) -> bool:
     try:
-        return object.__getattribute__(error, _USAGE_JOURNAL_ERROR_MARKER) is True
-    except AttributeError:
+        return (
+            _base_exception_instance_dict(error).get(
+                _USAGE_JOURNAL_ERROR_MARKER
+            )
+            is True
+        )
+    except Exception:
         return False
 
 
@@ -100,7 +110,9 @@ def _call_usage_journal(operation, /, *args: object, **kwargs: object) -> object
         return operation(*args, **kwargs)
     except Exception as error:
         try:
-            object.__setattr__(error, _USAGE_JOURNAL_ERROR_MARKER, True)
+            _base_exception_instance_dict(error)[
+                _USAGE_JOURNAL_ERROR_MARKER
+            ] = True
         except Exception:
             pass
         raise
