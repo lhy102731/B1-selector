@@ -1919,8 +1919,10 @@ class ModelInvocationTests(unittest.TestCase):
             nonlocal process_close_calls
             context.actions.append("process.close")
             process_close_calls += 1
-            clock.now = deadline
-            raise interrupt
+            if process_close_calls == 1:
+                clock.now = deadline
+                raise interrupt
+            context.process.closed = True
 
         context.process.close = interrupt_process_close  # type: ignore[method-assign]
         with patch.object(
@@ -1935,8 +1937,9 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertIs(caught.exception, interrupt)
-        self.assertEqual(process_close_calls, 1)
+        self.assertEqual(process_close_calls, 2)
         self.assertFalse(context.process._alive)
+        self.assertTrue(context.process.closed)
         self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
         self.assertEqual(journal.events, [])
@@ -1962,7 +1965,9 @@ class ModelInvocationTests(unittest.TestCase):
             nonlocal receive_close_calls
             context.actions.append("receive.close")
             receive_close_calls += 1
-            raise interrupt
+            if receive_close_calls == 1:
+                raise interrupt
+            context.receive.closed = True
 
         context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
         with patch.object(
@@ -1977,10 +1982,11 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertIs(caught.exception, interrupt)
-        self.assertEqual(receive_close_calls, 1)
+        self.assertEqual(receive_close_calls, 2)
         self.assertEqual(context.send.close_calls, 2)
         self.assertFalse(context.process._alive)
         self.assertTrue(context.process.closed)
+        self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
         self.assertEqual(journal.events, [])
 
@@ -2004,7 +2010,9 @@ class ModelInvocationTests(unittest.TestCase):
             nonlocal send_close_calls
             context.actions.append("send.close")
             send_close_calls += 1
-            raise cleanup_interrupt
+            if send_close_calls == 1:
+                raise cleanup_interrupt
+            context.send.closed = True
 
         context.process.start = interrupt_start_after_pid  # type: ignore[method-assign]
         context.send.close = interrupt_send_close  # type: ignore[method-assign]
@@ -2022,10 +2030,11 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertIs(caught.exception, primary_interrupt)
-        self.assertEqual(send_close_calls, 1)
+        self.assertEqual(send_close_calls, 2)
         self.assertFalse(context.process._alive)
         self.assertTrue(context.process.closed)
         self.assertTrue(context.receive.closed)
+        self.assertTrue(context.send.closed)
         self.assertEqual(journal.events, [])
 
     def test_cleanup_pid_probe_interrupt_conservatively_reaps_worker(self) -> None:
@@ -2093,7 +2102,9 @@ class ModelInvocationTests(unittest.TestCase):
         def interrupt_receive_close() -> None:
             nonlocal receive_close_calls
             receive_close_calls += 1
-            raise interrupt
+            if receive_close_calls == 1:
+                raise interrupt
+            context.receive.closed = True
 
         context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
         with patch.object(
@@ -2108,7 +2119,8 @@ class ModelInvocationTests(unittest.TestCase):
                 )
 
         self.assertIs(caught.exception, interrupt)
-        self.assertEqual(receive_close_calls, 1)
+        self.assertEqual(receive_close_calls, 2)
+        self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
         self.assertEqual(context.process_calls, 0)
         self.assertEqual(journal.events, [])
@@ -2129,7 +2141,9 @@ class ModelInvocationTests(unittest.TestCase):
         def interrupt_receive_close() -> None:
             nonlocal receive_close_calls
             receive_close_calls += 1
-            raise interrupt
+            if receive_close_calls == 1:
+                raise interrupt
+            context.receive.closed = True
 
         context.receive.close = interrupt_receive_close  # type: ignore[method-assign]
         with patch.object(
@@ -2145,7 +2159,8 @@ class ModelInvocationTests(unittest.TestCase):
 
         self.assertIs(caught.exception, interrupt)
         self.assertEqual(context.process_calls, 1)
-        self.assertEqual(receive_close_calls, 1)
+        self.assertEqual(receive_close_calls, 2)
+        self.assertTrue(context.receive.closed)
         self.assertTrue(context.send.closed)
         self.assertEqual(journal.events, [])
 
@@ -3585,6 +3600,28 @@ class ModelInvocationTests(unittest.TestCase):
                         max_attempts=1,
                         max_wall_time_ms=invalid,  # type: ignore[arg-type]
                     )
+
+    def test_retrying_invocation_rejects_wall_time_that_overflows_deadline(
+        self,
+    ) -> None:
+        journal = _RecordingUsageJournal()
+        attempt = ModelInvocation(
+            provider=_FakeProvider(),
+            usage_journal=journal,
+            provider_name="fake",
+            profile="offline",
+            request_model="fake-primary-model",
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "max_wall_time_ms exceeds the finite deadline range",
+        ):
+            RetryingModelInvocation(
+                attempt=attempt,
+                max_attempts=1,
+                max_wall_time_ms=10**400,
+            )
 
     def test_spawned_retrying_invocation_requires_wall_time_budget(self) -> None:
         journal = _RecordingUsageJournal()

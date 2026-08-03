@@ -1112,6 +1112,29 @@ def _best_effort_close(resource: object) -> BaseException | None:
     return None
 
 
+def _close_resources_after_interrupts(
+    resources: tuple[object, ...],
+    *,
+    first_interrupt: BaseException | None = None,
+    first_error: Exception | None = None,
+) -> tuple[BaseException | None, Exception | None]:
+    retry: list[object] = []
+    for resource in resources:
+        close_error = _best_effort_close(resource)
+        if close_error is not None:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                close_error, first_interrupt, first_error
+            )
+            retry.append(resource)
+    for resource in retry:
+        close_error = _best_effort_close(resource)
+        if close_error is not None:
+            first_interrupt, first_error = _defer_cleanup_failure(
+                close_error, first_interrupt, first_error
+            )
+    return first_interrupt, first_error
+
+
 def _raise_if_provider_deadline_expired(deadline: float) -> None:
     if time.monotonic() >= deadline:
         raise _ProviderExecutorDeadlineExceeded(
@@ -1197,14 +1220,9 @@ class SpawnedProviderExecutor:
         try:
             _raise_if_provider_deadline_expired(deadline)
         except _ProviderExecutorDeadlineExceeded as error:
-            cleanup_interrupt: BaseException | None = None
-            cleanup_error: Exception | None = None
-            for connection in (receive_connection, send_connection):
-                close_error = _best_effort_close(connection)
-                if close_error is not None:
-                    cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
-                        close_error, cleanup_interrupt, cleanup_error
-                    )
+            cleanup_interrupt, cleanup_error = _close_resources_after_interrupts(
+                (receive_connection, send_connection)
+            )
             if cleanup_interrupt is not None:
                 raise cleanup_interrupt
             if cleanup_error is not None:
@@ -1221,14 +1239,9 @@ class SpawnedProviderExecutor:
                 ),
             )
         except BaseException as error:
-            cleanup_interrupt: BaseException | None = None
-            cleanup_error: Exception | None = None
-            for connection in (receive_connection, send_connection):
-                close_error = _best_effort_close(connection)
-                if close_error is not None:
-                    cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
-                        close_error, cleanup_interrupt, cleanup_error
-                    )
+            cleanup_interrupt, cleanup_error = _close_resources_after_interrupts(
+                (receive_connection, send_connection)
+            )
             if not isinstance(error, Exception):
                 raise
             if cleanup_interrupt is not None:
@@ -1369,18 +1382,14 @@ class SpawnedProviderExecutor:
                 cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
                     error, cleanup_interrupt, cleanup_error
                 )
-        for resource in (worker, receive_connection):
-            close_error = _best_effort_close(resource)
-            if close_error is not None:
-                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
-                    close_error, cleanup_interrupt, cleanup_error
-                )
+        resources_to_close = [worker, receive_connection]
         if not send_connection_closed:
-            close_error = _best_effort_close(send_connection)
-            if close_error is not None:
-                cleanup_interrupt, cleanup_error = _defer_cleanup_failure(
-                    close_error, cleanup_interrupt, cleanup_error
-                )
+            resources_to_close.append(send_connection)
+        cleanup_interrupt, cleanup_error = _close_resources_after_interrupts(
+            tuple(resources_to_close),
+            first_interrupt=cleanup_interrupt,
+            first_error=cleanup_error,
+        )
 
         # Control-flow interrupts win after cleanup, including if cleanup
         # crosses the deadline.  They are never provider retry signals.
@@ -1693,6 +1702,17 @@ class RetryingModelInvocation:
             type(max_wall_time_ms) is not int or max_wall_time_ms <= 0
         ):
             raise ValueError("max_wall_time_ms must be a positive integer")
+        if max_wall_time_ms is not None:
+            try:
+                wall_time_seconds = max_wall_time_ms / 1000.0
+            except OverflowError as error:
+                raise ValueError(
+                    "max_wall_time_ms exceeds the finite deadline range"
+                ) from error
+            if not math.isfinite(wall_time_seconds):
+                raise ValueError(
+                    "max_wall_time_ms exceeds the finite deadline range"
+                )
         if (
             type(attempt._provider_executor) is SpawnedProviderExecutor
             and max_wall_time_ms is None
