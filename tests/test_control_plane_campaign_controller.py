@@ -46,6 +46,7 @@ from research_automation.control_plane.evidence_learning import (
 from research_automation.control_plane.campaign_context import (
     OperationalCycleContextJournal,
 )
+from research_automation.control_plane.memory import CommittedLearningLedgerReader
 from research_automation.control_plane.campaign_freeze import (
     CycleFreezeError,
     OperationalCycleFreezeJournal,
@@ -782,6 +783,7 @@ def _completed_eligible_information_gain(
     root,
     journal,
     *,
+    test_case: unittest.TestCase,
     campaign_id: str,
     max_cycles: int = 2,
 ):
@@ -830,11 +832,44 @@ def _completed_eligible_information_gain(
         execution_usage=usage,
         learning_commit_receipt=learning,
     )
+    reader_patch = patch.object(
+        CommittedLearningLedgerReader,
+        "read_projection_input",
+        return_value=_projectable_learning_input(packet_hash),
+    )
+    reader_patch.start()
+    test_case.addCleanup(reader_patch.stop)
     information_gain = controller.record_information_gain(
         execution=execution,
         settlement_receipt=settlement,
     )
     return controller, execution, information_gain
+
+
+def _projectable_learning_input(packet_hash: str) -> dict[str, object]:
+    return {
+        "schema_version": "control_plane.committed_learning_input.v1",
+        "claims": [
+            {
+                "claim_id": packet_hash,
+                "kind": "NEGATIVE",
+                "execution_identity": "synthetic-execution",
+                "semantic_identity": "synthetic-semantic",
+                "conclusion": "AVOID",
+                "scope": _scope(generation="generation-1"),
+                "audit_grade": "PASS",
+                "evidence_grade": "UNSPECIFIED",
+                "evidence_refs": [],
+                "taint_refs": [],
+                "invalidation_codes": [],
+                "reopen_predicates": [],
+                "parent_claim_ids": [],
+                "directional_status": "avoid",
+                "universal_factor_rejection": False,
+            }
+        ],
+        "excluded_claims": [],
+    }
 
 
 def _completed_no_material_information_gain(
@@ -11055,6 +11090,13 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 execution_usage=usage,
                 learning_commit_receipt=learning,
             )
+            reader_patch = patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(packet_hash),
+            )
+            reader_patch.start()
+            self.addCleanup(reader_patch.stop)
 
             information_gain = controller.record_information_gain(
                 execution=execution,
@@ -11936,6 +11978,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12010,6 +12053,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12087,6 +12131,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                     max_cycles=1,
                 )
@@ -12152,6 +12197,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                     max_cycles=3,
                 )
@@ -12292,6 +12338,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                     max_cycles=3,
                 )
@@ -12426,6 +12473,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12505,6 +12553,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12571,6 +12620,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12655,6 +12705,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         _completed_eligible_information_gain(
                             root,
                             journal,
+                            test_case=self,
                             campaign_id=campaign_id,
                         )
                     )
@@ -12690,6 +12741,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )
@@ -12728,6 +12780,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                     max_cycles=3,
                 )
@@ -12759,6 +12812,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 _completed_eligible_information_gain(
                     root,
                     journal,
+                    test_case=self,
                     campaign_id=campaign_id,
                 )
             )

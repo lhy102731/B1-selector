@@ -109,6 +109,33 @@ def _content_sha256(domain: bytes, canonical_text: str) -> str:
     ).hexdigest()
 
 
+def _projection_input_snapshot(
+    value: object,
+) -> tuple[dict[str, object], str]:
+    projection_text, frozen_projection = _canonical_snapshot(
+        value,
+        "projection_input",
+        maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+    )
+    if (
+        not isinstance(frozen_projection, dict)
+        or set(frozen_projection)
+        != {"schema_version", "claims", "excluded_claims"}
+        or frozen_projection.get("schema_version")
+        != "control_plane.committed_learning_input.v1"
+        or not isinstance(frozen_projection.get("claims"), list)
+        or not isinstance(frozen_projection.get("excluded_claims"), list)
+    ):
+        raise ValueError("projection_input has an invalid field contract")
+    return (
+        frozen_projection,
+        _content_sha256(
+            b"control_plane.committed_learning_input.v1",
+            projection_text,
+        ),
+    )
+
+
 def _tokenizer_ref(tokenizer_name: str | None) -> str | None:
     if tokenizer_name is None:
         return None
@@ -522,28 +549,7 @@ class OperationalCycleContextJournal:
         projection_input = CommittedLearningLedgerReader(
             self._repository_root
         ).read_projection_input()
-        projection_text, frozen_projection = _canonical_snapshot(
-            projection_input,
-            "projection_input",
-            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
-        )
-        if (
-            not isinstance(frozen_projection, dict)
-            or set(frozen_projection)
-            != {"schema_version", "claims", "excluded_claims"}
-            or frozen_projection.get("schema_version")
-            != "control_plane.committed_learning_input.v1"
-            or not isinstance(frozen_projection.get("claims"), list)
-            or not isinstance(frozen_projection.get("excluded_claims"), list)
-        ):
-            raise ValueError("projection_input has an invalid field contract")
-        return (
-            frozen_projection,
-            _content_sha256(
-                b"control_plane.committed_learning_input.v1",
-                projection_text,
-            ),
-        )
+        return _projection_input_snapshot(projection_input)
 
     def prepare(
         self,

@@ -45,6 +45,7 @@ from .campaign import (
 from .campaign_context import (
     CycleContextReceipt,
     OperationalCycleContextJournal,
+    _projection_input_snapshot,
     canonical_campaign_proposal,
 )
 from .evidence_learning import (
@@ -69,6 +70,7 @@ from .campaign_lifecycle import (
     OperationalCampaignLifecycle,
     _CYCLE_TRANSITIONED,
 )
+from .memory import CommittedLearningLedgerReader
 from .campaign_roster import (
     OperationalRosterJournal,
     RosterCompletion,
@@ -2369,9 +2371,15 @@ class OperationalCampaignController:
                         receipt=resolved_settlement,
                     )
                 )
-                information_gain_status = "ELIGIBLE_LEARNING_COMMITTED"
-                continuation_eligible = True
-                disposition_reason = None
+                (
+                    information_gain_status,
+                    continuation_eligible,
+                    disposition_reason,
+                ) = self._classify_learning_information_gain(
+                    connection,
+                    cycle_id=cycle_id,
+                    packet_hash=packet_hash,
+                )
             else:
                 disposition_reason, settled_sequence = (
                     self._replay_no_learning_settlement_receipt_in_transaction(
@@ -2489,6 +2497,75 @@ class OperationalCampaignController:
             return receipt
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    def _classify_learning_information_gain(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        packet_hash: str,
+    ) -> tuple[str, bool, str | None]:
+        projection_input, current_projection_sha256 = (
+            _projection_input_snapshot(
+                CommittedLearningLedgerReader(
+                    self._context._repository_root
+                ).read_projection_input()
+            )
+        )
+        matching_claims = [
+            claim
+            for claim in projection_input["claims"]
+            if claim.get("claim_id") == packet_hash
+        ]
+        matching_excluded = [
+            claim
+            for claim in projection_input["excluded_claims"]
+            if claim.get("claim_id") == packet_hash
+        ]
+        if (
+            not matching_claims
+            and len(matching_excluded) == 1
+            and matching_excluded[0].get("reason_codes")
+            == ["P5_PACKET_NOT_PROJECTABLE"]
+        ):
+            return (
+                "LEARNING_PACKET_NOT_PROJECTABLE",
+                False,
+                "P5_PACKET_NOT_PROJECTABLE",
+            )
+        if len(matching_claims) != 1 or matching_excluded:
+            raise CampaignJournalError(
+                "committed Learning packet projection conflicts"
+            )
+        context = self._context._replay_context(
+            self._context._context_events(connection, cycle_id)
+        )
+        baseline_sha256 = context.projection_input_sha256
+        if current_projection_sha256 == baseline_sha256:
+            return (
+                "LEARNING_PACKET_NOT_NOVEL",
+                False,
+                "DUPLICATE_LEARNING_PACKET",
+            )
+        counterfactual_projection = {
+            "schema_version": projection_input["schema_version"],
+            "claims": [
+                claim
+                for claim in projection_input["claims"]
+                if claim.get("claim_id") != packet_hash
+            ],
+            "excluded_claims": projection_input["excluded_claims"],
+        }
+        _, counterfactual_sha256 = _projection_input_snapshot(
+            counterfactual_projection
+        )
+        if counterfactual_sha256 != baseline_sha256:
+            return (
+                "LEARNING_PACKET_NOT_NOVEL",
+                False,
+                "DUPLICATE_LEARNING_PACKET",
+            )
+        return "ELIGIBLE_LEARNING_COMMITTED", True, None
 
     def decide_next_cycle(
         self,
@@ -4942,9 +5019,15 @@ class OperationalCampaignController:
                     receipt=settlement,
                 )
             )
-            expected_status = "ELIGIBLE_LEARNING_COMMITTED"
-            expected_continuation = True
-            expected_disposition = None
+            (
+                expected_status,
+                expected_continuation,
+                expected_disposition,
+            ) = self._classify_learning_information_gain(
+                connection,
+                cycle_id=cycle_id,
+                packet_hash=packet_hash,
+            )
         else:
             expected_disposition, settled_sequence = (
                 self._replay_no_learning_settlement_receipt_in_transaction(

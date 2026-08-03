@@ -98,6 +98,87 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             controller_fixtures._PROVIDER_CALL_COUNTER_PATHS.discard(path)
         self._owned_provider_call_counter_paths.clear()
 
+    def _complete_authority_learning_cycle(
+        self,
+        *,
+        controller: OperationalCampaignController,
+        journal,
+        root: Path,
+        cycle_id: str,
+        cycle_number: int,
+        claim_scope: dict[str, object],
+        report: dict[str, object],
+        binding: object,
+        artifact: dict[str, object],
+    ):
+        prompt = {
+            "instruction": f"Return Authority-bound artifact for {cycle_id}"
+        }
+        execution_spec, member = _execution_spec_and_member(prompt)
+        prepared = controller.prepare_cycle(
+            task=ExperimentTask(
+                task_id=cycle_id,
+                strategy="b1",
+                proposal={
+                    "hypothesis": f"Synthetic finding for Cycle {cycle_number}",
+                    "scope": claim_scope,
+                },
+                source="synthetic-test",
+            ),
+            cycle_number=cycle_number,
+            execution_spec=execution_spec,
+            roster_members=(member,),
+            reservation_limits=_RESERVATION_LIMITS,
+        )
+        execution = controller.start_execution(
+            cycle_id=prepared.cycle_id,
+            acquisition_id=f"execute-{cycle_id}",
+        )
+        controller.invoke_member_json(
+            execution=execution,
+            member_id=member.member_id,
+            provider=self._new_owned_fake_provider(
+                _AuthorityEvidenceArtifactBoundFakeProvider,
+                artifact,
+            ),
+            prompt=prompt,
+            limits=_FAKE_CALL_LIMITS,
+        )
+        usage = controller.complete_model_execution(execution=execution)
+        evidence = controller.record_model_evidence(
+            execution=execution,
+            member_id=member.member_id,
+            evidence_adapter=EvidenceAdapter(
+                known_runners={"fixture-runner": "1.0.0"},
+                approved_protocol=artifact["executed_protocol"],
+                approved_claim=artifact["claim"],
+            ),
+        )
+        with patch(
+            "research_automation.control_plane.evidence_learning."
+            "AuthorityReader.verify_task_report_binding",
+            return_value=binding,
+        ):
+            learning = controller.commit_learning(
+                execution=execution,
+                evidence_receipt=evidence,
+                authority_task_report=report,
+                learning_commit_sink=CampaignLearningCommitSink(
+                    journal=journal,
+                    service=LearningCommitService(repository_root=root),
+                ),
+            )
+            settlement = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settlement,
+            )
+        return prepared, execution, learning, information_gain
+
     def test_provider_call_counters_are_owned_by_test_instance(self) -> None:
         paths_before = set(controller_fixtures._PROVIDER_CALL_COUNTER_PATHS)
         provider = self._new_owned_fake_provider(
@@ -143,6 +224,233 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             )
         finally:
             foreign_owner.doCleanups()
+
+    def test_unprojectable_learning_packet_cannot_authorize_next_cycle(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-unprojectable-learning"
+        claim_scope = _scope(generation="generation-1")
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                evidence_fixtures.EvidenceLearningVerticalSliceTests()
+                ._authority_fixture(
+                    root,
+                    claim={"kind": "NEGATIVE"},
+                    protocol=_protocol().model_dump(mode="json"),
+                )
+            )
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-unprojectable", 211, 211_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                _, execution, learning, information_gain = (
+                    self._complete_authority_learning_cycle(
+                        controller=controller,
+                        journal=journal,
+                        root=root,
+                        cycle_id="cycle-001",
+                        cycle_number=1,
+                        claim_scope=claim_scope,
+                        report=report,
+                        binding=binding,
+                        artifact=artifact,
+                    )
+                )
+                projection_input = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+                decision = controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=information_gain,
+                )
+
+            self.assertEqual(projection_input["claims"], [])
+            self.assertEqual(
+                projection_input["excluded_claims"],
+                [
+                    {
+                        "claim_id": learning.packet_hash,
+                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                    }
+                ],
+            )
+            self.assertEqual(
+                information_gain.information_gain_status,
+                "LEARNING_PACKET_NOT_PROJECTABLE",
+            )
+            self.assertFalse(information_gain.continuation_eligible)
+            self.assertEqual(
+                information_gain.disposition_reason,
+                "P5_PACKET_NOT_PROJECTABLE",
+            )
+            self.assertEqual(
+                information_gain.learning_packet_hash,
+                learning.packet_hash,
+            )
+            self.assertEqual(decision.decision, "STOP")
+            self.assertFalse(decision.continuation_allowed)
+            self.assertTrue(
+                (
+                    root
+                    / "research_state/control_plane/learning_packets"
+                    / f"{learning.packet_hash}.json"
+                ).is_file()
+            )
+
+    def test_reused_packet_hash_does_not_count_as_new_information(self) -> None:
+        campaign_id = "campaign-controller-reused-learning-packet"
+        claim_scope = _scope(generation="generation-1")
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic reusable scoped finding",
+            "scope": json.dumps(
+                claim_scope,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "parent_lineage": [],
+            "reopen_predicate": "[]",
+            "future_usage_guidance": (
+                '{"conclusion":"AVOID","directional_status":"avoid"}'
+            ),
+        }
+        budget_limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=3,
+            max_input_tokens=300,
+            max_output_tokens=150,
+            max_cost="3",
+            max_wall_time_ms=_FAKE_CALL_LIMITS.max_wall_time_ms * 3,
+            max_tool_attempts=6,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                evidence_fixtures.EvidenceLearningVerticalSliceTests()
+                ._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_protocol().model_dump(mode="json"),
+                )
+            )
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=budget_limits,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-reused-packet", 212, 212_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                    3_000_000,
+                    4_000_000,
+                    5_000_000,
+                ),
+            )
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                (
+                    first_prepared,
+                    first_execution,
+                    first_learning,
+                    first_information_gain,
+                ) = (
+                    self._complete_authority_learning_cycle(
+                        controller=controller,
+                        journal=journal,
+                        root=root,
+                        cycle_id="cycle-001",
+                        cycle_number=1,
+                        claim_scope=claim_scope,
+                        report=report,
+                        binding=binding,
+                        artifact=artifact,
+                    )
+                )
+                first_decision = controller.decide_next_cycle(
+                    execution=first_execution,
+                    information_gain_receipt=first_information_gain,
+                )
+                (
+                    second_prepared,
+                    second_execution,
+                    second_learning,
+                    second_information_gain,
+                ) = self._complete_authority_learning_cycle(
+                    controller=controller,
+                    journal=journal,
+                    root=root,
+                    cycle_id="cycle-002",
+                    cycle_number=2,
+                    claim_scope=claim_scope,
+                    report=report,
+                    binding=binding,
+                    artifact=artifact,
+                )
+                replayed_information_gain = controller.record_information_gain(
+                    execution=second_execution,
+                )
+                second_decision = controller.decide_next_cycle(
+                    execution=second_execution,
+                    information_gain_receipt=second_information_gain,
+                )
+                projection_input = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+            self.assertEqual(first_decision.decision, "CONTINUE")
+            self.assertEqual(
+                first_information_gain.information_gain_status,
+                "ELIGIBLE_LEARNING_COMMITTED",
+            )
+            self.assertTrue(first_information_gain.continuation_eligible)
+            self.assertNotEqual(
+                second_prepared.context.projection_input_sha256,
+                first_prepared.context.projection_input_sha256,
+            )
+            self.assertEqual(
+                [claim["claim_id"] for claim in projection_input["claims"]],
+                [first_learning.packet_hash],
+            )
+            self.assertEqual(
+                second_learning.packet_hash,
+                first_learning.packet_hash,
+            )
+            self.assertEqual(replayed_information_gain, second_information_gain)
+            self.assertEqual(
+                second_information_gain.information_gain_status,
+                "LEARNING_PACKET_NOT_NOVEL",
+            )
+            self.assertFalse(second_information_gain.continuation_eligible)
+            self.assertEqual(
+                second_information_gain.disposition_reason,
+                "DUPLICATE_LEARNING_PACKET",
+            )
+            self.assertEqual(
+                second_information_gain.learning_packet_hash,
+                first_learning.packet_hash,
+            )
+            self.assertEqual(second_decision.decision, "STOP")
+            self.assertFalse(second_decision.continuation_allowed)
 
     def test_committed_cycle_one_learning_enters_recovered_cycle_two_context(
         self,
@@ -268,6 +576,12 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             self.assertEqual(first_settlement.currency, "USD")
             self.assertEqual(controller.budget_snapshot().currency, "USD")
             self.assertEqual(first_evidence.evidence, expected_evidence)
+            self.assertEqual(
+                first_information_gain.information_gain_status,
+                "ELIGIBLE_LEARNING_COMMITTED",
+            )
+            self.assertTrue(first_information_gain.continuation_eligible)
+            self.assertIsNone(first_information_gain.disposition_reason)
             self.assertEqual(first_decision.decision, "CONTINUE")
             ledger_claims = CommittedLearningLedgerReader(root).read_claims()
             self.assertEqual(
