@@ -326,6 +326,69 @@ def _transaction(*, repository_root, allowed_files, **kwargs):
 
 
 class MutationTransactionVerticalSliceTests(unittest.TestCase):
+    @staticmethod
+    def _bounded_process_fixture(stdout: bytes):
+        class FakeProcess:
+            def __init__(self) -> None:
+                self.returncode = 0
+                self.stdout = BytesIO(stdout)
+                self.stderr = BytesIO(b"stderr")
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                del timeout
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        return FakeProcess()
+
+    def test_bounded_process_closes_output_streams_after_success(self):
+        from research_automation.control_plane.mutation import (
+            _run_bounded_process,
+        )
+
+        process = self._bounded_process_fixture(b"stdout")
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "research_automation.control_plane.mutation.subprocess.Popen",
+            return_value=process,
+        ):
+            _run_bounded_process(
+                ("synthetic",),
+                cwd=Path(tmp),
+                env={},
+                timeout_seconds=1,
+                output_limit_bytes=1024,
+            )
+
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    def test_bounded_process_closes_output_streams_after_rejection(self):
+        from research_automation.control_plane.mutation import (
+            MutationRejected,
+            _run_bounded_process,
+        )
+
+        process = self._bounded_process_fixture(b"xx")
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "research_automation.control_plane.mutation.subprocess.Popen",
+            return_value=process,
+        ), self.assertRaisesRegex(MutationRejected, "output exceeded limit"):
+            _run_bounded_process(
+                ("synthetic",),
+                cwd=Path(tmp),
+                env={},
+                timeout_seconds=1,
+                output_limit_bytes=1,
+            )
+
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
     def test_traversal_patch_is_rejected_without_touching_source_tree(self):
         from research_automation.control_plane.mutation import (
             MutationRejected,

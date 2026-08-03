@@ -114,60 +114,82 @@ def _run_bounded_process(
     except OSError as error:
         raise MutationRejected(f"{operation_label} unavailable") from error
     assert process.stdout is not None and process.stderr is not None
-    overflow = threading.Event()
-    stream_results: dict[str, tuple[str, bytes]] = {}
-    stream_errors: list[BaseException] = []
-
-    def consume(name: str, stream) -> None:
-        try:
-            stream_results[name] = _stream_sha256(
-                stream,
-                output_limit_bytes,
-                overflow,
-                capture_stdout_bytes if name == "stdout" else 0,
-            )
-        except (OSError, ValueError) as error:
-            stream_errors.append(error)
-
-    readers = (
-        threading.Thread(target=consume, args=("stdout", process.stdout), daemon=True),
-        threading.Thread(target=consume, args=("stderr", process.stderr), daemon=True),
-    )
-    for reader in readers:
-        reader.start()
-    deadline = time.monotonic() + timeout_seconds
-    failure: str | None = None
-    while process.poll() is None:
-        if overflow.is_set():
-            failure = f"{operation_label} output exceeded limit"
-            break
-        if time.monotonic() >= deadline:
-            failure = f"{operation_label} timed out"
-            break
-        overflow.wait(0.02)
-    if failure is not None:
-        process.kill()
+    streams = (process.stdout, process.stderr)
     try:
-        returncode = process.wait(timeout=5)
-    except subprocess.TimeoutExpired as error:
-        process.kill()
-        raise MutationRejected(f"{operation_label} process did not stop") from error
-    for reader in readers:
-        reader.join(timeout=5)
-    if any(reader.is_alive() for reader in readers):
-        raise MutationRejected(f"{operation_label} output stream did not close")
-    if stream_errors:
-        raise MutationRejected(f"{operation_label} output stream failed") from stream_errors[0]
-    if failure is None and overflow.is_set():
-        failure = f"{operation_label} output exceeded limit"
-    if failure is not None:
-        raise MutationRejected(failure)
-    return _BoundedProcessResult(
-        returncode=returncode,
-        stdout_sha256=stream_results["stdout"][0],
-        stderr_sha256=stream_results["stderr"][0],
-        stdout_sample=stream_results["stdout"][1],
-    )
+        overflow = threading.Event()
+        stream_results: dict[str, tuple[str, bytes]] = {}
+        stream_errors: list[BaseException] = []
+
+        def consume(name: str, stream) -> None:
+            try:
+                stream_results[name] = _stream_sha256(
+                    stream,
+                    output_limit_bytes,
+                    overflow,
+                    capture_stdout_bytes if name == "stdout" else 0,
+                )
+            except (OSError, ValueError) as error:
+                stream_errors.append(error)
+
+        readers = (
+            threading.Thread(
+                target=consume,
+                args=("stdout", process.stdout),
+                daemon=True,
+            ),
+            threading.Thread(
+                target=consume,
+                args=("stderr", process.stderr),
+                daemon=True,
+            ),
+        )
+        for reader in readers:
+            reader.start()
+        deadline = time.monotonic() + timeout_seconds
+        failure: str | None = None
+        while process.poll() is None:
+            if overflow.is_set():
+                failure = f"{operation_label} output exceeded limit"
+                break
+            if time.monotonic() >= deadline:
+                failure = f"{operation_label} timed out"
+                break
+            overflow.wait(0.02)
+        if failure is not None:
+            process.kill()
+        try:
+            returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired as error:
+            process.kill()
+            raise MutationRejected(
+                f"{operation_label} process did not stop"
+            ) from error
+        for reader in readers:
+            reader.join(timeout=5)
+        if any(reader.is_alive() for reader in readers):
+            raise MutationRejected(
+                f"{operation_label} output stream did not close"
+            )
+        if stream_errors:
+            raise MutationRejected(
+                f"{operation_label} output stream failed"
+            ) from stream_errors[0]
+        if failure is None and overflow.is_set():
+            failure = f"{operation_label} output exceeded limit"
+        if failure is not None:
+            raise MutationRejected(failure)
+        return _BoundedProcessResult(
+            returncode=returncode,
+            stdout_sha256=stream_results["stdout"][0],
+            stderr_sha256=stream_results["stderr"][0],
+            stdout_sample=stream_results["stdout"][1],
+        )
+    finally:
+        for stream in streams:
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
 
 
 def _canonical_relative_path(value: str) -> str:
