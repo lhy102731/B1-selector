@@ -6,6 +6,7 @@ runner metadata and never opens market data, KBase content, or raw logs.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -13,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sqlite3
 import tempfile
 import time
@@ -41,6 +43,186 @@ _LEARNING_ALLOWED_FILES = frozenset(
         "research_state/control_plane/learning_packets/",
     }
 )
+_LEARNING_SNAPSHOT_SUFFIXES = ("", "-wal", "-journal")
+_LEARNING_SNAPSHOT_COPY_CHUNK_BYTES = 1024 * 1024
+_LEARNING_EVENTS_CREATE_SQL = (
+    "CREATE TABLE IF NOT EXISTS learning_commit_events ("
+    "sequence INTEGER PRIMARY KEY, packet_hash TEXT NOT NULL UNIQUE, "
+    "actor_id TEXT NOT NULL, previous_event_sha256 TEXT NOT NULL, "
+    "event_sha256 TEXT NOT NULL UNIQUE)"
+)
+_LEARNING_HEAD_CREATE_SQL = (
+    "CREATE TABLE IF NOT EXISTS learning_commit_head ("
+    "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+    "head_sequence INTEGER NOT NULL, head_event_sha256 TEXT NOT NULL)"
+)
+_LEARNING_EVENTS_SCHEMA_SQL = _LEARNING_EVENTS_CREATE_SQL.replace(
+    " IF NOT EXISTS",
+    "",
+)
+_LEARNING_HEAD_SCHEMA_SQL = _LEARNING_HEAD_CREATE_SQL.replace(
+    " IF NOT EXISTS",
+    "",
+)
+_LEARNING_JOURNAL_SCHEMA = (
+    (
+        "index",
+        "sqlite_autoindex_learning_commit_events_1",
+        "learning_commit_events",
+        None,
+    ),
+    (
+        "index",
+        "sqlite_autoindex_learning_commit_events_2",
+        "learning_commit_events",
+        None,
+    ),
+    (
+        "table",
+        "learning_commit_events",
+        "learning_commit_events",
+        _LEARNING_EVENTS_SCHEMA_SQL,
+    ),
+    (
+        "table",
+        "learning_commit_head",
+        "learning_commit_head",
+        _LEARNING_HEAD_SCHEMA_SQL,
+    ),
+)
+
+
+def _learning_journal_is_empty(connection: sqlite3.Connection) -> bool:
+    try:
+        schema = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "ORDER BY type, name"
+            )
+        )
+    except sqlite3.Error as error:
+        raise ValueError("learning commit journal is invalid") from error
+    if not schema:
+        return True
+    if schema != _LEARNING_JOURNAL_SCHEMA:
+        raise ValueError("learning commit journal is invalid")
+    return False
+
+
+def _capture_learning_journal_candidate(
+    journal: Path,
+    candidate_directory: Path,
+) -> tuple[Path, tuple[tuple[bool, int, str | None], ...]]:
+    """Stream one bounded-memory main/recovery-sidecar candidate to disk."""
+
+    snapshot = candidate_directory / "learning_commit.sqlite3"
+    signatures: list[tuple[bool, int, str | None]] = []
+    try:
+        candidate_directory.mkdir()
+        for suffix in _LEARNING_SNAPSHOT_SUFFIXES:
+            source = Path(f"{journal}{suffix}")
+            destination = Path(f"{snapshot}{suffix}")
+            try:
+                source_stream = source.open("rb")
+            except FileNotFoundError:
+                signatures.append((False, 0, None))
+                continue
+            with source_stream, destination.open("xb") as destination_stream:
+                digest = hashlib.sha256()
+                size = 0
+                while True:
+                    chunk = source_stream.read(
+                        _LEARNING_SNAPSHOT_COPY_CHUNK_BYTES
+                    )
+                    if not chunk:
+                        break
+                    destination_stream.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+            signatures.append((True, size, digest.hexdigest()))
+    except OSError as error:
+        raise ValueError("learning commit journal is invalid") from error
+    if not signatures or not signatures[0][0]:
+        raise ValueError("learning commit journal is invalid")
+    return snapshot, tuple(signatures)
+
+
+def _stable_learning_journal_snapshot(
+    journal: Path,
+    temporary_root: Path,
+) -> Path:
+    """Capture stable main/WAL/journal bytes without opening the source."""
+
+    previous_directory = temporary_root / "candidate-0"
+    _, previous_signature = (
+        _capture_learning_journal_candidate(journal, previous_directory)
+    )
+    for candidate_number in range(1, 4):
+        current_directory = temporary_root / f"candidate-{candidate_number}"
+        current_snapshot, current_signature = (
+            _capture_learning_journal_candidate(journal, current_directory)
+        )
+        if current_signature == previous_signature:
+            try:
+                shutil.rmtree(previous_directory)
+            except OSError as error:
+                raise ValueError(
+                    "learning commit journal is invalid"
+                ) from error
+            return current_snapshot
+        try:
+            shutil.rmtree(previous_directory)
+        except OSError as error:
+            raise ValueError("learning commit journal is invalid") from error
+        previous_directory = current_directory
+        previous_signature = current_signature
+    raise ValueError("learning commit journal is invalid")
+
+
+@contextmanager
+def _open_learning_journal_snapshot(journal: Path):
+    """Recover and query a stable private snapshot without opening the source."""
+
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="learning-journal-snapshot-"
+        ) as temporary:
+            snapshot = _stable_learning_journal_snapshot(
+                journal,
+                Path(temporary),
+            )
+            connection = None
+            try:
+                connection = sqlite3.connect(snapshot.as_uri(), uri=True)
+                connection.execute("PRAGMA schema_version").fetchone()
+                connection.execute("PRAGMA query_only=ON")
+                if (
+                    connection.execute("PRAGMA query_only").fetchone()
+                    != (1,)
+                ):
+                    connection.close()
+                    raise ValueError("learning commit journal is invalid")
+            except sqlite3.Error as error:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except sqlite3.Error:
+                        pass
+                raise ValueError(
+                    "learning commit journal is invalid"
+                ) from error
+            try:
+                yield connection
+            finally:
+                try:
+                    connection.close()
+                except sqlite3.Error as error:
+                    raise ValueError(
+                        "learning commit journal is invalid"
+                    ) from error
+    except OSError as error:
+        raise ValueError("learning commit journal is invalid") from error
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -661,31 +843,40 @@ class LearningCommitService:
         )
         directory = self._root / "research_state/control_plane/learning_packets"
         journal = directory.parent / "learning_commit.sqlite3"
-        if journal.exists() and journal.stat().st_size:
-            self.rebuild_ledger()
-        directory.mkdir(parents=True, exist_ok=True)
+        journal.parent.mkdir(parents=True, exist_ok=True)
         path = directory / f"{digest}.json"
         connection = sqlite3.connect(journal, timeout=30)
         try:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS learning_commit_events ("
-                "sequence INTEGER PRIMARY KEY, packet_hash TEXT NOT NULL UNIQUE, "
-                "actor_id TEXT NOT NULL, previous_event_sha256 TEXT NOT NULL, "
-                "event_sha256 TEXT NOT NULL UNIQUE)"
-            )
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS learning_commit_head ("
-                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
-                "head_sequence INTEGER NOT NULL, head_event_sha256 TEXT NOT NULL)"
-            )
-            connection.execute(
-                "INSERT OR IGNORE INTO learning_commit_head"
-                "(singleton_id, head_sequence, head_event_sha256) VALUES (1, 0, ?)",
-                (_ZERO_SHA256,),
-            )
-            connection.commit()
             connection.execute("BEGIN IMMEDIATE")
-            orphan_hashes = self.rebuild_ledger()["orphan_packet_hashes"]
+            bootstrapping = _learning_journal_is_empty(connection)
+            if bootstrapping:
+                connection.execute(_LEARNING_EVENTS_CREATE_SQL)
+                connection.execute(_LEARNING_HEAD_CREATE_SQL)
+                connection.execute(
+                    "INSERT OR IGNORE INTO learning_commit_head"
+                    "(singleton_id, head_sequence, head_event_sha256) "
+                    "VALUES (1, 0, ?)",
+                    (_ZERO_SHA256,),
+                )
+                if _learning_journal_is_empty(connection):
+                    raise ValueError("learning commit journal is invalid")
+            if bootstrapping:
+                orphan_hashes = []
+                if directory.exists():
+                    for packet_path in sorted(directory.glob("*.json")):
+                        packet_digest = packet_path.stem
+                        if re.fullmatch(r"[0-9a-f]{64}", packet_digest) is None:
+                            raise ValueError("learning packet filename is invalid")
+                        if (
+                            hashlib.sha256(packet_path.read_bytes()).hexdigest()
+                            != packet_digest
+                        ):
+                            raise ValueError("learning packet is tampered")
+                        orphan_hashes.append(packet_digest)
+            else:
+                orphan_hashes = self.rebuild_ledger()[
+                    "orphan_packet_hashes"
+                ]
             if orphan_hashes and orphan_hashes != [digest]:
                 raise ValueError(
                     "unresolved learning packet orphan blocks commit"
@@ -695,9 +886,12 @@ class LearningCommitService:
                 (digest,),
             ).fetchone()
             if existing is None:
-                head_sequence, previous_sha256 = connection.execute(
+                head = connection.execute(
                     "SELECT head_sequence, head_event_sha256 FROM learning_commit_head WHERE singleton_id = 1"
                 ).fetchone()
+                if head is None:
+                    raise ValueError("learning commit journal is invalid")
+                head_sequence, previous_sha256 = head
                 next_sequence = int(head_sequence) + 1
                 previous_order = None
                 trusted_seen = False
@@ -739,6 +933,7 @@ class LearningCommitService:
                     raise ValueError(
                         "Learning Commit Authority order is not append-only"
                     )
+                directory.mkdir(parents=True, exist_ok=True)
                 _durable_create_only(path, raw)
                 event_payload = {
                     "schema_version": "control_plane.learning_commit_event.v2",
@@ -769,6 +964,9 @@ class LearningCommitService:
                     (next_sequence, event_sha256, head_sequence, previous_sha256),
                 )
             connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
         finally:
             connection.close()
         return digest
@@ -781,21 +979,31 @@ class LearningCommitService:
         sequences: list[int] = []
         authority_order_keys: list[str] = []
         if journal.exists():
-            connection = sqlite3.connect(f"file:{journal.as_posix()}?mode=ro", uri=True)
-            try:
-                connection.execute("BEGIN")
-                rows = connection.execute(
-                    "SELECT sequence, packet_hash, actor_id, "
-                    "previous_event_sha256, event_sha256 "
-                    "FROM learning_commit_events ORDER BY sequence"
-                ).fetchall()
-                head = connection.execute(
-                    "SELECT head_sequence, head_event_sha256 FROM learning_commit_head WHERE singleton_id = 1"
-                ).fetchone()
-            except sqlite3.Error as error:
-                raise ValueError("learning commit journal is invalid") from error
-            finally:
-                connection.close()
+            with _open_learning_journal_snapshot(journal) as connection:
+                try:
+                    connection.execute("BEGIN")
+                    journal_is_empty = _learning_journal_is_empty(connection)
+                    if not journal_is_empty:
+                        rows = connection.execute(
+                            "SELECT sequence, packet_hash, actor_id, "
+                            "previous_event_sha256, event_sha256 "
+                            "FROM learning_commit_events ORDER BY sequence"
+                        ).fetchall()
+                        head = connection.execute(
+                            "SELECT head_sequence, head_event_sha256 "
+                            "FROM learning_commit_head WHERE singleton_id = 1"
+                        ).fetchone()
+                        if head is None:
+                            raise ValueError(
+                                "learning commit journal is invalid"
+                            )
+                    else:
+                        rows = []
+                        head = (0, _ZERO_SHA256)
+                except sqlite3.Error as error:
+                    raise ValueError(
+                        "learning commit journal is invalid"
+                    ) from error
             previous_sha256 = _ZERO_SHA256
             trusted_seen = False
             for (

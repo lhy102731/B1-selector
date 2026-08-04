@@ -741,6 +741,672 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
                 ).exists()
             )
 
+    def test_noncanonical_learning_journal_fails_closed_before_packet_writes(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        mutations = {
+            "extra_column": (
+                "ALTER TABLE learning_commit_events ADD COLUMN shadow TEXT"
+            ),
+            "extra_table": "CREATE TABLE unexpected_state (value TEXT)",
+            "missing_expected_table": "DROP TABLE learning_commit_head",
+            "user_index": (
+                "CREATE INDEX learning_commit_actor_idx "
+                "ON learning_commit_events(actor_id)"
+            ),
+            "user_trigger": (
+                "CREATE TRIGGER learning_commit_events_audit "
+                "AFTER INSERT ON learning_commit_events BEGIN "
+                "UPDATE learning_commit_head "
+                "SET head_sequence = head_sequence; END"
+            ),
+            "user_view": (
+                "CREATE VIEW learning_commit_event_view AS "
+                "SELECT sequence FROM learning_commit_events"
+            ),
+            "missing_head_singleton": "DELETE FROM learning_commit_head",
+        }
+        for label, mutation_sql in mutations.items():
+            with self.subTest(variant=label), TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                report, binding, _, _, _ = self._authority_fixture(root)
+                journal = (
+                    root
+                    / "research_state/control_plane/learning_commit.sqlite3"
+                )
+                journal.parent.mkdir(parents=True, exist_ok=True)
+                connection = sqlite3.connect(journal)
+                connection.execute(
+                    "CREATE TABLE learning_commit_events ("
+                    "sequence INTEGER PRIMARY KEY, "
+                    "packet_hash TEXT NOT NULL UNIQUE, "
+                    "actor_id TEXT NOT NULL, "
+                    "previous_event_sha256 TEXT NOT NULL, "
+                    "event_sha256 TEXT NOT NULL UNIQUE)"
+                )
+                connection.execute(
+                    "CREATE TABLE learning_commit_head ("
+                    "singleton_id INTEGER PRIMARY KEY "
+                    "CHECK(singleton_id = 1), "
+                    "head_sequence INTEGER NOT NULL, "
+                    "head_event_sha256 TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                    ("0" * 64,),
+                )
+                connection.execute(mutation_sql)
+                connection.commit()
+                connection.close()
+                original = journal.read_bytes()
+                service = LearningCommitService(repository_root=root)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "learning commit journal is invalid",
+                ):
+                    service.rebuild_ledger()
+                self.assertEqual(original, journal.read_bytes())
+                with patch(
+                    "research_automation.control_plane.evidence_learning."
+                    "AuthorityReader.verify_task_report_binding",
+                    return_value=binding,
+                ):
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "learning commit journal is invalid",
+                    ):
+                        service.commit(report)
+                self.assertEqual(original, journal.read_bytes())
+                self.assertFalse(
+                    (
+                        root
+                        / "research_state/control_plane/learning_packets"
+                    ).exists()
+                )
+
+    def test_uncheckpointed_invalid_wal_journal_has_no_side_effects(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        for directory_name in ("repository#fragment", "repository%23literal"):
+            with self.subTest(directory_name=directory_name), TemporaryDirectory() as tmp:
+                parent = Path(tmp)
+                source = parent / "source"
+                source.mkdir()
+                source_journal = source / "learning_commit.sqlite3"
+                writer = sqlite3.connect(source_journal)
+                writer.execute(
+                    "CREATE TABLE learning_commit_events ("
+                    "sequence INTEGER PRIMARY KEY, "
+                    "packet_hash TEXT NOT NULL UNIQUE, "
+                    "actor_id TEXT NOT NULL, "
+                    "previous_event_sha256 TEXT NOT NULL, "
+                    "event_sha256 TEXT NOT NULL UNIQUE)"
+                )
+                writer.execute(
+                    "CREATE TABLE learning_commit_head ("
+                    "singleton_id INTEGER PRIMARY KEY "
+                    "CHECK(singleton_id = 1), "
+                    "head_sequence INTEGER NOT NULL, "
+                    "head_event_sha256 TEXT NOT NULL)"
+                )
+                writer.execute(
+                    "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                    ("0" * 64,),
+                )
+                writer.commit()
+                self.assertEqual(
+                    "wal",
+                    writer.execute("PRAGMA journal_mode=WAL").fetchone()[0],
+                )
+                writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                writer.execute("PRAGMA wal_autocheckpoint=0")
+                reader = sqlite3.connect(source_journal)
+                reader.execute("BEGIN")
+                reader.execute("SELECT * FROM learning_commit_head").fetchone()
+                writer.execute("CREATE TABLE injected_only_in_wal (value TEXT)")
+                writer.commit()
+
+                root = parent / directory_name
+                journal = (
+                    root
+                    / "research_state/control_plane/learning_commit.sqlite3"
+                )
+                journal.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source_journal, journal)
+                shutil.copyfile(
+                    Path(f"{source_journal}-wal"),
+                    Path(f"{journal}-wal"),
+                )
+                immutable_probe = sqlite3.connect(
+                    f"{journal.as_uri()}?mode=ro&immutable=1",
+                    uri=True,
+                )
+                try:
+                    self.assertIsNone(
+                        immutable_probe.execute(
+                            "SELECT name FROM sqlite_master "
+                            "WHERE name = 'injected_only_in_wal'"
+                        ).fetchone()
+                    )
+                finally:
+                    immutable_probe.close()
+
+                def snapshot_tree():
+                    snapshot = {".": ("directory", None)}
+                    for path in sorted(root.rglob("*")):
+                        relative = path.relative_to(root).as_posix()
+                        snapshot[relative] = (
+                            ("directory", None)
+                            if path.is_dir()
+                            else ("file", path.read_bytes())
+                        )
+                    return snapshot
+
+                self.assertEqual(
+                    [
+                        "research_state/control_plane/learning_commit.sqlite3",
+                        "research_state/control_plane/learning_commit.sqlite3-wal",
+                    ],
+                    sorted(
+                        path.relative_to(root).as_posix()
+                        for path in root.rglob("*")
+                        if path.is_file()
+                    ),
+                )
+                before = snapshot_tree()
+
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError,
+                        "^learning commit journal is invalid$",
+                    ):
+                        LearningCommitService(
+                            repository_root=root
+                        ).rebuild_ledger()
+
+                    self.assertEqual(snapshot_tree(), before)
+                finally:
+                    reader.close()
+                    writer.close()
+
+    def test_rebuild_recovers_private_delete_journal_snapshot(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repository#rollback"
+            journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            journal.parent.mkdir(parents=True)
+            writer = sqlite3.connect(journal)
+            try:
+                self.assertEqual(
+                    "delete",
+                    writer.execute(
+                        "PRAGMA journal_mode=DELETE"
+                    ).fetchone()[0],
+                )
+                writer.execute(
+                    "CREATE TABLE learning_commit_events ("
+                    "sequence INTEGER PRIMARY KEY, "
+                    "packet_hash TEXT NOT NULL UNIQUE, "
+                    "actor_id TEXT NOT NULL, "
+                    "previous_event_sha256 TEXT NOT NULL, "
+                    "event_sha256 TEXT NOT NULL UNIQUE)"
+                )
+                writer.execute(
+                    "CREATE TABLE learning_commit_head ("
+                    "singleton_id INTEGER PRIMARY KEY "
+                    "CHECK(singleton_id = 1), "
+                    "head_sequence INTEGER NOT NULL, "
+                    "head_event_sha256 TEXT NOT NULL)"
+                )
+                writer.execute(
+                    "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                    ("0" * 64,),
+                )
+                packet = {
+                    "schema_version": "control_plane.learning_packet.v1",
+                    "claim": {"kind": "NEGATIVE"},
+                    "evidence_refs": [],
+                    "access_event_refs": [],
+                    "taint_refs": [],
+                    "audit_grade": "PASS",
+                    "invalidation_codes": [],
+                }
+                packet_raw = canonical_bytes(packet)
+                packet_hash = hashlib.sha256(packet_raw).hexdigest()
+                packet_directory = journal.parent / "learning_packets"
+                packet_directory.mkdir()
+                (packet_directory / f"{packet_hash}.json").write_bytes(
+                    packet_raw
+                )
+                event_payload = {
+                    "schema_version": (
+                        "control_plane.learning_commit_event.v1"
+                    ),
+                    "sequence": 1,
+                    "packet_hash": packet_hash,
+                    "actor_id": "legacy-runner",
+                    "previous_event_sha256": "0" * 64,
+                }
+                event_hash = hashlib.sha256(
+                    b"control_plane.learning_commit_event.v1\0"
+                    + canonical_bytes(event_payload)
+                ).hexdigest()
+                writer.execute(
+                    "INSERT INTO learning_commit_events "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        1,
+                        packet_hash,
+                        "legacy-runner",
+                        "0" * 64,
+                        event_hash,
+                    ),
+                )
+                writer.execute(
+                    "UPDATE learning_commit_head SET head_sequence = 1, "
+                    "head_event_sha256 = ? WHERE singleton_id = 1",
+                    (event_hash,),
+                )
+                writer.commit()
+
+                def snapshot_tree():
+                    return {
+                        path.relative_to(root).as_posix(): (
+                            ("directory", None)
+                            if path.is_dir()
+                            else ("file", path.read_bytes())
+                        )
+                        for path in root.rglob("*")
+                    }
+
+                committed_tree = snapshot_tree()
+                committed_ledger = {
+                    "event_count": 1,
+                    "sequences": [1],
+                    "legacy_unaudited_packet_hashes": [packet_hash],
+                    "orphan_packet_hashes": [],
+                }
+                writer.execute("PRAGMA cache_size=1")
+                writer.execute("PRAGMA cache_spill=ON")
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute(
+                    "UPDATE learning_commit_head SET head_sequence = 2, "
+                    "head_event_sha256 = ? WHERE singleton_id = 1",
+                    ("f" * 64,),
+                )
+                writer.execute(
+                    "SELECT COUNT(*) FROM learning_commit_events"
+                ).fetchone()
+                rollback_journal = Path(f"{journal}-journal")
+                self.assertTrue(rollback_journal.is_file())
+                self.assertGreater(rollback_journal.stat().st_size, 512)
+                self.assertNotEqual(
+                    committed_tree[
+                        "research_state/control_plane/learning_commit.sqlite3"
+                    ][1],
+                    journal.read_bytes(),
+                )
+
+                active_tree = snapshot_tree()
+                service = LearningCommitService(repository_root=root)
+                ledger = service.rebuild_ledger()
+                self.assertEqual(active_tree, snapshot_tree())
+                for key, expected in committed_ledger.items():
+                    self.assertEqual(expected, ledger[key])
+
+                writer.rollback()
+                self.assertEqual(committed_tree, snapshot_tree())
+                after_rollback_tree = snapshot_tree()
+                ledger = service.rebuild_ledger()
+                self.assertEqual(after_rollback_tree, snapshot_tree())
+                for key, expected in committed_ledger.items():
+                    self.assertEqual(expected, ledger[key])
+            finally:
+                writer.rollback()
+                writer.close()
+
+    def test_rebuild_streams_large_journal_snapshot_in_bounded_chunks(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            journal.parent.mkdir(parents=True)
+            connection = sqlite3.connect(journal)
+            try:
+                connection.execute(
+                    "CREATE TABLE learning_commit_events ("
+                    "sequence INTEGER PRIMARY KEY, "
+                    "packet_hash TEXT NOT NULL UNIQUE, "
+                    "actor_id TEXT NOT NULL, "
+                    "previous_event_sha256 TEXT NOT NULL, "
+                    "event_sha256 TEXT NOT NULL UNIQUE)"
+                )
+                connection.execute(
+                    "CREATE TABLE learning_commit_head ("
+                    "singleton_id INTEGER PRIMARY KEY "
+                    "CHECK(singleton_id = 1), "
+                    "head_sequence INTEGER NOT NULL, "
+                    "head_event_sha256 TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                    ("0" * 64,),
+                )
+                connection.execute(
+                    "WITH RECURSIVE rows(value) AS ("
+                    "VALUES(1) UNION ALL SELECT value + 1 FROM rows "
+                    "WHERE value < 2500) "
+                    "INSERT INTO learning_commit_events "
+                    "SELECT value, printf('%064x', value), "
+                    "hex(zeroblob(1024)), ?, printf('%064x', value + 2500) "
+                    "FROM rows",
+                    ("0" * 64,),
+                )
+                connection.execute("DELETE FROM learning_commit_events")
+                connection.commit()
+            finally:
+                connection.close()
+            self.assertGreater(journal.stat().st_size, 2 * 1024 * 1024)
+
+            original_open = Path.open
+            requested_read_sizes = []
+
+            class ObservedReader:
+                def __init__(self, delegate):
+                    self._delegate = delegate
+
+                def read(self, size=-1):
+                    requested_read_sizes.append(size)
+                    return self._delegate.read(size)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self._delegate.close()
+
+            def observed_open(path, *args, **kwargs):
+                stream = original_open(path, *args, **kwargs)
+                if path == journal and args and args[0] == "rb":
+                    return ObservedReader(stream)
+                return stream
+
+            with patch.object(Path, "open", observed_open):
+                ledger = LearningCommitService(
+                    repository_root=root
+                ).rebuild_ledger()
+
+            self.assertEqual(0, ledger["event_count"])
+            self.assertGreater(len(requested_read_sizes), 4)
+            self.assertTrue(
+                all(
+                    0 < requested_size <= 1024 * 1024
+                    for requested_size in requested_read_sizes
+                )
+            )
+
+    def test_rebuild_retries_until_latest_journal_snapshot_is_stable(self):
+        from research_automation.control_plane import evidence_learning as module
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            journal.parent.mkdir(parents=True)
+            connection = sqlite3.connect(journal)
+            connection.execute(module._LEARNING_EVENTS_CREATE_SQL)
+            connection.execute(module._LEARNING_HEAD_CREATE_SQL)
+            connection.execute(
+                "INSERT INTO learning_commit_head VALUES (1, 1, ?)",
+                ("0" * 64,),
+            )
+            connection.commit()
+            connection.close()
+
+            capture = module._capture_learning_journal_candidate
+            signatures = []
+
+            def capture_after_one_source_change(source, destination):
+                snapshot, signature = capture(source, destination)
+                signatures.append(signature)
+                if len(signatures) == 1:
+                    writer = sqlite3.connect(source)
+                    writer.execute(
+                        "UPDATE learning_commit_head SET head_sequence = 0 "
+                        "WHERE singleton_id = 1"
+                    )
+                    writer.commit()
+                    writer.close()
+                return snapshot, signature
+
+            with patch.object(
+                module,
+                "_capture_learning_journal_candidate",
+                side_effect=capture_after_one_source_change,
+            ):
+                ledger = module.LearningCommitService(
+                    repository_root=root
+                ).rebuild_ledger()
+
+            self.assertEqual(0, ledger["event_count"])
+            self.assertEqual(3, len(signatures))
+            self.assertNotEqual(signatures[0], signatures[1])
+            self.assertEqual(signatures[1], signatures[2])
+
+    def test_rebuild_fails_closed_when_every_snapshot_capture_changes(self):
+        from research_automation.control_plane import evidence_learning as module
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            journal.parent.mkdir(parents=True)
+            connection = sqlite3.connect(journal)
+            connection.execute(module._LEARNING_EVENTS_CREATE_SQL)
+            connection.execute(module._LEARNING_HEAD_CREATE_SQL)
+            connection.execute(
+                "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                ("0" * 64,),
+            )
+            connection.commit()
+            connection.close()
+
+            def source_tree():
+                return {
+                    path.relative_to(root).as_posix(): (
+                        ("directory", None)
+                        if path.is_dir()
+                        else ("file", path.read_bytes())
+                    )
+                    for path in root.rglob("*")
+                }
+
+            before = source_tree()
+            original_journal = journal.read_bytes()
+            capture = module._capture_learning_journal_candidate
+            signatures = []
+
+            def capture_during_continuous_changes(source, destination):
+                snapshot, signature = capture(source, destination)
+                signatures.append(signature)
+                if len(signatures) < 4:
+                    writer = sqlite3.connect(source)
+                    writer.execute(
+                        f"PRAGMA user_version={len(signatures)}"
+                    )
+                    writer.close()
+                else:
+                    source.write_bytes(original_journal)
+                return snapshot, signature
+
+            with patch.object(
+                module,
+                "_capture_learning_journal_candidate",
+                side_effect=capture_during_continuous_changes,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "^learning commit journal is invalid$",
+                ):
+                    module.LearningCommitService(
+                        repository_root=root
+                    ).rebuild_ledger()
+
+            self.assertEqual(4, len(signatures))
+            self.assertTrue(
+                all(
+                    earlier != later
+                    for earlier, later in zip(signatures, signatures[1:])
+                )
+            )
+            self.assertEqual(before, source_tree())
+
+    def test_rebuild_replays_committed_live_wal_event_and_head(self):
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            source_journal = parent / "source.sqlite3"
+            writer = sqlite3.connect(source_journal)
+            writer.execute(
+                "CREATE TABLE learning_commit_events ("
+                "sequence INTEGER PRIMARY KEY, packet_hash TEXT NOT NULL UNIQUE, "
+                "actor_id TEXT NOT NULL, previous_event_sha256 TEXT NOT NULL, "
+                "event_sha256 TEXT NOT NULL UNIQUE)"
+            )
+            writer.execute(
+                "CREATE TABLE learning_commit_head ("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id = 1), "
+                "head_sequence INTEGER NOT NULL, head_event_sha256 TEXT NOT NULL)"
+            )
+            writer.execute(
+                "INSERT INTO learning_commit_head VALUES (1, 0, ?)",
+                ("0" * 64,),
+            )
+            writer.commit()
+            self.assertEqual(
+                "wal",
+                writer.execute("PRAGMA journal_mode=WAL").fetchone()[0],
+            )
+            writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            writer.execute("PRAGMA wal_autocheckpoint=0")
+            reader = sqlite3.connect(source_journal)
+            reader.execute("BEGIN")
+            reader.execute("SELECT * FROM learning_commit_head").fetchone()
+
+            packet = {
+                "schema_version": "control_plane.learning_packet.v1",
+                "claim": {"kind": "NEGATIVE"},
+                "evidence_refs": [],
+                "access_event_refs": [],
+                "taint_refs": [],
+                "audit_grade": "PASS",
+                "invalidation_codes": [],
+            }
+            packet_raw = canonical_bytes(packet)
+            packet_hash = hashlib.sha256(packet_raw).hexdigest()
+            event_payload = {
+                "schema_version": "control_plane.learning_commit_event.v1",
+                "sequence": 1,
+                "packet_hash": packet_hash,
+                "actor_id": "legacy-runner",
+                "previous_event_sha256": "0" * 64,
+            }
+            event_hash = hashlib.sha256(
+                b"control_plane.learning_commit_event.v1\0"
+                + canonical_bytes(event_payload)
+            ).hexdigest()
+            writer.execute(
+                "INSERT INTO learning_commit_events VALUES (?, ?, ?, ?, ?)",
+                (1, packet_hash, "legacy-runner", "0" * 64, event_hash),
+            )
+            writer.execute(
+                "UPDATE learning_commit_head SET head_sequence = 1, "
+                "head_event_sha256 = ? WHERE singleton_id = 1",
+                (event_hash,),
+            )
+            writer.commit()
+
+            root = parent / "repository#live"
+            packet_dir = root / "research_state/control_plane/learning_packets"
+            packet_dir.mkdir(parents=True)
+            (packet_dir / f"{packet_hash}.json").write_bytes(packet_raw)
+            journal = root / "research_state/control_plane/learning_commit.sqlite3"
+            shutil.copyfile(source_journal, journal)
+            shutil.copyfile(
+                Path(f"{source_journal}-wal"),
+                Path(f"{journal}-wal"),
+            )
+            immutable_probe = sqlite3.connect(
+                f"{journal.as_uri()}?mode=ro&immutable=1",
+                uri=True,
+            )
+            try:
+                self.assertEqual(
+                    (0, "0" * 64),
+                    immutable_probe.execute(
+                        "SELECT head_sequence, head_event_sha256 "
+                        "FROM learning_commit_head WHERE singleton_id = 1"
+                    ).fetchone(),
+                )
+            finally:
+                immutable_probe.close()
+            before = {
+                path.relative_to(root).as_posix(): (
+                    ("directory", None)
+                    if path.is_dir()
+                    else ("file", path.read_bytes())
+                )
+                for path in root.rglob("*")
+            }
+
+            try:
+                ledger = LearningCommitService(
+                    repository_root=root
+                ).rebuild_ledger()
+                after = {
+                    path.relative_to(root).as_posix(): (
+                        ("directory", None)
+                        if path.is_dir()
+                        else ("file", path.read_bytes())
+                    )
+                    for path in root.rglob("*")
+                }
+            finally:
+                reader.close()
+                writer.close()
+
+            self.assertEqual(1, ledger["event_count"])
+            self.assertEqual(
+                [packet_hash],
+                ledger["legacy_unaudited_packet_hashes"],
+            )
+            self.assertEqual([], ledger["orphan_packet_hashes"])
+            self.assertEqual(before, after)
+
     def test_populated_v1_journal_remains_legacy_unaudited_before_v2_append(self):
         from research_automation.control_plane.evidence_learning import LearningCommitService
 
@@ -1286,6 +1952,196 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
             (root / "research_state/control_plane/learning_commit.sqlite3").unlink()
             self.assertEqual(service.rebuild_ledger()["orphan_packet_hashes"], [packet_hash])
 
+    def test_first_commit_bootstrap_crash_rolls_back_for_exact_retry(self):
+        from research_automation.control_plane import evidence_learning as module
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report, binding, _, _, _ = self._authority_fixture(root)
+            service = LearningCommitService(repository_root=root)
+            journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            original_connect = module.sqlite3.connect
+            crashed = False
+
+            class CrashBetweenBootstrapTables:
+                def __init__(self, delegate):
+                    self._delegate = delegate
+
+                def execute(self, statement, *args, **kwargs):
+                    nonlocal crashed
+                    if (
+                        not crashed
+                        and "CREATE TABLE IF NOT EXISTS learning_commit_head"
+                        in statement
+                    ):
+                        crashed = True
+                        raise RuntimeError("synthetic bootstrap crash")
+                    return self._delegate.execute(statement, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._delegate, name)
+
+            def connect(*args, **kwargs):
+                return CrashBetweenBootstrapTables(
+                    original_connect(*args, **kwargs)
+                )
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ), patch.object(
+                module.sqlite3,
+                "connect",
+                side_effect=connect,
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "synthetic bootstrap crash",
+                ):
+                    service.commit(report)
+
+            probe = sqlite3.connect(
+                f"file:{journal.as_posix()}?mode=ro",
+                uri=True,
+            )
+            try:
+                user_tables = {
+                    row[0]
+                    for row in probe.execute(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+            finally:
+                probe.close()
+            self.assertEqual(user_tables, set())
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                packet_hash = service.commit(report)
+                ledger = service.rebuild_ledger()
+            self.assertEqual(ledger["packet_hashes"], [packet_hash])
+            self.assertEqual(ledger["orphan_packet_hashes"], [])
+
+    def test_concurrent_first_commits_wait_for_atomic_journal_bootstrap(self):
+        from research_automation.control_plane import evidence_learning as module
+        from research_automation.control_plane.evidence_learning import (
+            LearningCommitService,
+        )
+        from research_automation.control_plane.task_reports import (
+            task_report_v2_payload_sha256,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_report, first_binding, _, _, _ = self._authority_fixture(root)
+            second_report = deepcopy(first_report)
+            second_report["ticket_id"] = "ticket-learning-002"
+            second_report["idempotency_key"] = "p4-learning-commit-002"
+            second_report["completed_at"] = "2026-07-30T08:02:00Z"
+            second_report["report_payload_sha256"] = (
+                task_report_v2_payload_sha256(second_report)
+            )
+            second_binding = SimpleNamespace(
+                ticket_id=second_report["ticket_id"],
+                report_payload_sha256=second_report["report_payload_sha256"],
+                actor_id=first_binding.actor_id,
+                allowed_side_effects=first_binding.allowed_side_effects,
+                ticket_state="SUCCEEDED",
+                terminal_evidence_ref=first_binding.terminal_evidence_ref,
+            )
+            bindings = {
+                first_report["ticket_id"]: first_binding,
+                second_report["ticket_id"]: second_binding,
+            }
+            service = LearningCommitService(repository_root=root)
+            original_connect = module.sqlite3.connect
+            first_thread_id: list[int] = []
+            second_thread_id: list[int] = []
+            first_between_tables = Event()
+            release_first = Event()
+            second_begin_attempted = Event()
+
+            class BootstrapBarrierConnection:
+                def __init__(self, delegate):
+                    self._delegate = delegate
+
+                def execute(self, statement, *args, **kwargs):
+                    thread_id = get_ident()
+                    normalized = " ".join(statement.split())
+                    if (
+                        first_thread_id
+                        and thread_id == first_thread_id[0]
+                        and "CREATE TABLE IF NOT EXISTS learning_commit_head"
+                        in normalized
+                    ):
+                        first_between_tables.set()
+                        if not release_first.wait(5):
+                            raise AssertionError(
+                                "timed out releasing first journal bootstrap"
+                            )
+                    if (
+                        second_thread_id
+                        and thread_id == second_thread_id[0]
+                        and normalized == "BEGIN IMMEDIATE"
+                    ):
+                        second_begin_attempted.set()
+                    return self._delegate.execute(statement, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._delegate, name)
+
+            def connect(*args, **kwargs):
+                return BootstrapBarrierConnection(
+                    original_connect(*args, **kwargs)
+                )
+
+            def commit_first():
+                first_thread_id.append(get_ident())
+                return service.commit(first_report)
+
+            def commit_second():
+                second_thread_id.append(get_ident())
+                return service.commit(second_report)
+
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                side_effect=lambda report: bindings[report["ticket_id"]],
+            ), patch.object(
+                module.sqlite3,
+                "connect",
+                side_effect=connect,
+            ):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    first = pool.submit(commit_first)
+                    self.assertTrue(first_between_tables.wait(5))
+                    second = pool.submit(commit_second)
+                    try:
+                        self.assertTrue(second_begin_attempted.wait(5))
+                        self.assertFalse(second.done())
+                    finally:
+                        release_first.set()
+                    first_hash = first.result(timeout=10)
+                    second_hash = second.result(timeout=10)
+
+                ledger = service.rebuild_ledger()
+            self.assertEqual(
+                ledger["packet_hashes"],
+                [first_hash, second_hash],
+            )
+            self.assertEqual(ledger["orphan_packet_hashes"], [])
+
     def test_preledger_orphan_blocks_later_commit_until_exact_retry(self):
         from research_automation.control_plane import evidence_learning as module
         from research_automation.control_plane.evidence_learning import (
@@ -1415,8 +2271,7 @@ class EvidenceLearningVerticalSliceTests(unittest.TestCase):
                     if (
                         second_thread_id
                         and get_ident() == second_thread_id[0]
-                        and "INSERT OR IGNORE INTO learning_commit_head"
-                        in statement
+                        and " ".join(statement.split()) == "BEGIN IMMEDIATE"
                     ):
                         second_write_attempted.set()
                     return self._delegate.execute(statement, *args, **kwargs)
