@@ -752,8 +752,7 @@ class OperationalCycleLeaseJournal:
             minimum=0,
         )
         if (
-            probe_started_monotonic_ns >= active.heartbeat_monotonic_ns
-            and probe_started_monotonic_ns - active.heartbeat_monotonic_ns
+            probe_started_monotonic_ns - active.heartbeat_monotonic_ns
             < stale_after_ns
         ):
             raise CycleLeaseConflictError("Cycle lease heartbeat is not stale")
@@ -787,8 +786,7 @@ class OperationalCycleLeaseJournal:
             minimum=0,
         )
         if (
-            recovery_monotonic_ns >= active.heartbeat_monotonic_ns
-            and recovery_monotonic_ns - active.heartbeat_monotonic_ns
+            recovery_monotonic_ns - active.heartbeat_monotonic_ns
             < stale_after_ns
         ):
             raise CycleLeaseConflictError("Cycle lease heartbeat is not stale")
@@ -1442,8 +1440,7 @@ class OperationalCycleLeaseJournal:
                 "Cycle lease replacement binding is invalid"
             ) from error
         is_stale = (
-            recovery_monotonic_ns < active.heartbeat_monotonic_ns
-            or recovery_monotonic_ns - active.heartbeat_monotonic_ns
+            recovery_monotonic_ns - active.heartbeat_monotonic_ns
             >= stale_after_ns
         )
         process_disproven = (

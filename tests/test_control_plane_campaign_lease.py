@@ -2690,6 +2690,137 @@ class OperationalCycleLeaseJournalTests(unittest.TestCase):
                 original,
             )
 
+    def test_recovery_rejects_a_backwards_monotonic_clock_without_replacement(self) -> None:
+        campaign_id = "campaign-lease-049"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            original = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity(
+                    host_id="host-a",
+                    pid=101,
+                    process_started_at_ns=1_000,
+                ),
+                monotonic_ns=lambda: 100,
+            ).acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            _start_executing_cycle(
+                journal=journal,
+                lifecycle=lifecycle,
+                lease=original,
+            )
+            probe_calls: list[tuple[str, int]] = []
+            recovery = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=ProcessIdentity(
+                    host_id="host-a",
+                    pid=202,
+                    process_started_at_ns=2_000,
+                ),
+                monotonic_ns=lambda: 50,
+                process_start_probe=lambda host_id, pid: (
+                    probe_calls.append((host_id, pid)) or None
+                ),
+            )
+
+            with self.assertRaises(CycleLeaseConflictError):
+                recovery.recover(
+                    cycle_id="cycle-001",
+                    acquisition_id="recover-cycle-001",
+                    stale_after_ns=50,
+                )
+
+            self.assertEqual(probe_calls, [])
+            self.assertEqual(
+                recovery.snapshot(cycle_id="cycle-001"),
+                original,
+            )
+            events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_LEASE",
+                aggregate_id="cycle-001",
+            )
+            self.assertEqual(len(events), 1)
+
+    def test_backwards_clock_replacement_history_is_rejected_and_blocks_campaign(self) -> None:
+        campaign_id = "campaign-lease-050"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            _freeze_cycle(lifecycle, cycle_id="cycle-001", cycle_number=1)
+            old_owner = ProcessIdentity(
+                host_id="host-a",
+                pid=101,
+                process_started_at_ns=1_000,
+            )
+            leases = OperationalCycleLeaseJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                owner=old_owner,
+                monotonic_ns=lambda: 100,
+            )
+            acquired = leases.acquire(
+                cycle_id="cycle-001",
+                acquisition_id="acquire-cycle-001",
+            )
+            new_owner = ProcessIdentity(
+                host_id="host-a",
+                pid=202,
+                process_started_at_ns=2_000,
+            )
+            new_lease_id = f"cyclelease_{'c' * 32}"
+            event_nonce = "b" * 64
+            event_id = _cycle_lease_event_id(
+                campaign_id=campaign_id,
+                cycle_id=acquired.cycle_id,
+                lease_id=acquired.lease_id,
+                role=f"replaced:{new_lease_id}:{event_nonce}",
+            )
+            journal.append(
+                event_id=event_id,
+                cycle_id=acquired.cycle_id,
+                aggregate_type="CYCLE_LEASE",
+                aggregate_id=acquired.cycle_id,
+                event_type="CYCLE_LEASE_REPLACED",
+                payload={
+                    "cycle_id": acquired.cycle_id,
+                    "old_lease_id": acquired.lease_id,
+                    "old_fencing_token": acquired.fencing_token,
+                    "old_owner": old_owner.to_payload(),
+                    "old_heartbeat_sequence": acquired.heartbeat_sequence,
+                    "old_heartbeat_monotonic_ns": (
+                        acquired.heartbeat_monotonic_ns
+                    ),
+                    "stale_after_ns": 50,
+                    "recovery_monotonic_ns": 50,
+                    "process_probe_result": "PROCESS_ABSENT",
+                    "observed_process_started_at_ns": None,
+                    "acquisition_id": "recover-cycle-001",
+                    "new_lease_id": new_lease_id,
+                    "new_fencing_token": acquired.fencing_token + 1,
+                    "new_owner": new_owner.to_payload(),
+                    "new_owner_observed_process_started_at_ns": (
+                        new_owner.process_started_at_ns
+                    ),
+                    "new_heartbeat_sequence": 0,
+                    "new_heartbeat_monotonic_ns": 50,
+                    "event_nonce": event_nonce,
+                },
+            )
+
+            with self.assertRaises(CycleLeaseIntegrityError):
+                leases.snapshot(cycle_id="cycle-001")
+
+            blocked = lifecycle.snapshot()
+            self.assertEqual(blocked.status, CampaignStatus.BLOCKED)
+            self.assertEqual(blocked.block_source_ref, event_id)
+
     def test_remote_host_lease_cannot_be_reaped_by_local_probe(self) -> None:
         campaign_id = "campaign-lease-016"
         with _authorized_campaign(campaign_id) as (_, journal):
