@@ -3,7 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import replace
 from decimal import Context, Inexact, Rounded, localcontext
-from threading import Barrier, Event
+from threading import Barrier, Event, get_ident
 import hashlib
 import json
 import multiprocessing
@@ -17,6 +17,8 @@ import unittest
 from unittest.mock import patch
 
 from research_automation.control_plane import campaign_controller as campaign_controller_module
+from research_automation.control_plane import campaign_context as campaign_context_module
+from research_automation.control_plane import campaign_freeze as campaign_freeze_module
 from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
     CycleReservationLimits,
@@ -44,11 +46,15 @@ from research_automation.control_plane.evidence_learning import (
     LearningCommitService,
 )
 from research_automation.control_plane.campaign_context import (
+    CycleContextConflictError,
+    CycleContextIntegrityError,
     OperationalCycleContextJournal,
 )
 from research_automation.control_plane.memory import CommittedLearningLedgerReader
 from research_automation.control_plane.campaign_freeze import (
+    CycleFreezeConflictError,
     CycleFreezeError,
+    CycleFreezeIntegrityError,
     OperationalCycleFreezeJournal,
 )
 from research_automation.control_plane.budget import (
@@ -56,6 +62,7 @@ from research_automation.control_plane.budget import (
     BudgetExceededError,
 )
 from research_automation.control_plane.campaign_lease import (
+    CycleLeaseIntegrityError,
     OperationalCycleLeaseJournal,
     ProcessIdentity,
 )
@@ -72,6 +79,7 @@ from research_automation.control_plane.campaign_store import (
     OperationalCampaignJournal,
     OperationalUsageJournal,
     _event_integrity_sha256,
+    _event_domain_payload,
 )
 from research_automation.control_plane.campaign_roster import (
     OperationalRosterJournal,
@@ -84,9 +92,12 @@ from research_automation.foundations.protocols import (
     compile_execution_spec,
 )
 from research_automation.task_queue import ExperimentTask
-from tests.test_control_plane_campaign_freeze import _protocol_member
+from tests.test_control_plane_campaign_freeze import (
+    _protocol_member,
+    _swap_and_resign_event_sequences,
+)
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
-from tests.test_control_plane_campaign_preflight import _scope
+from tests.test_control_plane_campaign_preflight import _claim, _scope
 from tests.test_control_plane_campaign_store import (
     NOW,
     ROOT_SECRET,
@@ -924,6 +935,32 @@ def _projectable_learning_input(
     }
 
 
+def _projectable_preflight_input(
+    *claims: dict[str, object],
+) -> dict[str, object]:
+    guidance = {
+        "NEGATIVE": ("AVOID", "avoid"),
+        "PARTIAL": ("REGIME_CONDITIONAL", "regime_conditional"),
+    }
+    projected_claims = []
+    for claim in claims:
+        conclusion, directional_status = guidance[str(claim["kind"])]
+        projected_claims.append(
+            {
+                **claim,
+                "conclusion": conclusion,
+                "evidence_refs": [],
+                "reopen_predicates": [],
+                "directional_status": directional_status,
+            }
+        )
+    return {
+        "schema_version": "control_plane.committed_learning_input.v1",
+        "claims": projected_claims,
+        "excluded_claims": [],
+    }
+
+
 def _excluded_learning_input(
     packet_hash: str,
     reason_code: str,
@@ -1108,6 +1145,117 @@ def _campaign_event_rows(root, campaign_id: str) -> tuple[tuple[object, ...], ..
         connection.close()
 
 
+def _learning_preflight_prepare_inputs(root, journal, *, hypothesis: str):
+    protocol = _protocol()
+    execution_spec = compile_execution_spec(
+        protocol,
+        approved_protocol=protocol,
+        approval=_approval(protocol),
+        amendment=None,
+    )
+    task = ExperimentTask(
+        task_id="cycle-001",
+        strategy="b1",
+        proposal={
+            "hypothesis": hypothesis,
+            "scope": _scope(generation="generation-1"),
+        },
+        source="synthetic-test",
+    )
+    controller = OperationalCampaignController(
+        journal=journal,
+        repository_root=root,
+        budget_limits=CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+            max_wall_time_ms=5_000,
+            max_tool_attempts=4,
+            max_data_exposures=1,
+            max_disk_growth_bytes=10_000,
+        ),
+        identity_provider=_FakeProcessIdentityProvider(
+            ProcessIdentity("host-learning-preflight", 141, 41_000)
+        ),
+        monotonic_ns=lambda: 100,
+    )
+    return (
+        controller,
+        task,
+        execution_spec,
+        (_protocol_member(),),
+        CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=20,
+            max_output_tokens=10,
+            max_cost="0.1",
+            max_wall_time_ms=1_000,
+            max_tool_attempts=1,
+            max_data_exposures=1,
+            max_disk_growth_bytes=1_000,
+        ),
+    )
+
+
+def _prepare_cycle_durable_snapshot(
+    root,
+    campaign_id: str,
+    journal,
+    controller: OperationalCampaignController,
+    *,
+    cycle_id: str,
+) -> dict[str, object]:
+    try:
+        cycle = controller.cycle_snapshot(cycle_id)
+    except CampaignLifecycleError:
+        cycle = None
+    return {
+        "all_events": _campaign_event_rows(root, campaign_id),
+        "budget": controller.budget_snapshot(),
+        "cycle_budget": controller.cycle_budget_snapshot(),
+        "cycle": cycle,
+        "work_item": journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="CAMPAIGN_WORK_ITEM",
+            aggregate_id=cycle_id,
+        ),
+        "context": journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="CYCLE_SAFE_CONTEXT",
+            aggregate_id=cycle_id,
+        ),
+        "roster": journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="CYCLE_ROSTER",
+            aggregate_id=cycle_id,
+        ),
+        "freeze": journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="CYCLE_INPUT_FREEZE",
+            aggregate_id=cycle_id,
+        ),
+        "preparation": journal.list_events(
+            cycle_id=cycle_id,
+            aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+            aggregate_id=cycle_id,
+        ),
+        "usage": OperationalUsageJournal(
+            journal=journal,
+            cycle_id=cycle_id,
+        ).list_attempts(),
+    }
+
+
+def _operational_table_bytes(root) -> tuple[bytes, ...]:
+    connection = sqlite3.connect(root / "operational.sqlite3")
+    try:
+        return tuple(line.encode("utf-8") for line in connection.iterdump())
+    finally:
+        connection.close()
+
+
 def _rewrite_campaign_event_payload(root, event, payload) -> None:
     payload_json = json.dumps(
         payload,
@@ -1138,6 +1286,135 @@ def _rewrite_campaign_event_payload(root, event, payload) -> None:
         connection.commit()
     finally:
         connection.close()
+
+
+def _graft_and_resign_preparation_context(
+    root,
+    journal,
+    *,
+    cycle_id: str,
+    context_proposal: dict[str, object],
+    freeze_proposal: dict[str, object],
+    preparation_work_item: dict[str, object] | None = None,
+) -> None:
+    context_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_SAFE_CONTEXT",
+        aggregate_id=cycle_id,
+    )[0]
+    context_payload = context_event.payload()
+    context_payload["proposal"] = context_proposal
+    proposal_text, _ = campaign_context_module._canonical_snapshot(
+        context_payload["proposal"],
+        "grafted context proposal",
+        maximum_bytes=16 * 1024 * 1024,
+    )
+    context_payload["proposal_sha256"] = (
+        campaign_context_module._content_sha256(
+            b"control_plane.cycle_context_proposal.v2",
+            proposal_text,
+        )
+    )
+    context_identity = {
+        key: value
+        for key, value in context_payload.items()
+        if key
+        not in {
+            "_authority_grant_id",
+            "manifest_sha256",
+            "safe_context",
+            "projection_input",
+            "proposal",
+            "untrusted_sources",
+        }
+    }
+    context_payload["manifest_sha256"] = (
+        campaign_context_module._content_sha256(
+            b"control_plane.cycle_context_receipt.v2",
+            campaign_context_module._canonical_snapshot(
+                context_identity,
+                "grafted context identity",
+                maximum_bytes=48 * 1024,
+            )[0],
+        )
+    )
+    _rewrite_campaign_event_payload(
+        root,
+        context_event,
+        context_payload,
+    )
+
+    freeze_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_INPUT_FREEZE",
+        aggregate_id=cycle_id,
+    )[0]
+    freeze_payload = freeze_event.payload()
+    freeze_payload["proposal_sha256"] = (
+        campaign_freeze_module._content_sha256(
+            b"control_plane.campaign_proposal.v1",
+            freeze_proposal,
+            "grafted frozen proposal",
+        )
+    )
+    freeze_payload["context_manifest_sha256"] = context_payload[
+        "manifest_sha256"
+    ]
+    freeze_identity = {
+        key: value
+        for key, value in freeze_payload.items()
+        if key not in {"_authority_grant_id", "manifest_sha256"}
+    }
+    freeze_payload["manifest_sha256"] = (
+        campaign_freeze_module._content_sha256(
+            campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+            freeze_identity,
+            "grafted Cycle freeze identity",
+        )
+    )
+    _rewrite_campaign_event_payload(
+        root,
+        freeze_event,
+        freeze_payload,
+    )
+
+    preparation_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+        aggregate_id=cycle_id,
+    )[0]
+    preparation_payload = preparation_event.payload()
+    if preparation_work_item is not None:
+        preparation_payload["work_item_sha256"] = _controller_sha256(
+            b"control_plane.controller_work_item_payload.v1",
+            {
+                key: value
+                for key, value in preparation_work_item.items()
+                if key != "_authority_grant_id"
+            },
+            "grafted stored Campaign work item",
+        )
+    preparation_payload["context_manifest_sha256"] = context_payload[
+        "manifest_sha256"
+    ]
+    preparation_payload["freeze_manifest_sha256"] = freeze_payload[
+        "manifest_sha256"
+    ]
+    preparation_identity = {
+        key: value
+        for key, value in preparation_payload.items()
+        if key not in {"_authority_grant_id", "manifest_sha256"}
+    }
+    preparation_payload["manifest_sha256"] = _controller_sha256(
+        b"control_plane.campaign_cycle_preparation.v2",
+        preparation_identity,
+        "grafted Cycle preparation identity",
+    )
+    _rewrite_campaign_event_payload(
+        root,
+        preparation_event,
+        preparation_payload,
+    )
 
 
 class OperationalCampaignControllerTests(unittest.TestCase):
@@ -3698,6 +3975,4153 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 ),
             )
 
+    def test_committed_hard_block_rejects_before_any_prepare_cycle_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-hard-preflight"
+        hypothesis = "Committed negative Learning blocks an exact execution"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            self.assertGreater(len(baseline["all_events"]), 0)
+            committed = _claim(
+                claim_id="committed-negative",
+                hypothesis=hypothesis,
+                scope=task.proposal["scope"],
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_preflight_input(committed),
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CycleFreezeError,
+                    "LEARNING_HARD_BLOCK",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_called_once_with()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+            self.assertEqual(baseline["usage"], ())
+
+    def test_committed_partial_rejects_before_any_prepare_cycle_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-scoped-preflight"
+        hypothesis = "Committed partial Learning blocks its covered scope"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            committed = _claim(
+                claim_id="committed-partial",
+                hypothesis=hypothesis,
+                scope=task.proposal["scope"],
+                kind="PARTIAL",
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_preflight_input(committed),
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CycleFreezeError,
+                    "LEARNING_SCOPED_BLOCK",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_called_once_with()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+            self.assertEqual(baseline["usage"], ())
+
+    def test_missing_work_item_cannot_adopt_a_created_cycle_shell(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-created-shell-admission"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A CREATED shell cannot be adopted by the controller",
+            )
+            controller._lifecycle.activate()
+            controller._cycle_budget.open_cycle(
+                lifecycle=controller._lifecycle,
+                cycle_id=task.task_id,
+                cycle_number=1,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.CREATED,
+            )
+            before = _operational_table_bytes(root)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_missing_work_item_cannot_adopt_valid_v2_context_ready_history(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-ready-without-work-item"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=(
+                    "A valid durable context cannot backfill controller admission"
+                ),
+            )
+            controller._lifecycle.activate()
+            controller._cycle_budget.open_cycle(
+                lifecycle=controller._lifecycle,
+                cycle_id=task.task_id,
+                cycle_number=1,
+            )
+            controller._lifecycle.advance_cycle(
+                cycle_id=task.task_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                controller._context.prepare(
+                    cycle_id=task.task_id,
+                    proposal=task.proposal,
+                    roles=tuple(
+                        sorted({member.role for member in roster_members})
+                    ),
+                )
+            context_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=task.task_id,
+            )[0]
+            self.assertEqual(
+                context_event.payload()["schema_version"],
+                "control_plane.cycle_context_receipt.v2",
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.CONTEXT_READY,
+            )
+            before = _operational_table_bytes(root)
+
+            with self.assertRaises(CampaignJournalError):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_admission_lock_replays_a_late_conflicting_work_item_before_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-late-conflicting-work-item"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Admission must bind the work item under its write lock",
+            )
+            _, conflicting_work_item = campaign_controller_module._canonical_task(
+                ExperimentTask(
+                    task_id=task.task_id,
+                    strategy=task.strategy,
+                    proposal={
+                        **task.proposal,
+                        "hypothesis": "A conflicting late-writer mechanism",
+                    },
+                    source=task.source,
+                    priority=task.priority,
+                ),
+                cycle_number=1,
+            )
+            conflicting_work_item["proposal"] = (
+                campaign_controller_module.canonical_campaign_proposal(
+                    conflicting_work_item["proposal"]
+                )
+            )
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            original_activate = OperationalCampaignLifecycle._activate_in_transaction
+            preflight_completed = False
+            inserted_baseline: list[tuple[bytes, ...]] = []
+            activation_calls = 0
+
+            def observed_preflight(**kwargs):
+                nonlocal preflight_completed
+                result = original_preflight(**kwargs)
+                self.assertEqual(result["verdict"], "WOULD_ACCEPT")
+                preflight_completed = True
+                return result
+
+            def late_writer_before_lock(unit_of_work, operation):
+                if operation.__name__ == "reserve_and_open":
+                    self.assertTrue(preflight_completed)
+                    self.assertEqual(
+                        controller.campaign_snapshot().status,
+                        CampaignStatus.CREATED,
+                    )
+                    journal.append(
+                        event_id=controller._work_item_event_id(task.task_id),
+                        cycle_id=task.task_id,
+                        aggregate_type="CAMPAIGN_WORK_ITEM",
+                        aggregate_id=task.task_id,
+                        event_type="CAMPAIGN_WORK_ITEM_ADOPTED",
+                        payload=conflicting_work_item,
+                    )
+                    inserted_baseline.append(_operational_table_bytes(root))
+                return original_write(unit_of_work, operation)
+
+            def observed_activate(lifecycle, connection):
+                nonlocal activation_calls
+                activation_calls += 1
+                return original_activate(lifecycle, connection)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=observed_preflight,
+            ), patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=late_writer_before_lock,
+            ), patch.object(
+                OperationalCampaignLifecycle,
+                "_activate_in_transaction",
+                new=observed_activate,
+            ):
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "^Campaign work item conflicts$",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(len(inserted_baseline), 1)
+            self.assertEqual(_operational_table_bytes(root), inserted_baseline[0])
+            self.assertEqual(activation_calls, 0)
+
+    def test_late_writer_resource_prefix_cannot_be_adopted_after_preflight(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-late-resource-prefix"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=(
+                    "A late resource reservation cannot skip Cycle-slot admission"
+                ),
+            )
+            _, work_item = campaign_controller_module._canonical_task(
+                task,
+                cycle_number=1,
+            )
+            work_item["proposal"] = (
+                campaign_controller_module.canonical_campaign_proposal(
+                    work_item["proposal"]
+                )
+            )
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            candidate_before_lock = Event()
+            late_writer_committed = Event()
+            release_candidate = Event()
+            candidate_thread_id: list[int] = []
+            late_writer_baseline: list[tuple[bytes, ...]] = []
+
+            def observed_preflight(**kwargs):
+                result = original_preflight(**kwargs)
+                self.assertEqual(result["verdict"], "WOULD_ACCEPT")
+                return result
+
+            def gated_write(unit_of_work, operation):
+                if (
+                    operation.__name__ == "reserve_and_open"
+                    and get_ident() == candidate_thread_id[0]
+                ):
+                    candidate_before_lock.set()
+                    if not release_candidate.wait(timeout=10):
+                        raise AssertionError("late writer did not release candidate")
+                    self.assertTrue(late_writer_committed.is_set())
+                return original_write(unit_of_work, operation)
+
+            def prepare_candidate():
+                candidate_thread_id.append(get_ident())
+                return controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            def write_illegal_prefix() -> None:
+                if not candidate_before_lock.wait(timeout=10):
+                    raise AssertionError("candidate did not reach admission boundary")
+
+                def append_prefix(connection) -> None:
+                    controller._adopt_work_item_in_transaction(
+                        connection,
+                        cycle_id=task.task_id,
+                        payload=work_item,
+                    )
+                    controller._budget._reserve_in_transaction(
+                        connection,
+                        reservation_id=controller._reservation_id(task.task_id),
+                        call_id=task.task_id,
+                        currency=reservation_limits.currency,
+                        max_input_tokens=reservation_limits.max_input_tokens,
+                        max_output_tokens=reservation_limits.max_output_tokens,
+                        max_cost=reservation_limits.max_cost,
+                        max_wall_time_ms=reservation_limits.max_wall_time_ms,
+                        max_tool_attempts=reservation_limits.max_tool_attempts,
+                        max_data_exposures=reservation_limits.max_data_exposures,
+                        max_disk_growth_bytes=(
+                            reservation_limits.max_disk_growth_bytes
+                        ),
+                    )
+
+                try:
+                    original_write(
+                        campaign_controller_module._SqliteUnitOfWork(
+                            campaign_controller_module.stores._operational_spec()
+                        ),
+                        append_prefix,
+                    )
+                    late_writer_baseline.append(_operational_table_bytes(root))
+                    late_writer_committed.set()
+                finally:
+                    release_candidate.set()
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=observed_preflight,
+            ) as preflight, patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=gated_write,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                candidate = executor.submit(prepare_candidate)
+                late_writer = executor.submit(write_illegal_prefix)
+                late_writer.result(timeout=10)
+                with self.assertRaises(CampaignJournalError):
+                    candidate.result(timeout=10)
+
+            preflight.assert_called_once()
+            self.assertTrue(late_writer_committed.is_set())
+            self.assertEqual(len(late_writer_baseline), 1)
+            self.assertEqual(
+                controller.cycle_budget_snapshot().reserved_cycle_ids,
+                (),
+            )
+            self.assertEqual(
+                _operational_table_bytes(root),
+                late_writer_baseline[0],
+            )
+
+    def test_settled_complete_admission_bundle_is_rejected_before_prepare_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settled-admission-bundle"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=(
+                    "A settled reservation cannot resume Cycle preparation"
+                ),
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch(
+                "research_automation.control_plane.campaign_context."
+                "OperationalCycleContextJournal._prepare_assembled",
+                side_effect=RuntimeError("synthetic crash before context"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "before context"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.BUDGET_RESERVED,
+            )
+            reservation_id = controller._reservation_id(task.task_id)
+            controller._budget.settle(
+                reservation_id,
+                currency=reservation_limits.currency,
+                input_tokens=0,
+                output_tokens=0,
+                cost="0",
+                wall_time_ms=0,
+                tool_attempts=0,
+                data_exposures=0,
+                disk_growth_bytes=0,
+            )
+            before = _operational_table_bytes(root)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.BUDGET_RESERVED,
+            )
+
+    def test_settlement_after_admission_blocks_context_write_without_pollution(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-settlement-before-context-write"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=(
+                    "Every preparation write revalidates its reservation"
+                ),
+            )
+            original_prepare = OperationalCycleContextJournal._prepare_assembled
+            settled_baseline: list[tuple[bytes, ...]] = []
+
+            def settle_before_context(context, assembled, **kwargs):
+                controller._budget.settle(
+                    controller._reservation_id(task.task_id),
+                    currency=reservation_limits.currency,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost="0",
+                    wall_time_ms=0,
+                    tool_attempts=0,
+                    data_exposures=0,
+                    disk_growth_bytes=0,
+                )
+                settled_baseline.append(_operational_table_bytes(root))
+                return original_prepare(context, assembled, **kwargs)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCycleContextJournal,
+                "_prepare_assembled",
+                new=settle_before_context,
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(len(settled_baseline), 1)
+            self.assertEqual(_operational_table_bytes(root), settled_baseline[0])
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.BUDGET_RESERVED,
+            )
+
+    def test_settlement_between_preparation_stages_blocks_the_next_write(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "before-roster",
+                OperationalRosterJournal,
+                0,
+            ),
+            (
+                "before-freeze",
+                OperationalCycleFreezeJournal,
+                1,
+            ),
+        )
+        for label, stage_owner, expected_roster_count in cases:
+            with self.subTest(boundary=label):
+                campaign_id = f"campaign-controller-settlement-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=(
+                            "Every durable preparation stage revalidates budget"
+                        ),
+                    )
+                    original_freeze = stage_owner.freeze
+                    settled_baseline: list[tuple[bytes, ...]] = []
+
+                    def settle_before_stage(stage, **kwargs):
+                        controller._budget.settle(
+                            controller._reservation_id(task.task_id),
+                            currency=reservation_limits.currency,
+                            input_tokens=0,
+                            output_tokens=0,
+                            cost="0",
+                            wall_time_ms=0,
+                            tool_attempts=0,
+                            data_exposures=0,
+                            disk_growth_bytes=0,
+                        )
+                        settled_baseline.append(_operational_table_bytes(root))
+                        return original_freeze(stage, **kwargs)
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ), patch.object(
+                        stage_owner,
+                        "freeze",
+                        new=settle_before_stage,
+                    ):
+                        with self.assertRaises(CampaignJournalError):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(len(settled_baseline), 1)
+                    self.assertEqual(
+                        _operational_table_bytes(root),
+                        settled_baseline[0],
+                    )
+                    self.assertEqual(
+                        controller.cycle_snapshot(task.task_id).status,
+                        CycleStatus.CONTEXT_READY,
+                    )
+                    self.assertEqual(
+                        len(
+                            journal.list_events(
+                                cycle_id=task.task_id,
+                                aggregate_type="CYCLE_ROSTER",
+                                aggregate_id=task.task_id,
+                            )
+                        ),
+                        expected_roster_count,
+                    )
+                    self.assertEqual(
+                        journal.list_events(
+                            cycle_id=task.task_id,
+                            aggregate_type="CYCLE_INPUT_FREEZE",
+                            aggregate_id=task.task_id,
+                        ),
+                        (),
+                    )
+
+    def test_early_artifact_prefix_is_rejected_before_context_write(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "roster",
+                "CYCLE_ROSTER",
+                "CYCLE_ROSTER_FROZEN",
+            ),
+            (
+                "freeze",
+                "CYCLE_INPUT_FREEZE",
+                "CYCLE_INPUTS_FROZEN",
+            ),
+        )
+        for label, aggregate_type, event_type in cases:
+            with self.subTest(prefix=label):
+                campaign_id = f"campaign-controller-early-{label}-prefix"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=(
+                            "Artifacts cannot precede their preparation stage"
+                        ),
+                    )
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ), patch.object(
+                        OperationalCycleContextJournal,
+                        "_prepare_assembled",
+                        side_effect=RuntimeError("synthetic pre-context crash"),
+                    ):
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "pre-context crash",
+                        ):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    event_id = (
+                        controller._roster._event_id(task.task_id, "freeze")
+                        if label == "roster"
+                        else controller._freeze._freeze_event_id(task.task_id)
+                    )
+                    journal.append(
+                        event_id=event_id,
+                        cycle_id=task.task_id,
+                        aggregate_type=aggregate_type,
+                        aggregate_id=task.task_id,
+                        event_type=event_type,
+                        payload={"invalid_early_prefix": label},
+                    )
+                    before = _operational_table_bytes(root)
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ):
+                        with self.assertRaises(RuntimeError):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(_operational_table_bytes(root), before)
+                    self.assertEqual(
+                        controller.cycle_snapshot(task.task_id).status,
+                        CycleStatus.BUDGET_RESERVED,
+                    )
+
+    def test_context_ready_roster_prefix_order_rejects_before_preflight(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-ready-roster-order"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Roster prefixes follow durable context readiness",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCycleFreezeJournal,
+                "freeze",
+                side_effect=RuntimeError("synthetic pre-freeze crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "pre-freeze crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            context_ready = next(
+                event
+                for event in journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_STATE",
+                    aggregate_id=task.task_id,
+                )
+                if event.payload().get("to_status") == CycleStatus.CONTEXT_READY.value
+            )
+            roster_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_ROSTER",
+                aggregate_id=task.task_id,
+            )[0]
+            _swap_and_resign_event_sequences(context_ready, roster_event)
+            before = _operational_table_bytes(root)
+            original_preflight = campaign_controller_module.run_campaign_preflight
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=AssertionError(
+                    "CONTEXT_READY recovery must not read live Learning"
+                ),
+            ) as live_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as controller_preflight:
+                with self.assertRaises(
+                    (CampaignJournalError, CycleFreezeIntegrityError)
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            live_reader.assert_not_called()
+            controller_preflight.assert_not_called()
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_context_ready_early_freeze_prefix_rejects_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-ready-early-freeze"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Freeze history cannot precede its freeze stage",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCycleFreezeJournal,
+                "freeze",
+                side_effect=RuntimeError("synthetic pre-freeze crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "pre-freeze crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            journal.append(
+                event_id=controller._freeze._freeze_event_id(task.task_id),
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=task.task_id,
+                event_type="CYCLE_INPUTS_FROZEN",
+                payload={"invalid_early_prefix": "freeze"},
+            )
+            before = _operational_table_bytes(root)
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=AssertionError(
+                    "invalid durable prefixes must reject before live Learning"
+                ),
+            ) as live_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=AssertionError(
+                    "invalid durable prefixes must reject before preflight"
+                ),
+            ) as controller_preflight:
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            live_reader.assert_not_called()
+            controller_preflight.assert_not_called()
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_context_ready_recovery_preflights_durable_claims_before_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-ready-durable-preflight"
+        hypothesis = "Durable blocked Learning cannot be adopted by recovery"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCycleContextJournal,
+                "_prepare_assembled",
+                side_effect=RuntimeError("synthetic pre-context crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "pre-context crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            blocked_claim = _claim(
+                claim_id="durable-context-hard-block",
+                hypothesis=hypothesis,
+                scope=task.proposal["scope"],
+            )
+            durable_projection = _projectable_preflight_input(blocked_claim)
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=durable_projection,
+            ):
+                controller._context.prepare(
+                    cycle_id=task.task_id,
+                    proposal=task.proposal,
+                    roles=tuple(
+                        sorted({member.role for member in roster_members})
+                    ),
+                )
+            before = _operational_table_bytes(root)
+            observed_claims: list[object] = []
+            original_preflight = campaign_controller_module.run_campaign_preflight
+
+            def observe_durable_preflight(**kwargs):
+                observed_claims.append(kwargs["committed_claims"])
+                return original_preflight(**kwargs)
+
+            live_read_error = AssertionError(
+                "CONTEXT_READY recovery must not read live Learning"
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=live_read_error,
+            ) as live_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=observe_durable_preflight,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                side_effect=AssertionError(
+                    "freeze preflight must not follow a durable rejection"
+                ),
+            ) as freeze_preflight:
+                with self.assertRaises(CycleFreezeConflictError) as caught:
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertIn("LEARNING_HARD_BLOCK", str(caught.exception))
+            live_reader.assert_not_called()
+            controller_preflight.assert_called_once()
+            freeze_preflight.assert_not_called()
+            self.assertEqual(observed_claims, [durable_projection["claims"]])
+            self.assertEqual(_operational_table_bytes(root), before)
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_ROSTER",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+
+    def test_executing_without_preparation_receipt_is_rejected_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-executing-without-preparation"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=(
+                    "Execution cannot precede its durable preparation receipt"
+                ),
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCampaignController,
+                "_record_cycle_preparation",
+                side_effect=RuntimeError("synthetic post-freeze crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "post-freeze crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+            controller._lifecycle.advance_cycle(
+                cycle_id=task.task_id,
+                expected_status=CycleStatus.FROZEN,
+                next_status=CycleStatus.EXECUTING,
+            )
+            before = _operational_table_bytes(root)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.EXECUTING,
+            )
+
+    def test_preparation_writer_revalidates_lifecycle_after_freeze(self) -> None:
+        cases = ("campaign-blocked", "cycle-executing")
+        for label in cases:
+            with self.subTest(boundary=label):
+                campaign_id = f"campaign-controller-preparation-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=(
+                            "Preparation receipts require the frozen active boundary"
+                        ),
+                    )
+                    original_write = (
+                        campaign_controller_module._SqliteUnitOfWork._write
+                    )
+                    mutated = False
+                    mutation_baseline: list[tuple[bytes, ...]] = []
+
+                    def mutate_before_preparation_writer(unit_of_work, operation):
+                        nonlocal mutated
+                        if not mutated and operation.__name__ == "record":
+                            mutated = True
+                            if label == "campaign-blocked":
+                                controller._lifecycle.block(
+                                    reason_code="synthetic_post_freeze_block",
+                                    source_ref="test:preparation-boundary",
+                                )
+                            else:
+                                controller._lifecycle.advance_cycle(
+                                    cycle_id=task.task_id,
+                                    expected_status=CycleStatus.FROZEN,
+                                    next_status=CycleStatus.EXECUTING,
+                                )
+                            mutation_baseline.append(
+                                _operational_table_bytes(root)
+                            )
+                        return original_write(unit_of_work, operation)
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ), patch.object(
+                        campaign_controller_module._SqliteUnitOfWork,
+                        "_write",
+                        new=mutate_before_preparation_writer,
+                    ):
+                        with self.assertRaises(CampaignJournalError):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertTrue(mutated)
+                    self.assertEqual(len(mutation_baseline), 1)
+                    self.assertEqual(
+                        _operational_table_bytes(root),
+                        mutation_baseline[0],
+                    )
+                    self.assertEqual(
+                        journal.list_events(
+                            cycle_id=task.task_id,
+                            aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                            aggregate_id=task.task_id,
+                        ),
+                        (),
+                    )
+
+    def test_preparation_writer_replays_freeze_after_freeze_boundary(self) -> None:
+        campaign_id = "campaign-controller-preparation-freeze-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Preparation receipts bind the durable frozen inputs",
+            )
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            mutated = False
+            mutation_baseline: list[tuple[bytes, ...]] = []
+
+            def resign_freeze_before_preparation_writer(unit_of_work, operation):
+                nonlocal mutated
+                if not mutated and operation.__name__ == "record":
+                    mutated = True
+                    freeze_event = journal.list_events(
+                        cycle_id=task.task_id,
+                        aggregate_type="CYCLE_INPUT_FREEZE",
+                        aggregate_id=task.task_id,
+                    )[0]
+                    payload = freeze_event.payload()
+                    payload["preflight_sha256"] = "0" * 64
+                    freeze_identity = {
+                        key: value
+                        for key, value in payload.items()
+                        if key not in {"_authority_grant_id", "manifest_sha256"}
+                    }
+                    payload["manifest_sha256"] = (
+                        campaign_freeze_module._content_sha256(
+                            campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+                            freeze_identity,
+                            "resigned Cycle freeze identity",
+                        )
+                    )
+                    _rewrite_campaign_event_payload(root, freeze_event, payload)
+                    mutation_baseline.append(_operational_table_bytes(root))
+                return original_write(unit_of_work, operation)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=resign_freeze_before_preparation_writer,
+            ):
+                with self.assertRaises(
+                    (CampaignJournalError, CycleFreezeIntegrityError)
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertTrue(mutated)
+            self.assertEqual(len(mutation_baseline), 1)
+            self.assertEqual(_operational_table_bytes(root), mutation_baseline[0])
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+
+    def test_blocked_campaign_cannot_recover_missing_preparation_receipt(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-blocked-preparation-recovery"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Blocked Campaigns cannot append recovery receipts",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCampaignController,
+                "_record_cycle_preparation",
+                side_effect=RuntimeError("synthetic post-freeze crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "post-freeze crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            controller._lifecycle.block(
+                reason_code="synthetic_post_freeze_block",
+                source_ref="test:preparation-recovery",
+            )
+            before = _operational_table_bytes(root)
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=AssertionError(
+                    "frozen recovery must not reopen live Learning"
+                ),
+            ) as live_reader:
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            live_reader.assert_not_called()
+            self.assertEqual(_operational_table_bytes(root), before)
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+
+    def test_late_lease_cannot_precede_recovered_preparation_receipt(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-lease-before-recovered-preparation"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A lease cannot precede controller preparation",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ), patch.object(
+                OperationalCampaignController,
+                "_record_cycle_preparation",
+                side_effect=RuntimeError("synthetic post-freeze crash"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "post-freeze crash"):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            lease_baseline: list[tuple[bytes, ...]] = []
+            lease_inserted = False
+
+            def insert_lease_before_recovery_write(unit_of_work, operation):
+                nonlocal lease_inserted
+                if not lease_inserted:
+                    lease_inserted = True
+                    controller._leases.acquire(
+                        cycle_id=task.task_id,
+                        acquisition_id="late-recovery-lease",
+                    )
+                    lease_baseline.append(_operational_table_bytes(root))
+                return original_write(unit_of_work, operation)
+
+            with patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=insert_lease_before_recovery_write,
+            ):
+                with self.assertRaises(CampaignJournalError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertTrue(lease_inserted)
+            self.assertEqual(len(lease_baseline), 1)
+            self.assertEqual(_operational_table_bytes(root), lease_baseline[0])
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+
+    def test_complete_replay_rejects_resigned_lease_before_preparation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-resigned-lease-before-preparation"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Preparation receipts precede every execution lease",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+            controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="resigned-order-lease",
+            )
+            preparation_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                aggregate_id=task.task_id,
+            )[0]
+            lease_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_LEASE",
+                aggregate_id=task.task_id,
+            )[0]
+            self.assertLess(preparation_event.sequence, lease_event.sequence)
+            _swap_and_resign_event_sequences(preparation_event, lease_event)
+            before = _operational_table_bytes(root)
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "preparation receipt conflicts",
+            ):
+                controller._preparation_snapshot(
+                    cycle_id=task.task_id,
+                    frozen=prepared.frozen,
+                )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_missing_work_item_rejects_all_cycle_bound_and_budget_prefixes(
+        self,
+    ) -> None:
+        cases = (
+            "aggregate-id-only",
+            "cycle-budget-only",
+            "resource-reservation-only",
+        )
+        for label in cases:
+            with self.subTest(prefix=label):
+                campaign_id = f"campaign-controller-prefix-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis="Admission rejects history without its work item",
+                    )
+                    if label == "aggregate-id-only":
+                        journal.append(
+                            event_id=hashlib.sha256(
+                                f"{campaign_id}:aggregate-prefix".encode("ascii")
+                            ).hexdigest(),
+                            cycle_id=None,
+                            aggregate_type="FOREIGN_CYCLE_PREFIX",
+                            aggregate_id=task.task_id,
+                            event_type="FOREIGN_CYCLE_PREFIX_WRITTEN",
+                            payload={"cycle_id": task.task_id},
+                        )
+                    elif label == "cycle-budget-only":
+                        controller._cycle_budget.reserve(cycle_id=task.task_id)
+                    else:
+                        controller._budget.reserve(
+                            reservation_id=controller._reservation_id(task.task_id),
+                            call_id=task.task_id,
+                            currency=reservation_limits.currency,
+                            max_input_tokens=reservation_limits.max_input_tokens,
+                            max_output_tokens=reservation_limits.max_output_tokens,
+                            max_cost=reservation_limits.max_cost,
+                            max_wall_time_ms=reservation_limits.max_wall_time_ms,
+                            max_tool_attempts=reservation_limits.max_tool_attempts,
+                            max_data_exposures=reservation_limits.max_data_exposures,
+                            max_disk_growth_bytes=(
+                                reservation_limits.max_disk_growth_bytes
+                            ),
+                        )
+                    before = _operational_table_bytes(root)
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ):
+                        with self.assertRaises(CampaignJournalError):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_work_item_only_partial_runs_live_preflight_and_can_continue(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-work-item-only-continues"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A work-item-only partial remains admissible",
+            )
+            _, work_item = campaign_controller_module._canonical_task(
+                task,
+                cycle_number=1,
+            )
+            work_item["proposal"] = (
+                campaign_controller_module.canonical_campaign_proposal(
+                    work_item["proposal"]
+                )
+            )
+            journal.append(
+                event_id=controller._work_item_event_id(task.task_id),
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_WORK_ITEM",
+                aggregate_id=task.task_id,
+                event_type="CAMPAIGN_WORK_ITEM_ADOPTED",
+                payload=work_item,
+            )
+            original_preflight = campaign_controller_module.run_campaign_preflight
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as preflight:
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            reader.assert_called_once_with()
+            preflight.assert_called_once()
+            self.assertEqual(prepared.cycle_id, task.task_id)
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+
+    def test_work_item_only_shell_cannot_bypass_learning_preflight(self) -> None:
+        campaign_id = "campaign-controller-learning-preflight-work-shell"
+        hypothesis = "An isolated work item cannot confer preflight admission"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            _, work_item = campaign_controller_module._canonical_task(
+                task,
+                cycle_number=1,
+            )
+            work_item["proposal"] = (
+                campaign_controller_module.canonical_campaign_proposal(
+                    work_item["proposal"]
+                )
+            )
+            journal.append(
+                event_id=controller._work_item_event_id(task.task_id),
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_WORK_ITEM",
+                aggregate_id=task.task_id,
+                event_type="CAMPAIGN_WORK_ITEM_ADOPTED",
+                payload=work_item,
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            committed = _claim(
+                claim_id="committed-work-shell-block",
+                hypothesis=hypothesis,
+                scope=task.proposal["scope"],
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_preflight_input(committed),
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CycleFreezeError,
+                    "LEARNING_HARD_BLOCK",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_called_once_with()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_learning_journal_open_failure_is_domain_closed_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-preflight-journal-open"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="An unreadable Learning journal must fail closed",
+            )
+            learning_journal = (
+                root
+                / "research_state/control_plane/learning_commit.sqlite3"
+            )
+            learning_journal.mkdir(parents=True)
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Learning preflight projection is unavailable",
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_exact_prepare_cycle_replay_does_not_reopen_learning_preflight(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-preflight-replay"
+        hypothesis = "A prepared Cycle remains exactly replayable"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as first_reader:
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+            first_reader.assert_called_once_with()
+            reopened = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-learning-preflight", 142, 42_000)
+                ),
+                monotonic_ns=lambda: 200,
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                reopened,
+                cycle_id=task.task_id,
+            )
+
+            external_read_error = AssertionError(
+                "exact durable replay must use only durable artifacts"
+            )
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=external_read_error,
+            ) as replay_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                wraps=original_freeze_preflight,
+            ) as freeze_preflight:
+                replayed = reopened.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            replay_reader.assert_not_called()
+            controller_preflight.assert_called_once()
+            freeze_preflight.assert_called_once()
+            self.assertEqual(replayed, prepared)
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    reopened,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_exact_prepare_cycle_replay_remains_durable_after_execution_starts(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-post-execution-preparation-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="An executing Cycle retains its exact preparation",
+            )
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as first_reader:
+                prepared = controller.prepare_cycle(**prepare_kwargs)
+            first_reader.assert_called_once_with()
+            controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="post-execution-preparation-replay",
+            )
+            baseline = _operational_table_bytes(root)
+            external_read_error = AssertionError(
+                "post-execution exact replay must not reopen Learning"
+            )
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=external_read_error,
+            ) as replay_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                wraps=original_freeze_preflight,
+            ) as freeze_preflight:
+                replayed = controller.prepare_cycle(**prepare_kwargs)
+
+            replay_reader.assert_not_called()
+            controller_preflight.assert_called_once()
+            freeze_preflight.assert_called_once()
+            self.assertEqual(replayed, prepared)
+            self.assertEqual(_operational_table_bytes(root), baseline)
+
+    def test_complete_replay_recomputes_resigned_preflight_semantics(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-resigned-preflight-semantics"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Durable preflight semantics remain reproducible",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            freeze_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=task.task_id,
+            )[0]
+            freeze_payload = freeze_event.payload()
+            forged_preflight = json.loads(freeze_payload["preflight_json"])
+            forged_preflight["learning_verdict"]["warning_codes"] = [
+                "FORGED_WARNING"
+            ]
+            freeze_payload["preflight_json"] = json.dumps(
+                forged_preflight,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            freeze_payload["preflight_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    b"control_plane.campaign_preflight.v1",
+                    forged_preflight,
+                    "forged preflight",
+                )
+            )
+            freeze_identity = {
+                key: value
+                for key, value in freeze_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            freeze_payload["manifest_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+                    freeze_identity,
+                    "forged Cycle freeze identity",
+                )
+            )
+            _rewrite_campaign_event_payload(root, freeze_event, freeze_payload)
+
+            preparation_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                aggregate_id=task.task_id,
+            )[0]
+            preparation_payload = preparation_event.payload()
+            preparation_payload["freeze_manifest_sha256"] = freeze_payload[
+                "manifest_sha256"
+            ]
+            preparation_identity = {
+                key: value
+                for key, value in preparation_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            preparation_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.campaign_cycle_preparation.v2",
+                preparation_identity,
+                "forged Cycle preparation identity",
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                preparation_event,
+                preparation_payload,
+            )
+            before = _operational_table_bytes(root)
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=AssertionError(
+                    "strict replay must use durable context claims"
+                ),
+            ) as live_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as replay_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                wraps=original_freeze_preflight,
+            ) as freeze_preflight:
+                with self.assertRaisesRegex(
+                    CycleFreezeIntegrityError,
+                    "preflight",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            live_reader.assert_not_called()
+            replay_preflight.assert_not_called()
+            freeze_preflight.assert_called_once()
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_start_execution_rejects_resigned_preflight_semantics(self) -> None:
+        campaign_id = "campaign-controller-execution-preflight-semantics"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Execution leases require authentic frozen preflight",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            freeze_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=task.task_id,
+            )[0]
+            freeze_payload = freeze_event.payload()
+            forged_preflight = json.loads(freeze_payload["preflight_json"])
+            forged_preflight["learning_verdict"]["warning_codes"] = [
+                "FORGED_WARNING"
+            ]
+            freeze_payload["preflight_json"] = json.dumps(
+                forged_preflight,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            freeze_payload["preflight_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    b"control_plane.campaign_preflight.v1",
+                    forged_preflight,
+                    "forged preflight",
+                )
+            )
+            freeze_identity = {
+                key: value
+                for key, value in freeze_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            freeze_payload["manifest_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+                    freeze_identity,
+                    "forged Cycle freeze identity",
+                )
+            )
+            _rewrite_campaign_event_payload(root, freeze_event, freeze_payload)
+
+            preparation_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                aggregate_id=task.task_id,
+            )[0]
+            preparation_payload = preparation_event.payload()
+            preparation_payload["freeze_manifest_sha256"] = freeze_payload[
+                "manifest_sha256"
+            ]
+            preparation_identity = {
+                key: value
+                for key, value in preparation_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            preparation_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.campaign_cycle_preparation.v2",
+                preparation_identity,
+                "forged Cycle preparation identity",
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                preparation_event,
+                preparation_payload,
+            )
+            before = _operational_table_bytes(root)
+
+            with self.assertRaises(
+                (CampaignJournalError, CycleFreezeIntegrityError)
+            ):
+                controller.start_execution(
+                    cycle_id=task.task_id,
+                    acquisition_id="forged-preflight-execution",
+                )
+
+            self.assertEqual(_operational_table_bytes(root), before)
+            self.assertEqual(
+                journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_LEASE",
+                    aggregate_id=task.task_id,
+                ),
+                (),
+            )
+
+    def test_complete_replay_rejects_self_consistent_context_proposal_graft(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-proposal-graft"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Exact replay binds the full context proposal",
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=roster_members,
+                reservation_limits=reservation_limits,
+            )
+
+            work_item_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_WORK_ITEM",
+                aggregate_id=task.task_id,
+            )[0]
+            work_item_payload = work_item_event.payload()
+            work_item_payload["proposal"]["self_consistent_graft"] = "grafted"
+            _rewrite_campaign_event_payload(
+                root,
+                work_item_event,
+                work_item_payload,
+            )
+
+            context_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=task.task_id,
+            )[0]
+            context_payload = context_event.payload()
+            context_payload["proposal"]["self_consistent_graft"] = "grafted"
+            proposal_text, _ = campaign_context_module._canonical_snapshot(
+                context_payload["proposal"],
+                "grafted context proposal",
+                maximum_bytes=16 * 1024 * 1024,
+            )
+            context_payload["proposal_sha256"] = (
+                campaign_context_module._content_sha256(
+                    b"control_plane.cycle_context_proposal.v2",
+                    proposal_text,
+                )
+            )
+            context_identity = {
+                key: value
+                for key, value in context_payload.items()
+                if key
+                not in {
+                    "_authority_grant_id",
+                    "manifest_sha256",
+                    "safe_context",
+                    "projection_input",
+                    "proposal",
+                    "untrusted_sources",
+                }
+            }
+            context_payload["manifest_sha256"] = (
+                campaign_context_module._content_sha256(
+                    b"control_plane.cycle_context_receipt.v2",
+                    campaign_context_module._canonical_snapshot(
+                        context_identity,
+                        "grafted context identity",
+                        maximum_bytes=48 * 1024,
+                    )[0],
+                )
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                context_event,
+                context_payload,
+            )
+
+            freeze_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=task.task_id,
+            )[0]
+            freeze_payload = freeze_event.payload()
+            freeze_payload["proposal_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    b"control_plane.campaign_proposal.v1",
+                    work_item_payload["proposal"],
+                    "grafted frozen proposal",
+                )
+            )
+            freeze_payload["context_manifest_sha256"] = context_payload[
+                "manifest_sha256"
+            ]
+            forged_preflight = campaign_freeze_module.run_campaign_preflight(
+                execution_spec=execution_spec,
+                proposal=work_item_payload["proposal"],
+                committed_claims=context_payload["projection_input"]["claims"],
+            )
+            freeze_payload["preflight_json"] = json.dumps(
+                forged_preflight,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            freeze_payload["preflight_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    b"control_plane.campaign_preflight.v1",
+                    forged_preflight,
+                    "grafted preflight",
+                )
+            )
+            freeze_identity = {
+                key: value
+                for key, value in freeze_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            freeze_payload["manifest_sha256"] = (
+                campaign_freeze_module._content_sha256(
+                    campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+                    freeze_identity,
+                    "grafted Cycle freeze identity",
+                )
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                freeze_event,
+                freeze_payload,
+            )
+
+            preparation_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                aggregate_id=task.task_id,
+            )[0]
+            preparation_payload = preparation_event.payload()
+            preparation_payload["work_item_sha256"] = _controller_sha256(
+                b"control_plane.controller_work_item_payload.v1",
+                {
+                    key: value
+                    for key, value in work_item_payload.items()
+                    if key != "_authority_grant_id"
+                },
+                "grafted stored Campaign work item",
+            )
+            preparation_payload["context_manifest_sha256"] = context_payload[
+                "manifest_sha256"
+            ]
+            preparation_payload["freeze_manifest_sha256"] = freeze_payload[
+                "manifest_sha256"
+            ]
+            preparation_identity = {
+                key: value
+                for key, value in preparation_payload.items()
+                if key not in {"_authority_grant_id", "manifest_sha256"}
+            }
+            preparation_payload["manifest_sha256"] = _controller_sha256(
+                b"control_plane.campaign_cycle_preparation.v2",
+                preparation_identity,
+                "grafted Cycle preparation identity",
+            )
+            _rewrite_campaign_event_payload(
+                root,
+                preparation_event,
+                preparation_payload,
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            external_read_error = AssertionError(
+                "durable graft rejection must not reopen external Learning"
+            )
+            original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=external_read_error,
+            ) as replay_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=external_read_error,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                wraps=original_freeze_preflight,
+            ) as freeze_preflight:
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "Campaign durable preparation conflicts",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            replay_reader.assert_not_called()
+            controller_preflight.assert_not_called()
+            freeze_preflight.assert_called_once()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_complete_replay_rejects_context_only_proposal_graft(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-only-proposal-graft"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Exact replay binds context to the current proposal",
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=roster_members,
+                reservation_limits=reservation_limits,
+            )
+
+            work_item_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CAMPAIGN_WORK_ITEM",
+                aggregate_id=task.task_id,
+            )[0]
+            original_work_item_row = next(
+                row
+                for row in _campaign_event_rows(root, campaign_id)
+                if row[0] == work_item_event.event_id
+            )
+            original_work_item_payload = work_item_event.payload()
+            grafted_context_proposal = {
+                **task.proposal,
+                "context_only_graft": "grafted",
+            }
+            _graft_and_resign_preparation_context(
+                root,
+                journal,
+                cycle_id=task.task_id,
+                context_proposal=grafted_context_proposal,
+                freeze_proposal=original_work_item_payload["proposal"],
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            self.assertEqual(
+                next(
+                    row
+                    for row in baseline["all_events"]
+                    if row[0] == work_item_event.event_id
+                ),
+                original_work_item_row,
+            )
+            external_read_error = AssertionError(
+                "context graft rejection must not reopen external Learning"
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=external_read_error,
+            ) as replay_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=external_read_error,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                side_effect=external_read_error,
+            ) as freeze_preflight:
+                with self.assertRaisesRegex(
+                    CycleFreezeIntegrityError,
+                    "Cycle freeze proposal binding is invalid",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            replay_reader.assert_not_called()
+            controller_preflight.assert_not_called()
+            freeze_preflight.assert_not_called()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_stale_negative_replay_returns_concurrent_exact_preparation_before_learning(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-stale-negative-replay"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A stale negative replay must converge durably",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-learning-preflight", 142, 42_000)
+                ),
+                monotonic_ns=lambda: 200,
+            )
+            loser_negative_seen = Event()
+            release_loser = Event()
+            loser_thread_id: list[int] = []
+            learning_reads = {"winner": 0, "loser": 0}
+            original_read = campaign_controller_module._SqliteUnitOfWork._read
+
+            def gated_read(unit_of_work, operation):
+                result = original_read(unit_of_work, operation)
+                if (
+                    operation.__name__ == "replay_complete_preparation"
+                    and result is None
+                    and not loser_thread_id
+                ):
+                    loser_thread_id.append(get_ident())
+                    loser_negative_seen.set()
+                    if not release_loser.wait(timeout=10):
+                        raise AssertionError("winner did not release stale replay")
+                return result
+
+            def read_projection():
+                if loser_thread_id and get_ident() == loser_thread_id[0]:
+                    learning_reads["loser"] += 1
+                    raise OSError("loser must not reopen committed Learning")
+                learning_reads["winner"] += 1
+                return _projectable_learning_input()
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_read",
+                new=gated_read,
+            ), patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=read_projection,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    controller.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(loser_negative_seen.wait(timeout=10))
+                winning = executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                durable_after_winner = _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    winner,
+                    cycle_id=task.task_id,
+                )
+                release_loser.set()
+                losing = loser_future.result(timeout=10)
+
+            self.assertEqual(losing, winning)
+            self.assertEqual(learning_reads, {"winner": 1, "loser": 0})
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                durable_after_winner,
+            )
+
+    def test_learning_read_failure_returns_concurrent_exact_preparation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-failure-convergence"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A failed Learning read must converge durably",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-learning-preflight", 142, 42_000)
+                ),
+                monotonic_ns=lambda: 200,
+            )
+            loser_learning_entered = Event()
+            release_learning_failure = Event()
+            loser_thread_id: list[int] = []
+            learning_reads = {"winner": 0, "loser": 0}
+
+            def read_projection():
+                thread_id = get_ident()
+                if not loser_thread_id:
+                    loser_thread_id.append(thread_id)
+                    learning_reads["loser"] += 1
+                    loser_learning_entered.set()
+                    if not release_learning_failure.wait(timeout=10):
+                        raise AssertionError(
+                            "winner did not release failing Learning read"
+                        )
+                    raise OSError("synthetic concurrent Learning failure")
+                if thread_id == loser_thread_id[0]:
+                    raise AssertionError("loser reopened Learning more than once")
+                learning_reads["winner"] += 1
+                return _projectable_learning_input()
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=read_projection,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    controller.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(loser_learning_entered.wait(timeout=10))
+                winning = executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                durable_after_winner = _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    winner,
+                    cycle_id=task.task_id,
+                )
+                release_learning_failure.set()
+                losing = loser_future.result(timeout=10)
+
+            self.assertEqual(losing, winning)
+            self.assertEqual(learning_reads, {"winner": 1, "loser": 1})
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                durable_after_winner,
+            )
+
+    def test_accepted_preflight_converges_when_exact_preparation_wins_before_admission(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-post-preflight-convergence"
+        hypothesis = "Post-preflight admission must converge durably"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                loser,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-learning-preflight", 142, 42_000)
+                ),
+                monotonic_ns=lambda: 200,
+            )
+            before = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                loser,
+                cycle_id=task.task_id,
+            )
+            loser_admission_write_entered = Event()
+            release_loser = Event()
+            loser_thread_id: list[int] = []
+            learning_reads = {"winner": 0, "loser": 0}
+            unrelated_claim = _claim(
+                claim_id="accepted-concurrent-snapshot",
+                hypothesis="Unrelated committed Learning remains admissible",
+                scope=task.proposal["scope"],
+            )
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+
+            def read_projection():
+                thread_id = get_ident()
+                if not loser_thread_id:
+                    loser_thread_id.append(thread_id)
+                    learning_reads["loser"] += 1
+                    return _projectable_learning_input()
+                if thread_id == loser_thread_id[0]:
+                    raise AssertionError("loser reopened Learning more than once")
+                learning_reads["winner"] += 1
+                return _projectable_preflight_input(unrelated_claim)
+
+            def gated_write(unit_of_work, operation):
+                if (
+                    operation.__name__ == "reserve_and_open"
+                    and get_ident() == loser_thread_id[0]
+                ):
+                    loser_admission_write_entered.set()
+                    if not release_loser.wait(timeout=10):
+                        raise AssertionError(
+                            "winner did not release the admission write"
+                        )
+                return original_write(unit_of_work, operation)
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=read_projection,
+            ), patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=gated_write,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    loser.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(
+                    loser_admission_write_entered.wait(timeout=10)
+                )
+                winning = executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                after_winner = _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    winner,
+                    cycle_id=task.task_id,
+                )
+                self.assertNotEqual(after_winner, before)
+                release_loser.set()
+                losing = loser_future.result(timeout=10)
+
+            self.assertEqual(losing, winning)
+            self.assertEqual(learning_reads, {"winner": 1, "loser": 1})
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    loser,
+                    cycle_id=task.task_id,
+                ),
+                after_winner,
+            )
+
+    def test_blocked_preflight_converges_when_exact_preparation_wins_during_preflight(
+        self,
+    ) -> None:
+        cases = (
+            ("hard", "NEGATIVE", "LEARNING_HARD_BLOCK"),
+            ("scoped", "PARTIAL", "LEARNING_SCOPED_BLOCK"),
+        )
+        for label, kind, rejection_code in cases:
+            with self.subTest(case=label):
+                campaign_id = (
+                    f"campaign-controller-blocked-preflight-race-{label}"
+                )
+                hypothesis = (
+                    "A concurrent exact preparation supersedes a stale block"
+                )
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        loser,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=hypothesis,
+                    )
+                    winner = OperationalCampaignController(
+                        journal=journal,
+                        repository_root=root,
+                        budget_limits=CampaignBudgetLimits(
+                            currency="USD",
+                            max_cycles=1,
+                            max_input_tokens=100,
+                            max_output_tokens=50,
+                            max_cost="1",
+                            max_wall_time_ms=5_000,
+                            max_tool_attempts=4,
+                            max_data_exposures=1,
+                            max_disk_growth_bytes=10_000,
+                        ),
+                        identity_provider=_FakeProcessIdentityProvider(
+                            ProcessIdentity(
+                                "host-learning-preflight",
+                                142,
+                                42_000,
+                            )
+                        ),
+                        monotonic_ns=lambda: 200,
+                    )
+                    before = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        loser,
+                        cycle_id=task.task_id,
+                    )
+                    loser_preflight_complete = Event()
+                    release_loser = Event()
+                    loser_thread_id: list[int] = []
+                    loser_preflight_calls = 0
+                    learning_reads = {"winner": 0, "loser": 0}
+                    blocked_claim = _claim(
+                        claim_id=f"concurrent-{label}-block",
+                        hypothesis=hypothesis,
+                        scope=task.proposal["scope"],
+                        kind=kind,
+                    )
+                    original_preflight = (
+                        campaign_controller_module.run_campaign_preflight
+                    )
+
+                    def read_projection():
+                        thread_id = get_ident()
+                        if not loser_thread_id:
+                            loser_thread_id.append(thread_id)
+                            learning_reads["loser"] += 1
+                            return _projectable_preflight_input(blocked_claim)
+                        if thread_id == loser_thread_id[0]:
+                            raise AssertionError(
+                                "loser reopened Learning more than once"
+                            )
+                        learning_reads["winner"] += 1
+                        return _projectable_learning_input()
+
+                    def gated_preflight(**kwargs):
+                        nonlocal loser_preflight_calls
+                        preflight = original_preflight(**kwargs)
+                        if get_ident() == loser_thread_id[0]:
+                            loser_preflight_calls += 1
+                            if loser_preflight_calls == 1:
+                                self.assertEqual(
+                                    preflight["verdict"],
+                                    "WOULD_REJECT",
+                                )
+                                self.assertIn(
+                                    rejection_code,
+                                    preflight["rejection_codes"],
+                                )
+                                loser_preflight_complete.set()
+                                if not release_loser.wait(timeout=10):
+                                    raise AssertionError(
+                                        "winner did not release blocked preflight"
+                                    )
+                        return preflight
+
+                    prepare_kwargs = {
+                        "task": task,
+                        "cycle_number": 1,
+                        "execution_spec": execution_spec,
+                        "roster_members": roster_members,
+                        "reservation_limits": reservation_limits,
+                    }
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        side_effect=read_projection,
+                    ), patch.object(
+                        campaign_controller_module,
+                        "run_campaign_preflight",
+                        side_effect=gated_preflight,
+                    ), ThreadPoolExecutor(max_workers=2) as executor:
+                        loser_future = executor.submit(
+                            loser.prepare_cycle,
+                            **prepare_kwargs,
+                        )
+                        self.assertTrue(
+                            loser_preflight_complete.wait(timeout=10)
+                        )
+                        winning = executor.submit(
+                            winner.prepare_cycle,
+                            **prepare_kwargs,
+                        ).result(timeout=10)
+                        after_winner = _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            winner,
+                            cycle_id=task.task_id,
+                        )
+                        self.assertNotEqual(after_winner, before)
+                        release_loser.set()
+                        losing = loser_future.result(timeout=10)
+
+                    self.assertEqual(losing, winning)
+                    self.assertEqual(
+                        learning_reads,
+                        {"winner": 1, "loser": 1},
+                    )
+                    self.assertEqual(loser_preflight_calls, 2)
+                    self.assertEqual(
+                        _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            loser,
+                            cycle_id=task.task_id,
+                        ),
+                        after_winner,
+                    )
+
+    def test_router_conflict_converges_when_exact_preparation_wins_during_assembly(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-router-race"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                loser,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Exact completion supersedes an assembly conflict",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity(
+                        "host-learning-preflight",
+                        144,
+                        44_000,
+                    )
+                ),
+                monotonic_ns=lambda: 400,
+            )
+            losing_router_entered = Event()
+            release_losing_router = Event()
+            original_build_messages = (
+                loser._context._router.build_messages
+            )
+            first_losing_call = True
+
+            def losing_router(*args, **kwargs):
+                nonlocal first_losing_call
+                if not first_losing_call:
+                    return original_build_messages(*args, **kwargs)
+                first_losing_call = False
+                losing_router_entered.set()
+                if not release_losing_router.wait(timeout=10):
+                    raise AssertionError(
+                        "winner did not release the losing router"
+                    )
+                raise CycleContextConflictError(
+                    "synthetic losing router conflict"
+                )
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                loser._context._router,
+                "build_messages",
+                side_effect=losing_router,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    loser.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(losing_router_entered.wait(timeout=10))
+                winning = executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                after_winner = _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    winner,
+                    cycle_id=task.task_id,
+                )
+                release_losing_router.set()
+                losing = loser_future.result(timeout=10)
+
+            self.assertEqual(losing, winning)
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    loser,
+                    cycle_id=task.task_id,
+                ),
+                after_winner,
+            )
+
+    def test_validation_conflict_preserves_original_when_replay_is_invalid(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-validation-invalid-winner"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                loser,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Validation conflict keeps its original identity",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity(
+                        "host-learning-preflight",
+                        147,
+                        47_000,
+                    )
+                ),
+                monotonic_ns=lambda: 700,
+            )
+            validation_router_entered = Event()
+            release_validation_router = Event()
+            original_build_messages = loser._context._router.build_messages
+            original_conflict = CycleContextConflictError(
+                "synthetic original validation router conflict"
+            )
+            router_calls = 0
+
+            def validation_router(*args, **kwargs):
+                nonlocal router_calls
+                router_calls += 1
+                if router_calls == 2:
+                    validation_router_entered.set()
+                    if not release_validation_router.wait(timeout=10):
+                        raise AssertionError(
+                            "winner did not release validation router"
+                        )
+                    raise original_conflict
+                return original_build_messages(*args, **kwargs)
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                loser._context._router,
+                "build_messages",
+                side_effect=validation_router,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    loser.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(validation_router_entered.wait(timeout=10))
+                executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                freeze_event = journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_INPUT_FREEZE",
+                    aggregate_id=task.task_id,
+                )[0]
+                freeze_payload = json.loads(freeze_event.payload_json)
+                freeze_payload["manifest_sha256"] = "0" * 64
+                _rewrite_campaign_event_payload(
+                    root,
+                    freeze_event,
+                    freeze_payload,
+                )
+                release_validation_router.set()
+                with self.assertRaises(CycleContextConflictError) as raised:
+                    loser_future.result(timeout=10)
+
+            self.assertEqual(router_calls, 2)
+            self.assertIs(raised.exception, original_conflict)
+
+    def test_router_conflict_re_raises_original_when_partial_winner_is_invalid(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-router-invalid-winner"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                loser,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Invalid partial completion cannot replace conflict",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity(
+                        "host-learning-preflight",
+                        145,
+                        45_000,
+                    )
+                ),
+                monotonic_ns=lambda: 500,
+            )
+            losing_router_entered = Event()
+            release_losing_router = Event()
+            original_build_messages = loser._context._router.build_messages
+            original_conflict = CycleContextConflictError(
+                "synthetic original losing router conflict"
+            )
+            first_losing_call = True
+
+            def losing_router(*args, **kwargs):
+                nonlocal first_losing_call
+                if not first_losing_call:
+                    return original_build_messages(*args, **kwargs)
+                first_losing_call = False
+                losing_router_entered.set()
+                if not release_losing_router.wait(timeout=10):
+                    raise AssertionError(
+                        "winner did not release the losing router"
+                    )
+                raise original_conflict
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                loser._context._router,
+                "build_messages",
+                side_effect=losing_router,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    loser.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(losing_router_entered.wait(timeout=10))
+                executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                freeze_event = journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_INPUT_FREEZE",
+                    aggregate_id=task.task_id,
+                )[0]
+                freeze_payload = json.loads(freeze_event.payload_json)
+                freeze_payload["manifest_sha256"] = "0" * 64
+                _rewrite_campaign_event_payload(
+                    root,
+                    freeze_event,
+                    freeze_payload,
+                )
+                release_losing_router.set()
+                with self.assertRaises(CycleContextConflictError) as raised:
+                    loser_future.result(timeout=10)
+
+            self.assertIs(raised.exception, original_conflict)
+
+    def test_post_reservation_conflict_preserves_original_when_replay_is_invalid(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-post-reservation-invalid-winner"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                loser,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Post-reservation recovery preserves conflict",
+            )
+            winner = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=5_000,
+                    max_tool_attempts=4,
+                    max_data_exposures=1,
+                    max_disk_growth_bytes=10_000,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity(
+                        "host-learning-preflight",
+                        146,
+                        46_000,
+                    )
+                ),
+                monotonic_ns=lambda: 600,
+            )
+            losing_prepare_entered = Event()
+            release_losing_prepare = Event()
+            original_conflict = CycleContextConflictError(
+                "synthetic original post-reservation context conflict"
+            )
+            original_prepare = (
+                OperationalCycleContextJournal._prepare_assembled
+            )
+
+            def gated_prepare(context_journal, assembled, **kwargs):
+                if context_journal is loser._context:
+                    losing_prepare_entered.set()
+                    if not release_losing_prepare.wait(timeout=10):
+                        raise AssertionError(
+                            "winner did not release losing context preparation"
+                        )
+                    raise original_conflict
+                return original_prepare(context_journal, assembled, **kwargs)
+
+            prepare_kwargs = {
+                "task": task,
+                "cycle_number": 1,
+                "execution_spec": execution_spec,
+                "roster_members": roster_members,
+                "reservation_limits": reservation_limits,
+            }
+            with patch.object(
+                OperationalCycleContextJournal,
+                "_prepare_assembled",
+                new=gated_prepare,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                loser_future = executor.submit(
+                    loser.prepare_cycle,
+                    **prepare_kwargs,
+                )
+                self.assertTrue(losing_prepare_entered.wait(timeout=10))
+                executor.submit(
+                    winner.prepare_cycle,
+                    **prepare_kwargs,
+                ).result(timeout=10)
+                freeze_event = journal.list_events(
+                    cycle_id=task.task_id,
+                    aggregate_type="CYCLE_INPUT_FREEZE",
+                    aggregate_id=task.task_id,
+                )[0]
+                freeze_payload = json.loads(freeze_event.payload_json)
+                freeze_payload["manifest_sha256"] = "0" * 64
+                _rewrite_campaign_event_payload(
+                    root,
+                    freeze_event,
+                    freeze_payload,
+                )
+                release_losing_prepare.set()
+                with self.assertRaises(CycleContextConflictError) as raised:
+                    loser_future.result(timeout=10)
+
+            self.assertIs(raised.exception, original_conflict)
+
+    def test_budget_reserved_recovery_rechecks_learning_before_any_write(
+        self,
+    ) -> None:
+        cases = (
+            ("hard", "NEGATIVE", "LEARNING_HARD_BLOCK"),
+            ("scoped", "PARTIAL", "LEARNING_SCOPED_BLOCK"),
+        )
+        for label, kind, rejection_code in cases:
+            with self.subTest(case=label):
+                campaign_id = (
+                    f"campaign-controller-learning-recovery-{label}"
+                )
+                hypothesis = (
+                    "Incomplete admission must recheck current Learning"
+                )
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=hypothesis,
+                    )
+                    with patch.object(
+                        OperationalCycleContextJournal,
+                        "_prepare_assembled",
+                        side_effect=RuntimeError("synthetic crash boundary"),
+                    ), patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_learning_input(),
+                    ):
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "synthetic crash boundary",
+                        ):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(
+                        controller.cycle_snapshot(task.task_id).status,
+                        CycleStatus.BUDGET_RESERVED,
+                    )
+                    reopened = OperationalCampaignController(
+                        journal=journal,
+                        repository_root=root,
+                        budget_limits=CampaignBudgetLimits(
+                            currency="USD",
+                            max_cycles=1,
+                            max_input_tokens=100,
+                            max_output_tokens=50,
+                            max_cost="1",
+                            max_wall_time_ms=5_000,
+                            max_tool_attempts=4,
+                            max_data_exposures=1,
+                            max_disk_growth_bytes=10_000,
+                        ),
+                        identity_provider=_FakeProcessIdentityProvider(
+                            ProcessIdentity(
+                                "host-learning-preflight",
+                                143,
+                                43_000,
+                            )
+                        ),
+                        monotonic_ns=lambda: 300,
+                    )
+                    baseline = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        reopened,
+                        cycle_id=task.task_id,
+                    )
+                    committed = _claim(
+                        claim_id=f"committed-recovery-{label}",
+                        hypothesis=hypothesis,
+                        scope=task.proposal["scope"],
+                        kind=kind,
+                    )
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=_projectable_preflight_input(committed),
+                    ) as reader:
+                        with self.assertRaisesRegex(
+                            CycleFreezeError,
+                            rejection_code,
+                        ):
+                            reopened.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    reader.assert_called_once_with()
+                    self.assertEqual(
+                        _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            reopened,
+                            cycle_id=task.task_id,
+                        ),
+                        baseline,
+                    )
+
+    def test_invalid_assembled_context_fails_before_admission_without_writes(
+        self,
+    ) -> None:
+        class ForgedAssembledContext:
+            def __init__(self, genuine) -> None:
+                self.preview = genuine.preview
+                self.projection_input_json = genuine.projection_input_json
+
+        def drift(genuine, field_name: str):
+            return replace(
+                genuine,
+                preview=replace(
+                    genuine.preview,
+                    **{field_name: "0" * 64},
+                ),
+            )
+
+        cases = (
+            (
+                "forged-type",
+                lambda genuine: ForgedAssembledContext(genuine),
+                CampaignJournalError,
+            ),
+            (
+                "request-hash-drift",
+                lambda genuine: drift(genuine, "request_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "context-hash-drift",
+                lambda genuine: drift(genuine, "context_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "manifest-hash-drift",
+                lambda genuine: drift(genuine, "manifest_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "projection-input-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    projection_input_json=(
+                        " " + genuine.projection_input_json
+                    ),
+                ),
+                CycleContextIntegrityError,
+            ),
+            (
+                "proposal-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    proposal_json=" " + genuine.proposal_json,
+                ),
+                CycleContextIntegrityError,
+            ),
+            (
+                "untrusted-sources-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    untrusted_sources_json=(
+                        " " + genuine.untrusted_sources_json
+                    ),
+                ),
+                CycleContextIntegrityError,
+            ),
+        )
+        for label, mutate, expected_error in cases:
+            with self.subTest(case=label):
+                campaign_id = f"campaign-controller-context-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis="Invalid assembly must precede admission",
+                    )
+                    genuine = controller._context._assemble(
+                        cycle_id=task.task_id,
+                        proposal=task.proposal,
+                        roles=tuple(
+                            member.role for member in roster_members
+                        ),
+                    )
+                    candidate = mutate(genuine)
+                    baseline = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        controller,
+                        cycle_id=task.task_id,
+                    )
+
+                    with patch.object(
+                        OperationalCycleContextJournal,
+                        "_assemble",
+                        return_value=candidate,
+                    ):
+                        with self.assertRaises(expected_error):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(
+                        _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            controller,
+                            cycle_id=task.task_id,
+                        ),
+                        baseline,
+                    )
+
+    def test_self_consistent_assembled_request_drift_fails_before_admission(
+        self,
+    ) -> None:
+        cases = (
+            "cycle",
+            "roles",
+            "learning-budget",
+            "control-budget",
+            "target-scope",
+            "untrusted-sources",
+        )
+        for label in cases:
+            with self.subTest(case=label):
+                campaign_id = f"campaign-controller-context-binding-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=(
+                            "Assembly must bind the current prepare request"
+                        ),
+                    )
+                    assembly_inputs = {
+                        "cycle_id": task.task_id,
+                        "proposal": task.proposal,
+                        "roles": tuple(
+                            member.role for member in roster_members
+                        ),
+                        "learning_token_budget": 1500,
+                        "control_token_budget": 500,
+                        "untrusted_sources": None,
+                    }
+                    if label == "cycle":
+                        assembly_inputs["cycle_id"] = "cycle-999"
+                    elif label == "roles":
+                        assembly_inputs["roles"] = ("source_librarian",)
+                    elif label == "learning-budget":
+                        assembly_inputs["learning_token_budget"] = 1499
+                    elif label == "control-budget":
+                        assembly_inputs["control_token_budget"] = 499
+                    elif label == "target-scope":
+                        assembly_inputs["proposal"] = {
+                            **task.proposal,
+                            "scope": _scope(generation="generation-2"),
+                        }
+                    else:
+                        assembly_inputs["untrusted_sources"] = (
+                            {
+                                "source_ref": "self-consistent-drift",
+                                "content": "Quoted drifted source material",
+                            },
+                        )
+                    candidate = controller._context._assemble(
+                        **assembly_inputs,
+                    )
+                    baseline = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        controller,
+                        cycle_id=task.task_id,
+                    )
+
+                    with patch.object(
+                        OperationalCycleContextJournal,
+                        "_assemble",
+                        return_value=candidate,
+                    ):
+                        with self.assertRaises(CycleContextIntegrityError):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    self.assertEqual(
+                        _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            controller,
+                            cycle_id=task.task_id,
+                        ),
+                        baseline,
+                    )
+
+    def test_learning_projection_failure_is_domain_closed_without_writes(
+        self,
+    ) -> None:
+        failures = (
+            ValueError("malformed committed Learning projection"),
+            OverflowError("committed Learning scope overflow"),
+        )
+        for index, failure in enumerate(failures, start=1):
+            with self.subTest(error=type(failure).__name__):
+                campaign_id = (
+                    f"campaign-controller-learning-preflight-invalid-{index}"
+                )
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis="Malformed Learning must fail closed",
+                    )
+                    baseline = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        controller,
+                        cycle_id=task.task_id,
+                    )
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        side_effect=failure,
+                    ) as reader:
+                        with self.assertRaisesRegex(
+                            CampaignJournalError,
+                            "Learning preflight projection is unavailable",
+                        ):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+
+                    reader.assert_called_once_with()
+                    self.assertEqual(
+                        _prepare_cycle_durable_snapshot(
+                            root,
+                            campaign_id,
+                            journal,
+                            controller,
+                            cycle_id=task.task_id,
+                        ),
+                        baseline,
+                    )
+                    self.assertEqual(baseline["usage"], ())
+
+    def test_learning_failure_preserves_original_cause_when_fallback_replay_is_invalid(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-fallback-replay-invalid"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Observational replay cannot replace Learning failure",
+            )
+            before = _operational_table_bytes(root)
+            original_error = OSError("original committed Learning read failure")
+            fallback_error = CampaignJournalError(
+                "invalid observational durable replay"
+            )
+            original_uow_read = (
+                campaign_controller_module._SqliteUnitOfWork._read
+            )
+            strict_replay_reads = 0
+
+            def fail_invalid_fallback_replay(unit_of_work, operation):
+                nonlocal strict_replay_reads
+                if operation.__name__ == "replay_complete_preparation":
+                    strict_replay_reads += 1
+                    if strict_replay_reads == 3:
+                        raise fallback_error
+                return original_uow_read(unit_of_work, operation)
+
+            with patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_read",
+                new=fail_invalid_fallback_replay,
+            ), patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=original_error,
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "^Committed Learning preflight projection is unavailable$",
+                ) as caught:
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_called_once_with()
+            self.assertEqual(strict_replay_reads, 3)
+            self.assertIs(caught.exception.__cause__, original_error)
+            self.assertEqual(_operational_table_bytes(root), before)
+
+    def test_rejected_preflight_survives_an_invalid_observational_replay(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-rejected-observational-replay"
+        hypothesis = "A rejected preflight remains the public failure"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis=hypothesis,
+            )
+            blocked_claim = _claim(
+                claim_id="rejected-observational-replay",
+                hypothesis=hypothesis,
+                scope=task.proposal["scope"],
+            )
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            inserted_baseline: list[tuple[bytes, ...]] = []
+
+            def reject_then_insert_invalid_partial(**kwargs):
+                result = original_preflight(**kwargs)
+                self.assertEqual(result["verdict"], "WOULD_REJECT")
+                self.assertIn(
+                    "LEARNING_HARD_BLOCK",
+                    result["rejection_codes"],
+                )
+                journal.append(
+                    event_id=controller._preparation_event_id(task.task_id),
+                    cycle_id=task.task_id,
+                    aggregate_type="CAMPAIGN_CYCLE_PREPARATION",
+                    aggregate_id=task.task_id,
+                    event_type="CAMPAIGN_CYCLE_PREPARED",
+                    payload={"invalid_partial_history": True},
+                )
+                inserted_baseline.append(_operational_table_bytes(root))
+                return result
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_preflight_input(blocked_claim),
+            ), patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                side_effect=reject_then_insert_invalid_partial,
+            ):
+                with self.assertRaises(CycleFreezeConflictError) as caught:
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertIn("LEARNING_HARD_BLOCK", str(caught.exception))
+            self.assertEqual(len(inserted_baseline), 1)
+            self.assertEqual(_operational_table_bytes(root), inserted_baseline[0])
+
+    def test_prior_cycle_continuation_rejects_before_learning_preflight(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-learning-preflight-order"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Continuation admission precedes Learning preflight",
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=AssertionError(
+                    "invalid continuation must not read Learning projection"
+                ),
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CampaignJournalError,
+                    "previous Cycle did not authorize continuation",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=2,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_not_called()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_context_overflow_precedes_reservation_and_writes_nothing(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-overflow-admission"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Context overflow must precede durable admission",
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+            self.assertIsNone(baseline["cycle"])
+            self.assertEqual(baseline["cycle_budget"].reserved_cycle_ids, ())
+            self.assertEqual(baseline["budget"].reserved_input_tokens, 0)
+            overflow_projection = {
+                "schema_version": "control_plane.committed_learning_input.v1",
+                "claims": [],
+                "excluded_claims": [
+                    {
+                        "claim_id": f"excluded-overflow-{index:04d}",
+                        "reason_codes": ["P5_PACKET_NOT_PROJECTABLE"],
+                    }
+                    for index in range(64)
+                ],
+            }
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=overflow_projection,
+            ):
+                with self.assertRaisesRegex(
+                    CycleContextConflictError,
+                    "safe context is not ready",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_large_valid_projection_payload_fails_before_admission_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-context-event-payload-overflow"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Large valid projection fails before admission",
+            )
+            projection = _projectable_learning_input(
+                *(
+                    hashlib.sha256(
+                        f"large-context-claim-{index}".encode("ascii")
+                    ).hexdigest()
+                    for index in range(256)
+                )
+            )
+            for claim in projection["claims"]:
+                claim["scope"] = _scope(generation="foreign-generation")
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=projection,
+            ) as reader:
+                with self.assertRaisesRegex(
+                    CycleContextConflictError,
+                    "durable event payload exceeds the bounded size",
+                ):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
+                    )
+
+            reader.assert_called_once_with()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+
+    def test_oversized_freeze_payload_fails_before_admission_writes(self) -> None:
+        campaign_id = "campaign-controller-freeze-event-payload-overflow"
+        base_protocol = _protocol()
+        protocol = base_protocol.model_copy(
+            update={
+                "metadata": base_protocol.metadata.model_copy(
+                    update={"notes": "x" * 24_300}
+                )
+            }
+        )
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                _,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Oversized freeze bytes must not consume admission",
+            )
+            baseline = _prepare_cycle_durable_snapshot(
+                root,
+                campaign_id,
+                journal,
+                controller,
+                cycle_id=task.task_id,
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as reader, self.assertRaises(Exception) as caught:
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            reader.assert_called_once_with()
+            self.assertEqual(
+                _prepare_cycle_durable_snapshot(
+                    root,
+                    campaign_id,
+                    journal,
+                    controller,
+                    cycle_id=task.task_id,
+                ),
+                baseline,
+            )
+            self.assertIsInstance(caught.exception, CycleFreezeConflictError)
+
+    def test_new_cycle_admission_reads_learning_projection_once(self) -> None:
+        campaign_id = "campaign-controller-one-context-projection-read"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="One projection snapshot drives full admission",
+            )
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as projection_reader:
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+
+            self.assertEqual(prepared.cycle_id, task.task_id)
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(projection_reader.call_count, 1)
+
     def test_controller_prepares_one_budgeted_context_bound_cycle(self) -> None:
         campaign_id = "campaign-controller-001"
         protocol = _protocol()
@@ -3888,6 +8312,137 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(executing.cycle.status, CycleStatus.EXECUTING)
             self.assertEqual(executing.lease.fencing_token, 1)
             self.assertEqual(executing.lease.owner, owner)
+
+    def test_start_execution_rejects_shadow_freeze_before_any_lease_write(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-shadow-freeze-before-execution"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Execution must linearize its durable freeze",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+            freeze_event = journal.list_events(
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=task.task_id,
+            )[0]
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            shadow_written = False
+            after_shadow: list[tuple[bytes, ...]] = []
+
+            def inject_shadow_before_start(unit_of_work, operation):
+                nonlocal shadow_written
+                if not shadow_written:
+                    shadow_written = True
+                    journal.append(
+                        event_id="shadow-freeze-before-execution",
+                        cycle_id=task.task_id,
+                        aggregate_type="CYCLE_INPUT_FREEZE",
+                        aggregate_id=task.task_id,
+                        event_type="CYCLE_INPUTS_FROZEN",
+                        payload=_event_domain_payload(freeze_event),
+                    )
+                    after_shadow.append(_operational_table_bytes(root))
+                return original_write(unit_of_work, operation)
+
+            error: Exception | None = None
+            with patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=inject_shadow_before_start,
+            ):
+                try:
+                    controller.start_execution(
+                        cycle_id=task.task_id,
+                        acquisition_id="shadow-freeze-execution",
+                    )
+                except Exception as caught:
+                    error = caught
+
+            self.assertEqual(len(after_shadow), 1, repr(error))
+            self.assertEqual(_operational_table_bytes(root), after_shadow[0])
+            self.assertIsInstance(error, CycleFreezeIntegrityError)
+
+    def test_start_execution_durably_blocks_a_poisoned_lease_prefix(self) -> None:
+        campaign_id = "campaign-controller-poisoned-lease-before-execution"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="A poisoned lease prefix must block execution",
+            )
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=roster_members,
+                    reservation_limits=reservation_limits,
+                )
+            poisoned_event_id = "poisoned-controller-start-lease-prefix"
+            journal.append(
+                event_id=poisoned_event_id,
+                cycle_id=task.task_id,
+                aggregate_type="CYCLE_LEASE",
+                aggregate_id=task.task_id,
+                event_type="UNKNOWN_CYCLE_LEASE_EVENT",
+                payload={"cycle_id": task.task_id},
+            )
+
+            with self.assertRaises(CycleLeaseIntegrityError):
+                controller.start_execution(
+                    cycle_id=task.task_id,
+                    acquisition_id="poisoned-lease-execution",
+                )
+
+            campaign = controller.campaign_snapshot()
+            self.assertEqual(campaign.status, CampaignStatus.BLOCKED)
+            self.assertEqual(campaign.block_source_ref, poisoned_event_id)
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                tuple(
+                    event.event_id
+                    for event in journal.list_events(
+                        cycle_id=task.task_id,
+                        aggregate_type="CYCLE_LEASE",
+                        aggregate_id=task.task_id,
+                    )
+                ),
+                (poisoned_event_id,),
+            )
 
     def test_resource_budget_failure_rolls_back_cycle_slot_and_open(self) -> None:
         campaign_id = "campaign-controller-003"
@@ -4149,7 +8704,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             with patch(
                 "research_automation.control_plane.campaign_context."
-                "OperationalCycleContextJournal.prepare",
+                "OperationalCycleContextJournal._prepare_assembled",
                 side_effect=RuntimeError("synthetic crash boundary"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "synthetic crash"):
@@ -4398,10 +8953,29 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 )
                 for _ in range(2)
             )
-            barrier = Barrier(2)
+            losing_recovery_completed = Event()
+            release_losing_recovery = Event()
+            losing_thread_id: list[int] = []
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+
+            def gated_write(unit_of_work, operation):
+                result = original_write(unit_of_work, operation)
+                if (
+                    losing_thread_id
+                    and get_ident() == losing_thread_id[0]
+                    and result is None
+                    and not losing_recovery_completed.is_set()
+                ):
+                    losing_recovery_completed.set()
+                    if not release_losing_recovery.wait(timeout=10):
+                        raise AssertionError(
+                            "winning work item did not release recovery boundary"
+                        )
+                return result
 
             def prepare(index: int) -> object:
-                barrier.wait()
+                if index == 0:
+                    losing_thread_id.append(get_ident())
                 try:
                     return controllers[index].prepare_cycle(
                         task=tasks[index],
@@ -4413,8 +8987,18 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 except Exception as error:
                     return error
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                outcomes = tuple(executor.map(prepare, range(2)))
+            with patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=gated_write,
+            ), ThreadPoolExecutor(max_workers=2) as executor:
+                losing_future = executor.submit(prepare, 0)
+                self.assertTrue(losing_recovery_completed.wait(timeout=10))
+                winning = executor.submit(prepare, 1).result(timeout=10)
+                release_losing_recovery.set()
+                losing = losing_future.result(timeout=10)
+
+            outcomes = (losing, winning)
 
             self.assertEqual(
                 sum(not isinstance(item, Exception) for item in outcomes),
@@ -4861,7 +9445,7 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             with patch(
                 "research_automation.control_plane.campaign_context."
-                "OperationalCycleContextJournal.prepare",
+                "OperationalCycleContextJournal._prepare_assembled",
                 side_effect=RuntimeError("synthetic crash boundary"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "synthetic crash"):
@@ -4893,45 +9477,23 @@ class OperationalCampaignControllerTests(unittest.TestCase):
 
     def test_reopen_records_missing_preparation_receipt_after_freeze(self) -> None:
         campaign_id = "campaign-controller-016"
-        protocol = _protocol()
-        execution_spec = compile_execution_spec(
-            protocol,
-            approved_protocol=protocol,
-            approval=_approval(protocol),
-            amendment=None,
-        )
-        task = ExperimentTask(
-            task_id="cycle-001",
-            strategy="b1",
-            proposal={
-                "hypothesis": "Preparation receipt recovers after freeze",
-                "scope": _scope(generation="generation-1"),
-            },
-            source="synthetic-test",
-        )
-        owner = ProcessIdentity("host-controller", 116, 16_000)
-        limits = CampaignBudgetLimits(
-            currency="USD",
-            max_cycles=1,
-            max_input_tokens=100,
-            max_output_tokens=50,
-            max_cost="1",
-        )
-        reservation = CycleReservationLimits(
-            currency="USD",
-            max_input_tokens=10,
-            max_output_tokens=5,
-            max_cost="0.1",
-        )
         with _authorized_campaign(campaign_id) as (root, _, journal):
-            controller = OperationalCampaignController(
-                journal=journal,
-                repository_root=root,
-                budget_limits=limits,
-                identity_provider=_FakeProcessIdentityProvider(owner),
-                monotonic_ns=lambda: 1_600,
+            (
+                controller,
+                task,
+                execution_spec,
+                roster_members,
+                reservation_limits,
+            ) = _learning_preflight_prepare_inputs(
+                root,
+                journal,
+                hypothesis="Preparation receipt recovers after freeze",
             )
             with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                return_value=_projectable_learning_input(),
+            ) as initial_reader, patch.object(
                 OperationalCampaignController,
                 "_record_cycle_preparation",
                 side_effect=RuntimeError("synthetic post-freeze crash"),
@@ -4941,9 +9503,10 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                         task=task,
                         cycle_number=1,
                         execution_spec=execution_spec,
-                        roster_members=(_protocol_member(),),
-                        reservation_limits=reservation,
+                        roster_members=roster_members,
+                        reservation_limits=reservation_limits,
                     )
+            initial_reader.assert_called_once_with()
 
             self.assertEqual(
                 controller.cycle_snapshot(task.task_id).status,
@@ -4966,20 +9529,88 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                     acquisition_id="pre-recovery-acquisition",
                 )
 
-            reopened = OperationalCampaignController(
-                journal=journal,
-                repository_root=root,
-                budget_limits=limits,
-                identity_provider=_FakeProcessIdentityProvider(owner),
-                monotonic_ns=lambda: 1_600,
+            frozen_context = controller._context.snapshot(cycle_id=task.task_id)
+            frozen_inputs = controller._freeze.snapshot(cycle_id=task.task_id)
+
+            def reopen(pid: int) -> OperationalCampaignController:
+                return OperationalCampaignController(
+                    journal=journal,
+                    repository_root=root,
+                    budget_limits=CampaignBudgetLimits(
+                        currency="USD",
+                        max_cycles=1,
+                        max_input_tokens=100,
+                        max_output_tokens=50,
+                        max_cost="1",
+                        max_wall_time_ms=5_000,
+                        max_tool_attempts=4,
+                        max_data_exposures=1,
+                        max_disk_growth_bytes=10_000,
+                    ),
+                    identity_provider=_FakeProcessIdentityProvider(
+                        ProcessIdentity(
+                            "host-learning-preflight",
+                            pid,
+                            42_000,
+                        )
+                    ),
+                    monotonic_ns=lambda: 200,
+                )
+
+            reopened = reopen(142)
+            concurrent_reopened = reopen(143)
+            rows_before_recovery = _campaign_event_rows(root, campaign_id)
+            external_read_error = AssertionError(
+                "frozen recovery must use only validated durable artifacts"
             )
-            prepared = reopened.prepare_cycle(
-                task=task,
-                cycle_number=1,
-                execution_spec=execution_spec,
-                roster_members=(_protocol_member(),),
-                reservation_limits=reservation,
-            )
+            recovery_write_barrier = Barrier(2)
+            original_write = campaign_controller_module._SqliteUnitOfWork._write
+            original_preflight = campaign_controller_module.run_campaign_preflight
+            original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+
+            def synchronized_recovery_write(unit_of_work, operation):
+                recovery_write_barrier.wait(timeout=10)
+                return original_write(unit_of_work, operation)
+
+            with patch.object(
+                CommittedLearningLedgerReader,
+                "read_projection_input",
+                side_effect=external_read_error,
+            ) as replay_reader, patch.object(
+                campaign_controller_module,
+                "run_campaign_preflight",
+                wraps=original_preflight,
+            ) as controller_preflight, patch.object(
+                campaign_freeze_module,
+                "run_campaign_preflight",
+                wraps=original_freeze_preflight,
+            ) as freeze_preflight, patch.object(
+                campaign_controller_module._SqliteUnitOfWork,
+                "_write",
+                new=synchronized_recovery_write,
+            ):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = tuple(
+                        executor.submit(
+                            candidate.prepare_cycle,
+                            task=task,
+                            cycle_number=1,
+                            execution_spec=execution_spec,
+                            roster_members=roster_members,
+                            reservation_limits=reservation_limits,
+                        )
+                        for candidate in (reopened, concurrent_reopened)
+                    )
+                    prepared, concurrent_prepared = tuple(
+                        future.result() for future in futures
+                    )
+
+            replay_reader.assert_not_called()
+            self.assertEqual(controller_preflight.call_count, 2)
+            self.assertEqual(freeze_preflight.call_count, 2)
+            self.assertEqual(concurrent_prepared, prepared)
+            self.assertEqual(prepared.context, frozen_context)
+            self.assertEqual(prepared.frozen, frozen_inputs)
 
             preparation_events = journal.list_events(
                 cycle_id=task.task_id,
@@ -4991,6 +9622,275 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 prepared.preparation_manifest_sha256,
                 preparation_events[0].payload_json,
             )
+            rows_after_recovery = _campaign_event_rows(root, campaign_id)
+            self.assertEqual(rows_after_recovery[:-1], rows_before_recovery)
+            self.assertEqual(
+                rows_after_recovery[-1][4],
+                "CAMPAIGN_CYCLE_PREPARATION",
+            )
+
+            replayed = reopened.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=roster_members,
+                reservation_limits=reservation_limits,
+            )
+            self.assertEqual(replayed, prepared)
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                rows_after_recovery,
+            )
+
+    def test_context_ready_recovery_uses_durable_learning_for_preflight(
+        self,
+    ) -> None:
+        crash_cases = (
+            (
+                "after-context-before-roster",
+                OperationalRosterJournal,
+                "freeze",
+                0,
+                (
+                    "CYCLE_ROSTER",
+                    "CYCLE_INPUT_FREEZE",
+                    "CYCLE_STATE",
+                    "CAMPAIGN_CYCLE_PREPARATION",
+                ),
+            ),
+            (
+                "after-roster-before-freeze",
+                OperationalCycleFreezeJournal,
+                "freeze",
+                1,
+                (
+                    "CYCLE_INPUT_FREEZE",
+                    "CYCLE_STATE",
+                    "CAMPAIGN_CYCLE_PREPARATION",
+                ),
+            ),
+        )
+        original_controller_preflight = (
+            campaign_controller_module.run_campaign_preflight
+        )
+        original_freeze_preflight = campaign_freeze_module.run_campaign_preflight
+        for (
+            label,
+            crash_owner,
+            crash_method,
+            expected_roster_count,
+            expected_new_aggregate_types,
+        ) in crash_cases:
+            with self.subTest(crash_boundary=label):
+                campaign_id = f"campaign-controller-context-ready-{label}"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    (
+                        controller,
+                        task,
+                        execution_spec,
+                        roster_members,
+                        reservation_limits,
+                    ) = _learning_preflight_prepare_inputs(
+                        root,
+                        journal,
+                        hypothesis=(
+                            "Durable context must recover without live Learning"
+                        ),
+                    )
+                    stored_projection = _projectable_learning_input(
+                        f"stored-context-ready-{label}"
+                    )
+                    stored_projection["claims"][0]["scope"] = _scope(
+                        generation="stored-foreign-generation"
+                    )
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        return_value=stored_projection,
+                    ) as initial_reader, patch.object(
+                        crash_owner,
+                        crash_method,
+                        side_effect=RuntimeError(
+                            f"synthetic {label} crash boundary"
+                        ),
+                    ):
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            f"synthetic {label}",
+                        ):
+                            controller.prepare_cycle(
+                                task=task,
+                                cycle_number=1,
+                                execution_spec=execution_spec,
+                                roster_members=roster_members,
+                                reservation_limits=reservation_limits,
+                            )
+                    initial_reader.assert_called_once_with()
+
+                    crash_snapshot = _prepare_cycle_durable_snapshot(
+                        root,
+                        campaign_id,
+                        journal,
+                        controller,
+                        cycle_id=task.task_id,
+                    )
+                    self.assertEqual(
+                        crash_snapshot["cycle"].status,
+                        CycleStatus.CONTEXT_READY,
+                    )
+                    self.assertEqual(len(crash_snapshot["context"]), 1)
+                    self.assertEqual(
+                        len(crash_snapshot["roster"]),
+                        expected_roster_count,
+                    )
+                    self.assertEqual(crash_snapshot["freeze"], ())
+                    self.assertEqual(crash_snapshot["preparation"], ())
+                    stored_context_payload = json.loads(
+                        crash_snapshot["context"][0].payload_json
+                    )
+                    self.assertEqual(
+                        stored_context_payload["projection_input"],
+                        stored_projection,
+                    )
+                    self.assertEqual(
+                        stored_context_payload["proposal"],
+                        task.proposal,
+                    )
+                    self.assertEqual(
+                        stored_context_payload["untrusted_sources"],
+                        [],
+                    )
+                    rows_before_recovery = crash_snapshot["all_events"]
+
+                    reopened = OperationalCampaignController(
+                        journal=journal,
+                        repository_root=root,
+                        budget_limits=CampaignBudgetLimits(
+                            currency="USD",
+                            max_cycles=1,
+                            max_input_tokens=100,
+                            max_output_tokens=50,
+                            max_cost="1",
+                            max_wall_time_ms=5_000,
+                            max_tool_attempts=4,
+                            max_data_exposures=1,
+                            max_disk_growth_bytes=10_000,
+                        ),
+                        identity_provider=_FakeProcessIdentityProvider(
+                            ProcessIdentity(
+                                "host-context-ready-recovery",
+                                144,
+                                44_000,
+                            )
+                        ),
+                        monotonic_ns=lambda: 400,
+                    )
+                    external_read_error = AssertionError(
+                        "CONTEXT_READY recovery must not read live Learning"
+                    )
+                    controller_claims = []
+                    freeze_claims = []
+
+                    def verify_stored_controller_preflight(**kwargs):
+                        controller_claims.append(kwargs["committed_claims"])
+                        self.assertEqual(
+                            kwargs["committed_claims"],
+                            stored_projection["claims"],
+                        )
+                        return original_controller_preflight(**kwargs)
+
+                    def verify_stored_freeze_preflight(**kwargs):
+                        freeze_claims.append(kwargs["committed_claims"])
+                        self.assertEqual(
+                            kwargs["committed_claims"],
+                            stored_projection["claims"],
+                        )
+                        return original_freeze_preflight(**kwargs)
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        side_effect=external_read_error,
+                    ) as recovery_reader, patch.object(
+                        campaign_controller_module,
+                        "run_campaign_preflight",
+                        side_effect=verify_stored_controller_preflight,
+                    ) as controller_preflight, patch.object(
+                        campaign_freeze_module,
+                        "run_campaign_preflight",
+                        side_effect=verify_stored_freeze_preflight,
+                    ) as freeze_preflight:
+                        prepared = reopened.prepare_cycle(
+                            task=task,
+                            cycle_number=1,
+                            execution_spec=execution_spec,
+                            roster_members=roster_members,
+                            reservation_limits=reservation_limits,
+                        )
+
+                    recovery_reader.assert_not_called()
+                    controller_preflight.assert_called_once()
+                    self.assertEqual(freeze_preflight.call_count, 3)
+                    self.assertEqual(
+                        controller_claims,
+                        [stored_projection["claims"]],
+                    )
+                    self.assertEqual(
+                        freeze_claims,
+                        [stored_projection["claims"]] * 3,
+                    )
+                    self.assertEqual(
+                        reopened.cycle_snapshot(task.task_id).status,
+                        CycleStatus.FROZEN,
+                    )
+                    self.assertEqual(prepared.context.event_id,
+                                     crash_snapshot["context"][0].event_id)
+                    rows_after_recovery = _campaign_event_rows(
+                        root,
+                        campaign_id,
+                    )
+                    self.assertEqual(
+                        rows_after_recovery[: len(rows_before_recovery)],
+                        rows_before_recovery,
+                    )
+                    self.assertEqual(
+                        tuple(
+                            row[4]
+                            for row in rows_after_recovery[
+                                len(rows_before_recovery) :
+                            ]
+                        ),
+                        expected_new_aggregate_types,
+                    )
+
+                    with patch.object(
+                        CommittedLearningLedgerReader,
+                        "read_projection_input",
+                        side_effect=external_read_error,
+                    ) as replay_reader, patch.object(
+                        campaign_controller_module,
+                        "run_campaign_preflight",
+                        side_effect=verify_stored_controller_preflight,
+                    ) as replay_controller_preflight, patch.object(
+                        campaign_freeze_module,
+                        "run_campaign_preflight",
+                        side_effect=verify_stored_freeze_preflight,
+                    ) as replay_freeze_preflight:
+                        replayed = reopened.prepare_cycle(
+                            task=task,
+                            cycle_number=1,
+                            execution_spec=execution_spec,
+                            roster_members=roster_members,
+                            reservation_limits=reservation_limits,
+                        )
+                    self.assertEqual(replayed, prepared)
+                    replay_reader.assert_not_called()
+                    replay_controller_preflight.assert_called_once()
+                    replay_freeze_preflight.assert_called_once()
+                    self.assertEqual(
+                        _campaign_event_rows(root, campaign_id),
+                        rows_after_recovery,
+                    )
 
     def test_unapproved_execution_spec_has_no_persistent_side_effects(self) -> None:
         campaign_id = "campaign-controller-017"

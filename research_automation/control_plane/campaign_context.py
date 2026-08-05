@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -27,6 +27,7 @@ from .campaign_store import (
     _event_domain_payload,
     _event_from_row,
     _identifier,
+    _payload,
 )
 from .memory import (
     ClaimScope,
@@ -41,8 +42,13 @@ from .sqlite_uow import _SqliteUnitOfWork
 _CONTEXT_POLICY_CONFIGURED = "CYCLE_CONTEXT_POLICY_CONFIGURED"
 _CONTEXT_AGGREGATE_TYPE = "CYCLE_SAFE_CONTEXT"
 _CONTEXT_PREPARED = "CYCLE_SAFE_CONTEXT_PREPARED"
+_CONTEXT_RECEIPT_SCHEMA_VERSION = "control_plane.cycle_context_receipt.v2"
+_CONTEXT_RECEIPT_MANIFEST_DOMAIN = b"control_plane.cycle_context_receipt.v2"
+_CONTEXT_PROPOSAL_DOMAIN = b"control_plane.cycle_context_proposal.v2"
 _MAX_CANONICAL_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_SAFE_CONTEXT_BYTES = 48 * 1024
+_CONTEXT_LEARNING_TOKEN_BUDGET = 1500
+_CONTEXT_CONTROL_TOKEN_BUDGET = 500
 _PRE_CONTEXT_STATUSES = frozenset(
     {CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED}
 )
@@ -172,6 +178,25 @@ def campaign_target_scope_sha256(value: object) -> str:
     return _target_scope_snapshot(value)[0]
 
 
+def _untrusted_sources_snapshot(
+    value: Sequence[Mapping[str, object]] | None,
+) -> tuple[str, list[object]]:
+    sources_text, frozen_sources = _canonical_snapshot(
+        [] if value is None else value,
+        "untrusted sources",
+        maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+    )
+    if not isinstance(frozen_sources, list):
+        raise ValueError("untrusted sources are invalid")
+    return (
+        _content_sha256(
+            b"control_plane.cycle_context_untrusted_sources.v1",
+            sources_text,
+        ),
+        frozen_sources,
+    )
+
+
 def canonical_campaign_proposal(
     proposal: Mapping[str, object],
 ) -> dict[str, object]:
@@ -195,6 +220,16 @@ def canonical_campaign_proposal(
         raise ValueError("proposal.hypothesis must be canonical")
     _target_scope_snapshot(frozen_proposal.get("scope"))
     return frozen_proposal
+
+
+def _campaign_proposal_sha256(proposal: Mapping[str, object]) -> str:
+    frozen_proposal = canonical_campaign_proposal(proposal)
+    proposal_text, _ = _canonical_snapshot(
+        frozen_proposal,
+        "proposal",
+        maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+    )
+    return _content_sha256(_CONTEXT_PROPOSAL_DOMAIN, proposal_text)
 
 
 def _sha256(value: object, name: str) -> str:
@@ -417,6 +452,62 @@ def _validate_safe_messages(
 
 
 @dataclass(frozen=True, slots=True)
+class _CycleContextPreview:
+    cycle_id: str
+    roles: tuple[str, ...]
+    learning_token_budget: int
+    control_token_budget: int
+    projection_input_sha256: str
+    target_scope_sha256: str
+    proposal_sha256: str
+    untrusted_sources_sha256: str
+    request_sha256: str
+    context_sha256: str
+    manifest_sha256: str
+    safe_context_json: str
+
+    def messages_for(self, role: str) -> dict[str, object]:
+        role = _identifier(role, "role")
+        if role not in self.roles:
+            raise KeyError(f"role is not present in this context receipt: {role}")
+        bundle = json.loads(self.safe_context_json)
+        for item in bundle["messages_by_role"]:
+            if item["role"] == role:
+                return item["messages"]
+        raise CycleContextIntegrityError("safe context role is unavailable")
+
+    def identity_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": _CONTEXT_RECEIPT_SCHEMA_VERSION,
+            "cycle_id": self.cycle_id,
+            "roles": list(self.roles),
+            "learning_token_budget": self.learning_token_budget,
+            "control_token_budget": self.control_token_budget,
+            "projection_input_sha256": self.projection_input_sha256,
+            "target_scope_sha256": self.target_scope_sha256,
+            "proposal_sha256": self.proposal_sha256,
+            "untrusted_sources_sha256": self.untrusted_sources_sha256,
+            "request_sha256": self.request_sha256,
+            "context_sha256": self.context_sha256,
+            "manifest_sha256": self.manifest_sha256,
+        }
+
+    def _receipt_identity_payload(self) -> dict[str, object]:
+        return {
+            "cycle_id": self.cycle_id,
+            "roles": list(self.roles),
+            "learning_token_budget": self.learning_token_budget,
+            "control_token_budget": self.control_token_budget,
+            "projection_input_sha256": self.projection_input_sha256,
+            "target_scope_sha256": self.target_scope_sha256,
+            "untrusted_sources_sha256": self.untrusted_sources_sha256,
+            "request_sha256": self.request_sha256,
+            "context_sha256": self.context_sha256,
+            "manifest_sha256": self.manifest_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class CycleContextReceipt:
     cycle_id: str
     roles: tuple[str, ...]
@@ -456,6 +547,74 @@ class CycleContextReceipt:
             "manifest_sha256": self.manifest_sha256,
         }
 
+
+@dataclass(frozen=True, slots=True)
+class _AssembledCycleContext:
+    preview: _CycleContextPreview
+    projection_input_json: str
+    proposal_json: str
+    untrusted_sources_json: str
+
+    def verified_projection_input(
+        self,
+    ) -> tuple[dict[str, object], str]:
+        try:
+            projection_input = json.loads(self.projection_input_json)
+            frozen_projection, projection_input_sha256 = (
+                _projection_input_snapshot(projection_input)
+            )
+            canonical_projection_input_json, _ = _canonical_snapshot(
+                frozen_projection,
+                "assembled projection_input",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise CycleContextIntegrityError(
+                "assembled Learning projection is invalid"
+            ) from error
+        if canonical_projection_input_json != self.projection_input_json:
+            raise CycleContextIntegrityError(
+                "assembled Learning projection bytes are invalid"
+            )
+        if not hmac.compare_digest(
+            projection_input_sha256,
+            self.preview.projection_input_sha256,
+        ):
+            raise CycleContextIntegrityError(
+                "assembled Learning projection identity is invalid"
+            )
+        return frozen_projection, projection_input_sha256
+
+    def verified_request_inputs(
+        self,
+    ) -> tuple[dict[str, object], list[object]]:
+        try:
+            proposal = json.loads(self.proposal_json)
+            frozen_proposal = canonical_campaign_proposal(proposal)
+            canonical_proposal_json, _ = _canonical_snapshot(
+                frozen_proposal,
+                "assembled proposal",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            sources = json.loads(self.untrusted_sources_json)
+            canonical_sources_json, frozen_sources = _canonical_snapshot(
+                sources,
+                "assembled untrusted sources",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+        except (TypeError, ValueError, UnicodeError, json.JSONDecodeError) as error:
+            raise CycleContextIntegrityError(
+                "assembled context request inputs are invalid"
+            ) from error
+        if (
+            canonical_proposal_json != self.proposal_json
+            or canonical_sources_json != self.untrusted_sources_json
+            or not isinstance(frozen_sources, list)
+        ):
+            raise CycleContextIntegrityError(
+                "assembled context request input bytes are invalid"
+            )
+        return frozen_proposal, frozen_sources
 
 class OperationalCycleContextJournal:
     """Build every declared role context and atomically mark a Cycle ready."""
@@ -551,24 +710,74 @@ class OperationalCycleContextJournal:
         ).read_projection_input()
         return _projection_input_snapshot(projection_input)
 
-    def prepare(
+    def _assemble(
         self,
         *,
         cycle_id: str,
         proposal: Mapping[str, object],
         roles: Sequence[str],
-        learning_token_budget: int = 1500,
-        control_token_budget: int = 500,
+        learning_token_budget: int = _CONTEXT_LEARNING_TOKEN_BUDGET,
+        control_token_budget: int = _CONTEXT_CONTROL_TOKEN_BUDGET,
         untrusted_sources: Sequence[Mapping[str, object]] | None = None,
-    ) -> CycleContextReceipt:
-        self._journal._authorize()
+    ) -> _AssembledCycleContext:
+        frozen_projection, projection_input_sha256 = (
+            self._verified_projection_input()
+        )
+        return self._assemble_verified_projection(
+            projection_input=frozen_projection,
+            projection_input_sha256=projection_input_sha256,
+            cycle_id=cycle_id,
+            proposal=proposal,
+            roles=roles,
+            learning_token_budget=learning_token_budget,
+            control_token_budget=control_token_budget,
+            untrusted_sources=untrusted_sources,
+        )
+
+    def _assemble_verified_projection(
+        self,
+        *,
+        projection_input: dict[str, object],
+        projection_input_sha256: str,
+        cycle_id: str,
+        proposal: Mapping[str, object],
+        roles: Sequence[str],
+        learning_token_budget: int = _CONTEXT_LEARNING_TOKEN_BUDGET,
+        control_token_budget: int = _CONTEXT_CONTROL_TOKEN_BUDGET,
+        untrusted_sources: Sequence[Mapping[str, object]] | None = None,
+    ) -> _AssembledCycleContext:
         cycle_id = _identifier(cycle_id, "cycle_id")
         frozen_proposal = canonical_campaign_proposal(proposal)
+        proposal_json, _ = _canonical_snapshot(
+            frozen_proposal,
+            "proposal",
+            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+        )
+        proposal_sha256 = _content_sha256(
+            _CONTEXT_PROPOSAL_DOMAIN,
+            proposal_json,
+        )
         target_scope_sha256, frozen_target_scope = _target_scope_snapshot(
             frozen_proposal.get("scope")
         )
-        frozen_projection, projection_input_sha256 = (
-            self._verified_projection_input()
+        frozen_projection, verified_projection_input_sha256 = (
+            _projection_input_snapshot(projection_input)
+        )
+        projection_input_sha256 = _sha256(
+            projection_input_sha256,
+            "projection_input_sha256",
+        )
+        if not hmac.compare_digest(
+            projection_input_sha256,
+            verified_projection_input_sha256,
+        ):
+            raise CycleContextIntegrityError(
+                "verified Learning projection identity is invalid"
+            )
+        projection_input_json, _ = _canonical_snapshot(
+            frozen_projection,
+            "projection_input",
+            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
         )
         if not isinstance(roles, Sequence) or isinstance(roles, (str, bytes)):
             raise ValueError("roles must be a sequence")
@@ -577,14 +786,13 @@ class OperationalCycleContextJournal:
         )
         if not canonical_roles or len(canonical_roles) != len(roles):
             raise ValueError("roles must be a non-empty unique sequence")
-        sources_text, frozen_sources = _canonical_snapshot(
-            [] if untrusted_sources is None else untrusted_sources,
+        untrusted_sources_sha256, frozen_sources = (
+            _untrusted_sources_snapshot(untrusted_sources)
+        )
+        untrusted_sources_json, _ = _canonical_snapshot(
+            frozen_sources,
             "untrusted sources",
             maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
-        )
-        untrusted_sources_sha256 = _content_sha256(
-            b"control_plane.cycle_context_untrusted_sources.v1",
-            sources_text,
         )
         request_identity = {
             "schema_version": "control_plane.cycle_context_request.v1",
@@ -600,8 +808,6 @@ class OperationalCycleContextJournal:
             "context request",
             maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
         )
-        if not isinstance(frozen_sources, list):
-            raise ValueError("untrusted sources are invalid")
         messages_by_role: list[dict[str, object]] = []
         for role in canonical_roles:
             messages = self._router.build_messages(
@@ -644,12 +850,14 @@ class OperationalCycleContextJournal:
             bundle_text,
         )
         identity = {
+            "schema_version": _CONTEXT_RECEIPT_SCHEMA_VERSION,
             "cycle_id": cycle_id,
             "roles": list(canonical_roles),
             "learning_token_budget": learning_token_budget,
             "control_token_budget": control_token_budget,
             "projection_input_sha256": projection_input_sha256,
             "target_scope_sha256": target_scope_sha256,
+            "proposal_sha256": proposal_sha256,
             "untrusted_sources_sha256": untrusted_sources_sha256,
             "request_sha256": request_sha256,
             "context_sha256": context_sha256,
@@ -660,16 +868,365 @@ class OperationalCycleContextJournal:
             maximum_bytes=_MAX_SAFE_CONTEXT_BYTES,
         )
         manifest_sha256 = _content_sha256(
-            b"control_plane.cycle_context_receipt.v1",
+            _CONTEXT_RECEIPT_MANIFEST_DOMAIN,
             identity_text,
         )
-        expected_payload = {
-            **identity,
-            "manifest_sha256": manifest_sha256,
-            "safe_context": bundle,
+        return _AssembledCycleContext(
+            preview=_CycleContextPreview(
+                cycle_id=cycle_id,
+                roles=canonical_roles,
+                learning_token_budget=learning_token_budget,
+                control_token_budget=control_token_budget,
+                projection_input_sha256=projection_input_sha256,
+                target_scope_sha256=target_scope_sha256,
+                proposal_sha256=proposal_sha256,
+                untrusted_sources_sha256=untrusted_sources_sha256,
+                request_sha256=request_sha256,
+                context_sha256=context_sha256,
+                manifest_sha256=manifest_sha256,
+                safe_context_json=bundle_text,
+            ),
+            projection_input_json=projection_input_json,
+            proposal_json=proposal_json,
+            untrusted_sources_json=untrusted_sources_json,
+        )
+
+    def _validated_assembled_payload(
+        self,
+        assembled: object,
+    ) -> tuple[_CycleContextPreview, dict[str, object]]:
+        if type(assembled) is not _AssembledCycleContext:
+            raise TypeError(
+                "assembled must be an exact _AssembledCycleContext"
+            )
+        preview = assembled.preview
+        if type(preview) is not _CycleContextPreview:
+            raise CycleContextIntegrityError(
+                "assembled Cycle context preview type is invalid"
+            )
+        try:
+            cycle_id = _identifier(preview.cycle_id, "assembled cycle_id")
+            roles = preview.roles
+            if (
+                type(roles) is not tuple
+                or not roles
+                or any(type(role) is not str for role in roles)
+                or roles != tuple(sorted(set(roles)))
+                or not set(roles).issubset(_SAFE_CONTEXT_ROLES)
+            ):
+                raise ValueError("assembled roles are invalid")
+            learning_token_budget = preview.learning_token_budget
+            control_token_budget = preview.control_token_budget
+            if (
+                type(learning_token_budget) is not int
+                or type(control_token_budget) is not int
+                or not 1 <= learning_token_budget <= 1500
+                or not 1 <= control_token_budget <= 500
+            ):
+                raise ValueError("assembled context budgets are invalid")
+            projection_input_sha256 = _sha256(
+                preview.projection_input_sha256,
+                "assembled projection_input_sha256",
+            )
+            target_scope_sha256 = _sha256(
+                preview.target_scope_sha256,
+                "assembled target_scope_sha256",
+            )
+            proposal_sha256 = _sha256(
+                preview.proposal_sha256,
+                "assembled proposal_sha256",
+            )
+            untrusted_sources_sha256 = _sha256(
+                preview.untrusted_sources_sha256,
+                "assembled untrusted_sources_sha256",
+            )
+            request_sha256 = _sha256(
+                preview.request_sha256,
+                "assembled request_sha256",
+            )
+            context_sha256 = _sha256(
+                preview.context_sha256,
+                "assembled context_sha256",
+            )
+            manifest_sha256 = _sha256(
+                preview.manifest_sha256,
+                "assembled manifest_sha256",
+            )
+            verified_projection, verified_projection_sha256 = (
+                assembled.verified_projection_input()
+            )
+            frozen_proposal, frozen_sources = (
+                assembled.verified_request_inputs()
+            )
+            proposal_text, _ = _canonical_snapshot(
+                frozen_proposal,
+                "assembled proposal",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            verified_proposal_sha256 = _content_sha256(
+                _CONTEXT_PROPOSAL_DOMAIN,
+                proposal_text,
+            )
+            safe_context = json.loads(preview.safe_context_json)
+            bundle_text, bundle = _canonical_snapshot(
+                safe_context,
+                "assembled safe context",
+                maximum_bytes=_MAX_SAFE_CONTEXT_BYTES,
+            )
+        except CycleContextIntegrityError:
+            raise
+        except (
+            TypeError,
+            ValueError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as error:
+            raise CycleContextIntegrityError(
+                "assembled Cycle context identity is invalid"
+            ) from error
+        if (
+            verified_projection_sha256 != projection_input_sha256
+            or verified_proposal_sha256 != proposal_sha256
+            or bundle_text != preview.safe_context_json
+            or not isinstance(bundle, dict)
+            or set(bundle) != {"schema_version", "messages_by_role"}
+        ):
+            raise CycleContextIntegrityError(
+                "assembled Cycle context bytes are invalid"
+            )
+        rows = bundle.get("messages_by_role")
+        if (
+            bundle.get("schema_version")
+            != "control_plane.cycle_safe_context_bundle.v1"
+            or not isinstance(rows, list)
+            or [row.get("role") for row in rows if isinstance(row, dict)]
+            != list(roles)
+            or any(
+                not isinstance(row, dict)
+                or set(row) != {"role", "messages"}
+                or not isinstance(row["messages"], dict)
+                for row in rows
+            )
+        ):
+            raise CycleContextIntegrityError(
+                "assembled safe context roles are invalid"
+            )
+        for row in rows:
+            _validate_safe_messages(
+                row["messages"],
+                learning_token_budget=learning_token_budget,
+                control_token_budget=control_token_budget,
+                tokenizer_kind=self._policy_payload["tokenizer_kind"],
+                tokenizer_ref=self._policy_payload["tokenizer_ref"],
+            )
+        request_text, _ = _canonical_snapshot(
+            {
+                "schema_version": "control_plane.cycle_context_request.v1",
+                "roles": list(roles),
+                "learning_token_budget": learning_token_budget,
+                "control_token_budget": control_token_budget,
+                "projection_input_sha256": projection_input_sha256,
+                "target_scope_sha256": target_scope_sha256,
+                "untrusted_sources_sha256": untrusted_sources_sha256,
+            },
+            "assembled context request",
+            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+        )
+        expected_request_sha256 = _content_sha256(
+            b"control_plane.cycle_context_request.v1",
+            request_text,
+        )
+        expected_context_sha256 = _content_sha256(
+            b"control_plane.cycle_safe_context_bundle.v1",
+            bundle_text,
+        )
+        identity = {
+            "schema_version": _CONTEXT_RECEIPT_SCHEMA_VERSION,
+            "cycle_id": cycle_id,
+            "roles": list(roles),
+            "learning_token_budget": learning_token_budget,
+            "control_token_budget": control_token_budget,
+            "projection_input_sha256": projection_input_sha256,
+            "target_scope_sha256": target_scope_sha256,
+            "proposal_sha256": proposal_sha256,
+            "untrusted_sources_sha256": untrusted_sources_sha256,
+            "request_sha256": request_sha256,
+            "context_sha256": context_sha256,
         }
+        identity_text, _ = _canonical_snapshot(
+            identity,
+            "assembled context identity",
+            maximum_bytes=_MAX_SAFE_CONTEXT_BYTES,
+        )
+        expected_manifest_sha256 = _content_sha256(
+            _CONTEXT_RECEIPT_MANIFEST_DOMAIN,
+            identity_text,
+        )
+        if (
+            not hmac.compare_digest(
+                request_sha256,
+                expected_request_sha256,
+            )
+            or not hmac.compare_digest(
+                context_sha256,
+                expected_context_sha256,
+            )
+            or not hmac.compare_digest(
+                manifest_sha256,
+                expected_manifest_sha256,
+            )
+        ):
+            raise CycleContextIntegrityError(
+                "assembled Cycle context hashes are invalid"
+            )
+        expected_assembled = self._assemble_verified_projection(
+            projection_input=verified_projection,
+            projection_input_sha256=verified_projection_sha256,
+            cycle_id=cycle_id,
+            proposal=frozen_proposal,
+            roles=roles,
+            learning_token_budget=learning_token_budget,
+            control_token_budget=control_token_budget,
+            untrusted_sources=frozen_sources,
+        )
+        if assembled != expected_assembled:
+            raise CycleContextIntegrityError(
+                "assembled Learning projection and safe context are not bound"
+            )
+        expected_payload = {
+            **preview.identity_payload(),
+            "safe_context": bundle,
+            "projection_input": verified_projection,
+            "proposal": frozen_proposal,
+            "untrusted_sources": frozen_sources,
+        }
+        try:
+            _payload(
+                {
+                    **expected_payload,
+                    "_authority_grant_id": self._journal._grant.grant_id,
+                }
+            )
+        except ValueError as error:
+            raise CycleContextConflictError(
+                "Cycle context durable event payload exceeds the bounded size"
+            ) from error
+        return preview, expected_payload
+
+    def _validated_assembled_binding(
+        self,
+        assembled: object,
+        *,
+        cycle_id: str,
+        proposal: Mapping[str, object],
+        roles: Sequence[str],
+        learning_token_budget: int = _CONTEXT_LEARNING_TOKEN_BUDGET,
+        control_token_budget: int = _CONTEXT_CONTROL_TOKEN_BUDGET,
+        untrusted_sources: Sequence[Mapping[str, object]] | None = None,
+    ) -> tuple[_CycleContextPreview, dict[str, object]]:
+        preview, payload = self._validated_assembled_payload(assembled)
+        projection_input, projection_input_sha256 = (
+            assembled.verified_projection_input()
+        )
+        expected_assembled = self._assemble_verified_projection(
+            projection_input=projection_input,
+            projection_input_sha256=projection_input_sha256,
+            cycle_id=cycle_id,
+            proposal=proposal,
+            roles=roles,
+            learning_token_budget=learning_token_budget,
+            control_token_budget=control_token_budget,
+            untrusted_sources=untrusted_sources,
+        )
+        if assembled != expected_assembled:
+            raise CycleContextIntegrityError(
+                "assembled Cycle context is not semantically bound to its request"
+            )
+        expected_cycle_id = _identifier(cycle_id, "cycle_id")
+        frozen_proposal = canonical_campaign_proposal(proposal)
+        expected_proposal_text, _ = _canonical_snapshot(
+            frozen_proposal,
+            "requested proposal",
+            maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+        )
+        expected_proposal_sha256 = _content_sha256(
+            _CONTEXT_PROPOSAL_DOMAIN,
+            expected_proposal_text,
+        )
+        expected_target_scope_sha256 = campaign_target_scope_sha256(
+            frozen_proposal.get("scope")
+        )
+        if not isinstance(roles, Sequence) or isinstance(roles, (str, bytes)):
+            raise ValueError("roles must be a sequence")
+        expected_roles = tuple(
+            sorted({_identifier(role, "role") for role in roles})
+        )
+        if not expected_roles or len(expected_roles) != len(roles):
+            raise ValueError("roles must be a non-empty unique sequence")
+        expected_untrusted_sources_sha256, _ = (
+            _untrusted_sources_snapshot(untrusted_sources)
+        )
+        if (
+            preview.cycle_id != expected_cycle_id
+            or preview.roles != expected_roles
+            or preview.learning_token_budget != learning_token_budget
+            or preview.control_token_budget != control_token_budget
+            or not hmac.compare_digest(
+                preview.target_scope_sha256,
+                expected_target_scope_sha256,
+            )
+            or not hmac.compare_digest(
+                preview.proposal_sha256,
+                expected_proposal_sha256,
+            )
+            or not hmac.compare_digest(
+                preview.untrusted_sources_sha256,
+                expected_untrusted_sources_sha256,
+            )
+        ):
+            raise CycleContextIntegrityError(
+                "assembled Cycle context is not bound to the current request"
+            )
+        return preview, payload
+
+    def prepare(
+        self,
+        *,
+        cycle_id: str,
+        proposal: Mapping[str, object],
+        roles: Sequence[str],
+        learning_token_budget: int = _CONTEXT_LEARNING_TOKEN_BUDGET,
+        control_token_budget: int = _CONTEXT_CONTROL_TOKEN_BUDGET,
+        untrusted_sources: Sequence[Mapping[str, object]] | None = None,
+    ) -> CycleContextReceipt:
+        self._journal._authorize()
+        assembled = self._assemble(
+            cycle_id=cycle_id,
+            proposal=proposal,
+            roles=roles,
+            learning_token_budget=learning_token_budget,
+            control_token_budget=control_token_budget,
+            untrusted_sources=untrusted_sources,
+        )
+        return self._prepare_assembled(assembled)
+
+    def _prepare_assembled(
+        self,
+        assembled: object,
+        *,
+        _transaction_guard: Callable[[object], None] | None = None,
+    ) -> CycleContextReceipt:
+        self._journal._authorize()
+        if _transaction_guard is not None and not callable(_transaction_guard):
+            raise TypeError("_transaction_guard must be callable")
+        preview, expected_payload = self._validated_assembled_payload(
+            assembled
+        )
+        cycle_id = preview.cycle_id
 
         def prepare_context(connection) -> CycleContextReceipt | None:
+            if _transaction_guard is not None:
+                _transaction_guard(connection)
             policy = self._replay_policy(self._policy_events(connection))
             self._require_policy_precedes_context_history(
                 connection,
@@ -685,8 +1242,8 @@ class OperationalCycleContextJournal:
                 receipt = self._replay_context(events)
                 if (
                     receipt.identity_payload()
-                    != {key: expected_payload[key] for key in receipt.identity_payload()}
-                    or receipt.safe_context_json != bundle_text
+                    != preview._receipt_identity_payload()
+                    or receipt.safe_context_json != preview.safe_context_json
                 ):
                     raise CycleContextConflictError(
                         "Cycle safe context is already bound to another request"
@@ -726,16 +1283,16 @@ class OperationalCycleContextJournal:
             )
             receipt = CycleContextReceipt(
                 cycle_id=cycle_id,
-                roles=canonical_roles,
-                learning_token_budget=learning_token_budget,
-                control_token_budget=control_token_budget,
-                projection_input_sha256=projection_input_sha256,
-                target_scope_sha256=target_scope_sha256,
-                untrusted_sources_sha256=untrusted_sources_sha256,
-                request_sha256=request_sha256,
-                context_sha256=context_sha256,
-                manifest_sha256=manifest_sha256,
-                safe_context_json=bundle_text,
+                roles=preview.roles,
+                learning_token_budget=preview.learning_token_budget,
+                control_token_budget=preview.control_token_budget,
+                projection_input_sha256=preview.projection_input_sha256,
+                target_scope_sha256=preview.target_scope_sha256,
+                untrusted_sources_sha256=preview.untrusted_sources_sha256,
+                request_sha256=preview.request_sha256,
+                context_sha256=preview.context_sha256,
+                manifest_sha256=preview.manifest_sha256,
+                safe_context_json=preview.safe_context_json,
                 event_id=event.event_id,
                 sequence=event.sequence,
             )
@@ -765,6 +1322,99 @@ class OperationalCycleContextJournal:
 
         return _SqliteUnitOfWork(stores._operational_spec())._read(load_snapshot)
 
+    def _verified_stored_assembly(
+        self,
+        *,
+        cycle_id: str,
+    ) -> _AssembledCycleContext | None:
+        """Recover an exact durable v2 assembly without consulting Learning."""
+
+        self._journal._authorize()
+        cycle_id = _identifier(cycle_id, "cycle_id")
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._verified_stored_assembly_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+        )
+
+    def _verified_stored_assembly_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> _AssembledCycleContext | None:
+        cycle_events = self._lifecycle._cycle_events(connection, cycle_id)
+        if not cycle_events:
+            return None
+        cycle = self._lifecycle._replay_cycle(cycle_events)
+        events = self._context_events(connection, cycle_id)
+        if cycle.status in _PRE_CONTEXT_STATUSES and not events:
+            return None
+        if cycle.status in _PRE_CONTEXT_STATUSES:
+            if events:
+                policy = self._replay_policy(self._policy_events(connection))
+                receipt = self._replay_context(events)
+                self._require_complete_context_order(
+                    connection,
+                    policy,
+                    receipt,
+                )
+            return None
+        policy = self._replay_policy(self._policy_events(connection))
+        receipt = self._replay_context(events)
+        self._require_complete_context_order(connection, policy, receipt)
+        payload = _event_domain_payload(events[0])
+        try:
+            projection_input_json, _ = _canonical_snapshot(
+                payload["projection_input"],
+                "stored assembled projection_input",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            proposal_json, _ = _canonical_snapshot(
+                payload["proposal"],
+                "stored assembled proposal",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            untrusted_sources_json, _ = _canonical_snapshot(
+                payload["untrusted_sources"],
+                "stored assembled untrusted sources",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            proposal_sha256 = _sha256(
+                payload["proposal_sha256"],
+                "stored proposal_sha256",
+            )
+        except (KeyError, TypeError, ValueError, UnicodeError) as error:
+            raise CycleContextIntegrityError(
+                "stored Cycle context assembly is invalid"
+            ) from error
+        assembled = _AssembledCycleContext(
+            preview=_CycleContextPreview(
+                cycle_id=receipt.cycle_id,
+                roles=receipt.roles,
+                learning_token_budget=receipt.learning_token_budget,
+                control_token_budget=receipt.control_token_budget,
+                projection_input_sha256=receipt.projection_input_sha256,
+                target_scope_sha256=receipt.target_scope_sha256,
+                proposal_sha256=proposal_sha256,
+                untrusted_sources_sha256=receipt.untrusted_sources_sha256,
+                request_sha256=receipt.request_sha256,
+                context_sha256=receipt.context_sha256,
+                manifest_sha256=receipt.manifest_sha256,
+                safe_context_json=receipt.safe_context_json,
+            ),
+            projection_input_json=projection_input_json,
+            proposal_json=proposal_json,
+            untrusted_sources_json=untrusted_sources_json,
+        )
+        _, expected_payload = self._validated_assembled_payload(assembled)
+        if expected_payload != payload:
+            raise CycleContextIntegrityError(
+                "stored Cycle context assembly does not match its event"
+            )
+        return assembled
+
     def _policy_event_id(self) -> str:
         return _event_id(
             namespace=self._journal._namespace,
@@ -775,6 +1425,9 @@ class OperationalCycleContextJournal:
         )
 
     def _context_event_id(self, cycle_id: str) -> str:
+        # This remains stable across receipt schemas to preserve one idempotent
+        # preparation slot per Cycle. The v2 payload discriminator and manifest
+        # domain prevent a legacy receipt from aliasing the current identity.
         return _event_id(
             namespace=self._journal._namespace,
             campaign_id=self._journal._campaign_id,
@@ -876,7 +1529,7 @@ class OperationalCycleContextJournal:
             raise CycleContextIntegrityError("Cycle context history is invalid")
         event = events[0]
         payload = _event_domain_payload(event)
-        expected_fields = {
+        legacy_v1_fields = {
             "cycle_id",
             "roles",
             "learning_token_budget",
@@ -888,6 +1541,36 @@ class OperationalCycleContextJournal:
             "context_sha256",
             "manifest_sha256",
             "safe_context",
+        }
+        if set(payload) == legacy_v1_fields:
+            raise CycleContextIntegrityError(
+                "Cycle context legacy v1 is unsupported; "
+                "fresh preparation is required"
+            )
+        schema_version = payload.get("schema_version")
+        if schema_version is not None and (
+            schema_version != _CONTEXT_RECEIPT_SCHEMA_VERSION
+        ):
+            raise CycleContextIntegrityError(
+                "Cycle context schema version is unsupported"
+            )
+        expected_fields = {
+            "schema_version",
+            "cycle_id",
+            "roles",
+            "learning_token_budget",
+            "control_token_budget",
+            "projection_input_sha256",
+            "target_scope_sha256",
+            "proposal_sha256",
+            "untrusted_sources_sha256",
+            "request_sha256",
+            "context_sha256",
+            "manifest_sha256",
+            "safe_context",
+            "projection_input",
+            "proposal",
+            "untrusted_sources",
         }
         if set(payload) != expected_fields:
             raise CycleContextIntegrityError("Cycle context payload is invalid")
@@ -923,6 +1606,10 @@ class OperationalCycleContextJournal:
                 payload["target_scope_sha256"],
                 "stored target_scope_sha256",
             )
+            proposal_sha256 = _sha256(
+                payload["proposal_sha256"],
+                "stored proposal_sha256",
+            )
             untrusted_sources_sha256 = _sha256(
                 payload["untrusted_sources_sha256"],
                 "stored untrusted_sources_sha256",
@@ -940,6 +1627,24 @@ class OperationalCycleContextJournal:
                 payload["safe_context"],
                 "stored safe context",
                 maximum_bytes=_MAX_SAFE_CONTEXT_BYTES,
+            )
+            frozen_projection, stored_projection_input_sha256 = (
+                _projection_input_snapshot(payload["projection_input"])
+            )
+            frozen_proposal = canonical_campaign_proposal(
+                payload["proposal"]
+            )
+            proposal_text, _ = _canonical_snapshot(
+                frozen_proposal,
+                "stored proposal",
+                maximum_bytes=_MAX_CANONICAL_INPUT_BYTES,
+            )
+            stored_proposal_sha256 = _content_sha256(
+                _CONTEXT_PROPOSAL_DOMAIN,
+                proposal_text,
+            )
+            _, frozen_sources = _untrusted_sources_snapshot(
+                payload["untrusted_sources"]
             )
         except (TypeError, ValueError) as error:
             raise CycleContextIntegrityError(
@@ -979,12 +1684,14 @@ class OperationalCycleContextJournal:
             bundle_text,
         )
         identity = {
+            "schema_version": _CONTEXT_RECEIPT_SCHEMA_VERSION,
             "cycle_id": cycle_id,
             "roles": list(roles),
             "learning_token_budget": learning_token_budget,
             "control_token_budget": control_token_budget,
             "projection_input_sha256": projection_input_sha256,
             "target_scope_sha256": target_scope_sha256,
+            "proposal_sha256": proposal_sha256,
             "untrusted_sources_sha256": untrusted_sources_sha256,
         }
         request_text, _ = _canonical_snapshot(
@@ -1016,7 +1723,7 @@ class OperationalCycleContextJournal:
             maximum_bytes=_MAX_SAFE_CONTEXT_BYTES,
         )
         expected_manifest_sha256 = _content_sha256(
-            b"control_plane.cycle_context_receipt.v1",
+            _CONTEXT_RECEIPT_MANIFEST_DOMAIN,
             identity_text,
         )
         expected_envelope = (
@@ -1039,11 +1746,45 @@ class OperationalCycleContextJournal:
         )
         if (
             observed_envelope != expected_envelope
+            or not hmac.compare_digest(
+                projection_input_sha256,
+                stored_projection_input_sha256,
+            )
+            or not hmac.compare_digest(
+                proposal_sha256,
+                stored_proposal_sha256,
+            )
             or not hmac.compare_digest(request_sha256, expected_request_sha256)
             or not hmac.compare_digest(context_sha256, expected_context_sha256)
             or not hmac.compare_digest(manifest_sha256, expected_manifest_sha256)
         ):
             raise CycleContextIntegrityError("Cycle context integrity is invalid")
+        try:
+            expected_assembled = self._assemble_verified_projection(
+                projection_input=frozen_projection,
+                projection_input_sha256=stored_projection_input_sha256,
+                cycle_id=cycle_id,
+                proposal=frozen_proposal,
+                roles=roles,
+                learning_token_budget=learning_token_budget,
+                control_token_budget=control_token_budget,
+                untrusted_sources=frozen_sources,
+            )
+        except (TypeError, ValueError, CycleContextError) as error:
+            raise CycleContextIntegrityError(
+                "stored Learning projection and safe context are invalid"
+            ) from error
+        if (
+            expected_assembled.preview.identity_payload()
+            != {
+                key: payload[key]
+                for key in expected_assembled.preview.identity_payload()
+            }
+            or expected_assembled.preview.safe_context_json != bundle_text
+        ):
+            raise CycleContextIntegrityError(
+                "stored Learning projection and safe context are not bound"
+            )
         return CycleContextReceipt(
             cycle_id=cycle_id,
             roles=roles,
@@ -1133,9 +1874,18 @@ class OperationalCycleContextJournal:
             and _event_domain_payload(event).get("to_status")
             == CycleStatus.CONTEXT_READY.value
         )
+        budget_reserved_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.BUDGET_RESERVED.value
+        )
         if (
             cycle.status in _PRE_CONTEXT_STATUSES
+            or len(budget_reserved_transitions) != 1
             or len(ready_transitions) != 1
+            or budget_reserved_transitions[0].sequence >= receipt.sequence
             or ready_transitions[0].sequence <= receipt.sequence
         ):
             raise CycleContextIntegrityError(

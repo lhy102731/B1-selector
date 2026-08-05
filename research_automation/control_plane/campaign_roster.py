@@ -210,11 +210,16 @@ class OperationalRosterJournal:
         *,
         cycle_id: str,
         members: tuple[RosterMember, ...],
+        _transaction_guard: Callable[[object], None] | None = None,
     ) -> RosterManifest:
         self._journal._authorize()
+        if _transaction_guard is not None and not callable(_transaction_guard):
+            raise TypeError("_transaction_guard must be callable")
         manifest = _roster_manifest(cycle_id, members)
 
         def freeze_roster(connection) -> RosterManifest | None:
+            if _transaction_guard is not None:
+                _transaction_guard(connection)
             campaign = self._lifecycle._replay_campaign(
                 self._lifecycle._campaign_events(connection)
             )

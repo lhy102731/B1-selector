@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -16,7 +16,9 @@ from .campaign_context import (
     CycleContextError,
     CycleContextIntegrityError,
     OperationalCycleContextJournal,
+    _campaign_proposal_sha256,
     campaign_target_scope_sha256,
+    canonical_campaign_proposal,
 )
 from .campaign_lifecycle import (
     CampaignLifecycleError,
@@ -41,6 +43,7 @@ from .campaign_store import (
     _event_domain_payload,
     _event_from_row,
     _identifier,
+    _payload,
 )
 from .sqlite_uow import _SqliteUnitOfWork
 
@@ -48,6 +51,8 @@ from .sqlite_uow import _SqliteUnitOfWork
 _FREEZE_POLICY_CONFIGURED = "CYCLE_FREEZE_POLICY_CONFIGURED"
 _CYCLE_FREEZE_AGGREGATE_TYPE = "CYCLE_INPUT_FREEZE"
 _CYCLE_INPUTS_FROZEN = "CYCLE_INPUTS_FROZEN"
+_CYCLE_FREEZE_SCHEMA_VERSION = "control_plane.campaign_cycle_freeze.v2"
+_CYCLE_FREEZE_MANIFEST_DOMAIN = b"control_plane.campaign_cycle_freeze.v2"
 _MAX_FROZEN_INPUT_BYTES = 64 * 1024
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PRE_FREEZE_STATUSES = frozenset(
@@ -100,6 +105,27 @@ def _content_sha256(domain: bytes, value: object, name: str) -> str:
     return hashlib.sha256(domain + b"\0" + _canonical_bytes(value, name)).hexdigest()
 
 
+def _execution_spec_from_json(value: object, name: str) -> ExecutionSpec:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be canonical JSON")
+    try:
+        parsed = json.loads(value)
+        execution_spec = ExecutionSpec.model_validate_json(value, strict=True)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a valid ExecutionSpec") from error
+    canonical = _canonical_bytes(
+        execution_spec.model_dump(mode="json", warnings=False),
+        name,
+    ).decode("utf-8")
+    if (
+        not isinstance(parsed, dict)
+        or _canonical_bytes(parsed, name).decode("utf-8") != value
+        or canonical != value
+    ):
+        raise ValueError(f"{name} must be canonical JSON")
+    return execution_spec
+
+
 def _event_id(
     *,
     namespace: str,
@@ -118,14 +144,17 @@ def _event_id(
 
 @dataclass(frozen=True, slots=True)
 class FrozenCycleInputs:
+    schema_version: str
     cycle_id: str
     proposal_sha256: str
     execution_spec_id: str
+    execution_spec_json: str
     executed_protocol_sha256: str
     generation_id: str
     generation_manifest_artifact_id: str
     roster_manifest_sha256: str
     context_manifest_sha256: str
+    preflight_json: str
     preflight_sha256: str
     manifest_sha256: str
     event_id: str
@@ -133,9 +162,11 @@ class FrozenCycleInputs:
 
     def identity_payload(self) -> dict[str, str]:
         return {
+            "schema_version": self.schema_version,
             "cycle_id": self.cycle_id,
             "proposal_sha256": self.proposal_sha256,
             "execution_spec_id": self.execution_spec_id,
+            "execution_spec_json": self.execution_spec_json,
             "executed_protocol_sha256": self.executed_protocol_sha256,
             "generation_id": self.generation_id,
             "generation_manifest_artifact_id": (
@@ -143,6 +174,7 @@ class FrozenCycleInputs:
             ),
             "roster_manifest_sha256": self.roster_manifest_sha256,
             "context_manifest_sha256": self.context_manifest_sha256,
+            "preflight_json": self.preflight_json,
             "preflight_sha256": self.preflight_sha256,
             "manifest_sha256": self.manifest_sha256,
         }
@@ -220,6 +252,109 @@ class OperationalCycleFreezeJournal:
 
         _SqliteUnitOfWork(stores._operational_spec())._write(configure)
 
+    def _validated_expected_payload(
+        self,
+        *,
+        cycle_id: str,
+        proposal: Mapping[str, object],
+        execution_spec: ExecutionSpec,
+        expected_roster: RosterManifest,
+        context_roles: tuple[str, ...],
+        context_target_scope_sha256: str,
+        context_manifest_sha256: str,
+        preflight: Mapping[str, object],
+    ) -> tuple[dict[str, object], dict[str, object], str]:
+        proposal_bytes = _canonical_bytes(dict(proposal), "proposal")
+        frozen_proposal = json.loads(proposal_bytes)
+        frozen_preflight = dict(preflight)
+        if frozen_preflight.get("verdict") != "WOULD_ACCEPT":
+            raise CycleFreezeConflictError(
+                "Campaign preflight rejected frozen inputs"
+            )
+        proposal_sha256 = _content_sha256(
+            b"control_plane.campaign_proposal.v1",
+            frozen_proposal,
+            "proposal",
+        )
+        expected_context_proposal_sha256 = _campaign_proposal_sha256(
+            frozen_proposal
+        )
+        preflight_sha256 = _content_sha256(
+            b"control_plane.campaign_preflight.v1",
+            frozen_preflight,
+            "preflight",
+        )
+        preflight_json = _canonical_bytes(
+            frozen_preflight,
+            "preflight",
+        ).decode("utf-8")
+        execution_spec_json = _canonical_bytes(
+            execution_spec.model_dump(mode="json", warnings=False),
+            "execution_spec",
+        ).decode("utf-8")
+        protocol = execution_spec.protocol
+        expected_context_roles = tuple(
+            sorted({member.role for member in expected_roster.members})
+        )
+        if context_roles != expected_context_roles:
+            raise CycleFreezeConflictError(
+                "safe context roles conflict with the frozen roster"
+            )
+        target_scope_sha256 = campaign_target_scope_sha256(
+            frozen_proposal.get("scope")
+        )
+        if not hmac.compare_digest(
+            _sha256(
+                context_target_scope_sha256,
+                "context_target_scope_sha256",
+            ),
+            target_scope_sha256,
+        ):
+            raise CycleFreezeConflictError(
+                "safe context target scope conflicts with the proposal"
+            )
+        identity = {
+            "schema_version": _CYCLE_FREEZE_SCHEMA_VERSION,
+            "cycle_id": cycle_id,
+            "proposal_sha256": proposal_sha256,
+            "execution_spec_id": execution_spec.execution_spec_id,
+            "execution_spec_json": execution_spec_json,
+            "executed_protocol_sha256": execution_spec.executed_protocol_sha256,
+            "generation_id": protocol.generation_id,
+            "generation_manifest_artifact_id": (
+                protocol.generation_manifest_artifact_id
+            ),
+            "roster_manifest_sha256": expected_roster.manifest_sha256,
+            "context_manifest_sha256": _sha256(
+                context_manifest_sha256,
+                "context_manifest_sha256",
+            ),
+            "preflight_json": preflight_json,
+            "preflight_sha256": preflight_sha256,
+        }
+        manifest_sha256 = _content_sha256(
+            _CYCLE_FREEZE_MANIFEST_DOMAIN,
+            identity,
+            "Cycle freeze identity",
+        )
+        expected_payload = {**identity, "manifest_sha256": manifest_sha256}
+        try:
+            _payload(
+                {
+                    **expected_payload,
+                    "_authority_grant_id": self._journal._grant.grant_id,
+                }
+            )
+        except ValueError as error:
+            raise CycleFreezeConflictError(
+                "Cycle freeze durable event payload exceeds the bounded size"
+            ) from error
+        return (
+            expected_payload,
+            frozen_proposal,
+            expected_context_proposal_sha256,
+        )
+
     def freeze(
         self,
         *,
@@ -227,8 +362,12 @@ class OperationalCycleFreezeJournal:
         proposal: Mapping[str, object],
         execution_spec: ExecutionSpec,
         expected_roster: RosterManifest,
+        _transaction_guard: Callable[[object], None] | None = None,
+        _prevalidated_payload: Mapping[str, object] | None = None,
     ) -> FrozenCycleInputs:
         self._journal._authorize()
+        if _transaction_guard is not None and not callable(_transaction_guard):
+            raise TypeError("_transaction_guard must be callable")
         cycle_id = _identifier(cycle_id, "cycle_id")
         if not isinstance(execution_spec, ExecutionSpec):
             raise TypeError("execution_spec must be an ExecutionSpec")
@@ -261,56 +400,36 @@ class OperationalCycleFreezeJournal:
             proposal=frozen_proposal,
             committed_claims=projection_input["claims"],
         )
-        if preflight["verdict"] != "WOULD_ACCEPT":
-            raise CycleFreezeConflictError("Campaign preflight rejected frozen inputs")
-        proposal_sha256 = _content_sha256(
-            b"control_plane.campaign_proposal.v1",
+        (
+            expected_payload,
             frozen_proposal,
-            "proposal",
+            context_proposal_sha256,
+        ) = self._validated_expected_payload(
+            cycle_id=cycle_id,
+            proposal=frozen_proposal,
+            execution_spec=execution_spec,
+            expected_roster=expected_roster,
+            context_roles=context_receipt.roles,
+            context_target_scope_sha256=context_receipt.target_scope_sha256,
+            context_manifest_sha256=context_receipt.manifest_sha256,
+            preflight=preflight,
         )
-        preflight_sha256 = _content_sha256(
-            b"control_plane.campaign_preflight.v1",
-            preflight,
-            "preflight",
-        )
+        if _prevalidated_payload is not None:
+            if (
+                not isinstance(_prevalidated_payload, Mapping)
+                or dict(_prevalidated_payload) != expected_payload
+            ):
+                raise CycleFreezeConflictError(
+                    "prevalidated Cycle freeze payload conflicts"
+                )
+            expected_payload = dict(_prevalidated_payload)
         protocol = execution_spec.protocol
-        context_roles = tuple(
-            sorted({member.role for member in expected_roster.members})
-        )
-        if context_receipt.roles != context_roles:
-            raise CycleFreezeConflictError(
-                "safe context roles conflict with the frozen roster"
-            )
-        target_scope_sha256 = campaign_target_scope_sha256(
-            frozen_proposal.get("scope")
-        )
-        if context_receipt.target_scope_sha256 != target_scope_sha256:
-            raise CycleFreezeConflictError(
-                "safe context target scope conflicts with the proposal"
-            )
-        identity = {
-            "cycle_id": cycle_id,
-            "proposal_sha256": proposal_sha256,
-            "execution_spec_id": execution_spec.execution_spec_id,
-            "executed_protocol_sha256": execution_spec.executed_protocol_sha256,
-            "generation_id": protocol.generation_id,
-            "generation_manifest_artifact_id": (
-                protocol.generation_manifest_artifact_id
-            ),
-            "roster_manifest_sha256": expected_roster.manifest_sha256,
-            "context_manifest_sha256": context_receipt.manifest_sha256,
-            "preflight_sha256": preflight_sha256,
-        }
-        manifest_sha256 = _content_sha256(
-            b"control_plane.campaign_cycle_freeze.v1",
-            identity,
-            "Cycle freeze identity",
-        )
-        expected_payload = {**identity, "manifest_sha256": manifest_sha256}
 
         def freeze_inputs(
             connection,
         ) -> tuple[FrozenCycleInputs | None, str | None]:
+            if _transaction_guard is not None:
+                _transaction_guard(connection)
             policy = self._replay_policy(self._policy_events(connection))
             self._require_policy_precedes_freeze_history(
                 connection,
@@ -377,6 +496,22 @@ class OperationalCycleFreezeJournal:
                 raise CycleFreezeConflictError(
                     "safe context changed before the Cycle freeze"
                 )
+            persisted_assembly = (
+                self._context._verified_stored_assembly_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if (
+                persisted_assembly is None
+                or not hmac.compare_digest(
+                    persisted_assembly.preview.proposal_sha256,
+                    context_proposal_sha256,
+                )
+            ):
+                raise CycleFreezeConflictError(
+                    "safe context proposal conflicts with the proposal"
+                )
             freeze_event_id = self._freeze_event_id(cycle_id)
             try:
                 event = self._journal._append_in_transaction(
@@ -423,18 +558,23 @@ class OperationalCycleFreezeJournal:
     def snapshot(self, *, cycle_id: str) -> FrozenCycleInputs:
         self._journal._authorize()
         cycle_id = _identifier(cycle_id, "cycle_id")
-
-        def load_snapshot(connection) -> FrozenCycleInputs:
-            policy = self._replay_policy(self._policy_events(connection))
-            frozen = self._replay_freeze(
-                self._freeze_events(connection, cycle_id)
-            )
-            self._require_complete_freeze_order(connection, policy, frozen)
-            return frozen
-
         return _SqliteUnitOfWork(stores._operational_spec())._read(
-            load_snapshot
+            lambda connection: self._snapshot_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
         )
+
+    def _snapshot_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> FrozenCycleInputs:
+        policy = self._replay_policy(self._policy_events(connection))
+        frozen = self._replay_freeze(self._freeze_events(connection, cycle_id))
+        self._require_complete_freeze_order(connection, policy, frozen)
+        return frozen
 
     def _policy_event_id(self) -> str:
         return _event_id(
@@ -499,14 +639,17 @@ class OperationalCycleFreezeJournal:
         event = events[0]
         payload = _event_domain_payload(event)
         expected_fields = {
+            "schema_version",
             "cycle_id",
             "proposal_sha256",
             "execution_spec_id",
+            "execution_spec_json",
             "executed_protocol_sha256",
             "generation_id",
             "generation_manifest_artifact_id",
             "roster_manifest_sha256",
             "context_manifest_sha256",
+            "preflight_json",
             "preflight_sha256",
             "manifest_sha256",
         }
@@ -514,8 +657,20 @@ class OperationalCycleFreezeJournal:
             raise CycleFreezeIntegrityError("Cycle freeze payload is invalid")
         try:
             cycle_id = _identifier(payload["cycle_id"], "stored cycle_id")
-            for field_name in expected_fields - {"cycle_id", "generation_id"}:
+            for field_name in expected_fields - {
+                "schema_version",
+                "cycle_id",
+                "generation_id",
+                "execution_spec_json",
+                "preflight_json",
+            }:
                 _sha256(payload[field_name], f"stored {field_name}")
+            if payload["schema_version"] != _CYCLE_FREEZE_SCHEMA_VERSION:
+                raise ValueError("stored freeze schema is unsupported")
+            execution_spec = _execution_spec_from_json(
+                payload["execution_spec_json"],
+                "stored execution_spec",
+            )
             generation_id = payload["generation_id"]
             if (
                 not isinstance(generation_id, str)
@@ -523,12 +678,60 @@ class OperationalCycleFreezeJournal:
                 or generation_id != generation_id.strip()
             ):
                 raise ValueError("stored generation_id must be canonical")
+            preflight_json = payload["preflight_json"]
+            if type(preflight_json) is not str:
+                raise ValueError("stored preflight_json must be canonical JSON")
+            preflight = json.loads(preflight_json)
+            if (
+                not isinstance(preflight, dict)
+                or _canonical_bytes(preflight, "stored preflight").decode("utf-8")
+                != preflight_json
+                or set(preflight)
+                != {
+                    "schema_version",
+                    "verdict",
+                    "execution_spec_id",
+                    "protocol_conformance",
+                    "proposal_identity",
+                    "learning_verdict",
+                    "rejection_codes",
+                }
+                or preflight["schema_version"]
+                != "control_plane.campaign_preflight.v1"
+                or preflight["verdict"] != "WOULD_ACCEPT"
+                or preflight["execution_spec_id"] != payload["execution_spec_id"]
+                or execution_spec.execution_spec_id
+                != payload["execution_spec_id"]
+                or execution_spec.executed_protocol_sha256
+                != payload["executed_protocol_sha256"]
+                or execution_spec.protocol.generation_id != generation_id
+                or execution_spec.protocol.generation_manifest_artifact_id
+                != payload["generation_manifest_artifact_id"]
+                or preflight["protocol_conformance"]
+                not in {
+                    "IDENTICAL",
+                    "IMMATERIAL_ALLOWLISTED",
+                    "APPROVED_AMENDMENT",
+                }
+                or preflight["protocol_conformance"]
+                != execution_spec.conformance
+                or preflight["rejection_codes"] != []
+                or not hmac.compare_digest(
+                    payload["preflight_sha256"],
+                    _content_sha256(
+                        b"control_plane.campaign_preflight.v1",
+                        preflight,
+                        "stored preflight",
+                    ),
+                )
+            ):
+                raise ValueError("stored preflight is invalid")
         except (TypeError, ValueError) as error:
             raise CycleFreezeIntegrityError(
-                "Cycle freeze identity is invalid"
+                "Cycle freeze identity or preflight is invalid"
             ) from error
         expected_manifest = _content_sha256(
-            b"control_plane.campaign_cycle_freeze.v1",
+            _CYCLE_FREEZE_MANIFEST_DOMAIN,
             {key: payload[key] for key in payload if key != "manifest_sha256"},
             "stored Cycle freeze identity",
         )
@@ -600,8 +803,12 @@ class OperationalCycleFreezeJournal:
                 "Cycle freeze roster ordering is invalid"
             )
         try:
+            context_events = self._context._context_events(
+                connection,
+                frozen.cycle_id,
+            )
             context = self._context._replay_context(
-                self._context._context_events(connection, frozen.cycle_id)
+                context_events
             )
             context_policy = self._context._replay_policy(
                 self._context._policy_events(connection)
@@ -611,10 +818,56 @@ class OperationalCycleFreezeJournal:
                 context_policy,
                 context,
             )
-        except CycleContextIntegrityError as error:
+            context_payload = _event_domain_payload(context_events[0])
+            context_proposal = canonical_campaign_proposal(
+                context_payload["proposal"]
+            )
+            context_proposal_sha256 = _content_sha256(
+                b"control_plane.campaign_proposal.v1",
+                context_proposal,
+                "durable context proposal",
+            )
+            projection_input = context_payload["projection_input"]
+            if not isinstance(projection_input, dict) or not isinstance(
+                projection_input.get("claims"),
+                list,
+            ):
+                raise ValueError("durable context projection is invalid")
+            execution_spec = _execution_spec_from_json(
+                frozen.execution_spec_json,
+                "frozen execution_spec",
+            )
+            protocol_roster = tuple(
+                sorted(
+                    (
+                        member.role,
+                        member.provider_profile_id,
+                        member.model_id,
+                    )
+                    for member in execution_spec.protocol.roster
+                )
+            )
+            operational_roster = tuple(
+                sorted(
+                    (member.role, member.profile, member.model)
+                    for member in roster.members
+                )
+            )
+        except (CycleContextIntegrityError, TypeError, ValueError) as error:
             raise CycleFreezeIntegrityError(
                 "Cycle freeze context binding is invalid"
             ) from error
+        if protocol_roster != operational_roster:
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze ExecutionSpec roster binding is invalid"
+            )
+        if not hmac.compare_digest(
+            context_proposal_sha256,
+            frozen.proposal_sha256,
+        ):
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze proposal binding is invalid"
+            )
         if (
             context.manifest_sha256 != frozen.context_manifest_sha256
             or context.sequence >= frozen.sequence
@@ -639,13 +892,55 @@ class OperationalCycleFreezeJournal:
             and _event_domain_payload(event).get("to_status")
             == CycleStatus.FROZEN.value
         )
+        context_ready_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.CONTEXT_READY.value
+        )
         if (
             cycle.status in _PRE_FREEZE_STATUSES
+            or len(context_ready_transitions) != 1
             or len(frozen_transitions) != 1
-            or frozen_transitions[0].sequence <= frozen.sequence
+            or not (
+                context_ready_transitions[0].sequence
+                < roster_events[0].sequence
+                < frozen.sequence
+                < frozen_transitions[0].sequence
+            )
         ):
             raise CycleFreezeIntegrityError(
                 "Cycle freeze lifecycle ordering is invalid"
+            )
+        try:
+            durable_preflight = run_campaign_preflight(
+                execution_spec=execution_spec,
+                proposal=context_proposal,
+                committed_claims=projection_input["claims"],
+            )
+            durable_preflight_json = _canonical_bytes(
+                durable_preflight,
+                "durable preflight",
+            ).decode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze preflight binding is invalid"
+            ) from error
+        if (
+            durable_preflight["verdict"] != "WOULD_ACCEPT"
+            or durable_preflight_json != frozen.preflight_json
+            or not hmac.compare_digest(
+                frozen.preflight_sha256,
+                _content_sha256(
+                    b"control_plane.campaign_preflight.v1",
+                    durable_preflight,
+                    "durable preflight",
+                ),
+            )
+        ):
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze preflight binding is invalid"
             )
 
 

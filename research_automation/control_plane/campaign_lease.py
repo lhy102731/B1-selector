@@ -320,79 +320,10 @@ class OperationalCycleLeaseJournal:
             )
 
         def acquire_cycle(connection) -> CycleLease | None:
-            campaign = self._lifecycle._replay_campaign(
-                self._lifecycle._campaign_events(connection)
-            )
-            if campaign.status is not CampaignStatus.ACTIVE:
-                raise CycleLeaseConflictError("Campaign is not ACTIVE")
-            events = self._events_or_block(connection, cycle_id)
-            if events is None:
-                return None
-            if events:
-                history = self._replay_or_block(connection, events)
-                if history is None:
-                    return None
-                active = history.active
-                if (
-                    active.acquisition_id == acquisition_id
-                    and active.owner == self._owner
-                ):
-                    return active
-                raise CycleLeaseConflictError(
-                    "Cycle already has an active execution lease"
-                )
-            cycle = self._lifecycle._replay_cycle(
-                self._lifecycle._cycle_events(connection, cycle_id)
-            )
-            if cycle.status is not CycleStatus.FROZEN:
-                raise CycleLeaseConflictError(
-                    "Cycle lease requires the FROZEN boundary"
-                )
-            heartbeat_monotonic_ns = _bounded_int(
-                self._monotonic_ns(),
-                "heartbeat_monotonic_ns",
-                minimum=0,
-            )
-            while True:
-                lease_id = f"cyclelease_{secrets.token_hex(16)}"
-                event_id = _lease_event_id(
-                    namespace=self._journal._namespace,
-                    campaign_id=self._journal._campaign_id,
-                    cycle_id=cycle_id,
-                    lease_id=lease_id,
-                    role="acquired",
-                )
-                if self._journal._event_in_transaction(connection, event_id) is None:
-                    break
-            event = self._journal._append_in_transaction(
+            return self._acquire_in_transaction(
                 connection,
-                event_id=event_id,
                 cycle_id=cycle_id,
-                aggregate_type=_LEASE_AGGREGATE_TYPE,
-                aggregate_id=cycle_id,
-                event_type=_LEASE_ACQUIRED,
-                payload={
-                    "cycle_id": cycle_id,
-                    "acquisition_id": acquisition_id,
-                    "lease_id": lease_id,
-                    "fencing_token": 1,
-                    "owner": self._owner.to_payload(),
-                    "owner_observed_process_started_at_ns": (
-                        self._owner.process_started_at_ns
-                    ),
-                    "heartbeat_sequence": 0,
-                    "heartbeat_monotonic_ns": heartbeat_monotonic_ns,
-                },
-            )
-            return CycleLease(
-                cycle_id,
-                acquisition_id,
-                lease_id,
-                1,
-                self._owner,
-                0,
-                heartbeat_monotonic_ns,
-                event.sequence,
+                acquisition_id=acquisition_id,
             )
 
         lease = _SqliteUnitOfWork(stores._operational_spec())._write(
@@ -403,6 +334,88 @@ class OperationalCycleLeaseJournal:
                 "invalid Cycle lease journal blocked Campaign"
             )
         return lease
+
+    def _acquire_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        acquisition_id: str,
+    ) -> CycleLease | None:
+        campaign = self._lifecycle._replay_campaign(
+            self._lifecycle._campaign_events(connection)
+        )
+        if campaign.status is not CampaignStatus.ACTIVE:
+            raise CycleLeaseConflictError("Campaign is not ACTIVE")
+        events = self._events_or_block(connection, cycle_id)
+        if events is None:
+            return None
+        if events:
+            history = self._replay_or_block(connection, events)
+            if history is None:
+                return None
+            active = history.active
+            if (
+                active.acquisition_id == acquisition_id
+                and active.owner == self._owner
+            ):
+                return active
+            raise CycleLeaseConflictError(
+                "Cycle already has an active execution lease"
+            )
+        cycle = self._lifecycle._replay_cycle(
+            self._lifecycle._cycle_events(connection, cycle_id)
+        )
+        if cycle.status is not CycleStatus.FROZEN:
+            raise CycleLeaseConflictError(
+                "Cycle lease requires the FROZEN boundary"
+            )
+        heartbeat_monotonic_ns = _bounded_int(
+            self._monotonic_ns(),
+            "heartbeat_monotonic_ns",
+            minimum=0,
+        )
+        while True:
+            lease_id = f"cyclelease_{secrets.token_hex(16)}"
+            event_id = _lease_event_id(
+                namespace=self._journal._namespace,
+                campaign_id=self._journal._campaign_id,
+                cycle_id=cycle_id,
+                lease_id=lease_id,
+                role="acquired",
+            )
+            if self._journal._event_in_transaction(connection, event_id) is None:
+                break
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=event_id,
+            cycle_id=cycle_id,
+            aggregate_type=_LEASE_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+            event_type=_LEASE_ACQUIRED,
+            payload={
+                "cycle_id": cycle_id,
+                "acquisition_id": acquisition_id,
+                "lease_id": lease_id,
+                "fencing_token": 1,
+                "owner": self._owner.to_payload(),
+                "owner_observed_process_started_at_ns": (
+                    self._owner.process_started_at_ns
+                ),
+                "heartbeat_sequence": 0,
+                "heartbeat_monotonic_ns": heartbeat_monotonic_ns,
+            },
+        )
+        return CycleLease(
+            cycle_id,
+            acquisition_id,
+            lease_id,
+            1,
+            self._owner,
+            0,
+            heartbeat_monotonic_ns,
+            event.sequence,
+        )
 
     def advance_cycle(
         self,
@@ -423,25 +436,9 @@ class OperationalCycleLeaseJournal:
             )
 
         def advance(connection) -> CycleSnapshot | None:
-            campaign = self._lifecycle._replay_campaign(
-                self._lifecycle._campaign_events(connection)
-            )
-            if campaign.status is not CampaignStatus.ACTIVE:
-                raise CycleLeaseConflictError("Campaign is not ACTIVE")
-            events = self._events_or_block(connection, cycle_id)
-            if events is None:
-                return None
-            history = self._replay_or_block(connection, events)
-            if history is None:
-                return None
-            active = history.active
-            if active != lease or active.owner != self._owner:
-                raise StaleFencingTokenError(
-                    "Cycle lease snapshot is stale or owned by another process"
-                )
-            return self._lifecycle._advance_cycle_in_transaction(
+            return self._advance_cycle_in_transaction(
                 connection,
-                cycle_id=cycle_id,
+                lease=lease,
                 expected_status=expected_status,
                 next_status=next_status,
             )
@@ -454,6 +451,69 @@ class OperationalCycleLeaseJournal:
                 "invalid Cycle lease journal blocked Campaign"
             )
         return snapshot
+
+    def _advance_cycle_in_transaction(
+        self,
+        connection,
+        *,
+        lease: CycleLease,
+        expected_status: CycleStatus,
+        next_status: CycleStatus,
+    ) -> CycleSnapshot | None:
+        campaign = self._lifecycle._replay_campaign(
+            self._lifecycle._campaign_events(connection)
+        )
+        if campaign.status is not CampaignStatus.ACTIVE:
+            raise CycleLeaseConflictError("Campaign is not ACTIVE")
+        events = self._events_or_block(connection, lease.cycle_id)
+        if events is None:
+            return None
+        history = self._replay_or_block(connection, events)
+        if history is None:
+            return None
+        active = history.active
+        if active != lease or active.owner != self._owner:
+            raise StaleFencingTokenError(
+                "Cycle lease snapshot is stale or owned by another process"
+            )
+        return self._lifecycle._advance_cycle_in_transaction(
+            connection,
+            cycle_id=lease.cycle_id,
+            expected_status=expected_status,
+            next_status=next_status,
+        )
+
+    def _start_execution_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        acquisition_id: str,
+    ) -> tuple[CycleLease, CycleSnapshot] | None:
+        if _verified_current_owner(self._identity_provider) != self._owner:
+            raise CycleLeaseConflictError(
+                "current process identity changed after journal construction"
+            )
+        self._lifecycle._validate_cycle_transition(
+            CycleStatus.FROZEN,
+            CycleStatus.EXECUTING,
+        )
+        lease = self._acquire_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+            acquisition_id=acquisition_id,
+        )
+        if lease is None:
+            return None
+        cycle = self._advance_cycle_in_transaction(
+            connection,
+            lease=lease,
+            expected_status=CycleStatus.FROZEN,
+            next_status=CycleStatus.EXECUTING,
+        )
+        if cycle is None:
+            return None
+        return lease, cycle
 
     def heartbeat(
         self,

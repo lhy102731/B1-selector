@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import sqlite3
 import unittest
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import FrozenInstanceError, replace
 from threading import Barrier
 from unittest.mock import patch
 
+from research_automation.control_plane import campaign_context as campaign_context_module
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.campaign_context import (
     CycleContextConflictError,
     CycleContextIntegrityError,
+    CycleContextReceipt,
     OperationalCycleContextJournal,
 )
 from research_automation.control_plane.campaign_freeze import (
@@ -39,6 +43,7 @@ from tests.test_control_plane_campaign_store import (
     NOW,
     ROOT_SECRET,
     _authorized_campaign,
+    _campaign_full_rows,
 )
 from tests.test_control_plane_memory import scope
 from tests.test_foundations_protocols import _approval, _protocol
@@ -71,20 +76,28 @@ def _rewrite_context_event(
             b"control_plane.cycle_safe_context_bundle.v1\0"
             + bundle_text.encode("ascii")
         ).hexdigest()
-        identity = {
-            key: payload[key]
-            for key in (
-                "cycle_id",
-                "roles",
-                "learning_token_budget",
-                "control_token_budget",
-                "projection_input_sha256",
-                "target_scope_sha256",
-                "untrusted_sources_sha256",
-                "request_sha256",
-                "context_sha256",
-            )
-        }
+        identity_keys = (
+            "cycle_id",
+            "roles",
+            "learning_token_budget",
+            "control_token_budget",
+            "projection_input_sha256",
+            "target_scope_sha256",
+            "untrusted_sources_sha256",
+            "request_sha256",
+            "context_sha256",
+        )
+        schema_version = payload.get("schema_version")
+        if schema_version is None:
+            identity = {key: payload[key] for key in identity_keys}
+            manifest_domain = b"control_plane.cycle_context_receipt.v1"
+        else:
+            identity = {
+                "schema_version": schema_version,
+                "proposal_sha256": payload["proposal_sha256"],
+                **{key: payload[key] for key in identity_keys},
+            }
+            manifest_domain = str(schema_version).encode("ascii")
         identity_text = json.dumps(
             identity,
             ensure_ascii=True,
@@ -93,7 +106,8 @@ def _rewrite_context_event(
             allow_nan=False,
         )
         payload["manifest_sha256"] = hashlib.sha256(
-            b"control_plane.cycle_context_receipt.v1\0"
+            manifest_domain
+            + b"\0"
             + identity_text.encode("ascii")
         ).hexdigest()
         payload_json = json.dumps(
@@ -126,7 +140,830 @@ def _rewrite_context_event(
         connection.close()
 
 
+def _swap_event_sequences(first, second) -> None:
+    connection = sqlite3.connect(stores_module._OPERATIONAL_STORE_PATH)
+    try:
+        connection.execute(
+            "UPDATE campaign_events SET sequence = ? WHERE event_id = ?",
+            (-first.sequence, first.event_id),
+        )
+        connection.execute(
+            "UPDATE campaign_events SET sequence = ? WHERE event_id = ?",
+            (-second.sequence, second.event_id),
+        )
+        for event, sequence in (
+            (first, second.sequence),
+            (second, first.sequence),
+        ):
+            integrity = _event_integrity_sha256(
+                event_id=event.event_id,
+                namespace=event.namespace,
+                campaign_id=event.campaign_id,
+                cycle_id=event.cycle_id,
+                aggregate_type=event.aggregate_type,
+                aggregate_id=event.aggregate_id,
+                event_type=event.event_type,
+                payload_json=event.payload_json,
+                occurred_at=event.occurred_at.isoformat(),
+                sequence=sequence,
+            )
+            connection.execute(
+                "UPDATE campaign_events SET sequence = ?, payload_sha256 = ? "
+                "WHERE event_id = ?",
+                (sequence, integrity, event.event_id),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 class OperationalCycleContextJournalTests(unittest.TestCase):
+    def test_public_receipt_preserves_the_exact_legacy_constructor_contract(
+        self,
+    ) -> None:
+        expected_parameters = (
+            "cycle_id",
+            "roles",
+            "learning_token_budget",
+            "control_token_budget",
+            "projection_input_sha256",
+            "target_scope_sha256",
+            "untrusted_sources_sha256",
+            "request_sha256",
+            "context_sha256",
+            "manifest_sha256",
+            "safe_context_json",
+            "event_id",
+            "sequence",
+        )
+        signature = inspect.signature(CycleContextReceipt)
+
+        self.assertEqual(tuple(signature.parameters), expected_parameters)
+        self.assertTrue(
+            all(
+                parameter.kind
+                is inspect.Parameter.POSITIONAL_OR_KEYWORD
+                and parameter.default is inspect.Parameter.empty
+                for parameter in signature.parameters.values()
+            )
+        )
+
+        receipt = CycleContextReceipt(
+            cycle_id="cycle-001",
+            roles=("source_librarian",),
+            learning_token_budget=1500,
+            control_token_budget=500,
+            projection_input_sha256="1" * 64,
+            target_scope_sha256="2" * 64,
+            untrusted_sources_sha256="3" * 64,
+            request_sha256="4" * 64,
+            context_sha256="5" * 64,
+            manifest_sha256="6" * 64,
+            safe_context_json="{}",
+            event_id="event-001",
+            sequence=7,
+        )
+        self.assertEqual(
+            receipt.identity_payload(),
+            {
+                "cycle_id": "cycle-001",
+                "roles": ["source_librarian"],
+                "learning_token_budget": 1500,
+                "control_token_budget": 500,
+                "projection_input_sha256": "1" * 64,
+                "target_scope_sha256": "2" * 64,
+                "untrusted_sources_sha256": "3" * 64,
+                "request_sha256": "4" * 64,
+                "context_sha256": "5" * 64,
+                "manifest_sha256": "6" * 64,
+            },
+        )
+
+    def test_projection_and_safe_context_from_different_assemblies_are_rejected(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-semantic-graft"
+        cycle_id = "cycle-001"
+        proposal = {
+            "hypothesis": "Assembly bytes remain bound to their projection",
+            "scope": scope(regime="bull"),
+        }
+        empty_projection = {
+            "schema_version": "control_plane.committed_learning_input.v1",
+            "claims": [],
+            "excluded_claims": [],
+        }
+        committed = {
+            **_claim(
+                claim_id="committed-semantic-graft",
+                hypothesis=proposal["hypothesis"],
+                scope=_scope(generation="generation-1"),
+                kind="POSITIVE",
+            ),
+            "conclusion": "POSITIVE_DIRECTIONAL",
+            "evidence_refs": [],
+            "reopen_predicates": [],
+            "directional_status": "positive_directional",
+        }
+        projected = ContextProjection().project([committed])
+        populated_projection = {
+            **projected,
+            "schema_version": "control_plane.committed_learning_input.v1",
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            with patch(
+                "research_automation.control_plane.campaign_context."
+                "CommittedLearningLedgerReader.read_projection_input",
+                side_effect=(empty_projection, populated_projection),
+            ):
+                empty = contexts._assemble(
+                    cycle_id=cycle_id,
+                    proposal=proposal,
+                    roles=("factor_engineer",),
+                )
+                populated = contexts._assemble(
+                    cycle_id=cycle_id,
+                    proposal=proposal,
+                    roles=("factor_engineer",),
+                )
+
+            request_identity = {
+                "schema_version": "control_plane.cycle_context_request.v1",
+                "roles": list(populated.preview.roles),
+                "learning_token_budget": populated.preview.learning_token_budget,
+                "control_token_budget": populated.preview.control_token_budget,
+                "projection_input_sha256": empty.preview.projection_input_sha256,
+                "target_scope_sha256": populated.preview.target_scope_sha256,
+                "untrusted_sources_sha256": (
+                    populated.preview.untrusted_sources_sha256
+                ),
+            }
+            request_text = json.dumps(
+                request_identity,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            request_sha256 = hashlib.sha256(
+                b"control_plane.cycle_context_request.v1\0"
+                + request_text.encode("ascii")
+            ).hexdigest()
+            grafted_preview = replace(
+                populated.preview,
+                projection_input_sha256=empty.preview.projection_input_sha256,
+                request_sha256=request_sha256,
+            )
+            identity_text = json.dumps(
+                {
+                    **grafted_preview.identity_payload(),
+                    "manifest_sha256": None,
+                },
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            identity = json.loads(identity_text)
+            identity.pop("manifest_sha256")
+            manifest_text = json.dumps(
+                identity,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            grafted_preview = replace(
+                grafted_preview,
+                manifest_sha256=hashlib.sha256(
+                    b"control_plane.cycle_context_receipt.v2\0"
+                    + manifest_text.encode("ascii")
+                ).hexdigest(),
+            )
+            grafted = replace(
+                populated,
+                preview=grafted_preview,
+                projection_input_json=empty.projection_input_json,
+            )
+
+            with self.assertRaises(CycleContextIntegrityError):
+                contexts._validated_assembled_binding(
+                    grafted,
+                    cycle_id=cycle_id,
+                    proposal=proposal,
+                    roles=("factor_engineer",),
+                )
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            rows_before = _campaign_full_rows(
+                root,
+                campaign_id=campaign_id,
+            )
+
+            with self.assertRaises(CycleContextIntegrityError):
+                contexts._prepare_assembled(grafted)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+            self.assertEqual(
+                lifecycle.cycle_snapshot(cycle_id).status,
+                CycleStatus.BUDGET_RESERVED,
+            )
+
+    def test_context_assembly_overflow_is_read_only_before_budget_reservation(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-preview-overflow"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            events_before = _campaign_full_rows(
+                root,
+                campaign_id=campaign_id,
+            )
+            campaign_before = lifecycle.snapshot()
+            cycle_before = lifecycle.cycle_snapshot(cycle_id)
+            self.assertEqual(cycle_before.status, CycleStatus.CREATED)
+            files_before = tuple(
+                (path.relative_to(root).as_posix(), path.read_bytes())
+                for path in sorted(
+                    path for path in root.rglob("*") if path.is_file()
+                )
+            )
+
+            errors: list[str] = []
+            for _ in range(2):
+                with self.assertRaises(CycleContextConflictError) as raised:
+                    contexts._assemble(
+                        cycle_id=cycle_id,
+                        proposal={
+                            "hypothesis": "Preview rejects deterministic overflow",
+                            "scope": scope(regime="bull"),
+                        },
+                        roles=("source_librarian", "factor_engineer"),
+                        learning_token_budget=1,
+                        control_token_budget=1,
+                    )
+                errors.append(str(raised.exception))
+
+            self.assertEqual(errors, [errors[0], errors[0]])
+            self.assertTrue(errors[0])
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                events_before,
+            )
+            self.assertEqual(lifecycle.snapshot(), campaign_before)
+            self.assertEqual(lifecycle.cycle_snapshot(cycle_id), cycle_before)
+            self.assertEqual(
+                tuple(
+                    (path.relative_to(root).as_posix(), path.read_bytes())
+                    for path in sorted(
+                        path for path in root.rglob("*") if path.is_file()
+                    )
+                ),
+                files_before,
+            )
+
+    def test_private_assembly_exactly_matches_later_preparation(self) -> None:
+        campaign_id = "campaign-context-preview-success"
+        cycle_id = "cycle-001"
+        proposal = {
+            "hypothesis": "A preview fixes the exact durable context identity",
+            "scope": scope(regime="bull"),
+        }
+        sources = (
+            {
+                "source_ref": "synthetic-preview-source",
+                "content": "Quoted source material only",
+            },
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            events_before = _campaign_full_rows(
+                root,
+                campaign_id=campaign_id,
+            )
+            campaign_before = lifecycle.snapshot()
+            cycle_before = lifecycle.cycle_snapshot(cycle_id)
+            self.assertEqual(cycle_before.status, CycleStatus.CREATED)
+            files_before = tuple(
+                (path.relative_to(root).as_posix(), path.read_bytes())
+                for path in sorted(
+                    path for path in root.rglob("*") if path.is_file()
+                )
+            )
+
+            assembled = contexts._assemble(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                roles=("source_librarian", "falsification_officer"),
+                untrusted_sources=sources,
+            )
+            preview = assembled.preview
+
+            self.assertFalse(hasattr(contexts, "preview"))
+            self.assertFalse(
+                hasattr(campaign_context_module, "CycleContextPreview")
+            )
+            self.assertFalse(hasattr(preview, "event_id"))
+            self.assertFalse(hasattr(preview, "sequence"))
+            self.assertLessEqual(
+                len(preview.safe_context_json.encode("ascii")),
+                48 * 1024,
+            )
+            with self.assertRaises(FrozenInstanceError):
+                preview.cycle_id = "cycle-mutated"  # type: ignore[misc]
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                events_before,
+            )
+            self.assertEqual(lifecycle.snapshot(), campaign_before)
+            self.assertEqual(lifecycle.cycle_snapshot(cycle_id), cycle_before)
+            self.assertEqual(
+                tuple(
+                    (path.relative_to(root).as_posix(), path.read_bytes())
+                    for path in sorted(
+                        path for path in root.rglob("*") if path.is_file()
+                    )
+                ),
+                files_before,
+            )
+
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            receipt = contexts.prepare(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                roles=("falsification_officer", "source_librarian"),
+                untrusted_sources=sources,
+            )
+
+            self.assertEqual(
+                preview._receipt_identity_payload(),
+                receipt.identity_payload(),
+            )
+            self.assertEqual(preview.safe_context_json, receipt.safe_context_json)
+
+    def test_assembled_preview_bytes_and_hashes_become_the_receipt(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-assembled-handoff"
+        cycle_id = "cycle-001"
+        proposal = {
+            "hypothesis": "One assembled object crosses the durable boundary",
+            "scope": scope(regime="bull"),
+        }
+        roles = ("factor_engineer", "source_librarian")
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            assembled = contexts._assemble(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                roles=roles,
+            )
+            preview = assembled.preview
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+
+            self.assertTrue(
+                callable(getattr(contexts, "_prepare_assembled", None))
+            )
+            receipt = contexts._prepare_assembled(assembled)
+
+            event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            durable_bundle_text = json.dumps(
+                json.loads(event.payload_json)["safe_context"],
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            self.assertEqual(
+                durable_bundle_text.encode("ascii"),
+                preview.safe_context_json.encode("ascii"),
+            )
+            self.assertEqual(receipt.safe_context_json, preview.safe_context_json)
+            self.assertEqual(
+                receipt.identity_payload(),
+                preview._receipt_identity_payload(),
+            )
+            self.assertEqual(
+                receipt.context_sha256,
+                hashlib.sha256(
+                    b"control_plane.cycle_safe_context_bundle.v1\0"
+                    + preview.safe_context_json.encode("ascii")
+                ).hexdigest(),
+            )
+            self.assertEqual(receipt.request_sha256, preview.request_sha256)
+            self.assertEqual(receipt.manifest_sha256, preview.manifest_sha256)
+
+    def test_v2_receipt_round_trips_with_an_explicit_manifest_domain(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-receipt-v2"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            receipt = contexts.prepare(
+                cycle_id=cycle_id,
+                proposal={
+                    "hypothesis": "Durable semantic context has a v2 identity",
+                    "scope": scope(regime="bull"),
+                },
+                roles=("source_librarian",),
+            )
+            event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            payload = json.loads(event.payload_json)
+            identity = {
+                key: payload[key]
+                for key in (
+                    "schema_version",
+                    "cycle_id",
+                    "roles",
+                    "learning_token_budget",
+                    "control_token_budget",
+                    "projection_input_sha256",
+                    "target_scope_sha256",
+                    "proposal_sha256",
+                    "untrusted_sources_sha256",
+                    "request_sha256",
+                    "context_sha256",
+                )
+            }
+            identity_text = json.dumps(
+                identity,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+
+            self.assertEqual(
+                payload["schema_version"],
+                "control_plane.cycle_context_receipt.v2",
+            )
+            self.assertEqual(
+                receipt.manifest_sha256,
+                hashlib.sha256(
+                    b"control_plane.cycle_context_receipt.v2\0"
+                    + identity_text.encode("ascii")
+                ).hexdigest(),
+            )
+            self.assertEqual(
+                contexts.snapshot(cycle_id=cycle_id),
+                receipt,
+            )
+
+    def test_stable_event_id_rejects_authentic_legacy_v1_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-legacy-v1"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            receipt = contexts.prepare(
+                cycle_id=cycle_id,
+                proposal={
+                    "hypothesis": "Legacy v1 lacks semantic reconstruction facts",
+                    "scope": scope(regime="bull"),
+                },
+                roles=("source_librarian",),
+            )
+
+            def restore_authentic_baseline_v1(payload: dict[str, object]) -> None:
+                payload.pop("schema_version", None)
+                payload.pop("proposal_sha256")
+                payload.pop("projection_input")
+                payload.pop("proposal")
+                payload.pop("untrusted_sources")
+
+            _rewrite_context_event(campaign_id, restore_authentic_baseline_v1)
+            event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(event.event_id, receipt.event_id)
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaisesRegex(
+                CycleContextIntegrityError,
+                "^Cycle context legacy v1 is unsupported; "
+                "fresh preparation is required$",
+            ):
+                contexts.snapshot(cycle_id=cycle_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_unknown_context_receipt_schema_fails_closed_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-future-schema"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts.prepare(
+                cycle_id=cycle_id,
+                proposal={
+                    "hypothesis": "Unknown durable schemas fail closed",
+                    "scope": scope(regime="bull"),
+                },
+                roles=("source_librarian",),
+            )
+
+            def select_future_schema(payload: dict[str, object]) -> None:
+                payload["schema_version"] = (
+                    "control_plane.cycle_context_receipt.v999"
+                )
+
+            _rewrite_context_event(campaign_id, select_future_schema)
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaisesRegex(
+                CycleContextIntegrityError,
+                "^Cycle context schema version is unsupported$",
+            ):
+                contexts.snapshot(cycle_id=cycle_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_v2_receipt_rejects_full_proposal_tampering_without_writes(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-proposal-tamper-v2"
+        cycle_id = "cycle-001"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            contexts.prepare(
+                cycle_id=cycle_id,
+                proposal={
+                    "hypothesis": "Every canonical proposal byte is durable",
+                    "scope": scope(regime="bull"),
+                    "research_note": "original",
+                },
+                roles=("source_librarian",),
+            )
+            original_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            original_manifest = json.loads(original_event.payload_json)[
+                "manifest_sha256"
+            ]
+
+            def tamper_full_proposal(payload: dict[str, object]) -> None:
+                payload["proposal"]["hypothesis"] = "tampered hypothesis"
+                payload["proposal"]["research_note"] = "tampered"
+
+            _rewrite_context_event(campaign_id, tamper_full_proposal)
+            tampered_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            self.assertEqual(
+                json.loads(tampered_event.payload_json)["manifest_sha256"],
+                original_manifest,
+            )
+            rows_before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaises(CycleContextIntegrityError):
+                contexts.snapshot(cycle_id=cycle_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                rows_before,
+            )
+
+    def test_forged_or_drifted_assembled_context_is_never_persisted(
+        self,
+    ) -> None:
+        class ForgedAssembledContext:
+            def __init__(self, genuine) -> None:
+                self.preview = genuine.preview
+
+        def drift(genuine, field_name: str):
+            return replace(
+                genuine,
+                preview=replace(
+                    genuine.preview,
+                    **{field_name: "0" * 64},
+                ),
+            )
+
+        cases = (
+            (
+                "forged-type",
+                lambda genuine: ForgedAssembledContext(genuine),
+                TypeError,
+            ),
+            (
+                "request-hash-drift",
+                lambda genuine: drift(genuine, "request_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "context-hash-drift",
+                lambda genuine: drift(genuine, "context_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "manifest-hash-drift",
+                lambda genuine: drift(genuine, "manifest_sha256"),
+                CycleContextIntegrityError,
+            ),
+            (
+                "projection-input-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    projection_input_json=(
+                        " " + genuine.projection_input_json
+                    ),
+                ),
+                CycleContextIntegrityError,
+            ),
+            (
+                "proposal-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    proposal_json=" " + genuine.proposal_json,
+                ),
+                CycleContextIntegrityError,
+            ),
+            (
+                "untrusted-sources-noncanonical-bytes",
+                lambda genuine: replace(
+                    genuine,
+                    untrusted_sources_json=(
+                        " " + genuine.untrusted_sources_json
+                    ),
+                ),
+                CycleContextIntegrityError,
+            ),
+        )
+        for label, mutate, expected_error in cases:
+            with self.subTest(case=label):
+                campaign_id = f"campaign-context-assembled-{label}"
+                cycle_id = "cycle-001"
+                with _authorized_campaign(campaign_id) as (root, _, journal):
+                    lifecycle = OperationalCampaignLifecycle(journal=journal)
+                    lifecycle.activate()
+                    lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+                    lifecycle.advance_cycle(
+                        cycle_id=cycle_id,
+                        expected_status=CycleStatus.CREATED,
+                        next_status=CycleStatus.BUDGET_RESERVED,
+                    )
+                    contexts = OperationalCycleContextJournal(
+                        journal=journal,
+                        lifecycle=lifecycle,
+                        repository_root=root,
+                    )
+                    genuine = contexts._assemble(
+                        cycle_id=cycle_id,
+                        proposal={
+                            "hypothesis": "Forged assembly must fail closed",
+                            "scope": scope(regime="bull"),
+                        },
+                        roles=("source_librarian",),
+                    )
+                    candidate = mutate(genuine)
+                    rows_before = _campaign_full_rows(
+                        root,
+                        campaign_id=campaign_id,
+                    )
+                    cycle_before = lifecycle.cycle_snapshot(cycle_id)
+
+                    if label in {
+                        "proposal-noncanonical-bytes",
+                        "untrusted-sources-noncanonical-bytes",
+                    }:
+                        with self.assertRaises(CycleContextIntegrityError):
+                            candidate.verified_request_inputs()
+
+                    with self.assertRaises(expected_error):
+                        contexts._prepare_assembled(candidate)
+
+                    self.assertEqual(
+                        _campaign_full_rows(root, campaign_id=campaign_id),
+                        rows_before,
+                    )
+                    self.assertEqual(
+                        lifecycle.cycle_snapshot(cycle_id),
+                        cycle_before,
+                    )
+                    self.assertEqual(
+                        journal.list_events(
+                            cycle_id=cycle_id,
+                            aggregate_type="CYCLE_SAFE_CONTEXT",
+                            aggregate_id=cycle_id,
+                        ),
+                        (),
+                    )
+
     def test_safe_context_bundle_atomically_makes_the_cycle_context_ready(
         self,
     ) -> None:
@@ -227,6 +1064,60 @@ class OperationalCycleContextJournalTests(unittest.TestCase):
                 repository_root=root,
             )
             self.assertEqual(reopened.snapshot(cycle_id=cycle_id), receipt)
+
+    def test_snapshot_rejects_context_before_budget_reserved_transition(
+        self,
+    ) -> None:
+        campaign_id = "campaign-context-before-budget-transition"
+        cycle_id = "cycle-001"
+        proposal = {
+            "hypothesis": "Context follows its reserved budget boundary",
+            "scope": scope(regime="bull"),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            contexts = OperationalCycleContextJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                repository_root=root,
+            )
+            lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+            lifecycle.advance_cycle(
+                cycle_id=cycle_id,
+                expected_status=CycleStatus.CREATED,
+                next_status=CycleStatus.BUDGET_RESERVED,
+            )
+            contexts.prepare(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                roles=("factor_engineer",),
+            )
+            context_event = journal.list_events(
+                cycle_id=cycle_id,
+                aggregate_type="CYCLE_SAFE_CONTEXT",
+                aggregate_id=cycle_id,
+            )[0]
+            budget_transition = next(
+                event
+                for event in journal.list_events(
+                    cycle_id=cycle_id,
+                    aggregate_type="CYCLE_STATE",
+                    aggregate_id=cycle_id,
+                )
+                if event.payload().get("to_status")
+                == CycleStatus.BUDGET_RESERVED.value
+            )
+            _swap_event_sequences(context_event, budget_transition)
+            before = _campaign_full_rows(root, campaign_id=campaign_id)
+
+            with self.assertRaises(CycleContextIntegrityError):
+                contexts.snapshot(cycle_id=cycle_id)
+
+            self.assertEqual(
+                _campaign_full_rows(root, campaign_id=campaign_id),
+                before,
+            )
 
     def test_self_consistent_context_cannot_confer_tool_authority(self) -> None:
         campaign_id = "campaign-context-002"

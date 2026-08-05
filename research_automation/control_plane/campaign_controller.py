@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sqlite3
 
 from research_automation.foundations.protocols import (
     ExecutionSpec,
@@ -43,20 +44,33 @@ from .campaign import (
     _is_usage_journal_error,
 )
 from .campaign_context import (
+    CycleContextConflictError,
     CycleContextReceipt,
     OperationalCycleContextJournal,
+    _AssembledCycleContext,
+    _CONTEXT_CONTROL_TOKEN_BUDGET,
+    _CONTEXT_LEARNING_TOKEN_BUDGET,
     _projection_input_snapshot,
+    _untrusted_sources_snapshot,
+    _campaign_proposal_sha256,
+    campaign_target_scope_sha256,
     canonical_campaign_proposal,
 )
+from .campaign_preflight import run_campaign_preflight
 from .evidence_learning import (
     EvidenceAdapter,
     EvidenceResult,
     LearningCommitService,
 )
-from .campaign_freeze import FrozenCycleInputs, OperationalCycleFreezeJournal
+from .campaign_freeze import (
+    CycleFreezeConflictError,
+    FrozenCycleInputs,
+    OperationalCycleFreezeJournal,
+)
 from .campaign_lease import (
     CycleLease,
     CycleLeaseConflictError,
+    CycleLeaseIntegrityError,
     OperationalCycleLeaseJournal,
     ProcessIdentityProvider,
     _verified_current_owner,
@@ -74,7 +88,9 @@ from .memory import ClaimScope, CommittedLearningLedgerReader, ScopeMatch
 from .campaign_roster import (
     OperationalRosterJournal,
     RosterCompletion,
+    RosterConflictError,
     RosterDriftError,
+    RosterIntegrityError,
     RosterManifest,
     RosterMember,
     VerifiedRosterResponse,
@@ -91,6 +107,7 @@ from .campaign_store import (
     RecordedModelAttempt,
     _BUDGET_RESERVED,
     _BUDGET_SETTLED,
+    _CYCLE_SLOT_RESERVED,
     _attempt_id,
     _event_domain_payload,
     _identifier,
@@ -592,6 +609,30 @@ def _canonical_task(
     return task_id, payload
 
 
+class _AssembledProjectionContextJournal(OperationalCycleContextJournal):
+    """Read one explicit assembled projection during the matching freeze."""
+
+    __slots__ = ("_assembled",)
+
+    def __init__(
+        self,
+        *,
+        source: OperationalCycleContextJournal,
+        assembled: _AssembledCycleContext,
+    ) -> None:
+        self._journal = source._journal
+        self._lifecycle = source._lifecycle
+        self._repository_root = source._repository_root
+        self._router = source._router
+        self._policy_payload = source._policy_payload
+        self._assembled = assembled
+
+    def _verified_projection_input(
+        self,
+    ) -> tuple[dict[str, object], str]:
+        return self._assembled.verified_projection_input()
+
+
 class OperationalCampaignController:
     """Compose one authoritative pre-execution path for Campaign Cycles."""
 
@@ -729,18 +770,366 @@ class OperationalCampaignController:
         )
         if operational_roster != protocol_roster:
             raise ValueError("ExecutionSpec roster conflicts with roster_members")
-        _SqliteUnitOfWork(stores._operational_spec())._read(
-            lambda connection: (
-                self._require_prior_cycle_continuation_in_transaction(
-                    connection,
-                    cycle_id=cycle_id,
-                    cycle_number=cycle_number,
-                )
-            )
+        context_roles = tuple(
+            member.role for member in canonical_roster.members
+        )
+        context_learning_token_budget = _CONTEXT_LEARNING_TOKEN_BUDGET
+        context_control_token_budget = _CONTEXT_CONTROL_TOKEN_BUDGET
+        context_untrusted_sources = work_item["proposal"].get(
+            "untrusted_sources"
+        )
+        context_untrusted_sources_sha256, _ = _untrusted_sources_snapshot(
+            context_untrusted_sources
         )
         reservation_id = self._reservation_id(cycle_id)
+        requested_reservation = BudgetReservation(
+            reservation_id=reservation_id,
+            call_id=cycle_id,
+            currency=reservation_limits.currency,
+            max_input_tokens=reservation_limits.max_input_tokens,
+            max_output_tokens=reservation_limits.max_output_tokens,
+            max_cost=_cost_text(_bounded_cost(reservation_limits.max_cost)),
+            max_wall_time_ms=reservation_limits.max_wall_time_ms,
+            max_tool_attempts=reservation_limits.max_tool_attempts,
+            max_data_exposures=reservation_limits.max_data_exposures,
+            max_disk_growth_bytes=reservation_limits.max_disk_growth_bytes,
+        )
+
+        def replay_complete_preparation(
+            connection,
+            *,
+            recover_missing_receipt: bool = False,
+        ):
+            preparation_events = self._preparation_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if not preparation_events:
+                if not recover_missing_receipt:
+                    return None
+                cycle_events = self._lifecycle._cycle_events(
+                    connection,
+                    cycle_id,
+                )
+                if not cycle_events:
+                    return None
+                cycle = self._lifecycle._replay_cycle(cycle_events)
+                if cycle.status is not CycleStatus.FROZEN:
+                    return None
+                campaign = self._lifecycle._replay_campaign(
+                    self._lifecycle._campaign_events(connection)
+                )
+                if campaign.status is not CampaignStatus.ACTIVE:
+                    raise CampaignJournalError(
+                        "Cycle preparation recovery requires an ACTIVE Campaign"
+                    )
+            self._require_prior_cycle_continuation_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+            )
+            freeze_policy = self._freeze._replay_policy(
+                self._freeze._policy_events(connection)
+            )
+            frozen = self._freeze._replay_freeze(
+                self._freeze._freeze_events(connection, cycle_id)
+            )
+            self._freeze._require_complete_freeze_order(
+                connection,
+                freeze_policy,
+                frozen,
+            )
+            context_policy = self._context._replay_policy(
+                self._context._policy_events(connection)
+            )
+            context = self._context._replay_context(
+                self._context._context_events(connection, cycle_id)
+            )
+            self._context._require_complete_context_order(
+                connection,
+                context_policy,
+                context,
+            )
+            context_assembly = (
+                self._context._verified_stored_assembly_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                )
+            )
+            if context_assembly is None:
+                raise CampaignJournalError(
+                    "Campaign durable context assembly is incomplete"
+                )
+            roster = self._roster._replay(
+                self._roster._events(connection, cycle_id)
+            )
+            (
+                identity,
+                stored_work_item,
+                reservation_payload,
+                minimum_sequence,
+            ) = self._controller_artifact_identity_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                frozen=frozen,
+            )
+            protocol = execution_spec.protocol
+            if (
+                _canonical_json_text(
+                    stored_work_item,
+                    "stored Campaign work item",
+                )
+                != _canonical_json_text(
+                    work_item,
+                    "requested Campaign work item",
+                )
+                or reservation_payload
+                != self._reservation_payload(requested_reservation)
+                or roster != canonical_roster
+                or context.roles != tuple(sorted(context_roles))
+                or context.learning_token_budget
+                != context_learning_token_budget
+                or context.control_token_budget
+                != context_control_token_budget
+                or context.target_scope_sha256
+                != campaign_target_scope_sha256(
+                    work_item["proposal"].get("scope")
+                )
+                or context_assembly.preview.proposal_sha256
+                != _campaign_proposal_sha256(work_item["proposal"])
+                or context.untrusted_sources_sha256
+                != context_untrusted_sources_sha256
+                or frozen.execution_spec_id
+                != execution_spec.execution_spec_id
+                or frozen.executed_protocol_sha256
+                != execution_spec.executed_protocol_sha256
+                or frozen.generation_id != protocol.generation_id
+                or frozen.generation_manifest_artifact_id
+                != protocol.generation_manifest_artifact_id
+            ):
+                raise CampaignJournalError(
+                    "Campaign durable preparation conflicts"
+                )
+            projection_input, _ = context_assembly.verified_projection_input()
+            durable_preflight = run_campaign_preflight(
+                execution_spec=execution_spec,
+                proposal=work_item["proposal"],
+                committed_claims=projection_input["claims"],
+            )
+            if (
+                durable_preflight["verdict"] != "WOULD_ACCEPT"
+                or _canonical_json_text(
+                    durable_preflight,
+                    "recomputed Campaign preflight",
+                )
+                != frozen.preflight_json
+                or _controller_sha256(
+                    b"control_plane.campaign_preflight.v1",
+                    durable_preflight,
+                    "recomputed Campaign preflight",
+                )
+                != frozen.preflight_sha256
+            ):
+                raise CampaignJournalError(
+                    "Campaign durable preflight conflicts"
+                )
+            preparation_manifest_sha256 = _controller_sha256(
+                b"control_plane.campaign_cycle_preparation.v2",
+                identity,
+                "Cycle preparation identity",
+            )
+            preparation_payload = {
+                **identity,
+                "manifest_sha256": preparation_manifest_sha256,
+            }
+            if preparation_events:
+                self._replay_preparation(
+                    cycle_id=cycle_id,
+                    events=preparation_events,
+                    expected_payload=preparation_payload,
+                    minimum_sequence=minimum_sequence,
+                    maximum_sequence=self._first_lease_sequence_in_transaction(
+                        connection,
+                        cycle_id=cycle_id,
+                    ),
+                )
+            else:
+                self._record_preparation_in_transaction(
+                    connection,
+                    cycle_id=cycle_id,
+                    payload=preparation_payload,
+                    minimum_sequence=minimum_sequence,
+                )
+            return PreparedOperationalCycle(
+                cycle_id=cycle_id,
+                reservation=BudgetReservation(**reservation_payload),
+                context=context,
+                roster=roster,
+                frozen=frozen,
+                preparation_manifest_sha256=preparation_manifest_sha256,
+            )
+
+        def strict_durable_replay() -> PreparedOperationalCycle | None:
+            return _SqliteUnitOfWork(
+                stores._operational_spec()
+            )._read(replay_complete_preparation)
+
+        def guarded_strict_durable_replay() -> PreparedOperationalCycle | None:
+            try:
+                return strict_durable_replay()
+            except Exception:
+                return None
+
+        durable_replay = strict_durable_replay()
+        if durable_replay is not None:
+            return durable_replay
+
+        def validate_incomplete_preparation(
+            connection,
+        ) -> PreparedOperationalCycle | None:
+            completed = replay_complete_preparation(connection)
+            if completed is not None:
+                return completed
+            self._require_prior_cycle_continuation_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+            )
+            self._require_admissible_work_item_history_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+                expected_work_item=work_item,
+                expected_reservation=requested_reservation,
+                expected_roster=canonical_roster,
+            )
+            return None
+
+        durable_replay = _SqliteUnitOfWork(
+            stores._operational_spec()
+        )._read(validate_incomplete_preparation)
+        if durable_replay is not None:
+            return durable_replay
+        durable_replay = strict_durable_replay()
+        if durable_replay is not None:
+            return durable_replay
+
+        durable_replay = _SqliteUnitOfWork(
+            stores._operational_spec()
+        )._write(
+            lambda connection: replay_complete_preparation(
+                connection,
+                recover_missing_receipt=True,
+            )
+        )
+        if durable_replay is not None:
+            return durable_replay
+
+        def load_admissible_stored_context(connection):
+            completed = replay_complete_preparation(connection)
+            if completed is not None:
+                return completed
+            self._require_admissible_work_item_history_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+                expected_work_item=work_item,
+                expected_reservation=requested_reservation,
+                expected_roster=canonical_roster,
+            )
+            return self._context._verified_stored_assembly_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+
+        try:
+            assembled_context = _SqliteUnitOfWork(
+                stores._operational_spec()
+            )._read(load_admissible_stored_context)
+            if isinstance(assembled_context, PreparedOperationalCycle):
+                return assembled_context
+            if assembled_context is None:
+                assembled_context = self._context._assemble(
+                    cycle_id=cycle_id,
+                    proposal=work_item["proposal"],
+                    roles=context_roles,
+                    learning_token_budget=context_learning_token_budget,
+                    control_token_budget=context_control_token_budget,
+                    untrusted_sources=context_untrusted_sources,
+                )
+            context_preview, _ = self._context._validated_assembled_binding(
+                assembled_context,
+                cycle_id=cycle_id,
+                proposal=work_item["proposal"],
+                roles=context_roles,
+                learning_token_budget=context_learning_token_budget,
+                control_token_budget=context_control_token_budget,
+                untrusted_sources=context_untrusted_sources,
+            )
+            projection_input, _ = assembled_context.verified_projection_input()
+            preflight = run_campaign_preflight(
+                execution_spec=execution_spec,
+                proposal=work_item["proposal"],
+                committed_claims=projection_input["claims"],
+            )
+        except CycleContextConflictError:
+            durable_replay = guarded_strict_durable_replay()
+            if durable_replay is not None:
+                return durable_replay
+            raise
+        except (
+            OSError,
+            TypeError,
+            ValueError,
+            UnicodeError,
+            RecursionError,
+            OverflowError,
+            sqlite3.Error,
+        ) as error:
+            durable_replay = guarded_strict_durable_replay()
+            if durable_replay is not None:
+                return durable_replay
+            raise CampaignJournalError(
+                "Committed Learning preflight projection is unavailable"
+            ) from error
+        if preflight["verdict"] != "WOULD_ACCEPT":
+            durable_replay = guarded_strict_durable_replay()
+            if durable_replay is not None:
+                return durable_replay
+            raise CycleFreezeConflictError(
+                "Campaign preflight rejected prepared work item: "
+                + ",".join(preflight["rejection_codes"])
+            )
+        prevalidated_freeze_payload, _, _ = (
+            self._freeze._validated_expected_payload(
+                cycle_id=cycle_id,
+                proposal=work_item["proposal"],
+                execution_spec=execution_spec,
+                expected_roster=canonical_roster,
+                context_roles=context_preview.roles,
+                context_target_scope_sha256=(
+                    context_preview.target_scope_sha256
+                ),
+                context_manifest_sha256=context_preview.manifest_sha256,
+                preflight=preflight,
+            )
+        )
+        durable_replay = strict_durable_replay()
+        if durable_replay is not None:
+            return durable_replay
 
         def reserve_and_open(connection):
+            completed = replay_complete_preparation(connection)
+            if completed is not None:
+                return completed
+            self._require_admissible_work_item_history_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+                expected_work_item=work_item,
+                expected_reservation=requested_reservation,
+                expected_roster=canonical_roster,
+            )
             self._require_prior_cycle_continuation_in_transaction(
                 connection,
                 cycle_id=cycle_id,
@@ -786,32 +1175,68 @@ class OperationalCampaignController:
                 )
             return cycle, reservation
 
-        cycle, reservation = _SqliteUnitOfWork(
+        admission = _SqliteUnitOfWork(
             stores._operational_spec()
         )._write(reserve_and_open)
-        context = self._context.prepare(
-            cycle_id=cycle_id,
-            proposal=work_item["proposal"],
-            roles=tuple(member.role for member in canonical_roster.members),
-        )
-        roster = self._roster.freeze(
-            cycle_id=cycle_id,
-            members=canonical_roster.members,
-        )
-        frozen = self._freeze.freeze(
-            cycle_id=cycle_id,
-            proposal=work_item["proposal"],
-            execution_spec=execution_spec,
-            expected_roster=roster,
-        )
-        preparation_manifest_sha256 = self._record_cycle_preparation(
-            cycle_id=cycle_id,
-            expected_work_item=work_item,
-            expected_reservation=reservation,
-            expected_context=context,
-            expected_roster=roster,
-            expected_frozen=frozen,
-        )
+        if isinstance(admission, PreparedOperationalCycle):
+            return admission
+        cycle, reservation = admission
+
+        def require_admissible_preparation_write(connection) -> None:
+            self._require_admissible_work_item_history_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                cycle_number=cycle_number,
+                expected_work_item=work_item,
+                expected_reservation=requested_reservation,
+                expected_roster=canonical_roster,
+            )
+
+        try:
+            context = self._context._prepare_assembled(
+                assembled_context,
+                _transaction_guard=require_admissible_preparation_write,
+            )
+            freeze_journal = OperationalCycleFreezeJournal(
+                journal=self._journal,
+                lifecycle=self._lifecycle,
+                roster=self._roster,
+                context=_AssembledProjectionContextJournal(
+                    source=self._context,
+                    assembled=assembled_context,
+                ),
+            )
+            roster = self._roster.freeze(
+                cycle_id=cycle_id,
+                members=canonical_roster.members,
+                _transaction_guard=require_admissible_preparation_write,
+            )
+            frozen = freeze_journal.freeze(
+                cycle_id=cycle_id,
+                proposal=work_item["proposal"],
+                execution_spec=execution_spec,
+                expected_roster=roster,
+                _transaction_guard=require_admissible_preparation_write,
+                _prevalidated_payload=prevalidated_freeze_payload,
+            )
+            preparation_manifest_sha256 = self._record_cycle_preparation(
+                cycle_id=cycle_id,
+                expected_work_item=work_item,
+                expected_reservation=reservation,
+                expected_context=context,
+                expected_roster=roster,
+                expected_frozen=frozen,
+            )
+        except (
+            CycleContextConflictError,
+            RosterConflictError,
+            CycleFreezeConflictError,
+            CampaignJournalError,
+        ):
+            durable_replay = guarded_strict_durable_replay()
+            if durable_replay is not None:
+                return durable_replay
+            raise
         return PreparedOperationalCycle(
             cycle_id=cycle_id,
             reservation=reservation,
@@ -910,18 +1335,35 @@ class OperationalCampaignController:
         acquisition_id: str,
     ) -> ExecutingOperationalCycle:
         self._journal._authorize()
-        frozen = self._freeze.snapshot(cycle_id=cycle_id)
-        self._preparation_snapshot(cycle_id=cycle_id, frozen=frozen)
-        lease = self._leases.acquire(
-            cycle_id=cycle_id,
-            acquisition_id=acquisition_id,
-        )
-        cycle = self._leases.advance_cycle(
-            lease=lease,
-            expected_status=CycleStatus.FROZEN,
-            next_status=CycleStatus.EXECUTING,
-        )
-        return ExecutingOperationalCycle(cycle=cycle, lease=lease)
+        cycle_id = _identifier(cycle_id, "cycle_id")
+        acquisition_id = _identifier(acquisition_id, "acquisition_id")
+
+        def start(connection) -> ExecutingOperationalCycle | None:
+            frozen = self._freeze._snapshot_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            self._preparation_snapshot_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                frozen=frozen,
+            )
+            started = self._leases._start_execution_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                acquisition_id=acquisition_id,
+            )
+            if started is None:
+                return None
+            lease, cycle = started
+            return ExecutingOperationalCycle(cycle=cycle, lease=lease)
+
+        execution = _SqliteUnitOfWork(stores._operational_spec())._write(start)
+        if execution is None:
+            raise CycleLeaseIntegrityError(
+                "invalid Cycle lease journal blocked Campaign"
+            )
+        return execution
 
     def invoke_member_json(
         self,
@@ -6636,11 +7078,30 @@ class OperationalCampaignController:
                 cycle_id=cycle_id,
             ),
         )
-        cycle_budget = self._cycle_budget._snapshot_in_transaction(connection)
-        if cycle_id not in cycle_budget.reserved_cycle_ids:
+        cycle_budget_events = self._cycle_budget._events_in_transaction(
+            connection
+        )
+        cycle_budget = self._cycle_budget._snapshot_in_transaction(
+            connection,
+            events=cycle_budget_events,
+        )
+        slot_events = tuple(
+            event
+            for event in cycle_budget_events
+            if event.event_id
+            == self._cycle_budget._event_id(
+                "reserve",
+                cycle_id=cycle_id,
+            )
+        )
+        if (
+            cycle_id not in cycle_budget.reserved_cycle_ids
+            or len(slot_events) != 1
+        ):
             raise CampaignJournalError(
                 "controller preparation is incomplete: Cycle slot is missing"
             )
+        slot_event = slot_events[0]
         budget_events = self._budget._events_in_transaction(connection)
         self._budget._replay(budget_events)
         reservation_id = self._reservation_id(cycle_id)
@@ -6679,6 +7140,13 @@ class OperationalCampaignController:
         cycle_events = self._lifecycle._cycle_events(connection, cycle_id)
         cycle = self._lifecycle._replay_cycle(cycle_events)
         opened = cycle_events[0]
+        budget_reserved_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.BUDGET_RESERVED.value
+        )
         frozen_transitions = tuple(
             event
             for event in cycle_events
@@ -6688,8 +7156,14 @@ class OperationalCampaignController:
         )
         if (
             work_item["cycle_number"] != cycle.cycle_number
-            or work_event.sequence >= opened.sequence
-            or reservation_event.sequence >= opened.sequence
+            or len(budget_reserved_transitions) != 1
+            or not (
+                work_event.sequence
+                < slot_event.sequence
+                < reservation_event.sequence
+                < opened.sequence
+                < budget_reserved_transitions[0].sequence
+            )
             or frozen.cycle_id != cycle_id
             or len(frozen_transitions) != 1
             or frozen_transitions[0].sequence <= frozen.sequence
@@ -6747,11 +7221,39 @@ class OperationalCampaignController:
         expected_frozen: FrozenCycleInputs,
     ) -> str:
         def record(connection) -> str:
+            campaign = self._lifecycle._replay_campaign(
+                self._lifecycle._campaign_events(connection)
+            )
+            cycle = self._lifecycle._replay_cycle(
+                self._lifecycle._cycle_events(connection, cycle_id)
+            )
+            if (
+                campaign.status is not CampaignStatus.ACTIVE
+                or cycle.status is not CycleStatus.FROZEN
+            ):
+                raise CampaignJournalError(
+                    "Cycle preparation requires an ACTIVE Campaign and FROZEN Cycle"
+                )
+            freeze_policy = self._freeze._replay_policy(
+                self._freeze._policy_events(connection)
+            )
+            durable_frozen = self._freeze._replay_freeze(
+                self._freeze._freeze_events(connection, cycle_id)
+            )
+            self._freeze._require_complete_freeze_order(
+                connection,
+                freeze_policy,
+                durable_frozen,
+            )
+            if durable_frozen != expected_frozen:
+                raise CampaignJournalError(
+                    "controller preparation frozen inputs conflict"
+                )
             identity, work_item, reservation_payload, minimum_sequence = (
                 self._controller_artifact_identity_in_transaction(
                     connection,
                     cycle_id=cycle_id,
-                    frozen=expected_frozen,
+                    frozen=durable_frozen,
                 )
             )
             if (
@@ -6784,34 +7286,58 @@ class OperationalCampaignController:
                 "Cycle preparation identity",
             )
             payload = {**identity, "manifest_sha256": manifest_sha256}
-            events = self._preparation_events_in_transaction(
+            self._record_preparation_in_transaction(
                 connection,
                 cycle_id=cycle_id,
-            )
-            if events:
-                self._replay_preparation(
-                    cycle_id=cycle_id,
-                    events=events,
-                    expected_payload=payload,
-                    minimum_sequence=minimum_sequence,
-                )
-                return manifest_sha256
-            event = self._journal._append_in_transaction(
-                connection,
-                event_id=self._preparation_event_id(cycle_id),
-                cycle_id=cycle_id,
-                aggregate_type=_PREPARATION_AGGREGATE_TYPE,
-                aggregate_id=cycle_id,
-                event_type=_CYCLE_PREPARED,
                 payload=payload,
+                minimum_sequence=minimum_sequence,
             )
-            if event.sequence <= minimum_sequence:
-                raise CampaignJournalError(
-                    "Cycle preparation must follow the frozen inputs"
-                )
             return manifest_sha256
 
         return _SqliteUnitOfWork(stores._operational_spec())._write(record)
+
+    def _record_preparation_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        payload: dict[str, object],
+        minimum_sequence: int,
+    ) -> None:
+        events = self._preparation_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        first_lease_sequence = self._first_lease_sequence_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        if events:
+            self._replay_preparation(
+                cycle_id=cycle_id,
+                events=events,
+                expected_payload=payload,
+                minimum_sequence=minimum_sequence,
+                maximum_sequence=first_lease_sequence,
+            )
+            return
+        if first_lease_sequence is not None:
+            raise CampaignJournalError(
+                "Cycle preparation must precede the execution lease"
+            )
+        event = self._journal._append_in_transaction(
+            connection,
+            event_id=self._preparation_event_id(cycle_id),
+            cycle_id=cycle_id,
+            aggregate_type=_PREPARATION_AGGREGATE_TYPE,
+            aggregate_id=cycle_id,
+            event_type=_CYCLE_PREPARED,
+            payload=payload,
+        )
+        if event.sequence <= minimum_sequence:
+            raise CampaignJournalError(
+                "Cycle preparation must follow the frozen inputs"
+            )
 
     def _preparation_snapshot(
         self,
@@ -6819,32 +7345,48 @@ class OperationalCampaignController:
         cycle_id: str,
         frozen: FrozenCycleInputs,
     ) -> str:
-        def snapshot(connection) -> str:
-            identity, _, _, minimum_sequence = (
-                self._controller_artifact_identity_in_transaction(
-                    connection,
-                    cycle_id=cycle_id,
-                    frozen=frozen,
-                )
-            )
-            manifest_sha256 = _controller_sha256(
-                b"control_plane.campaign_cycle_preparation.v2",
-                identity,
-                "Cycle preparation identity",
-            )
-            payload = {**identity, "manifest_sha256": manifest_sha256}
-            self._replay_preparation(
+        return _SqliteUnitOfWork(stores._operational_spec())._read(
+            lambda connection: self._preparation_snapshot_in_transaction(
+                connection,
                 cycle_id=cycle_id,
-                events=self._preparation_events_in_transaction(
-                    connection,
-                    cycle_id=cycle_id,
-                ),
-                expected_payload=payload,
-                minimum_sequence=minimum_sequence,
+                frozen=frozen,
             )
-            return manifest_sha256
+        )
 
-        return _SqliteUnitOfWork(stores._operational_spec())._read(snapshot)
+    def _preparation_snapshot_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        frozen: FrozenCycleInputs,
+    ) -> str:
+        identity, _, _, minimum_sequence = (
+            self._controller_artifact_identity_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                frozen=frozen,
+            )
+        )
+        manifest_sha256 = _controller_sha256(
+            b"control_plane.campaign_cycle_preparation.v2",
+            identity,
+            "Cycle preparation identity",
+        )
+        payload = {**identity, "manifest_sha256": manifest_sha256}
+        self._replay_preparation(
+            cycle_id=cycle_id,
+            events=self._preparation_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            ),
+            expected_payload=payload,
+            minimum_sequence=minimum_sequence,
+            maximum_sequence=self._first_lease_sequence_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            ),
+        )
+        return manifest_sha256
 
     def _preparation_event_id(self, cycle_id: str) -> str:
         return _stable_id(
@@ -6853,6 +7395,17 @@ class OperationalCampaignController:
             self._journal.campaign_id,
             cycle_id,
         )
+
+    def _first_lease_sequence_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+    ) -> int | None:
+        lease_events = self._leases._events(connection, cycle_id)
+        if not lease_events:
+            return None
+        return min(event.sequence for event in lease_events)
 
     def _preparation_events_in_transaction(
         self,
@@ -6895,6 +7448,7 @@ class OperationalCampaignController:
         events,
         expected_payload: dict[str, object],
         minimum_sequence: int,
+        maximum_sequence: int | None = None,
     ) -> None:
         if not events:
             raise CampaignJournalError(
@@ -6910,6 +7464,10 @@ class OperationalCampaignController:
             event.event_id != self._preparation_event_id(cycle_id)
             or event.event_type != _CYCLE_PREPARED
             or event.sequence <= minimum_sequence
+            or (
+                maximum_sequence is not None
+                and event.sequence >= maximum_sequence
+            )
             or _canonical_json_text(
                 payload,
                 "stored Cycle preparation receipt",
@@ -6938,6 +7496,227 @@ class OperationalCampaignController:
             self._journal.campaign_id,
             cycle_id,
         )
+
+    def _require_admissible_work_item_history_in_transaction(
+        self,
+        connection,
+        *,
+        cycle_id: str,
+        cycle_number: int,
+        expected_work_item: dict[str, object],
+        expected_reservation: BudgetReservation,
+        expected_roster: RosterManifest,
+    ) -> None:
+        work_item_events = self._work_item_events_in_transaction(
+            connection,
+            cycle_id=cycle_id,
+        )
+        reservation_id = self._reservation_id(cycle_id)
+        slot_event_id = self._cycle_budget._event_id(
+            "reserve",
+            cycle_id=cycle_id,
+        )
+        reservation_event_id = self._budget._event_id(
+            "reserve",
+            reservation_id=reservation_id,
+        )
+        settlement_event_id = self._budget._event_id(
+            "settle",
+            reservation_id=reservation_id,
+        )
+        related = connection.execute(
+            "SELECT event_id FROM campaign_events "
+            "WHERE namespace = ? AND campaign_id = ? AND ("
+            "cycle_id = ? OR aggregate_id = ? OR event_id IN (?, ?, ?))",
+            (
+                self._journal.namespace,
+                self._journal.campaign_id,
+                cycle_id,
+                cycle_id,
+                slot_event_id,
+                reservation_event_id,
+                settlement_event_id,
+            ),
+        ).fetchall()
+        if not work_item_events:
+            if not related:
+                return
+            raise CampaignJournalError(
+                "controller work item cannot adopt existing Cycle history"
+            )
+
+        work_event, stored_work_item = self._replay_work_item(
+            cycle_id=cycle_id,
+            events=work_item_events,
+        )
+        if _canonical_json_text(
+            stored_work_item,
+            "stored Campaign work item",
+        ) != _canonical_json_text(
+            expected_work_item,
+            "requested Campaign work item",
+        ):
+            raise CampaignJournalError("Campaign work item conflicts")
+        if any(
+            row["event_id"] == settlement_event_id
+            for row in related
+        ):
+            raise CampaignJournalError("Campaign admission bundle conflicts")
+
+        cycle_budget_events = self._cycle_budget._events_in_transaction(
+            connection
+        )
+        cycle_budget = self._cycle_budget._replay(cycle_budget_events)
+        slot_events = tuple(
+            event
+            for event in cycle_budget_events
+            if event.event_id == slot_event_id
+        )
+        budget_events = self._budget._events_in_transaction(connection)
+        self._budget._replay(budget_events)
+        reservation_events = tuple(
+            event
+            for event in budget_events
+            if event.event_id == reservation_event_id
+        )
+        cycle_events = self._lifecycle._cycle_events(connection, cycle_id)
+
+        if not slot_events and not reservation_events and not cycle_events:
+            if (
+                len(related) == 1
+                and related[0]["event_id"] == work_event.event_id
+            ):
+                return
+            raise CampaignJournalError("Campaign admission bundle conflicts")
+
+        if (
+            len(slot_events) != 1
+            or cycle_id not in cycle_budget.reserved_cycle_ids
+            or len(reservation_events) != 1
+            or not cycle_events
+        ):
+            raise CampaignJournalError("Campaign admission bundle conflicts")
+
+        slot_event = slot_events[0]
+        reservation_event = reservation_events[0]
+        expected_reservation_payload = self._reservation_payload(
+            expected_reservation
+        )
+        if (
+            slot_event.event_type != _CYCLE_SLOT_RESERVED
+            or reservation_event.event_type != _BUDGET_RESERVED
+        ):
+            raise CampaignJournalError(
+                "Campaign admission reservation conflicts"
+            )
+        if (
+            _event_domain_payload(reservation_event)
+            != expected_reservation_payload
+        ):
+            raise BudgetConflictError(
+                "reservation_id was reused with different bounds"
+            )
+
+        cycle = self._lifecycle._replay_cycle(cycle_events)
+        opened = cycle_events[0]
+        budget_reserved_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.BUDGET_RESERVED.value
+        )
+        context_ready_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.CONTEXT_READY.value
+        )
+        frozen_transitions = tuple(
+            event
+            for event in cycle_events
+            if event.event_type == _CYCLE_TRANSITIONED
+            and _event_domain_payload(event).get("to_status")
+            == CycleStatus.FROZEN.value
+        )
+        context_events = self._context._context_events(connection, cycle_id)
+        roster_events = self._roster._events(connection, cycle_id)
+        freeze_events = self._freeze._freeze_events(connection, cycle_id)
+        artifact_events = ()
+        artifact_history_valid = True
+        if cycle.status is CycleStatus.BUDGET_RESERVED:
+            artifact_history_valid = not (
+                context_events or roster_events or freeze_events
+            )
+        elif cycle.status is CycleStatus.CONTEXT_READY:
+            artifact_history_valid = (
+                len(context_events) == 1
+                and len(roster_events) <= 1
+                and not freeze_events
+                and len(budget_reserved_transitions) == 1
+                and len(context_ready_transitions) == 1
+                and budget_reserved_transitions[0].sequence
+                < context_events[0].sequence
+                < context_ready_transitions[0].sequence
+                and (
+                    not roster_events
+                    or context_ready_transitions[0].sequence
+                    < roster_events[0].sequence
+                )
+            )
+            artifact_events = context_events + roster_events
+        elif cycle.status is CycleStatus.FROZEN:
+            artifact_history_valid = (
+                len(context_events) == 1
+                and len(roster_events) == 1
+                and len(freeze_events) == 1
+                and len(budget_reserved_transitions) == 1
+                and len(context_ready_transitions) == 1
+                and len(frozen_transitions) == 1
+                and budget_reserved_transitions[0].sequence
+                < context_events[0].sequence
+                < context_ready_transitions[0].sequence
+                < roster_events[0].sequence
+                < freeze_events[0].sequence
+                < frozen_transitions[0].sequence
+            )
+            artifact_events = context_events + roster_events + freeze_events
+        if artifact_history_valid and roster_events:
+            try:
+                artifact_history_valid = (
+                    self._roster._replay(roster_events) == expected_roster
+                )
+            except RosterIntegrityError:
+                artifact_history_valid = False
+        expected_related_event_ids = {
+            work_event.event_id,
+            slot_event.event_id,
+            reservation_event.event_id,
+            *(event.event_id for event in cycle_events),
+            *(event.event_id for event in artifact_events),
+        }
+        related_event_ids = {row["event_id"] for row in related}
+        if (
+            stored_work_item["cycle_number"] != cycle_number
+            or cycle.cycle_number != cycle_number
+            or cycle.status not in {
+                CycleStatus.BUDGET_RESERVED,
+                CycleStatus.CONTEXT_READY,
+                CycleStatus.FROZEN,
+            }
+            or not artifact_history_valid
+            or related_event_ids != expected_related_event_ids
+            or len(budget_reserved_transitions) != 1
+            or not (
+                work_event.sequence
+                < slot_event.sequence
+                < reservation_event.sequence
+                < opened.sequence
+                < budget_reserved_transitions[0].sequence
+            )
+        ):
+            raise CampaignJournalError("Campaign admission bundle conflicts")
 
     def _work_item_events_in_transaction(
         self,
