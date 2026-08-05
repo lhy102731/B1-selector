@@ -10,6 +10,7 @@ import json
 import math
 from pathlib import Path
 import sqlite3
+from typing import TypeVar
 
 from research_automation.foundations.protocols import (
     ExecutionSpec,
@@ -112,8 +113,10 @@ from .campaign_store import (
     _event_domain_payload,
     _identifier,
 )
-from .sqlite_uow import _SqliteUnitOfWork
+from .sqlite_uow import SqliteStoreBusyError, _SqliteUnitOfWork, _StoreSpec
 
+
+_T = TypeVar("_T")
 
 _WORK_ITEM_AGGREGATE_TYPE = "CAMPAIGN_WORK_ITEM"
 _WORK_ITEM_ADOPTED = "CAMPAIGN_WORK_ITEM_ADOPTED"
@@ -148,6 +151,41 @@ _MAX_OPERATIONAL_OUTPUT_BYTES = 48 * 1024
 _MODEL_CALL_IN_DOUBT_RESULT = object()
 _MODEL_CALL_BUDGET_EXCEEDED_RESULT = object()
 _MODEL_CALL_PREFLIGHT_REQUIRED_RESULT = object()
+_PREPARATION_LOCK_RETRY_ATTEMPTS = 3
+
+
+def _write_with_lock_retry(
+    spec: _StoreSpec,
+    operation: Callable[[sqlite3.Connection], _T],
+) -> _T:
+    """Bounded SQLite lock-wait retry for Cycle preparation writes.
+
+    A concurrent Cycle admission may hold the store write lock for a finite
+    transaction sequence. Each attempt runs the operation inside a fresh
+    transaction, and the operation re-checks the durable admission state
+    first, so a defeated admission converges deterministically instead of
+    leaking a transient sqlite busy error:
+
+    * exact replay -- a concurrent winner's completed preparation is
+      replayed and returned, so the defeated admission returns the winner's
+      durable Cycle;
+    * BudgetConflictError -- the durable reservation_id was reused with
+      different bounds;
+    * CampaignJournalError -- the durable preparation identity (work item,
+      roster, context, freeze, or preflight) drifted from the requested
+      Cycle;
+    * SqliteStoreBusyError -- the store stayed busy for every attempt and
+      the final attempt's busy error is re-raised after the bound to stay
+      fail-closed.
+    """
+    attempts_left = _PREPARATION_LOCK_RETRY_ATTEMPTS
+    while True:
+        try:
+            return _SqliteUnitOfWork(spec)._write(operation)
+        except SqliteStoreBusyError:
+            attempts_left -= 1
+            if attempts_left <= 0:
+                raise
 
 
 def _bounded_limits(
@@ -883,8 +921,6 @@ class OperationalCampaignController:
                     work_item,
                     "requested Campaign work item",
                 )
-                or reservation_payload
-                != self._reservation_payload(requested_reservation)
                 or roster != canonical_roster
                 or context.roles != tuple(sorted(context_roles))
                 or context.learning_token_budget
@@ -909,6 +945,12 @@ class OperationalCampaignController:
             ):
                 raise CampaignJournalError(
                     "Campaign durable preparation conflicts"
+                )
+            if reservation_payload != self._reservation_payload(
+                requested_reservation
+            ):
+                raise BudgetConflictError(
+                    "reservation_id was reused with different bounds"
                 )
             projection_input, _ = context_assembly.verified_projection_input()
             durable_preflight = run_campaign_preflight(
@@ -1014,13 +1056,12 @@ class OperationalCampaignController:
         if durable_replay is not None:
             return durable_replay
 
-        durable_replay = _SqliteUnitOfWork(
-            stores._operational_spec()
-        )._write(
+        durable_replay = _write_with_lock_retry(
+            stores._operational_spec(),
             lambda connection: replay_complete_preparation(
                 connection,
                 recover_missing_receipt=True,
-            )
+            ),
         )
         if durable_replay is not None:
             return durable_replay
@@ -1175,9 +1216,10 @@ class OperationalCampaignController:
                 )
             return cycle, reservation
 
-        admission = _SqliteUnitOfWork(
-            stores._operational_spec()
-        )._write(reserve_and_open)
+        admission = _write_with_lock_retry(
+            stores._operational_spec(),
+            reserve_and_open,
+        )
         if isinstance(admission, PreparedOperationalCycle):
             return admission
         cycle, reservation = admission

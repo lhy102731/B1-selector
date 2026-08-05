@@ -85,6 +85,10 @@ from research_automation.control_plane.campaign_roster import (
     OperationalRosterJournal,
     RosterDriftError,
 )
+from research_automation.control_plane.sqlite_uow import (
+    SqliteStoreBusyError,
+    _SqliteUnitOfWork,
+)
 from research_automation.control_plane.task_reports import build_task_report_v2
 from research_automation.foundations.protocols import (
     MaterialProtocolChangeError,
@@ -692,6 +696,54 @@ class _LeaseSwapMonotonicClock:
             self._barrier.wait(timeout=5)
             self._barrier.wait(timeout=5)
         return value
+
+
+class _FlakyWriteUnitOfWork:
+    """Delegates the real SQLite unit of work but deterministically raises
+    SqliteStoreBusyError for a configured number of _write calls (every call
+    when unlimited), tracking invocation and failure counts so tests can
+    prove the bounded lock-wait retry behavior without any timing."""
+
+    _skip_writes = 0
+    _failures_remaining = 0
+    _failures_unlimited = False
+    _write_calls = 0
+    _failures_raised = 0
+    _failure_call_numbers: list[int] = []
+
+    @classmethod
+    def reset(
+        cls,
+        *,
+        skip_writes: int = 0,
+        failures_remaining: int = 0,
+        failures_unlimited: bool = False,
+    ) -> None:
+        cls._skip_writes = skip_writes
+        cls._failures_remaining = failures_remaining
+        cls._failures_unlimited = failures_unlimited
+        cls._write_calls = 0
+        cls._failures_raised = 0
+        cls._failure_call_numbers = []
+
+    def __init__(self, spec, **kwargs) -> None:
+        self._delegate = _SqliteUnitOfWork(spec, **kwargs)
+
+    def _read(self, operation):
+        return self._delegate._read(operation)
+
+    def _write(self, operation):
+        type(self)._write_calls += 1
+        if type(self)._skip_writes > 0:
+            type(self)._skip_writes -= 1
+            return self._delegate._write(operation)
+        if type(self)._failures_unlimited or type(self)._failures_remaining > 0:
+            if not type(self)._failures_unlimited:
+                type(self)._failures_remaining -= 1
+            type(self)._failures_raised += 1
+            type(self)._failure_call_numbers.append(type(self)._write_calls)
+            raise SqliteStoreBusyError("control-plane store is busy")
+        return self._delegate._write(operation)
 
 
 _SPAWN_CALL_WALL_TIME_MS = 5_000
@@ -8902,6 +8954,494 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(
                 controllers[0].cycle_budget_snapshot().reserved_cycle_ids,
                 (task.task_id,),
+            )
+
+    def test_duplicate_completed_preparation_reports_different_reservation_as_budget_conflict(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008b"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservations = (
+            CycleReservationLimits(
+                currency="USD",
+                max_input_tokens=10,
+                max_output_tokens=5,
+                max_cost="0.1",
+            ),
+            CycleReservationLimits(
+                currency="USD",
+                max_input_tokens=11,
+                max_output_tokens=6,
+                max_cost="0.2",
+            ),
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            prepared = controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(_protocol_member(),),
+                reservation_limits=reservations[0],
+            )
+            with self.assertRaisesRegex(
+                BudgetConflictError,
+                "reservation_id was reused with different bounds",
+            ):
+                controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=(_protocol_member(),),
+                    reservation_limits=reservations[1],
+                )
+            self.assertEqual(
+                prepared.reservation.max_input_tokens,
+                reservations[0].max_input_tokens,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                reservations[0].max_input_tokens,
+            )
+
+    def test_combined_work_item_and_reservation_difference_reports_identity_conflict(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008d"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservations = (
+            CycleReservationLimits(
+                currency="USD",
+                max_input_tokens=10,
+                max_output_tokens=5,
+                max_cost="0.1",
+            ),
+            CycleReservationLimits(
+                currency="USD",
+                max_input_tokens=11,
+                max_output_tokens=6,
+                max_cost="0.2",
+            ),
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(_protocol_member(),),
+                reservation_limits=reservations[0],
+            )
+            grafted_task = replace(
+                task,
+                proposal={
+                    "hypothesis": "A different hypothesis is a graft",
+                    "scope": _scope(generation="generation-1"),
+                },
+            )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "Campaign durable preparation conflicts",
+            ):
+                controller.prepare_cycle(
+                    task=grafted_task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=(_protocol_member(),),
+                    reservation_limits=reservations[1],
+                )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                reservations[0].max_input_tokens,
+            )
+
+    def test_transient_store_busy_during_cycle_preparation_write_is_retried(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008c"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservation = CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=10,
+            max_output_tokens=5,
+            max_cost="0.1",
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            _FlakyWriteUnitOfWork.reset(failures_remaining=1)
+            with patch.object(
+                campaign_controller_module,
+                "_SqliteUnitOfWork",
+                _FlakyWriteUnitOfWork,
+            ):
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=(_protocol_member(),),
+                    reservation_limits=reservation,
+                )
+            self.assertEqual(
+                prepared.reservation.max_input_tokens,
+                reservation.max_input_tokens,
+            )
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failures_raised,
+                1,
+            )
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failure_call_numbers,
+                [1],
+            )
+            # Recovery write fails once and retries (2 calls), then the
+            # admission write (1) and preparation record write (1).
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._write_calls,
+                4,
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                reservation.max_input_tokens,
+            )
+
+    def test_transient_store_busy_during_cycle_admission_write_is_retried(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008e"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservation = CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=10,
+            max_output_tokens=5,
+            max_cost="0.1",
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            _FlakyWriteUnitOfWork.reset(
+                skip_writes=1,
+                failures_remaining=1,
+            )
+            with patch.object(
+                campaign_controller_module,
+                "_SqliteUnitOfWork",
+                _FlakyWriteUnitOfWork,
+            ):
+                prepared = controller.prepare_cycle(
+                    task=task,
+                    cycle_number=1,
+                    execution_spec=execution_spec,
+                    roster_members=(_protocol_member(),),
+                    reservation_limits=reservation,
+                )
+            self.assertEqual(
+                prepared.reservation.max_input_tokens,
+                reservation.max_input_tokens,
+            )
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failures_raised,
+                1,
+            )
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failure_call_numbers,
+                [2],
+            )
+            self.assertEqual(
+                controller.cycle_snapshot(task.task_id).status,
+                CycleStatus.FROZEN,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                reservation.max_input_tokens,
+            )
+
+    def test_all_busy_preparation_writes_fail_closed_with_exactly_three_attempts(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008f"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservation = CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=10,
+            max_output_tokens=5,
+            max_cost="0.1",
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            baseline_rows = _campaign_event_rows(root, campaign_id)
+            _FlakyWriteUnitOfWork.reset(failures_unlimited=True)
+            with patch.object(
+                campaign_controller_module,
+                "_SqliteUnitOfWork",
+                _FlakyWriteUnitOfWork,
+            ):
+                with self.assertRaises(SqliteStoreBusyError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=(_protocol_member(),),
+                        reservation_limits=reservation,
+                    )
+            self.assertEqual(_FlakyWriteUnitOfWork._write_calls, 3)
+            self.assertEqual(_FlakyWriteUnitOfWork._failures_raised, 3)
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failure_call_numbers,
+                [1, 2, 3],
+            )
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                baseline_rows,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                0,
+            )
+            self.assertEqual(
+                controller.cycle_budget_snapshot().reserved_cycle_ids,
+                (),
+            )
+
+    def test_all_busy_admission_writes_fail_closed_with_exactly_three_attempts(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-008g"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "One reservation identity has one bound",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 108, 8_000)
+        limits = CampaignBudgetLimits(
+            currency="USD",
+            max_cycles=1,
+            max_input_tokens=100,
+            max_output_tokens=50,
+            max_cost="1",
+        )
+        reservation = CycleReservationLimits(
+            currency="USD",
+            max_input_tokens=10,
+            max_output_tokens=5,
+            max_cost="0.1",
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=limits,
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 800,
+            )
+            baseline_rows = _campaign_event_rows(root, campaign_id)
+            _FlakyWriteUnitOfWork.reset(
+                skip_writes=1,
+                failures_remaining=(
+                    campaign_controller_module._PREPARATION_LOCK_RETRY_ATTEMPTS
+                ),
+            )
+            with patch.object(
+                campaign_controller_module,
+                "_SqliteUnitOfWork",
+                _FlakyWriteUnitOfWork,
+            ):
+                with self.assertRaises(SqliteStoreBusyError):
+                    controller.prepare_cycle(
+                        task=task,
+                        cycle_number=1,
+                        execution_spec=execution_spec,
+                        roster_members=(_protocol_member(),),
+                        reservation_limits=reservation,
+                    )
+            # The recovery write succeeds (1), then the admission write
+            # exhausts its bounded retries (3), so no further writes run.
+            self.assertEqual(_FlakyWriteUnitOfWork._write_calls, 4)
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failures_raised,
+                campaign_controller_module._PREPARATION_LOCK_RETRY_ATTEMPTS,
+            )
+            self.assertEqual(
+                _FlakyWriteUnitOfWork._failure_call_numbers,
+                [2, 3, 4],
+            )
+            self.assertEqual(
+                _campaign_event_rows(root, campaign_id),
+                baseline_rows,
+            )
+            self.assertEqual(
+                controller.budget_snapshot().reserved_input_tokens,
+                0,
+            )
+            self.assertEqual(
+                controller.cycle_budget_snapshot().reserved_cycle_ids,
+                (),
             )
 
     def test_concurrent_different_work_items_have_one_winner(self) -> None:
