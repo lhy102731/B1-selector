@@ -348,6 +348,18 @@ def _complete_cycle(
         )
 
 
+def _campaign_pause_event_id(
+    *,
+    namespace: str,
+    campaign_id: str,
+    role_parts: tuple[str, ...],
+) -> str:
+    return hashlib.sha256(
+        b"control_plane.campaign_pause_event.v2\0"
+        + "\0".join((namespace, campaign_id, *role_parts)).encode("ascii")
+    ).hexdigest()
+
+
 class CampaignNamespaceTests(unittest.TestCase):
     def test_campaign_namespace_contract_is_closed_and_bounded(self) -> None:
         longest_dry_run_id = "x" * 120
@@ -1490,6 +1502,82 @@ class OperationalBudgetJournalTests(unittest.TestCase):
                     max_cost="1.00",
                 )
 
+    def test_interrupted_settle_rolls_back_and_retries_cleanly(self) -> None:
+        campaign_id = "campaign-settle-crash-recovery"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            budget = OperationalBudgetJournal(
+                currency="USD",
+                journal=journal,
+                budget_id="campaign-budget",
+                max_input_tokens=100,
+                max_output_tokens=100,
+                max_cost="1.00",
+            )
+            budget.reserve(
+                currency="USD",
+                reservation_id="reservation-crash",
+                call_id="call-crash",
+                max_input_tokens=60,
+                max_output_tokens=60,
+                max_cost="0.60",
+            )
+            original_append = (
+                OperationalCampaignJournal._append_in_transaction
+            )
+
+            def append_then_crash(
+                active_journal: OperationalCampaignJournal,
+                connection: object,
+                **kwargs: object,
+            ) -> object:
+                event = original_append(
+                    active_journal,
+                    connection,
+                    **kwargs,
+                )
+                if kwargs.get("event_type") == "BUDGET_SETTLED":
+                    raise RuntimeError(
+                        "synthetic crash between append and commit"
+                    )
+                return event
+
+            with patch.object(
+                OperationalCampaignJournal,
+                "_append_in_transaction",
+                new=append_then_crash,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "synthetic crash"):
+                    budget.settle(
+                        "reservation-crash",
+                        currency="USD",
+                        input_tokens=20,
+                        output_tokens=10,
+                        cost="0.20",
+                    )
+
+            snapshot = budget.snapshot()
+            self.assertEqual(snapshot.reserved_input_tokens, 60)
+            self.assertEqual(snapshot.spent_input_tokens, 0)
+            events = journal.list_events(
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_BUDGET",
+                aggregate_id="campaign-budget",
+            )
+            self.assertEqual(
+                [event.event_type for event in events],
+                ["BUDGET_OPENED", "BUDGET_RESERVED"],
+            )
+
+            settlement = budget.settle(
+                "reservation-crash",
+                currency="USD",
+                input_tokens=20,
+                output_tokens=10,
+                cost="0.20",
+            )
+            self.assertEqual(settlement.state, "SETTLED")
+            self.assertEqual(budget.snapshot().spent_input_tokens, 20)
+
 
 class OperationalCycleBudgetJournalTests(unittest.TestCase):
     def test_concurrent_cycle_reservation_is_atomic_and_survives_reopen(self) -> None:
@@ -2335,6 +2423,448 @@ class OperationalCampaignLifecycleTests(unittest.TestCase):
 
             with self.assertRaisesRegex(CampaignLifecycleError, "envelope"):
                 lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+
+    def test_pause_replay_rejects_a_ghost_boundary_cycle(self) -> None:
+        campaign_id = "campaign-lifecycle-pause-ghost"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "ghost-cycle-999",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "ghost-cycle-999",
+                    "boundary_cycle_number": 42,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "pause boundary Cycle does not exist",
+            ):
+                lifecycle.pause_snapshot()
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "pause boundary Cycle does not exist",
+            ):
+                lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+
+    def test_pause_replay_rejects_a_mismatched_boundary_cycle_number(
+        self,
+    ) -> None:
+        campaign_id = "campaign-lifecycle-pause-wrong-number"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            _complete_cycle(lifecycle, cycle_id="cycle-001")
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-001",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-001",
+                    "boundary_cycle_number": 7,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "number is invalid",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_an_uncompleted_boundary_cycle(self) -> None:
+        campaign_id = "campaign-lifecycle-pause-uncompleted"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-001",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-001",
+                    "boundary_cycle_number": 1,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "not completed",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_a_stale_boundary_cycle(self) -> None:
+        campaign_id = "campaign-lifecycle-pause-stale"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            _complete_cycle(lifecycle, cycle_id="cycle-001")
+            lifecycle.open_cycle(cycle_id="cycle-002", cycle_number=2)
+            _complete_cycle(lifecycle, cycle_id="cycle-002")
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-001",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-001",
+                    "boundary_cycle_number": 1,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "latest",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_a_pre_cycle_boundary_with_prior_cycles(
+        self,
+    ) -> None:
+        campaign_id = "campaign-lifecycle-pause-pre-cycle"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "PRE_CYCLE",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": None,
+                    "boundary_cycle_number": None,
+                },
+            )
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "pre-Cycle",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_a_boundary_completed_after_the_pause_event(
+        self,
+    ) -> None:
+        campaign_id = "campaign-lifecycle-pause-late-completion"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-001",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-001",
+                    "boundary_cycle_number": 1,
+                },
+            )
+            # The boundary Cycle only completes AFTER the forged pause event.
+            _complete_cycle(lifecycle, cycle_id="cycle-001")
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "not completed",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_a_prior_cycle_completed_after_the_pause_event(
+        self,
+    ) -> None:
+        campaign_id = "campaign-lifecycle-pause-late-prior"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            lifecycle.open_cycle(cycle_id="cycle-002", cycle_number=2)
+            _complete_cycle(lifecycle, cycle_id="cycle-002")
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-002",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-002",
+                    "boundary_cycle_number": 2,
+                },
+            )
+            # The prior Cycle only completes AFTER the forged pause event.
+            _complete_cycle(lifecycle, cycle_id="cycle-001")
+
+            with self.assertRaisesRegex(
+                CampaignLifecycleError,
+                "prior Cycle",
+            ):
+                lifecycle.pause_snapshot()
+
+    def test_pause_replay_rejects_duplicate_opened_cycle_numbers(self) -> None:
+        campaign_id = "campaign-lifecycle-pause-duplicate-numbers"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            second_cycle_event_id = hashlib.sha256(
+                b"control_plane.campaign_lifecycle_event.v1\0"
+                + (
+                    f"formal\0{campaign_id}\0CYCLE_STATE\0cycle-002\0CREATED"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=second_cycle_event_id,
+                cycle_id="cycle-002",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-002",
+                event_type="CYCLE_OPENED",
+                payload={
+                    "cycle_id": "cycle-002",
+                    "cycle_number": 1,
+                    "status": CycleStatus.CREATED.value,
+                },
+            )
+            lifecycle.request_pause(pause_id="pause-001")
+            journal.append(
+                event_id=_campaign_pause_event_id(
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    role_parts=(
+                        CampaignPauseStatus.PAUSED.value,
+                        "pause-001",
+                        "cycle-001",
+                    ),
+                ),
+                cycle_id=None,
+                aggregate_type="CAMPAIGN_PAUSE",
+                aggregate_id=campaign_id,
+                event_type="CAMPAIGN_PAUSED",
+                payload={
+                    "pause_id": "pause-001",
+                    "boundary_cycle_id": "cycle-001",
+                    "boundary_cycle_number": 1,
+                },
+            )
+
+            with self.assertRaisesRegex(DuplicateCycleError, "unique"):
+                lifecycle.pause_snapshot()
+
+    def test_two_pause_generations_replay_resume_and_complete(self) -> None:
+        campaign_id = "campaign-lifecycle-two-pause-generations"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            _complete_cycle(lifecycle, cycle_id="cycle-001")
+            lifecycle.request_pause(pause_id="pause-001")
+            first_paused = lifecycle.pause_at_safe_boundary(
+                pause_id="pause-001",
+                boundary_cycle_id="cycle-001",
+            )
+            self.assertEqual(first_paused.boundary_cycle_id, "cycle-001")
+            lifecycle.resume_pause(
+                pause_id="pause-001",
+                resume_id="resume-001",
+            )
+            lifecycle.open_cycle(cycle_id="cycle-002", cycle_number=2)
+            _complete_cycle(lifecycle, cycle_id="cycle-002")
+            lifecycle.request_pause(pause_id="pause-002")
+            second_paused = lifecycle.pause_at_safe_boundary(
+                pause_id="pause-002",
+                boundary_cycle_id="cycle-002",
+            )
+            self.assertEqual(second_paused.boundary_cycle_id, "cycle-002")
+
+            reopened = OperationalCampaignLifecycle(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                )
+            )
+            # Replaying generation one ignores cycle-002 (opened only after
+            # its PAUSED event); generation two evaluates the full stream.
+            self.assertEqual(reopened.pause_snapshot(), second_paused)
+
+            resumed = reopened.resume_pause(
+                pause_id="pause-002",
+                resume_id="resume-002",
+            )
+            self.assertEqual(resumed.status, CampaignPauseStatus.RUNNING)
+            completed = reopened.complete()
+            self.assertEqual(completed.status, CampaignStatus.COMPLETED)
+            self.assertEqual(
+                reopened.snapshot().status,
+                CampaignStatus.COMPLETED,
+            )
+            self.assertEqual(
+                reopened.pause_snapshot().last_resume_id,
+                "resume-002",
+            )
+
+    def test_cycle_replay_rejects_duplicate_cycle_numbers(self) -> None:
+        campaign_id = "campaign-lifecycle-duplicate-numbers"
+        with _authorized_campaign(campaign_id) as (_, _, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            second_cycle_event_id = hashlib.sha256(
+                b"control_plane.campaign_lifecycle_event.v1\0"
+                + (
+                    f"formal\0{campaign_id}\0CYCLE_STATE\0cycle-002\0CREATED"
+                ).encode("ascii")
+            ).hexdigest()
+            journal.append(
+                event_id=second_cycle_event_id,
+                cycle_id="cycle-002",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-002",
+                event_type="CYCLE_OPENED",
+                payload={
+                    "cycle_id": "cycle-002",
+                    "cycle_number": 1,
+                    "status": CycleStatus.CREATED.value,
+                },
+            )
+
+            with self.assertRaisesRegex(DuplicateCycleError, "unique"):
+                lifecycle.complete()
+            with self.assertRaises(DuplicateCycleError):
+                lifecycle.open_cycle(cycle_id="cycle-003", cycle_number=3)
+
+    def test_concurrent_duplicate_cycle_transition_commits_once(self) -> None:
+        campaign_id = "campaign-lifecycle-concurrent-advance"
+        with _authorized_campaign(campaign_id) as (_, grant, journal):
+            first = OperationalCampaignLifecycle(journal=journal)
+            second = OperationalCampaignLifecycle(journal=journal)
+            first.activate()
+            first.open_cycle(cycle_id="cycle-001", cycle_number=1)
+            barrier = Barrier(2)
+
+            def advance() -> CycleSnapshot:
+                barrier.wait(timeout=5)
+                return first.advance_cycle(
+                    cycle_id="cycle-001",
+                    expected_status=CycleStatus.CREATED,
+                    next_status=CycleStatus.BUDGET_RESERVED,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                future_one = pool.submit(advance)
+                future_two = pool.submit(advance)
+                outcome_one = future_one.result(timeout=10)
+                outcome_two = future_two.result(timeout=10)
+
+            self.assertEqual(outcome_one, outcome_two)
+            self.assertEqual(outcome_one.status, CycleStatus.BUDGET_RESERVED)
+            events = journal.list_events(
+                cycle_id="cycle-001",
+                aggregate_type="CYCLE_STATE",
+                aggregate_id="cycle-001",
+            )
+            self.assertEqual(
+                [event.event_type for event in events],
+                ["CYCLE_OPENED", "CYCLE_TRANSITIONED"],
+            )
+            reopened = OperationalCampaignLifecycle(
+                journal=OperationalCampaignJournal(
+                    root_secret=ROOT_SECRET,
+                    grant=grant,
+                    namespace="formal",
+                    campaign_id=campaign_id,
+                    clock=lambda: NOW,
+                )
+            )
+            self.assertEqual(
+                reopened.cycle_snapshot("cycle-001").status,
+                CycleStatus.BUDGET_RESERVED,
+            )
 
 
 class OperationalUsageJournalTests(unittest.TestCase):

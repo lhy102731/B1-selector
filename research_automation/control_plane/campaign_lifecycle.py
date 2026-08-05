@@ -209,7 +209,8 @@ class OperationalCampaignLifecycle:
         self._journal._authorize()
         return _SqliteUnitOfWork(stores._operational_spec())._read(
             lambda connection: self._replay_pause(
-                self._pause_events(connection)
+                connection,
+                self._pause_events(connection),
             )
         )
 
@@ -222,7 +223,7 @@ class OperationalCampaignLifecycle:
             if campaign.status is not CampaignStatus.ACTIVE:
                 raise CampaignStateConflictError("Campaign is not ACTIVE")
             events = self._pause_events(connection)
-            snapshot = self._replay_pause(events)
+            snapshot = self._replay_pause(connection, events)
             if snapshot.status is not CampaignPauseStatus.RUNNING:
                 if snapshot.active_pause_id != pause_id:
                     raise CampaignStateConflictError(
@@ -278,7 +279,10 @@ class OperationalCampaignLifecycle:
             campaign = self._replay_campaign(self._campaign_events(connection))
             if campaign.status is not CampaignStatus.ACTIVE:
                 raise CampaignStateConflictError("Campaign is not ACTIVE")
-            snapshot = self._replay_pause(self._pause_events(connection))
+            snapshot = self._replay_pause(
+                connection,
+                self._pause_events(connection),
+            )
             if snapshot.status is CampaignPauseStatus.PAUSED:
                 if (
                     snapshot.active_pause_id != pause_id
@@ -376,7 +380,7 @@ class OperationalCampaignLifecycle:
             if campaign.status is not CampaignStatus.ACTIVE:
                 raise CampaignStateConflictError("Campaign is not ACTIVE")
             events = self._pause_events(connection)
-            snapshot = self._replay_pause(events)
+            snapshot = self._replay_pause(connection, events)
             if snapshot.status is CampaignPauseStatus.RUNNING:
                 if (
                     snapshot.last_pause_id == pause_id
@@ -499,7 +503,10 @@ class OperationalCampaignLifecycle:
                 raise DuplicateCycleError("cycle_number is already assigned")
         if existing is not None:
             return self._replay_cycle(self._cycle_events(connection, cycle_id))
-        pause = self._replay_pause(self._pause_events(connection))
+        pause = self._replay_pause(
+            connection,
+            self._pause_events(connection),
+        )
         if pause.status is not CampaignPauseStatus.RUNNING:
             raise CampaignStateConflictError(
                 "Campaign pause prevents opening a new Cycle"
@@ -562,7 +569,10 @@ class OperationalCampaignLifecycle:
             return snapshot
         if snapshot.status is not CampaignStatus.ACTIVE:
             raise CampaignStateConflictError("Campaign is not ACTIVE")
-        pause = self._replay_pause(self._pause_events(connection))
+        pause = self._replay_pause(
+            connection,
+            self._pause_events(connection),
+        )
         if pause.status is not CampaignPauseStatus.RUNNING:
             raise CampaignStateConflictError(
                 "Campaign must resume before completion"
@@ -908,25 +918,71 @@ class OperationalCampaignLifecycle:
             aggregate_id=cycle_id,
         )
 
-    def _opened_cycles(self, connection) -> tuple[CycleSnapshot, ...]:
-        rows = connection.execute(
-            """
+    def _opened_cycles(
+        self,
+        connection,
+        *,
+        sequence_cutoff: int | None = None,
+    ) -> tuple[CycleSnapshot, ...]:
+        """Enumerate opened Cycles and enforce unique Cycle numbers.
+
+        Without a cutoff this reads every CYCLE_OPENED row in sequence
+        order and replays only that event. With a cutoff, the sequence
+        bound is applied in the SQLite query (rows at or past the cutoff
+        are never loaded) and each Cycle is replayed from its stream as it
+        existed strictly before the cutoff, so later transitions cannot
+        retroactively alter the result.
+
+        Duplicate Cycle numbers raise DuplicateCycleError("Cycle numbers
+        must be unique") and fail fast: the error propagates through every
+        write and snapshot path here (open, complete, pause boundary) and
+        through the campaign_context, campaign_controller, and
+        campaign_freeze operations that enumerate opened Cycles inside
+        their own transactions, rolling those transactions back. Callers
+        must not swallow it.
+        """
+        query = """
             SELECT * FROM campaign_events
             WHERE namespace = ? AND campaign_id = ?
               AND cycle_id IS NOT NULL AND aggregate_type = ?
               AND event_type = ?
-            ORDER BY sequence
-            """,
-            (
-                self._journal._namespace,
-                self._journal._campaign_id,
-                _CYCLE_AGGREGATE_TYPE,
-                _CYCLE_OPENED,
-            ),
-        ).fetchall()
-        return tuple(
-            self._replay_cycle((_event_from_row(row),)) for row in rows
-        )
+        """
+        query_values = [
+            self._journal._namespace,
+            self._journal._campaign_id,
+            _CYCLE_AGGREGATE_TYPE,
+            _CYCLE_OPENED,
+        ]
+        if sequence_cutoff is not None:
+            query += " AND sequence < ?"
+            query_values.append(sequence_cutoff)
+        query += " ORDER BY sequence"
+        rows = connection.execute(query, query_values).fetchall()
+        opened: list[CycleSnapshot] = []
+        opened_numbers: dict[int, str] = {}
+        for row in rows:
+            cycle_event = _event_from_row(row)
+            if sequence_cutoff is None:
+                snapshot = self._replay_cycle((cycle_event,))
+            else:
+                snapshot = self._replay_cycle(
+                    self._cycle_events_before(
+                        connection,
+                        cycle_event.aggregate_id,
+                        sequence_cutoff,
+                    )
+                )
+            existing_cycle_id = opened_numbers.get(snapshot.cycle_number)
+            if (
+                existing_cycle_id is not None
+                and existing_cycle_id != snapshot.cycle_id
+            ):
+                raise DuplicateCycleError(
+                    "Cycle numbers must be unique"
+                )
+            opened_numbers[snapshot.cycle_number] = snapshot.cycle_id
+            opened.append(snapshot)
+        return tuple(opened)
 
     def _campaign_event_id(self, role: str) -> str:
         return _state_event_id(
@@ -1171,6 +1227,7 @@ class OperationalCampaignLifecycle:
 
     def _replay_pause(
         self,
+        connection,
         events: tuple[CampaignEvent, ...],
     ) -> CampaignPauseSnapshot:
         if not events:
@@ -1281,6 +1338,12 @@ class OperationalCampaignLifecycle:
                     raise CampaignLifecycleError(
                         "Campaign PAUSED transition is invalid"
                     )
+                self._validate_pause_boundary_in_transaction(
+                    connection,
+                    pause_event=event,
+                    boundary_cycle_id=stored_boundary_cycle_id,
+                    boundary_cycle_number=boundary_cycle_number,
+                )
                 status = CampaignPauseStatus.PAUSED
                 boundary_cycle_id = stored_boundary_cycle_id
             elif event.event_type == _CAMPAIGN_RESUMED:
@@ -1336,6 +1399,101 @@ class OperationalCampaignLifecycle:
             last_pause_id,
             last_resume_id,
         )
+
+    def _cycle_events_before(
+        self,
+        connection,
+        cycle_id: str,
+        sequence: int,
+    ) -> tuple[CampaignEvent, ...]:
+        """Return one Cycle stream as it existed before an event sequence.
+
+        The cutoff is applied in the SQLite query so rows at or past the
+        cutoff are never loaded or replayed in Python.
+        """
+        rows = connection.execute(
+            """
+            SELECT * FROM campaign_events
+            WHERE namespace = ? AND campaign_id = ? AND cycle_id = ?
+              AND aggregate_type = ? AND aggregate_id = ?
+              AND sequence < ?
+            ORDER BY sequence
+            """,
+            (
+                self._journal._namespace,
+                self._journal._campaign_id,
+                cycle_id,
+                _CYCLE_AGGREGATE_TYPE,
+                cycle_id,
+                sequence,
+            ),
+        ).fetchall()
+        return tuple(_event_from_row(row) for row in rows)
+
+    def _validate_pause_boundary_in_transaction(
+        self,
+        connection,
+        *,
+        pause_event: CampaignEvent,
+        boundary_cycle_id: str | None,
+        boundary_cycle_number: int | None,
+    ) -> None:
+        """Cross-check a persisted pause boundary against the Cycle stream.
+
+        The write path admits a pause only at the latest completed Cycle
+        boundary, so a replay that accepts anything else would hide a
+        corrupted pause stream. Completion and prior-completion are
+        evaluated from each Cycle stream as it existed at the pause event's
+        sequence; later Cycle transitions cannot retroactively legitimize a
+        forged pause. Cycles opened after the pause event cannot have been
+        part of its boundary and are intentionally ignored.
+
+        Replay cost is bounded and non-material: each PAUSED event triggers
+        one shared opened-Cycle enumeration plus one stream replay per
+        opened Cycle (O(G * C * E) event replays across G pause
+        generations). No caches or additional persistence are used;
+        duplicate Cycle numbers still surface as DuplicateCycleError from
+        the shared enumeration before any boundary check.
+        """
+        opened_before = {
+            snapshot.cycle_id: snapshot
+            for snapshot in self._opened_cycles(
+                connection,
+                sequence_cutoff=pause_event.sequence,
+            )
+        }
+        if boundary_cycle_id is None:
+            if opened_before:
+                raise CampaignLifecycleError(
+                    "pre-Cycle pause boundary conflicts with opened Cycles"
+                )
+            return
+        boundary_snapshot = opened_before.get(boundary_cycle_id)
+        if boundary_snapshot is None:
+            raise CampaignLifecycleError(
+                "pause boundary Cycle does not exist"
+            )
+        if boundary_snapshot.cycle_number != boundary_cycle_number:
+            raise CampaignLifecycleError(
+                "pause boundary Cycle number is invalid"
+            )
+        if boundary_snapshot.status is not CycleStatus.COMPLETED:
+            raise CampaignLifecycleError(
+                "pause boundary Cycle is not completed"
+            )
+        if boundary_snapshot.cycle_number != max(
+            snapshot.cycle_number for snapshot in opened_before.values()
+        ):
+            raise CampaignLifecycleError(
+                "pause boundary is not the latest completed Cycle"
+            )
+        if any(
+            snapshot.status is not CycleStatus.COMPLETED
+            for snapshot in opened_before.values()
+        ):
+            raise CampaignLifecycleError(
+                "pause boundary requires every prior Cycle completed"
+            )
 
     def _replay_cycle(self, events: tuple[CampaignEvent, ...]) -> CycleSnapshot:
         if not events:
