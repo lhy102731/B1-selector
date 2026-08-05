@@ -735,9 +735,26 @@ class OperationalCycleFreezeJournal:
             {key: payload[key] for key in payload if key != "manifest_sha256"},
             "stored Cycle freeze identity",
         )
+        expected_envelope = (
+            self._journal._namespace,
+            self._journal._campaign_id,
+            cycle_id,
+            _CYCLE_FREEZE_AGGREGATE_TYPE,
+            cycle_id,
+            _CYCLE_INPUTS_FROZEN,
+            self._freeze_event_id(cycle_id),
+        )
+        observed_envelope = (
+            event.namespace,
+            event.campaign_id,
+            event.cycle_id,
+            event.aggregate_type,
+            event.aggregate_id,
+            event.event_type,
+            event.event_id,
+        )
         if (
-            event.event_id != self._freeze_event_id(cycle_id)
-            or event.event_type != _CYCLE_INPUTS_FROZEN
+            observed_envelope != expected_envelope
             or not hmac.compare_digest(payload["manifest_sha256"], expected_manifest)
         ):
             raise CycleFreezeIntegrityError("Cycle freeze integrity is invalid")
@@ -860,6 +877,12 @@ class OperationalCycleFreezeJournal:
         if protocol_roster != operational_roster:
             raise CycleFreezeIntegrityError(
                 "Cycle freeze ExecutionSpec roster binding is invalid"
+            )
+        if context.roles != tuple(
+            sorted({member.role for member in roster.members})
+        ):
+            raise CycleFreezeIntegrityError(
+                "Cycle freeze context roles are not bound to the frozen roster"
             )
         if not hmac.compare_digest(
             context_proposal_sha256,

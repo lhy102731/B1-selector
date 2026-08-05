@@ -184,6 +184,98 @@ def _swap_and_resign_event_sequences(first, second) -> None:
         connection.close()
 
 
+def _rebind_freeze_event_to_cycle(
+    journal,
+    *,
+    cycle_id: str,
+    other_cycle_id: str,
+) -> None:
+    """Move a frozen Cycle event's cycle columns while keeping its identity."""
+    freeze_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_INPUT_FREEZE",
+        aggregate_id=cycle_id,
+    )[0]
+    integrity_sha256 = _event_integrity_sha256(
+        event_id=freeze_event.event_id,
+        namespace=freeze_event.namespace,
+        campaign_id=freeze_event.campaign_id,
+        cycle_id=other_cycle_id,
+        aggregate_type=freeze_event.aggregate_type,
+        aggregate_id=other_cycle_id,
+        event_type=freeze_event.event_type,
+        payload_json=freeze_event.payload_json,
+        occurred_at=freeze_event.occurred_at.isoformat(),
+        sequence=freeze_event.sequence,
+    )
+    connection = sqlite3.connect(stores_module._OPERATIONAL_STORE_PATH)
+    try:
+        cursor = connection.execute(
+            "UPDATE campaign_events "
+            "SET cycle_id = ?, aggregate_id = ?, payload_sha256 = ? "
+            "WHERE event_id = ?",
+            (
+                other_cycle_id,
+                other_cycle_id,
+                integrity_sha256,
+                freeze_event.event_id,
+            ),
+        )
+        if cursor.rowcount != 1:
+            raise AssertionError("freeze event was not rebound")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def _drift_context_roles_and_resign_freeze_binding(
+    journal,
+    context,
+    *,
+    cycle_id: str,
+    proposal: dict[str, object],
+    drifted_roles: tuple[str, ...],
+) -> None:
+    """Rebuild a valid stored context for drifted roles and resign the freeze."""
+    drifted = context._assemble(
+        cycle_id=cycle_id,
+        proposal=proposal,
+        roles=drifted_roles,
+    )
+    preview = drifted.preview
+    context_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_SAFE_CONTEXT",
+        aggregate_id=cycle_id,
+    )[0]
+    context_payload = context_event.payload()
+    context_payload["roles"] = list(preview.roles)
+    context_payload["safe_context"] = json.loads(preview.safe_context_json)
+    context_payload["request_sha256"] = preview.request_sha256
+    context_payload["context_sha256"] = preview.context_sha256
+    context_payload["manifest_sha256"] = preview.manifest_sha256
+    _rewrite_event_payload(context_event, context_payload)
+
+    freeze_event = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_INPUT_FREEZE",
+        aggregate_id=cycle_id,
+    )[0]
+    freeze_payload = freeze_event.payload()
+    freeze_payload["context_manifest_sha256"] = preview.manifest_sha256
+    freeze_identity = {
+        key: value
+        for key, value in freeze_payload.items()
+        if key not in {"_authority_grant_id", "manifest_sha256"}
+    }
+    freeze_payload["manifest_sha256"] = campaign_freeze_module._content_sha256(
+        campaign_freeze_module._CYCLE_FREEZE_MANIFEST_DOMAIN,
+        freeze_identity,
+        "drifted Cycle freeze identity",
+    )
+    _rewrite_event_payload(freeze_event, freeze_payload)
+
+
 def _graft_context_proposal_and_resign_freeze_binding(
     journal,
     *,
@@ -962,6 +1054,125 @@ class OperationalCycleFreezeJournalTests(unittest.TestCase):
                 "CYCLE_FREEZE_JOURNAL_INVALID",
             )
             self.assertEqual(blocked.block_source_ref, freeze_event_id)
+
+    def test_snapshot_rejects_a_freeze_event_rebound_to_another_cycle(
+        self,
+    ) -> None:
+        campaign_id = "campaign-freeze-cross-cycle-binding"
+        cycle_id = "cycle-001"
+        other_cycle_id = "cycle-002"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        proposal = {
+            "hypothesis": "Freeze identity stays bound to its own Cycle",
+            "scope": _scope(generation="generation-1"),
+        }
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle, context, roster, roster_manifest = (
+                _prepare_context_ready_cycle(
+                    journal,
+                    cycle_id=cycle_id,
+                    proposal=proposal,
+                )
+            )
+            freeze = OperationalCycleFreezeJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                roster=roster,
+                context=context,
+            )
+            frozen = freeze.freeze(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                execution_spec=execution_spec,
+                expected_roster=roster_manifest,
+            )
+            _rebind_freeze_event_to_cycle(
+                journal,
+                cycle_id=cycle_id,
+                other_cycle_id=other_cycle_id,
+            )
+            rebound = journal.list_events(
+                cycle_id=other_cycle_id,
+                aggregate_type="CYCLE_INPUT_FREEZE",
+                aggregate_id=other_cycle_id,
+            )
+            self.assertEqual(len(rebound), 1)
+            self.assertEqual(rebound[0].event_id, frozen.event_id)
+            before = _all_operational_table_bytes()
+
+            with self.assertRaisesRegex(
+                CycleFreezeIntegrityError,
+                "integrity",
+            ):
+                freeze.snapshot(cycle_id=other_cycle_id)
+
+            self.assertEqual(_all_operational_table_bytes(), before)
+
+    def test_snapshot_rejects_context_roles_drifted_from_the_frozen_roster(
+        self,
+    ) -> None:
+        campaign_id = "campaign-freeze-context-roster-role-drift"
+        cycle_id = "cycle-001"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        proposal = {
+            "hypothesis": "Context roles bind the frozen roster roles",
+            "scope": _scope(generation="generation-1"),
+        }
+        drifted_roles = ("alpha_hunter", "factor_engineer")
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle, context, roster, roster_manifest = (
+                _prepare_context_ready_cycle(
+                    journal,
+                    cycle_id=cycle_id,
+                    proposal=proposal,
+                )
+            )
+            freeze = OperationalCycleFreezeJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+                roster=roster,
+                context=context,
+            )
+            frozen = freeze.freeze(
+                cycle_id=cycle_id,
+                proposal=proposal,
+                execution_spec=execution_spec,
+                expected_roster=roster_manifest,
+            )
+            _drift_context_roles_and_resign_freeze_binding(
+                journal,
+                context,
+                cycle_id=cycle_id,
+                proposal=proposal,
+                drifted_roles=drifted_roles,
+            )
+            drifted_context = context.snapshot(cycle_id=cycle_id)
+            self.assertNotEqual(
+                drifted_context.manifest_sha256,
+                frozen.context_manifest_sha256,
+            )
+            self.assertEqual(drifted_context.roles, drifted_roles)
+            before = _all_operational_table_bytes()
+
+            with self.assertRaisesRegex(
+                CycleFreezeIntegrityError,
+                "roster",
+            ):
+                freeze.snapshot(cycle_id=cycle_id)
+
+            self.assertEqual(_all_operational_table_bytes(), before)
 
 
 if __name__ == "__main__":
