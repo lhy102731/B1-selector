@@ -11,6 +11,7 @@ from pathlib import Path
 
 import yaml
 
+from .control_plane.provenance import stamp_legacy_result
 from .experiment import Experiment, StandardMetrics
 from .safety import assert_safe_path, output_root
 
@@ -50,7 +51,10 @@ class PromotionEvaluator:
 
 class CandidatePool:
     """Append-only candidate ledger. promotion_status in
-    {candidate, tested, verified, rejected, promoted}; automation writes <= verified."""
+    {candidate, tested, verified, rejected, promoted}; automation writes <= verified.
+    Every entry is stamped as a legacy result (controller_created=False,
+    trust_state=legacy_unaudited, promotion_eligible=False) before persisting;
+    the stamp is non-overridable."""
 
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else (output_root() / "candidates" / "candidate_pool.yaml")
@@ -82,8 +86,9 @@ class CandidatePool:
         evidence_claim_ids = scope.get("evidence_claim_ids") or scope.get("knowledge_claims")
         if isinstance(evidence_claim_ids, (list, tuple)):
             entry["evidence_claim_ids"] = [str(item) for item in evidence_claim_ids if str(item).strip()]
-        self._append(entry)
-        return entry
+        stamped = stamp_legacy_result(entry)   # non-overridable, applied before persisting
+        self._append(stamped)
+        return stamped
 
     def _append(self, entry: dict) -> None:
         path = assert_safe_path(self.path)
