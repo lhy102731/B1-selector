@@ -1153,6 +1153,57 @@ class ModelInvocationTests(unittest.TestCase):
                 request_model="fake-request-model",
             )
 
+    def test_model_invocation_rejects_malformed_configured_identity(self) -> None:
+        malformed = (
+            ("provider_name", "bad name!", "fake", "offline"),
+            ("provider_name", "", "fake", "offline"),
+            ("provider_name", None, "fake", "offline"),
+            ("profile", "bad profile!", "fake", "offline"),
+            ("profile", "", "fake", "offline"),
+            ("profile", 17, "fake", "offline"),
+            ("request_model", "bad model!", "fake", "offline"),
+            ("request_model", "", "fake", "offline"),
+            ("request_model", True, "fake", "offline"),
+            ("request_model", "-leading", "fake", "offline"),
+        )
+        for field, invalid, provider_name, profile in malformed:
+            with self.subTest(field=field, invalid=invalid):
+                kwargs = {
+                    "provider_name": provider_name,
+                    "profile": profile,
+                    "request_model": "fake-request-model",
+                }
+                kwargs[field] = invalid
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "bounded control-plane identifier",
+                ):
+                    ModelInvocation(
+                        provider=_ChildPidProvider(),
+                        usage_journal=_RecordingUsageJournal(),
+                        **kwargs,
+                    )
+
+        long_identifier = "x" * 128
+        ModelInvocation(
+            provider=_ChildPidProvider(),
+            usage_journal=_RecordingUsageJournal(),
+            provider_name=long_identifier,
+            profile="offline",
+            request_model=long_identifier,
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "bounded control-plane identifier",
+        ):
+            ModelInvocation(
+                provider=_ChildPidProvider(),
+                usage_journal=_RecordingUsageJournal(),
+                provider_name="fake",
+                profile="offline",
+                request_model="x" * 129,
+            )
+
     def test_spawned_executor_binds_and_serializes_provider_once_at_construction(
         self,
     ) -> None:
@@ -3981,6 +4032,89 @@ class ModelInvocationTests(unittest.TestCase):
                 self.assertIsInstance(envelope, UsageEnvelope)
                 self.assertEqual(envelope.usage_status, UsageStatus.UNKNOWN)
                 self.assertEqual(envelope.outcome, InvocationOutcome.TIMEOUT)
+
+    def test_inline_invocation_rejects_non_finite_deadline_without_accounting(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            for index, invalid_deadline in enumerate(
+                (float("nan"), float("inf"), float("-inf"), "10"),
+                start=1,
+            ):
+                with self.subTest(invalid_deadline=invalid_deadline):
+                    marker = Path(temp_dir) / f"non-finite-deadline-{index}.marker"
+                    provider = _InvocationMarkerProvider(str(marker))
+                    journal = _RecordingUsageJournal()
+                    invocation = ModelInvocation(
+                        provider=provider,
+                        usage_journal=journal,
+                        provider_name="fake",
+                        profile="offline",
+                        request_model="fake-request-model",
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "finite"):
+                        invocation.invoke_json(
+                            {"prompt": "offline-only"},
+                            call_id=f"call-non-finite-deadline-{index}",
+                            attempt_id="attempt-001",
+                            deadline=invalid_deadline,  # type: ignore[arg-type]
+                        )
+
+                    self.assertFalse(marker.exists())
+                    self.assertEqual(journal.events, [])
+
+    def test_invocation_rejects_integer_deadline_beyond_float_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            marker = Path(temp_dir) / "huge-int-deadline.marker"
+            provider = _InvocationMarkerProvider(str(marker))
+            journal = _RecordingUsageJournal()
+            invocation = ModelInvocation(
+                provider=provider,
+                usage_journal=journal,
+                provider_name="fake",
+                profile="offline",
+                request_model="fake-request-model",
+            )
+
+            with self.assertRaisesRegex(ValueError, "finite"):
+                invocation.invoke_json(
+                    {"prompt": "offline-only"},
+                    call_id="call-huge-int-deadline",
+                    attempt_id="attempt-001",
+                    deadline=10**400,
+                )
+
+            self.assertFalse(marker.exists())
+            self.assertEqual(journal.events, [])
+
+    def test_spawned_executor_rejects_integer_deadline_beyond_float_range(
+        self,
+    ) -> None:
+        context = _NoProcessContext()
+        provider = _ChildPidProvider()
+        executor = SpawnedProviderExecutor(provider)
+        request = campaign_module._canonical_json_request(
+            {"prompt": "offline-only"}
+        )
+
+        with patch.object(
+            campaign_module.multiprocessing,
+            "get_context",
+            return_value=context,
+        ):
+            with self.assertRaisesRegex(
+                campaign_module._ProviderExecutorConfigurationError,
+                "finite deadline",
+            ):
+                executor.execute(
+                    provider,
+                    request,
+                    deadline=10**400,
+                    max_output_bytes=campaign_module._MAX_MODEL_OUTPUT_BYTES,
+                )
+
+        self.assertEqual(context.process_calls, 0)
 
     def test_inline_late_success_is_rejected_once_at_the_shared_deadline(self) -> None:
         clock = _ControlledClock(now=300.0)

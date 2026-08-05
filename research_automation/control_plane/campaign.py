@@ -137,6 +137,15 @@ def _is_retryable_model_invocation_error(error: BaseException) -> bool:
     )
 
 
+def _require_control_plane_identifier(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or _CONTROL_PLANE_IDENTIFIER_RE.fullmatch(value) is None
+    ):
+        raise ValueError(f"{name} must be a bounded control-plane identifier")
+    return value
+
+
 class _ModelOutputBoundsError(ValueError):
     """Raised when parsed model JSON exceeds a bounded output contract."""
 
@@ -1137,6 +1146,15 @@ def _close_resources_after_interrupts(
     return first_interrupt, first_error
 
 
+def _is_finite_deadline(deadline: object) -> bool:
+    if type(deadline) not in (int, float):
+        return False
+    try:
+        return math.isfinite(deadline)
+    except OverflowError:
+        return False
+
+
 def _raise_if_provider_deadline_expired(deadline: float) -> None:
     if time.monotonic() >= deadline:
         raise _ProviderExecutorDeadlineExceeded(
@@ -1197,7 +1215,7 @@ class SpawnedProviderExecutor:
             raise _ProviderExecutorConfigurationError(
                 "SpawnedProviderExecutor requires the universal output bound"
             )
-        if type(deadline) not in (int, float) or not math.isfinite(deadline):
+        if not _is_finite_deadline(deadline):
             raise _ProviderExecutorConfigurationError(
                 "SpawnedProviderExecutor requires a finite deadline"
             )
@@ -1489,9 +1507,15 @@ class ModelInvocation:
             else provider_executor
         )
         self._usage_journal = usage_journal
-        self._provider_name = provider_name
-        self._profile = profile
-        self._request_model = request_model
+        self._provider_name = _require_control_plane_identifier(
+            provider_name,
+            "provider_name",
+        )
+        self._profile = _require_control_plane_identifier(profile, "profile")
+        self._request_model = _require_control_plane_identifier(
+            request_model,
+            "request_model",
+        )
         self._max_output_bytes = max_output_bytes
 
     def invoke_json(
@@ -1502,6 +1526,8 @@ class ModelInvocation:
         attempt_id: str,
         deadline: float | None = None,
     ) -> object:
+        if deadline is not None and not _is_finite_deadline(deadline):
+            raise ValueError("deadline must be a finite monotonic timestamp")
         canonical_request = _canonical_json_request(request)
         try:
             response = self._provider_executor.execute(
