@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
 from research_automation.control_plane.campaign import (
+    _raw_usage_sha256,
     InvocationOutcome,
     ModelInvocation,
     ProviderResponse,
@@ -154,6 +155,76 @@ def _record_response(
     return usage
 
 
+def _ramp_cycle_to_executing(
+    lifecycle: OperationalCampaignLifecycle,
+    roster: OperationalRosterJournal,
+    *,
+    cycle_id: str,
+    members: tuple[RosterMember, ...],
+) -> None:
+    """Open, freeze and ramp a Cycle to EXECUTING via public APIs."""
+    lifecycle.open_cycle(cycle_id=cycle_id, cycle_number=1)
+    for expected, next_status in (
+        (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
+        (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
+    ):
+        lifecycle.advance_cycle(
+            cycle_id=cycle_id,
+            expected_status=expected,
+            next_status=next_status,
+        )
+    roster.freeze(cycle_id=cycle_id, members=members)
+    lifecycle.advance_cycle(
+        cycle_id=cycle_id,
+        expected_status=CycleStatus.CONTEXT_READY,
+        next_status=CycleStatus.FROZEN,
+    )
+    lifecycle.advance_cycle(
+        cycle_id=cycle_id,
+        expected_status=CycleStatus.FROZEN,
+        next_status=CycleStatus.EXECUTING,
+    )
+
+
+def _assert_drift_blocked(
+    test_case: unittest.TestCase,
+    *,
+    lifecycle: OperationalCampaignLifecycle,
+    roster: OperationalRosterJournal,
+    journal: OperationalCampaignJournal,
+    cycle_id: str,
+    reason_code: str,
+) -> None:
+    """Assert the atomic roster drift block tail via public APIs."""
+    blocked = lifecycle.snapshot()
+    roster_snapshot = roster.snapshot(cycle_id=cycle_id)
+    test_case.assertEqual(blocked.status, CampaignStatus.BLOCKED)
+    test_case.assertEqual(
+        roster_snapshot.terminal_event_type,
+        "ROSTER_DRIFT_DETECTED",
+    )
+    test_case.assertEqual(
+        roster_snapshot.terminal_event_id,
+        blocked.block_source_ref,
+    )
+    test_case.assertEqual(blocked.block_reason_code, reason_code)
+    with test_case.assertRaises(CampaignStateConflictError):
+        lifecycle.advance_cycle(
+            cycle_id=cycle_id,
+            expected_status=CycleStatus.EXECUTING,
+            next_status=CycleStatus.EVIDENCE_READY,
+        )
+    events = journal.list_events(
+        cycle_id=cycle_id,
+        aggregate_type="CYCLE_ROSTER",
+        aggregate_id=cycle_id,
+    )
+    test_case.assertEqual(
+        tuple(event.event_type for event in events),
+        ("ROSTER_FROZEN", "ROSTER_DRIFT_DETECTED"),
+    )
+
+
 class OperationalRosterJournalTests(unittest.TestCase):
     def test_roster_freeze_is_order_independent_and_drift_conflicts(self) -> None:
         campaign_id = "campaign-roster-001"
@@ -222,32 +293,16 @@ class OperationalRosterJournalTests(unittest.TestCase):
         with _authorized_campaign(campaign_id) as (_, journal):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
-            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
-            transitions = (
-                (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
-                (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
-            )
-            for expected, next_status in transitions:
-                lifecycle.advance_cycle(
-                    cycle_id="cycle-001",
-                    expected_status=expected,
-                    next_status=next_status,
-                )
             member = _member("alpha", model="fake-model-a")
             roster = OperationalRosterJournal(
                 journal=journal,
                 lifecycle=lifecycle,
             )
-            roster.freeze(cycle_id="cycle-001", members=(member,))
-            lifecycle.advance_cycle(
+            _ramp_cycle_to_executing(
+                lifecycle,
+                roster,
                 cycle_id="cycle-001",
-                expected_status=CycleStatus.CONTEXT_READY,
-                next_status=CycleStatus.FROZEN,
-            )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+                members=(member,),
             )
             usage = _record_response(
                 journal=journal,
@@ -265,35 +320,13 @@ class OperationalRosterJournalTests(unittest.TestCase):
                     attempt_id="call-alpha-attempt-001",
                 )
 
-            blocked = lifecycle.snapshot()
-            roster_snapshot = roster.snapshot(cycle_id="cycle-001")
-            self.assertEqual(blocked.status, CampaignStatus.BLOCKED)
-            self.assertEqual(
-                roster_snapshot.terminal_event_type,
-                "ROSTER_DRIFT_DETECTED",
-            )
-            self.assertEqual(
-                roster_snapshot.terminal_event_id,
-                blocked.block_source_ref,
-            )
-            self.assertEqual(
-                blocked.block_reason_code,
-                "RESPONSE_MODEL_DRIFT",
-            )
-            with self.assertRaises(CampaignStateConflictError):
-                lifecycle.advance_cycle(
-                    cycle_id="cycle-001",
-                    expected_status=CycleStatus.EXECUTING,
-                    next_status=CycleStatus.EVIDENCE_READY,
-                )
-            events = journal.list_events(
+            _assert_drift_blocked(
+                self,
+                lifecycle=lifecycle,
+                roster=roster,
+                journal=journal,
                 cycle_id="cycle-001",
-                aggregate_type="CYCLE_ROSTER",
-                aggregate_id="cycle-001",
-            )
-            self.assertEqual(
-                tuple(event.event_type for event in events),
-                ("ROSTER_FROZEN", "ROSTER_DRIFT_DETECTED"),
+                reason_code="RESPONSE_MODEL_DRIFT",
             )
 
     def test_missing_required_member_blocks_campaign(self) -> None:
@@ -301,32 +334,17 @@ class OperationalRosterJournalTests(unittest.TestCase):
         with _authorized_campaign(campaign_id) as (_, journal):
             lifecycle = OperationalCampaignLifecycle(journal=journal)
             lifecycle.activate()
-            lifecycle.open_cycle(cycle_id="cycle-001", cycle_number=1)
-            for expected, next_status in (
-                (CycleStatus.CREATED, CycleStatus.BUDGET_RESERVED),
-                (CycleStatus.BUDGET_RESERVED, CycleStatus.CONTEXT_READY),
-            ):
-                lifecycle.advance_cycle(
-                    cycle_id="cycle-001",
-                    expected_status=expected,
-                    next_status=next_status,
-                )
             alpha = _member("alpha", model="fake-model-a")
             beta = _member("beta", model="fake-model-b")
             roster = OperationalRosterJournal(
                 journal=journal,
                 lifecycle=lifecycle,
             )
-            roster.freeze(cycle_id="cycle-001", members=(alpha, beta))
-            lifecycle.advance_cycle(
+            _ramp_cycle_to_executing(
+                lifecycle,
+                roster,
                 cycle_id="cycle-001",
-                expected_status=CycleStatus.CONTEXT_READY,
-                next_status=CycleStatus.FROZEN,
-            )
-            lifecycle.advance_cycle(
-                cycle_id="cycle-001",
-                expected_status=CycleStatus.FROZEN,
-                next_status=CycleStatus.EXECUTING,
+                members=(alpha, beta),
             )
             usage = _record_response(
                 journal=journal,
@@ -1405,6 +1423,110 @@ class OperationalRosterJournalTests(unittest.TestCase):
             self.assertEqual(
                 roster.snapshot(cycle_id="cycle-001").verified_member_ids,
                 (),
+            )
+
+    def test_request_model_drift_atomically_blocks_campaign(self) -> None:
+        campaign_id = "campaign-roster-020"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            member = _member("alpha", model="fake-model-a")
+            roster = OperationalRosterJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+            )
+            _ramp_cycle_to_executing(
+                lifecycle,
+                roster,
+                cycle_id="cycle-001",
+                members=(member,),
+            )
+            # Record response with DIFFERENT request_model to simulate drift
+            usage = _record_response(
+                journal=journal,
+                member=member,
+                response_model=member.model,
+                call_id="call-alpha",
+                request_model="drifted-request-model",
+            )
+
+            with self.assertRaises(RosterDriftError):
+                roster.verify_response(
+                    cycle_id="cycle-001",
+                    member_id="alpha",
+                    usage_journal=usage,
+                    call_id="call-alpha",
+                    attempt_id="call-alpha-attempt-001",
+                )
+
+            _assert_drift_blocked(
+                self,
+                lifecycle=lifecycle,
+                roster=roster,
+                journal=journal,
+                cycle_id="cycle-001",
+                reason_code="ROSTER_IDENTITY_DRIFT",
+            )
+
+    def test_failed_outcome_blocks_campaign_as_invalid_member_response(self) -> None:
+        campaign_id = "campaign-roster-021"
+        with _authorized_campaign(campaign_id) as (_, journal):
+            lifecycle = OperationalCampaignLifecycle(journal=journal)
+            lifecycle.activate()
+            member = _member("alpha", model="fake-model-a")
+            roster = OperationalRosterJournal(
+                journal=journal,
+                lifecycle=lifecycle,
+            )
+            _ramp_cycle_to_executing(
+                lifecycle,
+                roster,
+                cycle_id="cycle-001",
+                members=(member,),
+            )
+            # Match the production unknown-outcome envelope: no response
+            # model and the production raw-usage digest for an empty report.
+            usage = OperationalUsageJournal(journal=journal, cycle_id="cycle-001")
+            usage.begin(
+                UsageEnvelope(
+                    provider=member.provider,
+                    profile=member.profile,
+                    request_model=member.model,
+                    response_model=None,
+                    call_id="call-alpha",
+                    attempt_id="call-alpha-attempt-001",
+                    usage_status=UsageStatus.UNKNOWN,
+                    input_tokens=None,
+                    output_tokens=None,
+                    total_tokens=None,
+                    cache_read_tokens=None,
+                    cache_write_tokens=None,
+                    reasoning_tokens=None,
+                    reported_cost=None,
+                    currency=None,
+                    fallback=False,
+                    streamed=False,
+                    outcome=InvocationOutcome.TIMEOUT,
+                    raw_usage_sha256=_raw_usage_sha256({}),
+                )
+            )
+
+            with self.assertRaises(RosterDriftError):
+                roster.verify_response(
+                    cycle_id="cycle-001",
+                    member_id="alpha",
+                    usage_journal=usage,
+                    call_id="call-alpha",
+                    attempt_id="call-alpha-attempt-001",
+                )
+
+            _assert_drift_blocked(
+                self,
+                lifecycle=lifecycle,
+                roster=roster,
+                journal=journal,
+                cycle_id="cycle-001",
+                reason_code="REQUIRED_MEMBER_RESPONSE_INVALID",
             )
 
 
