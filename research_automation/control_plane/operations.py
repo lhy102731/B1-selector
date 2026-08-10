@@ -28,6 +28,18 @@ class ProtectedStoreError(RuntimeError):
     synthetic journal durability surface."""
 
 
+class ProjectionError(RuntimeError):
+    """Base error for journal projection operations."""
+
+
+class ProjectionIntegrityError(ProjectionError):
+    """Raised when event sequences are not contiguous in a projection."""
+
+
+class ProjectionThresholdError(ProjectionError):
+    """Raised when a full rebuild exceeds the caller's max_events threshold."""
+
+
 @dataclass(frozen=True)
 class JournalDurabilitySnapshot:
     """Immutable snapshot of the journal durability contract for a path."""
@@ -37,6 +49,16 @@ class JournalDurabilitySnapshot:
     busy_timeout_ms: int
     synchronous: str
     single_writer: bool
+
+
+@dataclass(frozen=True)
+class ProjectionResult:
+    """Immutable result of a journal projection update."""
+
+    projection_name: str
+    last_sequence: int
+    events_processed: int
+    integrity_ok: bool
 
 
 def _repository_root() -> Path:
@@ -130,3 +152,205 @@ def journal_durability(
         )
     finally:
         connection.close()
+
+
+def _ensure_projection_table(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS projections (
+            name TEXT PRIMARY KEY,
+            last_sequence INTEGER NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _projection_last_sequence(connection: sqlite3.Connection, name: str) -> int:
+    row = connection.execute(
+        "SELECT last_sequence FROM projections WHERE name = ?",
+        (name,),
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _write_projection(
+    connection: sqlite3.Connection,
+    name: str,
+    last_sequence: int,
+    updated_at: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO projections(name, last_sequence, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            last_sequence = excluded.last_sequence,
+            updated_at = excluded.updated_at
+        """,
+        (name, last_sequence, updated_at),
+    )
+
+
+def incremental_project(
+    path: Path,
+    *,
+    projection_name: str = "default",
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+) -> ProjectionResult:
+    """Advance a projection from last_sequence in O(new events)."""
+
+    if not projection_name:
+        raise ValueError("projection_name must be non-empty")
+    result: ProjectionResult | None = None
+    with with_durable_journal_transaction(path, busy_timeout_ms=busy_timeout_ms) as connection:
+        _ensure_projection_table(connection)
+        last_sequence = _projection_last_sequence(connection, projection_name)
+        rows = connection.execute(
+            """
+            SELECT sequence
+            FROM events
+            WHERE sequence > ?
+            ORDER BY sequence
+            """,
+            (last_sequence,),
+        ).fetchall()
+        expected_sequence = last_sequence + 1
+        for row in rows:
+            observed = int(row[0])
+            if observed != expected_sequence:
+                raise ProjectionIntegrityError(
+                    f"event sequence gap: expected {expected_sequence}, observed {observed}"
+                )
+            expected_sequence += 1
+        events_processed = len(rows)
+        new_last = last_sequence + events_processed
+        if events_processed:
+            from datetime import datetime, timezone
+
+            _write_projection(
+                connection,
+                projection_name,
+                new_last,
+                datetime.now(timezone.utc).isoformat(),
+            )
+        result = ProjectionResult(
+            projection_name=projection_name,
+            last_sequence=new_last,
+            events_processed=events_processed,
+            integrity_ok=True,
+        )
+    assert result is not None
+    return result
+
+
+def rebuild_projection(
+    path: Path,
+    *,
+    projection_name: str = "default",
+    max_events: int | None = None,
+    progress: object | None = None,
+    busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
+) -> ProjectionResult:
+    """Offline full rebuild from sequence 1 with integrity, progress, and an
+    optional event-count threshold."""
+
+    if not projection_name:
+        raise ValueError("projection_name must be non-empty")
+    if max_events is not None and (type(max_events) is not int or max_events < 1):
+        raise ValueError("max_events must be a positive integer or None")
+    if progress is not None and not callable(progress):
+        raise TypeError("progress must be callable or None")
+    result: ProjectionResult | None = None
+    with with_durable_journal_transaction(path, busy_timeout_ms=busy_timeout_ms) as connection:
+        _ensure_projection_table(connection)
+        rows = connection.execute(
+            """
+            SELECT sequence
+            FROM events
+            ORDER BY sequence
+            """
+        ).fetchall()
+        total = len(rows)
+        if max_events is not None and total > max_events:
+            raise ProjectionThresholdError(
+                f"full rebuild requires {total} events, exceeding max_events={max_events}"
+            )
+        expected_sequence = 1
+        for index, row in enumerate(rows, start=1):
+            observed = int(row[0])
+            if observed != expected_sequence:
+                raise ProjectionIntegrityError(
+                    f"event sequence gap: expected {expected_sequence}, observed {observed}"
+                )
+            expected_sequence += 1
+            if progress is not None and (index % 1000 == 0 or index == total):
+                progress(index, total)
+        if total == 0 and progress is not None:
+            progress(0, 0)
+        from datetime import datetime, timezone
+
+        _write_projection(
+            connection,
+            projection_name,
+            total,
+            datetime.now(timezone.utc).isoformat(),
+        )
+        result = ProjectionResult(
+            projection_name=projection_name,
+            last_sequence=total,
+            events_processed=total,
+            integrity_ok=True,
+        )
+    assert result is not None
+    return result
+
+
+def backup_journal(
+    source: Path,
+    destination: Path,
+    *,
+    progress: object | None = None,
+) -> None:
+    """Copy a synthetic journal to a consistent backup via the SQLite backup API."""
+
+    if progress is not None and not callable(progress):
+        raise TypeError("progress must be callable or None")
+    source_path = _require_synthetic_path(source)
+    destination_path = _require_synthetic_path(destination)
+    if not source_path.exists():
+        raise FileNotFoundError(f"journal fixture is missing: {source_path}")
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    source_connection = _connect(source_path, read_only=True, busy_timeout_ms=DEFAULT_BUSY_TIMEOUT_MS)
+    destination_connection = sqlite3.connect(destination_path)
+    try:
+        source_connection.backup(destination_connection, pages=-1, progress=progress)
+        destination_connection.commit()
+    finally:
+        destination_connection.close()
+        source_connection.close()
+
+
+def restore_journal(
+    backup: Path,
+    target: Path,
+    *,
+    progress: object | None = None,
+) -> None:
+    """Restore a backup into a target synthetic journal via the SQLite backup API."""
+
+    if progress is not None and not callable(progress):
+        raise TypeError("progress must be callable or None")
+    backup_path = _require_synthetic_path(backup)
+    target_path = _require_synthetic_path(target)
+    if not backup_path.exists():
+        raise FileNotFoundError(f"backup file is missing: {backup_path}")
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    backup_connection = sqlite3.connect(backup_path)
+    target_connection = sqlite3.connect(target_path)
+    try:
+        backup_connection.backup(target_connection, pages=-1, progress=progress)
+        target_connection.commit()
+    finally:
+        target_connection.close()
+        backup_connection.close()

@@ -1,0 +1,65 @@
+{
+  "schema_version": "control_plane.p7r2_t3_independent_quality_review.v1",
+  "review_id": "p7r2-t3-independent-quality-review",
+  "receipt_id": "p7r2-t3-independent-quality-review",
+  "reviewed_at": "2026-08-10T09:35:13.137469+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T3-OPS-PROJECTION-RECOVERY",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t3-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t3-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_quality_approval": true,
+  "candidate": {
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "db1431b2516599020ec58aece6f3736aaa42702d234254a7b8b6fd205556f0ce",
+    "test_ref": "tests/test_control_plane_operations.py",
+    "test_sha256": "1cb9ff0f896257ac56f4278dbe3f3731af012930ec28820b79682d9a08f73e6f"
+  },
+  "checks": [
+    {
+      "check_id": "implementation_quality",
+      "status": "PASS",
+      "detail": "Projection writes are upserts inside the same durable IMMEDIATE transaction; no separate read-modify-write race exists because the whole operation is one short single-writer transaction; results are frozen dataclasses."
+    },
+    {
+      "check_id": "integrity_and_threshold_semantics",
+      "status": "PASS",
+      "detail": "Sequence contiguity is checked both incrementally (from last_sequence+1) and during full rebuild (from 1); threshold violations raise before the projection write and roll back, so a failed rebuild never leaves a partial projection."
+    },
+    {
+      "check_id": "backup_restore_quality",
+      "status": "PASS",
+      "detail": "The SQLite backup API is used instead of file copy, giving a consistent snapshot even under concurrent writes; restore into a fresh target verifies 7/7 rows and the correct max sequence."
+    },
+    {
+      "check_id": "fixture_isolation",
+      "status": "PASS",
+      "detail": "All tests create temp directories and never touch real data, authority, operational, policies, inventories, research, or KBase content; protected paths are rejected by contract and by test."
+    },
+    {
+      "check_id": "regression_evidence",
+      "status": "PASS",
+      "detail": "The focused operations suite passes 15/15; the 80-test access/budget/mutation/runner/promotion regression group passes; no production source beyond the two owned files changed."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p7r2-t3-independent-spec-review-20260810 and p7r2-t3-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blockers exist in the diff, tests, or contract review; no advisory requires follow-up for T3."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": []
+}

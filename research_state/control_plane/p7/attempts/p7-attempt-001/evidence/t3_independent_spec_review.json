@@ -1,0 +1,65 @@
+{
+  "schema_version": "control_plane.p7r2_t3_independent_spec_review.v1",
+  "review_id": "p7r2-t3-independent-spec-review",
+  "receipt_id": "p7r2-t3-independent-spec-review",
+  "reviewed_at": "2026-08-10T09:35:13.137469+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T3-OPS-PROJECTION-RECOVERY",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t3-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t3-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_spec_approval": true,
+  "candidate": {
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "db1431b2516599020ec58aece6f3736aaa42702d234254a7b8b6fd205556f0ce",
+    "test_ref": "tests/test_control_plane_operations.py",
+    "test_sha256": "1cb9ff0f896257ac56f4278dbe3f3731af012930ec28820b79682d9a08f73e6f"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 matches the committed T3 spec; allowed_files cover operations.py, the operations test, and all six evidence outputs; baseline and seven input evidence references hash-match live files."
+    },
+    {
+      "check_id": "incremental_projection_contract",
+      "status": "PASS",
+      "detail": "incremental_project reads last_sequence from the projections table and selects only events with sequence > last_sequence in ascending order, so work is O(new events); the projection advances to the new last_sequence in one durable transaction."
+    },
+    {
+      "check_id": "offline_rebuild_contract",
+      "status": "PASS",
+      "detail": "rebuild_projection performs a full ordered scan from sequence 1, verifies contiguity, reports progress to the caller, enforces an optional max_events threshold, and writes the rebuilt projection in one durable transaction; threshold/integrity failures roll back and leave the projection untouched."
+    },
+    {
+      "check_id": "backup_restore_contract",
+      "status": "PASS",
+      "detail": "backup_journal and restore_journal use the SQLite online backup API with progress callbacks and destination parent creation; protected authority/operational paths are rejected before any connection opens."
+    },
+    {
+      "check_id": "diff_boundary",
+      "status": "PASS",
+      "detail": "The only tracked source changes are research_automation/control_plane/operations.py and tests/test_control_plane_operations.py; no sealed TCB, run_research.py, policy, inventory, or store file changed."
+    },
+    {
+      "check_id": "red_green_test_quality",
+      "status": "PASS",
+      "detail": "The new tests failed at import before implementation (RED), then passed 15/15 after implementation (GREEN): incremental only-new events, no-op projection, full rebuild with progress, threshold abort, integrity gap, backup/restore row preservation, backup progress, and protected-path rejection."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is slice-completion ready: authorization CLAIMED, grant ACTIVE, T3 ticket ISSUED with zero trusted receipts, one open ticket, succeeded=(T1,T2), no failed/in-doubt, pending outbox 0, no P7 closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": []
+}
