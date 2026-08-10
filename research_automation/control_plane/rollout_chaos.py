@@ -616,12 +616,21 @@ def _run_main_campaign(
     seed: int,
     cycles: int,
 ) -> tuple[dict[str, object], Path]:
+    root_path = _deterministic_root(seed, cycles)
+    with _deterministic_root_lock(seed, cycles):
+        if root_path.exists():
+            shutil.rmtree(root_path)
+        return _run_main_campaign_locked(seed, cycles, root_path)
+
+
+def _run_main_campaign_locked(
+    seed: int,
+    cycles: int,
+    root_path: Path,
+) -> tuple[dict[str, object], Path]:
     schedule = _build_schedule(seed, cycles)
     scenario_log: list[str] = []
-    root_path = _deterministic_root(seed, cycles)
-    if root_path.exists():
-        shutil.rmtree(root_path)
-    with _deterministic_root_lock(seed, cycles), _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
+    with _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
         _CAMPAIGN_ID,
         root_path,
     ) as (root, _, journal):
