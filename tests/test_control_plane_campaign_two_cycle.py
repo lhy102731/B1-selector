@@ -25,7 +25,11 @@ from research_automation.control_plane.campaign_lifecycle import (
     CycleStatus,
 )
 from research_automation.control_plane.campaign_store import (
+    CampaignExecutionMode,
     CampaignLearningCommitSink,
+    DryRunIsolationError,
+    OperationalCampaignJournal,
+    dry_run_namespace,
 )
 from research_automation.control_plane.evidence_learning import (
     EvidenceAdapter,
@@ -48,7 +52,12 @@ from tests import test_control_plane_campaign_controller as controller_fixtures
 from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
-from tests.test_control_plane_campaign_store import _authorized_campaign
+from tests.test_control_plane_campaign_store import (
+    NOW,
+    ROOT_SECRET,
+    _authorized_campaign,
+    _claim_campaign_grant,
+)
 from tests import test_control_plane_evidence_learning as evidence_fixtures
 from tests.test_foundations_protocols import _approval, _protocol
 
@@ -881,6 +890,260 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             self.assertEqual(
                 learning.packet_hash,
                 projection_input["claims"][0]["claim_id"],
+            )
+
+    def test_dry_run_controller_uses_separate_namespace_and_budget(
+        self,
+    ) -> None:
+        campaign_id = "campaign-dry-run-boundary-two-cycle"
+        dry_namespace = dry_run_namespace("preview-boundary")
+        with _authorized_campaign(
+            campaign_id,
+            namespace=dry_namespace,
+        ) as (root, _, journal):
+            dry_controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-dry-run-boundary", 231, 231_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            self.assertEqual(
+                dry_controller.execution_mode,
+                CampaignExecutionMode.DRY_RUN,
+            )
+            self.assertEqual(dry_controller.namespace, dry_namespace)
+            prompt = {
+                "instruction": "Return a no-material synthetic artifact"
+            }
+            execution_spec, member = _execution_spec_and_member(prompt)
+            prepared = dry_controller.prepare_cycle(
+                task=ExperimentTask(
+                    task_id="cycle-001",
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Preview-only bounded mechanism",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                ),
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=_RESERVATION_LIMITS,
+            )
+            self.assertEqual(
+                dry_controller.budget_snapshot().reserved_input_tokens,
+                _RESERVATION_LIMITS.max_input_tokens,
+            )
+            self.assertEqual(prepared.reservation.currency, "USD")
+            self.assertEqual(dry_controller.namespace, dry_namespace)
+
+    def test_dry_run_commit_learning_fails_closed_without_formal_state(
+        self,
+    ) -> None:
+        campaign_id = "campaign-dry-run-learning-isolation"
+        dry_namespace = dry_run_namespace("preview-learning-isolation")
+        with _authorized_campaign(
+            campaign_id,
+            namespace=dry_namespace,
+        ) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-dry-learning", 232, 232_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            prompt = {
+                "instruction": "Return a no-material synthetic artifact"
+            }
+            execution_spec, member = _execution_spec_and_member(prompt)
+            prepared = controller.prepare_cycle(
+                task=ExperimentTask(
+                    task_id="cycle-001",
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Preview-only no-learning cycle",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                ),
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=_RESERVATION_LIMITS,
+            )
+            execution = controller.start_execution(
+                cycle_id=prepared.cycle_id,
+                acquisition_id="execute-cycle-001",
+            )
+            controller.invoke_member_json(
+                execution=execution,
+                member_id=member.member_id,
+                provider=self._new_owned_fake_provider(
+                    _EvidenceArtifactBoundFakeProvider
+                ),
+                prompt=prompt,
+                limits=_FAKE_CALL_LIMITS,
+            )
+            usage = controller.complete_model_execution(
+                execution=execution
+            )
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol={"label": "synthetic-only"},
+                ),
+            )
+            with self.assertRaisesRegex(
+                DryRunIsolationError,
+                "dry-run Campaigns cannot write formal Learning state",
+            ):
+                controller.commit_learning(
+                    execution=execution,
+                    evidence_receipt=evidence,
+                    authority_task_report={},
+                    learning_commit_sink=CampaignLearningCommitSink(
+                        journal=journal,
+                        service=LearningCommitService(
+                            repository_root=root
+                        ),
+                    ),
+                )
+            with self.assertRaisesRegex(
+                DryRunIsolationError,
+                "dry-run Campaigns cannot write formal Learning state",
+            ):
+                controller.require_formal_learning_sink()
+            settlement = controller.settle_cycle_without_learning(
+                execution=execution,
+                execution_usage=usage,
+                evidence_receipt=evidence,
+            )
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settlement,
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            completed = controller.complete_campaign()
+            self.assertFalse(information_gain.continuation_eligible)
+            self.assertEqual(decision.decision, "STOP")
+            self.assertEqual(completed.status, CampaignStatus.COMPLETED)
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_commit.sqlite3")
+                .exists()
+            )
+            self.assertFalse(
+                (root / "research_state/control_plane/learning_packets")
+                .exists()
+            )
+
+    def test_dry_run_and_formal_budgets_do_not_alias_at_controller_level(
+        self,
+    ) -> None:
+        campaign_id = "campaign-dry-run-formal-budget-boundary"
+        with _authorized_campaign(campaign_id) as (
+            root,
+            _,
+            formal_journal,
+        ):
+            formal_controller = OperationalCampaignController(
+                journal=formal_journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-formal-budget", 233, 233_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            dry_namespace = dry_run_namespace("preview-budget")
+            dry_grant = _claim_campaign_grant(
+                campaign_id=campaign_id,
+                namespace=dry_namespace,
+                actor_id="p6-dry-runner",
+                invocation_id="campaign-dry-run-formal-budget-dry-test",
+                attempt_id="campaign-dry-run-formal-budget-dry-attempt",
+                plan_sha256="a" * 64,
+                instruction_sha256="c" * 64,
+            )
+            dry_journal = OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=dry_grant,
+                namespace=dry_namespace,
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+            dry_controller = OperationalCampaignController(
+                journal=dry_journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-dry-budget", 234, 234_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            self.assertEqual(
+                formal_controller.execution_mode,
+                CampaignExecutionMode.FORMAL,
+            )
+            self.assertEqual(
+                dry_controller.execution_mode,
+                CampaignExecutionMode.DRY_RUN,
+            )
+            self.assertEqual(formal_controller.namespace, "formal")
+            self.assertEqual(dry_controller.namespace, dry_namespace)
+            prompt = {
+                "instruction": "Return a no-material synthetic artifact"
+            }
+            execution_spec, member = _execution_spec_and_member(prompt)
+            dry_controller.prepare_cycle(
+                task=ExperimentTask(
+                    task_id="cycle-001",
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": "Preview-only budget isolation",
+                        "scope": _scope(generation="generation-1"),
+                    },
+                    source="synthetic-test",
+                ),
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=_RESERVATION_LIMITS,
+            )
+            self.assertEqual(
+                dry_controller.budget_snapshot().reserved_input_tokens,
+                _RESERVATION_LIMITS.max_input_tokens,
+            )
+            self.assertEqual(
+                formal_controller.budget_snapshot().reserved_input_tokens,
+                0,
             )
 
 

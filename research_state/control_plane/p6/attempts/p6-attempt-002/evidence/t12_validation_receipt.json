@@ -1,0 +1,110 @@
+{
+  "schema_version": "control_plane.p6r2_t12_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T12-FULL-DRY-RUN-BOUNDARY",
+  "ticket_id": "cce388f441a4ef9969d7f0ec857d3796e0196d015b9b16ed594fb757b666f3c6",
+  "validated_at": "2026-08-10T07:25:14.613297+00:00",
+  "validation_git_head": "7303f41de9f341f37d4aa213bced727c96e47a9c",
+  "validation_git_tree": "c9a925f09c665410f26b3c82c941ec26930aebac",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t12-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t12_independent_spec_review.json",
+      "sha256": "3d1698efafb55685e3a51f03e2e5381f047b6c223ebd27580ba71e7942849e9a",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t12-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t12_independent_quality_review.json",
+      "sha256": "4a88ad06fe4822292cfd9cc215147817d7207a51688da8dfe986807b3b87a79f",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t12-focused-tests",
+      "result": "PASS",
+      "tests_run": 291,
+      "tail": "----------------------------------------------------------------------\nRan 291 tests in 148.912s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t12-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "tests/test_control_plane_campaign_controller.py",
+          "tests/test_control_plane_campaign_two_cycle.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "tests/test_control_plane_campaign_controller.py",
+          "tests/test_control_plane_campaign_two_cycle.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {},
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "tests/test_control_plane_campaign_controller.py",
+      "tests/test_control_plane_campaign_two_cycle.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "tests/test_control_plane_campaign_controller.py",
+      "tests/test_control_plane_campaign_two_cycle.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {},
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "cce388f441a4ef9969d7f0ec857d3796e0196d015b9b16ed594fb757b666f3c6",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 11,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

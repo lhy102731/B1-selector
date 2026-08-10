@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p6r2_t12_independent_spec_review.v1",
+  "review_id": "p6r2-t12-independent-spec-review",
+  "receipt_id": "p6r2-t12-independent-spec-review",
+  "reviewed_at": "2026-08-10T09:20:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T12-FULL-DRY-RUN-BOUNDARY",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t12-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t12-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_spec_approval": true,
+  "checks": [
+    {
+      "check_id": "task_spec_binding",
+      "status": "PASS",
+      "detail": "T12 TaskSpec envelope binds exactly three owned files (campaign_controller.py, test_control_plane_campaign_controller.py, test_control_plane_campaign_two_cycle.py) plus six t12 evidence files, forbids every other campaign/control-plane module, data/KBase, scheduler/ACL, user files, strategy, requirements, policies and inventories; dependencies name T7/T10/T11; payload_sha256 matches canonical serialization."
+    },
+    {
+      "check_id": "evidence_binding",
+      "status": "PASS",
+      "detail": "All twenty-six input evidence references hash-match the live repository: P6 approval, scope manifest, baseline, T1 validation, T1-T11 task reports, and T1-T11 completions; baseline_sha256 matches implementation_baseline.json."
+    },
+    {
+      "check_id": "source_boundary",
+      "status": "PASS",
+      "detail": "The only tracked source changes are campaign_controller.py plus the two owned test modules; data, KBase, strategy, policy, scheduler/ACL, user files, and all other control-plane modules are untouched."
+    },
+    {
+      "check_id": "dry_run_boundary_contract",
+      "status": "PASS",
+      "detail": "OperationalCampaignController now exposes execution_mode and namespace from its journal, and require_formal_learning_sink delegates to the journal's fail-closed dry-run guard; dry-run namespaces stay separate from formal namespaces and dry-run budget reservations never alias the formal budget; commit_learning on a dry-run journal raises DryRunIsolationError before any formal Learning artifact is written."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "p7_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false; no real data/KBase read or update, no scheduler/ACL mutation, no daily update/backtest/research/campaign/holdout started; all dry-run cycles use fake providers in isolated temporary journals."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_COMPOSITION_ONLY",
+      "detail": "T12 composes the existing dry-run namespace/budget/learning-sink primitives at the controller layer; it does not add a separate dry-run CLI surface, which belongs to later composition slices if the plan requires it."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_PROVIDER_INJECTION",
+      "detail": "Dry-run model execution still uses the same fake provider injection path as formal cycles; a distinct preview-only provider policy is not required by the P6 scope."
+    }
+  ]
+}

@@ -77,10 +77,13 @@ from research_automation.control_plane.campaign_lifecycle import (
     OperationalCampaignLifecycle,
 )
 from research_automation.control_plane.campaign_store import (
+    CampaignExecutionMode,
     CampaignLearningCommitSink,
     CampaignJournalError,
+    DryRunIsolationError,
     OperationalCampaignJournal,
     OperationalUsageJournal,
+    dry_run_namespace,
     _event_integrity_sha256,
     _event_domain_payload,
 )
@@ -1547,6 +1550,35 @@ class OperationalCampaignControllerTests(unittest.TestCase):
                 max_wall_time_ms=10**400,
                 max_attempts=2,
             )
+
+    def test_dry_run_controller_exposes_isolated_execution_mode(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-dry-run-mode"
+        dry_namespace = dry_run_namespace("preview-controller")
+        with _authorized_campaign(
+            campaign_id,
+            namespace=dry_namespace,
+        ) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_FAKE_CAMPAIGN_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-dry-runner", 235, 235_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(100, 1_000_000),
+            )
+            self.assertEqual(
+                controller.execution_mode,
+                CampaignExecutionMode.DRY_RUN,
+            )
+            self.assertEqual(controller.namespace, dry_namespace)
+            with self.assertRaisesRegex(
+                DryRunIsolationError,
+                "dry-run Campaigns cannot write formal Learning state",
+            ):
+                controller.require_formal_learning_sink()
 
     def test_controller_executes_member_in_spawned_worker(self) -> None:
         campaign_id = "campaign-controller-spawn-boundary"

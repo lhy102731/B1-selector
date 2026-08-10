@@ -107,6 +107,7 @@ from .campaign_roster import (
     _roster_manifest,
 )
 from .campaign_store import (
+    CampaignExecutionMode,
     CampaignLearningCommitSink,
     CampaignJournalError,
     CycleBudgetSnapshot,
@@ -771,6 +772,23 @@ class OperationalCampaignController:
         self._freeze = freeze
         self._leases = leases
         self._monotonic_ns = monotonic_ns
+
+    @property
+    def execution_mode(self) -> CampaignExecutionMode:
+        """Return the closed formal/dry-run execution mode of the journal."""
+
+        return self._journal.execution_mode
+
+    @property
+    def namespace(self) -> str:
+        """Return the isolated OperationalJournal namespace of this controller."""
+
+        return self._journal.namespace
+
+    def require_formal_learning_sink(self) -> None:
+        """Fail closed before a dry-run Campaign can reach formal Learning."""
+
+        self._journal.require_formal_learning_sink()
 
     def prepare_cycle(
         self,
