@@ -19,6 +19,7 @@ class Phase(str, Enum):
     P6 = "P6"
     P7 = "P7"
     P8 = "P8"
+    C0 = "C0"
 
 
 class SideEffect(str, Enum):
