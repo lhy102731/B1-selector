@@ -1,0 +1,96 @@
+{
+  "schema_version": "control_plane.p7r2_t2_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T2-OPS-JOURNAL-DURABILITY-CONTRACT",
+  "ticket_id": "ec1631a8ead87d19927b383f0580746c4ccdc0f9a51cc47796134e169e5d4d7d",
+  "validated_at": "2026-08-10T09:32:33.919250+00:00",
+  "validation_git_head": "586508922ea136db754336a7011233441c99c215",
+  "validation_git_tree": "0ff5f24862a39a3d4d1455fd5c1c6cc7fabe2ea7",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t2-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t2_independent_spec_review.json",
+      "sha256": "5c716109f2bfb39e28ee253e28effa3d5cbecb10d83fa0f7297c9d3810147874",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t2-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t2_independent_quality_review.json",
+      "sha256": "04a5f1883023a1d70c6efac58951fa53161474577bd4ed5993875a2f748a9e47",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t2-focused-durability-tests",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": "----------------------------------------------------------------------\nRan 7 tests in 1.162s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t2-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "ec1631a8ead87d19927b383f0580746c4ccdc0f9a51cc47796134e169e5d4d7d",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 1,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
