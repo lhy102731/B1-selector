@@ -1,0 +1,116 @@
+{
+  "schema_version": "control_plane.p6r2_t5_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T5-CAPITAL-PROJECTION",
+  "ticket_id": "9a1f75487fc64d68a1a555ff3d0f12bfd2ee0c066312fab669576727ad9c3b30",
+  "validated_at": "2026-08-10T05:15:16.592284+00:00",
+  "validation_git_head": "60718c13bb9bd9adeb36741cd621c9f6dfab7198",
+  "validation_git_tree": "909f07f98d438633eb8c0ef30fc0f00370a94146",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t5-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t5_independent_spec_review.json",
+      "sha256": "25a671871572c95c784adf518dcb0fa726dc2fd88b8e4887ce94f90b96df15ba",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t5-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t5_independent_quality_review.json",
+      "sha256": "21eccbc7f3afbc40dccd23faa5e11eb0e9b29606e8be1c12ef5752ee6a2b9658",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t5-focused-tests",
+      "result": "PASS",
+      "tests_run": 7,
+      "tail": "b\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\n----------------------------------------------------------------------\nRan 7 tests in 0.780s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t5-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/capital_tracker.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/capital_tracker.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/capital_tracker.py": {
+            "mkdir": true,
+            "WRITE_FORBIDDEN_MESSAGE": true,
+            "def record_experiment": true,
+            "def record_round": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/capital_tracker.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/capital_tracker.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/capital_tracker.py": {
+        "mkdir": true,
+        "WRITE_FORBIDDEN_MESSAGE": true,
+        "def record_experiment": true,
+        "def record_round": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "9a1f75487fc64d68a1a555ff3d0f12bfd2ee0c066312fab669576727ad9c3b30",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 4,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

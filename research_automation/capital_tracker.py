@@ -1,15 +1,23 @@
-"""v4.2 — Research Capital Tracker (governance layer).
+"""capital_tracker.py - analytics-only research capital projection.
 
-NOT a passive dashboard. ACTIVE governance:
-- Auto-written by autonomous_runner._drain after every experiment
-- Read by Research_Director on every invocation
-- Triggers Pipeline_Controller to fire Director early when:
-    * any channel > 70% capital share over rolling 20 cycles
-    * any channel underfunded while another overfunded
+This module is NOT a governance or control layer. It is a read-only
+analytics projection:
 
-Files written:
-  research_state/<subject>/capital_tracker.yaml   <- aggregated state
-  research_state/<subject>/capital_events.jsonl   <- append-only event log
+- pure projection: load / infer_channel / compute_metrics /
+  _rolling_concentration / summary_for_director / estimate_cost /
+  category_spend_estimate / aggregate_to_json only read input files or
+  in-memory records and return projections;
+- no state writes: save(), record_experiment(), record_round() and
+  _append_event() fail closed with RuntimeError. Importing the module,
+  loading a missing subject, or calling any projection never creates
+  directories or files;
+- no triggering: the tracker no longer claims to fire Pipeline_Controller
+  or any other control surface. Governance decisions belong to the P6
+  control plane only.
+
+Legacy read locations (kept read-only for analytics):
+  research_state/<subject>/capital_tracker.yaml
+  research_state/<subject>/capital_events.jsonl
 """
 from __future__ import annotations
 
@@ -28,17 +36,21 @@ CHANNELS = ("architecture", "factor", "dimension", "kgpr", "maintenance")
 # the PRIMARY capital measure is experiments_per_channel (mode-agnostic).
 EST_TOKENS_PER_AGENT_CALL = 3000
 
-# Governance thresholds — Director can override these in its decision
+# Analytics thresholds. The tracker reports these; it never enforces them.
 ROLLING_WINDOW = 20
 CONCENTRATION_THRESHOLD = 0.70
 OVERFUND_SHARE = 0.40
 UNDERFUND_SHARE = 0.10
 
+WRITE_FORBIDDEN_MESSAGE = (
+    "capital_tracker is analytics-only: state writes, event appends and "
+    "governance triggering are forbidden outside the P6 control plane."
+)
+
 
 def _state_dir(subject: str) -> Path:
-    p = Path("research_state") / subject
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    # Read-only path resolution: never creates directories or writes.
+    return Path("research_state") / subject
 
 
 def _capital_path(subject: str) -> Path:
@@ -66,6 +78,10 @@ def _empty_record(subject: str) -> dict:
 
 
 def load(subject: str) -> dict:
+    """Read the tracker record if present; otherwise return an empty record.
+
+    Read-only: a missing file never triggers a write.
+    """
     p = _capital_path(subject)
     if not p.exists():
         return _empty_record(subject)
@@ -76,10 +92,7 @@ def load(subject: str) -> dict:
 
 
 def save(subject: str, data: dict) -> None:
-    p = _capital_path(subject)
-    data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
-                 encoding="utf-8")
+    raise RuntimeError(WRITE_FORBIDDEN_MESSAGE)
 
 
 def infer_channel(entry: dict) -> str:
@@ -117,10 +130,8 @@ def infer_channel(entry: dict) -> str:
 
     return "kgpr"   # parameter sweeps are knowledge-generating param research by default
 
-
 def _append_event(subject: str, ev: dict) -> None:
-    with _events_path(subject).open("a", encoding="utf-8") as f:
-        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    raise RuntimeError(WRITE_FORBIDDEN_MESSAGE)
 
 
 def record_experiment(subject: str, cycle_id: str, round_n: int,
@@ -128,58 +139,21 @@ def record_experiment(subject: str, cycle_id: str, round_n: int,
                       agents_used: Iterable[str] | None = None,
                       llm_profiles_used: Iterable[str] | None = None,
                       info_gain: int = 0) -> dict:
-    """Record one experiment's effort + return. Returns updated tracker dict."""
-    data = load(subject)
-    channel = infer_channel(entry)
+    """Fail closed: recording experiments would write state and events.
 
-    data["total_experiments"] = data.get("total_experiments", 0) + 1
-
-    ch = data["channel_usage"].setdefault(channel,
-        {"experiments": 0, "tokens": 0, "info_gain_total": 0})
-    ch["experiments"] += 1
-    ch["info_gain_total"] += int(info_gain or 0)
-
-    rr = data["research_return"].setdefault(channel, {"information_gain": 0})
-    rr["information_gain"] += int(info_gain or 0)
-
-    for a in (agents_used or []):
-        au = data["agent_usage"].setdefault(a,
-            {"experiments": 0, "tokens": 0})
-        au["experiments"] += 1
-        au["tokens"] += EST_TOKENS_PER_AGENT_CALL
-        ch["tokens"] += EST_TOKENS_PER_AGENT_CALL
-
-    for p in (llm_profiles_used or []):
-        lu = data["llm_usage"].setdefault(p, {"calls": 0, "tokens": 0})
-        lu["calls"] += 1
-        lu["tokens"] += EST_TOKENS_PER_AGENT_CALL
-
-    _append_event(subject, {
-        "at": datetime.now(timezone.utc).isoformat(),
-        "cycle_id": cycle_id, "round": round_n,
-        "experiment_id": entry.get("experiment_id"),
-        "channel": channel,
-        "agents": list(agents_used or []),
-        "llm_profiles": list(llm_profiles_used or []),
-        "info_gain": int(info_gain or 0),
-    })
-
-    data["metrics"] = compute_metrics(subject, data)
-    save(subject, data)
-    return data
+    The P6 control plane owns capital-state persistence; this analytics-only
+    module must never write.
+    """
+    raise RuntimeError(WRITE_FORBIDDEN_MESSAGE)
 
 
 def record_round(subject: str, cycle_id: str, round_n: int) -> dict:
-    """Increment cycle counter at end of each round."""
-    data = load(subject)
-    data["total_cycles"] = data.get("total_cycles", 0) + 1
-    data["metrics"] = compute_metrics(subject, data)
-    save(subject, data)
-    return data
+    """Fail closed: recording rounds would write state."""
+    raise RuntimeError(WRITE_FORBIDDEN_MESSAGE)
 
 
 def _rolling_concentration(subject: str, window: int = ROLLING_WINDOW) -> dict[str, float]:
-    """Share of last `window` experiments per channel (read from event log)."""
+    """Share of the last window experiments per channel (read from event log)."""
     p = _events_path(subject)
     if not p.exists():
         return {ch: 0.0 for ch in CHANNELS}
@@ -197,7 +171,10 @@ def _rolling_concentration(subject: str, window: int = ROLLING_WINDOW) -> dict[s
 
 
 def compute_metrics(subject: str, data: dict) -> dict:
-    """Compute capital_share, knowledge_yield, ROI, waste, violations."""
+    """Compute capital_share, knowledge_yield, ROI, waste, violations.
+
+    Pure projection over the in-memory record; never writes.
+    """
     # PRIMARY measure: experiments (mode-agnostic)
     total_exp = sum(c.get("experiments", 0) for c in data["channel_usage"].values())
     total_exp = max(total_exp, 1)
@@ -239,7 +216,7 @@ def compute_metrics(subject: str, data: dict) -> dict:
                 "threshold": CONCENTRATION_THRESHOLD,
             })
 
-    # ROI ranking — only channels that actually have info_gain
+    # ROI ranking - only channels that actually have info_gain
     rois = [(ch, m["research_roi"]) for ch, m in per_channel.items()
             if m["info_gain_total"] > 0]
     rois.sort(key=lambda x: -x[1])
@@ -267,9 +244,11 @@ def compute_metrics(subject: str, data: dict) -> dict:
         "violations": violations,
     }
 
-
 def check_concentration_violation(subject: str) -> dict | None:
-    """Return violation dict if any channel > threshold in rolling window."""
+    """Return violation dict if any channel > threshold in rolling window.
+
+    Analytics-only: reports the projection, never triggers an action.
+    """
     rolling = _rolling_concentration(subject)
     for ch, share in rolling.items():
         if share > CONCENTRATION_THRESHOLD:
@@ -283,7 +262,7 @@ def check_concentration_violation(subject: str) -> dict | None:
 
 
 def summary_for_director(subject: str) -> dict:
-    """Compact summary passed to Research_Director's research_context."""
+    """Compact read-only summary for a Director research_context."""
     data = load(subject)
     m = data.get("metrics", {})
     return {
@@ -300,12 +279,12 @@ def summary_for_director(subject: str) -> dict:
 
 
 # ============================================================
-# v4.x Step 6 — Agent efficiency aggregation
+# Analytics-only cost projection
 # ============================================================
 # Per-profile LLM pricing in USD / 1M tokens. Multiplier-only model: actual
 # spend = (tokens_in / 1e6) * in_price + (tokens_out / 1e6) * out_price.
 # Values are conservative public-list estimates; override via env if you
-# have better ones. Used ONLY for cost tracking — never for gating.
+# have better ones. Used ONLY for cost projection - never for gating.
 LLM_PRICING_USD_PER_MTOKEN = {
     "deepseekv4":    {"in": 0.55, "out": 2.18},
     "glm51":         {"in": 0.14, "out": 0.55},
@@ -323,10 +302,10 @@ DEFAULT_TOKEN_SPLIT = {"in_pct": 0.30, "out_pct": 0.70}
 
 
 def estimate_cost(profile: str, tokens: int) -> float | None:
-    """Estimate USD cost for `tokens` total tokens consumed by `profile`.
+    """Estimate USD cost for tokens consumed by profile.
 
     Uses the 30/70 in/out split assumption. Returns None if profile is
-    unknown — caller should treat None as 0.
+    unknown - caller should treat None as 0.
     """
     pricing = LLM_PRICING_USD_PER_MTOKEN.get(profile)
     if not pricing:
@@ -335,10 +314,6 @@ def estimate_cost(profile: str, tokens: int) -> float | None:
     out_tok = tokens * DEFAULT_TOKEN_SPLIT["out_pct"]
     return round((in_tok / 1e6) * pricing["in"]
                  + (out_tok / 1e6) * pricing["out"], 6)
-
-
-def _agent_performance_path(subject: str) -> Path:
-    return _state_dir(subject) / "agent_performance.json"
 
 
 def _iter_events(subject: str) -> Iterable[dict]:
@@ -357,9 +332,9 @@ def _iter_events(subject: str) -> Iterable[dict]:
 
 
 def aggregate_to_json(subject: str) -> dict:
-    """Aggregate all capital_events into research_state/<subject>/agent_performance.json.
+    """Aggregate all capital_events into an in-memory analytics projection.
 
-    Per-agentetable fields:
+    Per-agent projected fields:
       tokens_in / tokens_out / cost : estimated (default in:out=30:70 split)
       accepted_proposals / rejected_proposals / confirmed_results / disproven_results
       info_gain_total
@@ -369,9 +344,8 @@ def aggregate_to_json(subject: str) -> dict:
 
     Also aggregates llm_usage + channel_usage returns.
 
-    This is a pure aggregation pass. It is idempotent — running it again
-    overwrites the cached json. Call it periodically (e.g. weekly) or on
-    Director demand via kb_lookup('capital', 'agent_performance').
+    This is a pure aggregation pass. It returns the projection dict and
+    NEVER writes agent_performance.json or any other file.
     """
     # Accumulators keyed by agent_id + by profile + by channel
     by_agent: dict[str, dict] = {}
@@ -458,13 +432,13 @@ def aggregate_to_json(subject: str) -> dict:
         ent["cost_per_info_gain_point"] = (
             round(ent["cost_total_usd"] / ig_total, 4) if ig_total > 0 else None
         )
-        # status breakdown — defaulted; refined later when annotated events exist
+        # status breakdown - defaulted; refined later when annotated events exist
         ent.setdefault("accepted_proposals", ent["experiments"])
         ent["cycles_active"] = sorted(ent["cycles_active"])[-10:]
         # remove the set before serializing
         agent_rows.append({k: v for k, v in ent.items() if k != "cycles_active_set"})
 
-    # Sort by info_gain_total descending — most impactful agents first
+    # Sort by info_gain_total descending - most impactful agents first
     agent_rows.sort(key=lambda r: -r["info_gain_total"])
 
     # Per-profile cost rollup
@@ -490,7 +464,7 @@ def aggregate_to_json(subject: str) -> dict:
         en["agents_seen"] = sorted(en["agents_seen"])
         channel_rows.append({"channel": ch, **en})
 
-    out = {
+    return {
         "schema_version": "1.0",
         "subject": subject,
         "as_of_cycles_seen": len(seen_cycles),
@@ -498,7 +472,6 @@ def aggregate_to_json(subject: str) -> dict:
         "agents": agent_rows,
         "llm_profiles": profile_rows,
         "channels": channel_rows,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
         "pricing_note": (
             "USD estimates use conservative per-1M-token pricing in "
             "LLM_PRICING_USD_PER_MTOKEN; token in/out split 30/70 default. "
@@ -506,14 +479,10 @@ def aggregate_to_json(subject: str) -> dict:
         ),
     }
 
-    p = _agent_performance_path(subject)
-    p.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return out
 
-
-# Bucketed category budget check: warn if any category over target within a horizon.
+# Bucketed category budget projection: warn if any category over target.
 CATEGORY_BUDGETS_USD = {
-    # Soft monthly budget per category — triggers a softok warning, not a block
+    # Soft monthly budget per category - triggers a softok warning, not a block
     "architecture":    25.0,
     "factor":          40.0,
     "dimension":       35.0,
@@ -526,8 +495,7 @@ def category_spend_estimate(subject: str,
                             per_event_tokens: int | None = None) -> dict:
     """Return per-category estimated USD spend over last N events using jsonl.
 
-    Useful to flag a category running over budget. NOT enforced — Director
-    reads the warning and acts.
+    Pure projection. The warning is informational; nothing is enforced.
     """
     per_event_tokens = per_event_tokens or EST_TOKENS_PER_AGENT_CALL
     spend = {c: 0.0 for c in CHANNELS}

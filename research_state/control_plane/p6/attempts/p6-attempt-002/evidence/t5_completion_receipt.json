@@ -1,0 +1,72 @@
+{
+  "schema_version": "control_plane.p6r2_t5_completion_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T5-CAPITAL-PROJECTION",
+  "authorization_ref": "auth_b7326cf5b223bcb693681e2f7a79daee",
+  "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+  "ticket_id": "9a1f75487fc64d68a1a555ff3d0f12bfd2ee0c066312fab669576727ad9c3b30",
+  "ticket_state": "SUCCEEDED",
+  "started_at": "2026-08-10T05:15:16.619949+00:00",
+  "completed_at": "2026-08-10T05:15:16.684229+00:00",
+  "completion_runtime_git_head": "60718c13bb9bd9adeb36741cd621c9f6dfab7198",
+  "completion_runtime_git_tree": "909f07f98d438633eb8c0ef30fc0f00370a94146",
+  "task_spec_sha256": "5b49ffb3e464a122db2d19aaeb81a59c28758d420c3f89588d411ad24cd62cbc",
+  "task_report_ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t5_task_report.json",
+  "task_report_file_sha256": "94c3e97da06405dec246c3a6413efd29b13395158f0f6e08037ad6f75cd144cf",
+  "task_report_payload_sha256": "4ec2b7980050ed9b9c5116c5134fa250bc11a6098e8dd6a96f0d69f794f2b583",
+  "task_report_authority_binding_verified": true,
+  "trusted_receipt_count": 16,
+  "trusted_receipt_breakdown": {
+    "EVIDENCE": 12,
+    "REVIEW": 2,
+    "TEST": 2
+  },
+  "source_changes": [
+    "research_automation/capital_tracker.py"
+  ],
+  "authority_final": {
+    "active_entry_policy_sha256": "5b0f43c4c69ed6735a3fb1c7a14d5332732806b95b5c056a3c2472d2c98f3d1f",
+    "active_grant_ids": [
+      "grant_44627140765b20e805bf7eddf0de1f6c"
+    ],
+    "open_ticket_ids": [],
+    "succeeded_ticket_ids": [
+      "3e0f86a3b070e92b12a4de5551b68160862a82620da2efa44dd350e0f798028f",
+      "6df19c1771da4914c88037d615e87cc3a88c4d7262bfc7f4a7f57956740a6dd5",
+      "9a1f75487fc64d68a1a555ff3d0f12bfd2ee0c066312fab669576727ad9c3b30",
+      "a75a9eb31e93e79ad105b2969473b20eac4a2b0e642f76a31693e421ac34d57e",
+      "e21868b7c64e2bb1741d9e683fb14543d69f368cd89ce4d8543dcd4089117677"
+    ],
+    "failed_ticket_ids": [],
+    "in_doubt_ticket_ids": [],
+    "pending_outbox_count": 0
+  },
+  "outbox_after_completion": {
+    "scanned": 18,
+    "inserted": 18,
+    "acknowledged": 18
+  },
+  "external_usage": {
+    "retained_review_artifacts": 2,
+    "unknown_invocation_lower_bound": 2,
+    "unknown_is_zero": false
+  },
+  "authorization_continuity": {
+    "authorization_ref": "auth_b7326cf5b223bcb693681e2f7a79daee",
+    "authorization_state": "CLAIMED",
+    "grant_state": "ACTIVE",
+    "expires_at_note": "authorizations_v2.expires_at is enforced only at claim time; the ticket was issued before expiry under the operator's continuous P0-P8/P9 approval"
+  },
+  "root_capability_logged_or_written": false,
+  "side_effects": {
+    "control_plane_state_written": true,
+    "p7_entered": false,
+    "real_data_or_kbase_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "pending_outbox_count": 0,
+  "result": "PASS"
+}
