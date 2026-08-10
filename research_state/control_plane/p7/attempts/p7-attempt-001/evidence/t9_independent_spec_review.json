@@ -1,0 +1,80 @@
+{
+  "schema_version": "control_plane.p7r2_t9_independent_spec_review.v1",
+  "review_id": "p7r2-t9-independent-spec-review",
+  "receipt_id": "p7r2-t9-independent-spec-review",
+  "reviewed_at": "2026-08-10T10:02:27.206922+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T9-OPS-PERFORMANCE-GATE",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t9-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t9-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_spec_approval": true,
+  "candidate": {
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "a118998dd2e0a46facc8546ccb451e0af9291bd95cbefb6bea0f7c791d3741f1",
+    "test_ref": "tests/test_control_plane_operations.py",
+    "test_sha256": "173b00eda4a3660d5de93355bf2ac22b2674ebd2e3682e03f0bdbdc040752251"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 matches the committed T9 spec; allowed_files cover operations.py, the operations test, and all evidence outputs; baseline and eleven input evidence references hash-match live files."
+    },
+    {
+      "check_id": "environment_baseline_contract",
+      "status": "PASS",
+      "detail": "performance_environment_baseline records machine, disk, Python, SQLite, and platform strings with a schema version for reproducible synthetic tests."
+    },
+    {
+      "check_id": "100k_projection_measurement_contract",
+      "status": "PASS",
+      "detail": "measure_synthetic_performance projects a synthetic 100k-event journal via incremental_project, reports events_processed, projection_last_sequence, elapsed_seconds, budget_seconds, events_per_second, and within_budget; missing fixtures raise FileNotFoundError."
+    },
+    {
+      "check_id": "10k_packet_context_measurement_contract",
+      "status": "PASS",
+      "detail": "measure_packet_context_construction builds 10,000 in-memory packet contexts deterministically and reports context_bytes, elapsed_seconds, budget_seconds, and within_budget; no real learning packets are opened."
+    },
+    {
+      "check_id": "overhead_budget_contract",
+      "status": "PASS",
+      "detail": "performance_overhead_report computes control-plane overhead as a percentage of cycle wall time, enforces the 5% budget, and reports within_budget; invalid inputs raise ValueError."
+    },
+    {
+      "check_id": "synthetic_only_boundary",
+      "status": "PASS",
+      "detail": "All measurements run on synthetic fixtures or in-memory payloads; real_data=False, synthetic_only=True, and no real data, authority, operational, policy, inventory, research, campaign, or KBase content is read or mutated."
+    },
+    {
+      "check_id": "diff_boundary",
+      "status": "PASS",
+      "detail": "The only tracked source changes are operations.py and tests/test_control_plane_operations.py; no sealed TCB, policy, inventory, authority, store, run_research.py, or memory.py file changed."
+    },
+    {
+      "check_id": "red_green_test_quality",
+      "status": "PASS",
+      "detail": "All six new tests failed before implementation (AttributeError on the missing surface), then passed 6/6 after implementation; focused operations suite is 21/21."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is slice-completion ready: authorization CLAIMED, grant ACTIVE, T9 ticket ISSUED with zero trusted receipts, one open ticket, succeeded=(T1..T8), no failed/in-doubt, pending outbox 0, no P7 closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "PERFORMANCE_CLI_WIRING_DEFERRED",
+      "detail": "run_research.py is outside T9 allowed_files; exposing performance baselines through a CLI command is a non-blocking follow-up for a slice that owns run_research.py."
+    }
+  ]
+}

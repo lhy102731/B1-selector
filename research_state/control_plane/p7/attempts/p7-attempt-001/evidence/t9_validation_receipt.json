@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p7r2_t9_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T9-OPS-PERFORMANCE-GATE",
+  "ticket_id": "1304018b60f775e8175314070571133ac5f8b7ebb96b356d3f9ed208a4142696",
+  "validated_at": "2026-08-10T10:02:33.515962+00:00",
+  "validation_git_head": "883f8306e930246f881b1766b9ee8e84cf2d3d8b",
+  "validation_git_tree": "cd8aab343bac3d9cb560ae1380940ce44eb34867",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t9-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t9_independent_spec_review.json",
+      "sha256": "0af28530ac3eb5d9752d4a91f923dcf9318e9eb8fc596a64bd9e2d491e9967a2",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t9-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t9_independent_quality_review.json",
+      "sha256": "3253b3bbdd4fa6dabb0d80bd088dc6c5291806e8b95f2a4c7eadc5a8c417b82e",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t9-focused-performance-tests",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": "----------------------------------------------------------------------\nRan 21 tests in 1.391s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t9-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_operations.py"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_operations.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_operations.py"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_operations.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "1304018b60f775e8175314070571133ac5f8b7ebb96b356d3f9ed208a4142696",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 8,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

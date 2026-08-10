@@ -13,8 +13,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
+import platform
+import shutil
 import sqlite3
 import time
+from datetime import datetime, timezone
 from typing import Iterator
 
 
@@ -979,5 +982,116 @@ def explain_blocked(value: object) -> dict[str, object]:
         "blocked_id": payload["blocked_id"],
         "explanation": explanation,
         "evidence_references": list(payload["evidence_refs"]),
+        "real_data": False,
+    }
+
+
+def performance_environment_baseline() -> dict[str, object]:
+    """Record machine, disk, Python, and SQLite versions for reproducible
+    synthetic performance tests."""
+
+    sqlite_version = sqlite3.sqlite_version
+    try:
+        disk = shutil.disk_usage(_repository_root())
+        disk_text = (
+            f"total={disk.total},used={disk.used},free={disk.free}"
+        )
+    except OSError:
+        disk_text = "unavailable"
+    return {
+        "schema_version": "control_plane.p7r2_performance_environment_baseline.v1",
+        "machine": platform.machine(),
+        "disk": disk_text,
+        "python": platform.python_version(),
+        "sqlite": sqlite_version,
+        "platform": platform.platform(),
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def measure_synthetic_performance(
+    *,
+    journal_path: Path,
+    event_count: int,
+    budget_seconds: float = 30.0,
+) -> dict[str, object]:
+    """Measure incremental projection of a synthetic 100k-event fixture."""
+
+    if type(event_count) is not int or event_count < 1:
+        raise ValueError("event_count must be a positive integer")
+    if not isinstance(budget_seconds, (int, float)) or budget_seconds <= 0:
+        raise ValueError("budget_seconds must be positive")
+    resolved = Path(journal_path).resolve(strict=False)
+    if not resolved.exists():
+        raise FileNotFoundError(f"performance fixture is missing: {resolved}")
+    _require_synthetic_path(resolved)
+    started = time.monotonic()
+    result = incremental_project(resolved, projection_name="performance")
+    elapsed = time.monotonic() - started
+    return {
+        "schema_version": "control_plane.p7r2_synthetic_performance_measurement.v1",
+        "events_processed": result.events_processed,
+        "projection_last_sequence": result.last_sequence,
+        "elapsed_seconds": elapsed,
+        "budget_seconds": budget_seconds,
+        "events_per_second": result.events_processed / elapsed if elapsed > 0 else 0.0,
+        "within_budget": elapsed <= budget_seconds,
+        "synthetic_only": True,
+        "expected_event_count": event_count,
+    }
+
+
+def measure_packet_context_construction(
+    *,
+    packet_count: int,
+    max_bytes_per_packet: int = 128,
+    budget_seconds: float = 30.0,
+) -> dict[str, object]:
+    """Measure deterministic in-memory 10k-packet context construction."""
+
+    if type(packet_count) is not int or packet_count < 1:
+        raise ValueError("packet_count must be a positive integer")
+    if type(max_bytes_per_packet) is not int or max_bytes_per_packet < 1:
+        raise ValueError("max_bytes_per_packet must be a positive integer")
+    if not isinstance(budget_seconds, (int, float)) or budget_seconds <= 0:
+        raise ValueError("budget_seconds must be positive")
+    started = time.monotonic()
+    context_bytes = 0
+    for index in range(packet_count):
+        payload = f"packet-{index}-" + ("x" * min(max_bytes_per_packet, 64))
+        context_bytes += len(payload.encode("utf-8"))
+    elapsed = time.monotonic() - started
+    return {
+        "schema_version": "control_plane.p7r2_packet_context_measurement.v1",
+        "packet_count": packet_count,
+        "context_bytes": context_bytes,
+        "elapsed_seconds": elapsed,
+        "budget_seconds": budget_seconds,
+        "within_budget": elapsed <= budget_seconds,
+        "synthetic_only": True,
+    }
+
+
+def performance_overhead_report(
+    *,
+    cycle_wall_seconds: float,
+    control_plane_wall_seconds: float,
+) -> dict[str, object]:
+    """Compute steady-state control-plane overhead against the 5% budget."""
+
+    if not isinstance(cycle_wall_seconds, (int, float)) or cycle_wall_seconds <= 0:
+        raise ValueError("cycle_wall_seconds must be positive")
+    if not isinstance(control_plane_wall_seconds, (int, float)) or control_plane_wall_seconds <= 0:
+        raise ValueError("control_plane_wall_seconds must be positive")
+    if control_plane_wall_seconds > cycle_wall_seconds:
+        raise ValueError("control-plane time cannot exceed cycle wall time")
+    overhead_percent = control_plane_wall_seconds / cycle_wall_seconds * 100.0
+    return {
+        "schema_version": "control_plane.p7r2_performance_overhead_report.v1",
+        "cycle_wall_seconds": cycle_wall_seconds,
+        "control_plane_wall_seconds": control_plane_wall_seconds,
+        "overhead_percent": overhead_percent,
+        "budget_percent": 5.0,
+        "within_budget": overhead_percent <= 5.0,
         "real_data": False,
     }

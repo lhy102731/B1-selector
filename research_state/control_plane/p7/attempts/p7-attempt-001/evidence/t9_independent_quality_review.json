@@ -1,0 +1,65 @@
+{
+  "schema_version": "control_plane.p7r2_t9_independent_quality_review.v1",
+  "review_id": "p7r2-t9-independent-quality-review",
+  "receipt_id": "p7r2-t9-independent-quality-review",
+  "reviewed_at": "2026-08-10T10:02:27.206922+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T9-OPS-PERFORMANCE-GATE",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t9-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t9-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_quality_approval": true,
+  "candidate": {
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "a118998dd2e0a46facc8546ccb451e0af9291bd95cbefb6bea0f7c791d3741f1",
+    "test_ref": "tests/test_control_plane_operations.py",
+    "test_sha256": "173b00eda4a3660d5de93355bf2ac22b2674ebd2e3682e03f0bdbdc040752251"
+  },
+  "checks": [
+    {
+      "check_id": "implementation_quality",
+      "status": "PASS",
+      "detail": "The performance surface is small and deterministic: one environment snapshot, one synthetic projection measurement, one in-memory context measurement, and one overhead budget report; no persistent state or mutation API exists."
+    },
+    {
+      "check_id": "measurement_quality",
+      "status": "PASS",
+      "detail": "Measurements use time.monotonic, report explicit budgets and within_budget flags, and reuse the already-verified incremental projection path; packet contexts are in-memory only."
+    },
+    {
+      "check_id": "fixture_isolation",
+      "status": "PASS",
+      "detail": "The 100k projection test creates a temp SQLite journal; the packet measurement constructs strings only; no real data, authority, operational, policy, inventory, research, campaign, or KBase content is read or mutated."
+    },
+    {
+      "check_id": "regression_evidence",
+      "status": "PASS",
+      "detail": "Focused operations suite passes 21/21; the 211-test regression group (ops CLI, cli_entry_guards, access, budget, mutation, runner_control, promotion_legacy_provenance, memory) passes."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p7r2-t9-independent-spec-review-20260810 and p7r2-t9-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blockers exist in the diff, tests, or contract review; the only advisory is the deferred CLI wiring for run_research.py, which is recorded in the follow-up pool."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "PERFORMANCE_CLI_WIRING_DEFERRED",
+      "detail": "The performance surfaces are not yet wired into run_research.py because that file is outside T9 allowed_files; non-blocking and recorded in the follow-up pool."
+    }
+  ]
+}

@@ -266,5 +266,87 @@ class ProjectionRecoveryContractTests(unittest.TestCase):
                 operations.restore_journal(Path("backup.sqlite3"), Path(protected))
 
 
+class PerformanceGateTests(unittest.TestCase):
+    """P7R2-T9: reproducible synthetic performance baselines and the
+    steady-state overhead budget on synthetic fixtures only."""
+
+    def test_environment_baseline_records_required_versions(self) -> None:
+        baseline = operations.performance_environment_baseline()
+        self.assertIn("machine", baseline)
+        self.assertIn("disk", baseline)
+        self.assertIn("python", baseline)
+        self.assertIn("sqlite", baseline)
+        self.assertIsInstance(baseline["machine"], str)
+        self.assertIsInstance(baseline["disk"], str)
+        self.assertIsInstance(baseline["python"], str)
+        self.assertIsInstance(baseline["sqlite"], str)
+        self.assertTrue(baseline["python"].startswith("3."))
+
+    def test_100k_projection_measured_with_budget(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "journal.sqlite3"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                "CREATE TABLE events (sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL, aggregate_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)"
+            )
+            connection.executemany(
+                "INSERT INTO events(sequence, event_type, aggregate_id, payload_json, created_at) VALUES (?, 'E', 'a', '{}', '2026-08-10T00:00:00+00:00')",
+                [(index,) for index in range(1, 100_001)],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        measurement = operations.measure_synthetic_performance(
+            journal_path=path,
+            event_count=100_000,
+        )
+        self.assertEqual(100_000, measurement["events_processed"])
+        self.assertLessEqual(measurement["elapsed_seconds"], measurement["budget_seconds"])
+        self.assertIn("elapsed_seconds", measurement)
+        self.assertIn("events_per_second", measurement)
+        self.assertIn("projection_last_sequence", measurement)
+        self.assertEqual(100_000, measurement["projection_last_sequence"])
+
+    def test_10k_packet_context_measured(self) -> None:
+        measurement = operations.measure_packet_context_construction(
+            packet_count=10_000,
+            max_bytes_per_packet=128,
+        )
+        self.assertEqual(10_000, measurement["packet_count"])
+        self.assertGreaterEqual(measurement["context_bytes"], 0)
+        self.assertIn("elapsed_seconds", measurement)
+        self.assertIn("budget_seconds", measurement)
+        self.assertLessEqual(measurement["elapsed_seconds"], measurement["budget_seconds"])
+
+    def test_overhead_budget_does_not_exceed_five_percent(self) -> None:
+        report = operations.performance_overhead_report(
+            cycle_wall_seconds=100.0,
+            control_plane_wall_seconds=4.0,
+        )
+        self.assertEqual(4.0, report["overhead_percent"])
+        self.assertTrue(report["within_budget"])
+        self.assertLessEqual(report["overhead_percent"], 5.0)
+        self.assertFalse(report["real_data"])
+
+    def test_overhead_budget_fails_when_breached(self) -> None:
+        report = operations.performance_overhead_report(
+            cycle_wall_seconds=100.0,
+            control_plane_wall_seconds=6.0,
+        )
+        self.assertFalse(report["within_budget"])
+        self.assertGreater(report["overhead_percent"], 5.0)
+
+    def test_performance_surfaces_reject_invalid_inputs(self) -> None:
+        with self.assertRaises(ValueError):
+            operations.performance_overhead_report(cycle_wall_seconds=0, control_plane_wall_seconds=0)
+        with self.assertRaises(FileNotFoundError):
+            operations.measure_synthetic_performance(
+                journal_path=Path("missing.sqlite3"),
+                event_count=100,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
