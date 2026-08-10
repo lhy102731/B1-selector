@@ -1,0 +1,63 @@
+{
+  "schema_version": "control_plane.p7r2_t10_independent_spec_review.v1",
+  "review_id": "p7r2-t10-independent-spec-review",
+  "receipt_id": "p7r2-t10-independent-spec-review",
+  "reviewed_at": "2026-08-10T10:05:44.638517+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T10-INTEGRATION-VERIFICATION",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t10-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t10-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_spec_approval": true,
+  "candidate": {
+    "verification_only": true,
+    "source_changes": []
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 matches the committed T10 spec; verification-only slice with no owned source files; baseline and twelve input evidence references hash-match live files."
+    },
+    {
+      "check_id": "full_test_matrix",
+      "status": "PASS",
+      "detail": "The complete P7 suite (test_control_plane_operations, test_control_plane_ops_cli, test_cli_entry_guards, access, budget, mutation, runner_control, promotion_legacy_provenance, memory) passes 232/232 tests."
+    },
+    {
+      "check_id": "diff_boundary",
+      "status": "PASS",
+      "detail": "No source files changed in T10; tracked dirt is exactly the four protected user files and the verification-only evidence outputs; no sealed TCB, policy, inventory, authority, store, or production file changed."
+    },
+    {
+      "check_id": "phase_readiness",
+      "status": "PASS",
+      "detail": "All P7 slice tickets T1..T9 are SUCCEEDED, no open/failed/in-doubt tickets remain, the outbox is drained, and no P7 closure exists yet; the phase is ready for the single final T11 freeze/inventory/policy/Gate."
+    },
+    {
+      "check_id": "synthetic_only_boundary",
+      "status": "PASS",
+      "detail": "The full suite runs synthetic fixtures and in-memory payloads only; no real data, authority, operational, policy, inventory, research, campaign, or KBase content is read or mutated."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is slice-completion ready: authorization CLAIMED, grant ACTIVE, T10 ticket ISSUED with zero trusted receipts, one open ticket, succeeded=(T1..T9), no failed/in-doubt, pending outbox 0, no P7 closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "DEFERRED_CLI_WIRING",
+      "detail": "The audit/backfill/retention/conflict/performance surfaces are not yet wired into run_research.py because no P7 slice owns that file; recorded in the follow-up pool."
+    }
+  ]
+}

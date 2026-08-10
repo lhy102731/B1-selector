@@ -1,0 +1,96 @@
+{
+  "schema_version": "control_plane.p7r2_t10_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T10-INTEGRATION-VERIFICATION",
+  "ticket_id": "2d1b9ff82ced237aab0b2f4fe175a535b5c18199afa41aa5e2658464fe704a50",
+  "validated_at": "2026-08-10T10:06:11.016414+00:00",
+  "validation_git_head": "5ec42e7f5281ff0a176cbb67b7d1734297142d98",
+  "validation_git_tree": "2aaaa7d57789da528a0fc42b82a48f281c0f180b",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t10-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t10_independent_spec_review.json",
+      "sha256": "ae36e64993dd632f95e512b13ad7c73baa69969bd4358cd84908165db25281b6",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t10-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t10_independent_quality_review.json",
+      "sha256": "fc2c51e05b01ad216bb89bfa117dd8bf1dce2ecb73dce9f779c68b694cd965d7",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t10-full-p7-suite",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": ",\n    \"max_sequence\": 1166\n  }\n}\n\n=== LLM Profiles ===\nP7_FULL_RESULT {\"errors\": 0, \"failures\": 0, \"ok\": true, \"skipped\": 0, \"tests_run\": 232}\n...........................................[run_research] blocked: campaign boundary rejected for run_research.py:brainstorm: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT\n.......[run_research] blocked: CLI command 'brainstorm' requires a programmatic control-plane adapter\n.[run_research] blocked: CLI command 'repair-handoff-runner' requires a programmatic control-plane adapter\n.....................................................................................................................................................................................\n----------------------------------------------------------------------\nRan 232 tests in 19.731s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t10-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "2d1b9ff82ced237aab0b2f4fe175a535b5c18199afa41aa5e2658464fe704a50",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 9,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
