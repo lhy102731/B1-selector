@@ -12,22 +12,32 @@ consume; nonce replay and crash-after-consume are rejected.  The broker
 uses an injectable HoldoutStore backend so tests can verify consume-once
 semantics without touching real Authority storage.
 
-Later P8 slices extend this module with the low-privilege TrustedEvaluator
-adapter (T4) and terminal audit closure (T5).
+T4 slice: TrustedEvaluator opens the consumed Final Holdout only through a
+separate low-privilege data-root adapter.  Path traversal and reparse escape
+are rejected, prompt/LLM access is denied, and the evaluation result carries
+only bounded structured metrics plus repo-relative evidence references.
+HoldoutHandle is promoted to a distinct frozen dataclass carrying the lease
+capability so OPEN_HOLDOUT can never be exercised by a non-evaluator path.
+Terminal audit closure is T5.
 """
 from __future__ import annotations
 
+import math
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+from research_automation.control_plane import entry_guard as _entry_guard
 from research_automation.control_plane.campaign_roster import RosterManifest
 from research_automation.control_plane.contracts import (
     Actor,
     IdentityBinding,
     Phase,
     SideEffect,
+    canonical_json,
     canonical_sha256,
 )
 from research_automation.foundations.protocols import ExecutionSpec
@@ -403,10 +413,6 @@ class HoldoutConsumed:
         }
 
 
-# HoldoutHandle is the canonical name for the consumed handle returned by the broker.
-HoldoutHandle = HoldoutConsumed
-
-
 class HoldoutStore:
     """Injectable persistence contract for holdout consume-once semantics.
 
@@ -523,6 +529,672 @@ def _sha_dummy(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# P8R2 T4: low-privilege TrustedEvaluator data-root adapter
+# ---------------------------------------------------------------------------
+
+TRUSTED_HOLDOUT_HANDLE_SCHEMA = "control_plane.trusted_holdout_handle.v1"
+TRUSTED_HOLDOUT_VIEW_SCHEMA = "control_plane.trusted_holdout_view.v1"
+TRUSTED_EVALUATOR_RESULT_SCHEMA = "control_plane.trusted_evaluator_result.v1"
+TRUSTED_DATA_ROOT_SCHEMA = "control_plane.trusted_evaluator_data_root.v1"
+FINAL_HOLDOUT_TAINT = "FINAL_HOLDOUT"
+OPEN_HOLDOUT_EFFECT = "OPEN_HOLDOUT"
+
+_MAX_METRICS = 64
+_MAX_COUNTS = 64
+_MAX_SHA256S = 64
+_MAX_EVIDENCE_REFS = 32
+_MAX_REF_LENGTH = 512
+_MAX_CHILD_DEPTH = 8
+_MAX_RESULT_PAYLOAD_BYTES = 256 * 1024
+
+_SAFE_REF_RE = re.compile(r"^[A-Za-z0-9_./-]{1,512}$")
+_SAFE_METRIC_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+_RESERVED_WINDOWS_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    }
+)
+
+
+class TrustedEvaluatorError(RuntimeError):
+    """Base error for the low-privilege TrustedEvaluator adapter."""
+
+
+class TrustedEvaluatorLeaseError(TrustedEvaluatorError):
+    """Raised when a lease lacks OPEN_HOLDOUT or a non-evaluator path declares it."""
+
+
+class TrustedEvaluatorPathError(TrustedEvaluatorError, ValueError):
+    """Raised when a holdout path fails lexical, reparse or containment checks."""
+
+
+class TrustedEvaluatorBoundaryError(TrustedEvaluatorError, ValueError):
+    """Raised when a ref is unregistered, unbounded or not repo-relative."""
+
+
+class PromptAccessDeniedError(TrustedEvaluatorError):
+    """Raised when holdout-derived content is offered to a prompt/LLM surface."""
+
+
+class UnboundedResultError(TrustedEvaluatorError):
+    """Raised when an evaluation result exceeds the fixed bound."""
+
+
+def _normalize_effect(effect: object) -> str:
+    """Return the canonical side-effect spelling for any input shape.
+
+    SideEffect is a str-Enum: str(SideEffect.OPEN_HOLDOUT) is
+    "SideEffect.OPEN_HOLDOUT", while the enum member compares equal to
+    "OPEN_HOLDOUT".  Normalizing through the value attribute keeps the lease
+    and the denial guard consistent for both plain strings and enum members.
+    """
+    if isinstance(effect, SideEffect):
+        return effect.value
+    return str(effect)
+
+
+def _is_repo_relative_evidence_ref(ref: object) -> bool:
+    if not isinstance(ref, str) or _SAFE_REF_RE.fullmatch(ref) is None:
+        return False
+    if ref.startswith("/") or ref.startswith(chr(92)):
+        return False
+    parts = PurePosixPath(ref).parts
+    return bool(parts) and all(part not in ("", ".", "..") for part in parts)
+
+
+def _validate_child_ref(ref: object) -> str:
+    if not isinstance(ref, str) or not ref or len(ref) > _MAX_REF_LENGTH:
+        raise TrustedEvaluatorBoundaryError(
+            "holdout ref must be a bounded non-empty string"
+        )
+    if chr(0) in ref or chr(92) in ref or ":" in ref or ref.startswith("/"):
+        raise TrustedEvaluatorBoundaryError("holdout ref uses a forbidden spelling")
+    parts = PurePosixPath(ref).parts
+    if any(part in ("", ".", "..") for part in parts):
+        raise TrustedEvaluatorBoundaryError(
+            "holdout ref contains traversal or empty segments"
+        )
+    if len(parts) > _MAX_CHILD_DEPTH:
+        raise TrustedEvaluatorBoundaryError(
+            "holdout ref exceeds the maximum child depth"
+        )
+    if os.name == "nt":
+        for part in parts:
+            if part.endswith((" ", ".")):
+                raise TrustedEvaluatorBoundaryError(
+                    "holdout ref uses a trailing dot or space component"
+                )
+            if part.rstrip(". ").upper() in _RESERVED_WINDOWS_NAMES:
+                raise TrustedEvaluatorBoundaryError(
+                    "holdout ref contains a reserved Windows name"
+                )
+    return "/".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutMetric:
+    """One bounded numeric metric derived from a Final Holdout artifact."""
+
+    name: str
+    value: float
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or _SAFE_METRIC_NAME_RE.fullmatch(self.name) is None
+        ):
+            raise TrustedEvaluatorBoundaryError(
+                "holdout metric name must be bounded and safe"
+            )
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+            raise TrustedEvaluatorBoundaryError(
+                "holdout metric value must be numeric"
+            )
+        numeric = float(self.value)
+        if not math.isfinite(numeric):
+            raise TrustedEvaluatorBoundaryError(
+                "holdout metric value must be finite"
+            )
+        object.__setattr__(self, "value", numeric)
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutLease:
+    """Capability lease bound to a holdout ticket and frozen evaluator code."""
+
+    lease_id: str
+    ticket_id: str
+    allowed_side_effects: tuple[str, ...]
+    code_sha256: str
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("lease_id", self.lease_id),
+            ("ticket_id", self.ticket_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise TrustedEvaluatorLeaseError(
+                    f"{label} must be a non-empty identifier"
+                )
+        if (
+            not isinstance(self.allowed_side_effects, tuple)
+            or not self.allowed_side_effects
+        ):
+            raise TrustedEvaluatorLeaseError(
+                "lease must declare at least one allowed side effect"
+            )
+        normalized = tuple(_normalize_effect(effect) for effect in self.allowed_side_effects)
+        if any(not value.strip() for value in normalized):
+            raise TrustedEvaluatorLeaseError(
+                "lease side effects must be non-empty strings"
+            )
+        if len(set(normalized)) != len(normalized) or normalized != tuple(
+            sorted(normalized)
+        ):
+            raise TrustedEvaluatorLeaseError(
+                "lease side effects must be unique and sorted"
+            )
+        object.__setattr__(self, "allowed_side_effects", normalized)
+        if _HEX64_RE.fullmatch(self.code_sha256) is None:
+            raise TrustedEvaluatorLeaseError(
+                "lease code_sha256 must be a 64-character lowercase SHA-256 digest"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutHandle:
+    """Distinct frozen handle binding a consumed receipt to its lease.
+
+    T4 promotes HoldoutHandle from a plain alias of HoldoutConsumed to
+    this wrapper so OPEN_HOLDOUT can be enforced per-lease before any data-root
+    path is resolved.
+    """
+
+    consumed: HoldoutConsumed
+    lease: HoldoutLease
+    handle_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.consumed, HoldoutConsumed):
+            raise TypeError("consumed must be a HoldoutConsumed receipt")
+        if not isinstance(self.lease, HoldoutLease):
+            raise TypeError("lease must be a HoldoutLease")
+        object.__setattr__(self, "handle_sha256", canonical_sha256(self.to_payload()))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": TRUSTED_HOLDOUT_HANDLE_SCHEMA,
+            "consumed": self.consumed.to_payload(),
+            "lease": {
+                "lease_id": self.lease.lease_id,
+                "ticket_id": self.lease.ticket_id,
+                "allowed_side_effects": self.lease.allowed_side_effects,
+                "code_sha256": self.lease.code_sha256,
+            },
+        }
+
+
+def require_open_holdout_lease(handle: HoldoutHandle) -> None:
+    """Require the lease to hold OPEN_HOLDOUT before any data-root access."""
+    if not isinstance(handle, HoldoutHandle):
+        raise TypeError("handle must be a HoldoutHandle")
+    if OPEN_HOLDOUT_EFFECT not in handle.lease.allowed_side_effects:
+        raise TrustedEvaluatorLeaseError(
+            "OPEN_HOLDOUT is denied for this lease; only the TrustedEvaluator "
+            "data-root adapter may open the Final Holdout"
+        )
+
+
+def deny_open_holdout_effect(effects: object) -> None:
+    """Reject any non-evaluator path that would declare OPEN_HOLDOUT."""
+    if not isinstance(effects, (tuple, frozenset, set, list)):
+        raise TypeError("effects must be a collection of side effects")
+    if OPEN_HOLDOUT_EFFECT in {_normalize_effect(effect) for effect in effects}:
+        raise TrustedEvaluatorLeaseError(
+            "non-evaluator paths must never declare OPEN_HOLDOUT"
+        )
+
+
+def require_evaluator_spec_holdout_free(execution_spec: ExecutionSpec) -> None:
+    """Fail closed unless the runner-facing spec is disjoint from OPEN_HOLDOUT."""
+    try:
+        effects = execution_spec.protocol.allowed_side_effects
+    except AttributeError as error:
+        raise TrustedEvaluatorLeaseError(
+            "execution spec must expose a frozen protocol with allowed_side_effects"
+        ) from error
+    deny_open_holdout_effect(effects)
+
+
+@dataclass(frozen=True, slots=True)
+class TrustedEvaluatorDataRoot:
+    """Sealed, non-reparse data root plus the only blessed holdout refs."""
+
+    root: str
+    holdout_refs: tuple[str, ...]
+    root_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.root, str) or not self.root:
+            raise TrustedEvaluatorPathError(
+                "sealed data root must be a non-empty absolute path"
+            )
+        if not isinstance(self.holdout_refs, tuple):
+            raise TrustedEvaluatorBoundaryError("holdout_refs must be a tuple")
+        normalized = tuple(_validate_child_ref(ref) for ref in self.holdout_refs)
+        if len(normalized) != len(set(normalized)):
+            raise TrustedEvaluatorBoundaryError("holdout_refs must be unique")
+        object.__setattr__(self, "holdout_refs", normalized)
+        object.__setattr__(self, "root_sha256", canonical_sha256(self.to_payload()))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": TRUSTED_DATA_ROOT_SCHEMA,
+            "root": self.root,
+            "holdout_refs": self.holdout_refs,
+        }
+
+
+def seal_trusted_data_root(
+    root: str | Path,
+    holdout_refs: tuple[str, ...] = (),
+) -> TrustedEvaluatorDataRoot:
+    """Seal one existing, non-reparse directory as the trusted data root."""
+    try:
+        raw_root = _entry_guard._validate_resource_path_lexically(root)
+    except Exception as error:
+        raise TrustedEvaluatorPathError(
+            "trusted data root path is not lexically safe"
+        ) from error
+    root_path = Path(raw_root)
+    if not root_path.is_dir():
+        raise TrustedEvaluatorPathError(
+            "trusted data root must be an existing directory"
+        )
+    if _entry_guard._resource_path_has_reparse_point(root_path):
+        raise TrustedEvaluatorPathError(
+            "trusted data root must not be a reparse point"
+        )
+    resolved = _entry_guard._resolve_validated_resource(raw_root)
+    if _entry_guard._resource_path_has_reparse_point(resolved):
+        raise TrustedEvaluatorPathError(
+            "resolved trusted data root must not be a reparse point"
+        )
+    return TrustedEvaluatorDataRoot(
+        root=str(resolved),
+        holdout_refs=tuple(holdout_refs),
+    )
+
+
+def _resolve_blessed_child(root: TrustedEvaluatorDataRoot, ref: str) -> Path:
+    if not isinstance(root, TrustedEvaluatorDataRoot):
+        raise TypeError("root must be a TrustedEvaluatorDataRoot")
+    relative = _validate_child_ref(ref)
+    if relative not in root.holdout_refs:
+        raise TrustedEvaluatorBoundaryError(
+            f"holdout ref {relative!r} is not registered on the sealed data root"
+        )
+    candidate = Path(root.root).joinpath(*PurePosixPath(relative).parts)
+    try:
+        _entry_guard._validate_resource_path_lexically(str(candidate))
+    except Exception as error:
+        raise TrustedEvaluatorPathError(
+            "holdout path is not lexically safe"
+        ) from error
+    if _entry_guard._resource_path_has_reparse_point(candidate):
+        raise TrustedEvaluatorPathError("holdout path contains a reparse point")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise TrustedEvaluatorPathError(
+            "holdout path cannot be resolved inside the sealed data root"
+        ) from error
+    try:
+        resolved.relative_to(Path(root.root))
+    except ValueError as error:
+        raise TrustedEvaluatorPathError(
+            "holdout path escapes the sealed data root"
+        ) from error
+    if _entry_guard._resource_path_has_reparse_point(resolved):
+        raise TrustedEvaluatorPathError(
+            "resolved holdout path contains a reparse point"
+        )
+    return resolved
+
+
+class HoldoutDataBackend:
+    """Injectable contract for reading bounded summaries from one artifact."""
+
+    def read_holdout_summary(
+        self,
+        *,
+        path: Path,
+        holdout_id: str,
+        holdout_sha256: str,
+    ) -> dict[str, object]:
+        raise NotImplementedError("HoldoutDataBackend is an injectable contract")
+
+
+def _parse_metrics(value: object) -> tuple[HoldoutMetric, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TrustedEvaluatorBoundaryError("backend metrics must be a sequence")
+    parsed: list[HoldoutMetric] = []
+    for item in value:
+        if not isinstance(item, dict) or "name" not in item or "value" not in item:
+            raise TrustedEvaluatorBoundaryError(
+                "backend metric entries must carry name and value"
+            )
+        parsed.append(HoldoutMetric(name=str(item["name"]), value=item["value"]))
+    return tuple(parsed)
+
+
+def _parse_counts(value: object) -> tuple[tuple[str, int], ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TrustedEvaluatorBoundaryError("backend counts must be a sequence")
+    parsed: list[tuple[str, int]] = []
+    for item in value:
+        if not isinstance(item, dict) or "name" not in item or "value" not in item:
+            raise TrustedEvaluatorBoundaryError(
+                "backend count entries must carry name and value"
+            )
+        name = str(item["name"])
+        count = item["value"]
+        if (
+            _SAFE_METRIC_NAME_RE.fullmatch(name) is None
+            or isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+        ):
+            raise TrustedEvaluatorBoundaryError(
+                "backend count entries must be safe non-negative integers"
+            )
+        parsed.append((name, count))
+    return tuple(parsed)
+
+
+def _parse_digests(value: object) -> tuple[tuple[str, str], ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TrustedEvaluatorBoundaryError("backend digests must be a sequence")
+    parsed: list[tuple[str, str]] = []
+    for item in value:
+        if (
+            not isinstance(item, dict)
+            or "artifact_id" not in item
+            or "sha256" not in item
+        ):
+            raise TrustedEvaluatorBoundaryError(
+                "backend digest entries must carry artifact_id and sha256"
+            )
+        artifact_id = str(item["artifact_id"])
+        digest = str(item["sha256"])
+        if (
+            _SAFE_METRIC_NAME_RE.fullmatch(artifact_id) is None
+            or _HEX64_RE.fullmatch(digest) is None
+        ):
+            raise TrustedEvaluatorBoundaryError(
+                "backend digest entries are malformed"
+            )
+        parsed.append((artifact_id, digest))
+    return tuple(parsed)
+
+
+def _parse_evidence_refs(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)):
+        raise TrustedEvaluatorBoundaryError(
+            "backend evidence refs must be a sequence"
+        )
+    parsed: list[str] = []
+    for ref in value:
+        if not isinstance(ref, str) or not _is_repo_relative_evidence_ref(ref):
+            raise TrustedEvaluatorBoundaryError(
+                "backend evidence refs must be repo-relative and bounded"
+            )
+        parsed.append(ref)
+    return tuple(parsed)
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutView:
+    """Bounded structured metrics plus evidence refs; never raw holdout bytes."""
+
+    metrics: tuple[HoldoutMetric, ...]
+    counts: tuple[tuple[str, int], ...]
+    sha256s: tuple[tuple[str, str], ...]
+    evidence_refs: tuple[str, ...]
+    taint: tuple[str, ...]
+    view_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.metrics, tuple) or len(self.metrics) > _MAX_METRICS:
+            raise UnboundedResultError("holdout metrics exceed the fixed bound")
+        if not all(isinstance(metric, HoldoutMetric) for metric in self.metrics):
+            raise TypeError("metrics must contain only HoldoutMetric values")
+        if not isinstance(self.counts, tuple) or len(self.counts) > _MAX_COUNTS:
+            raise UnboundedResultError("holdout counts exceed the fixed bound")
+        if not isinstance(self.sha256s, tuple) or len(self.sha256s) > _MAX_SHA256S:
+            raise UnboundedResultError("holdout digests exceed the fixed bound")
+        if (
+            not isinstance(self.evidence_refs, tuple)
+            or len(self.evidence_refs) > _MAX_EVIDENCE_REFS
+        ):
+            raise UnboundedResultError("holdout evidence refs exceed the fixed bound")
+        if not all(
+            _is_repo_relative_evidence_ref(ref) for ref in self.evidence_refs
+        ):
+            raise TrustedEvaluatorBoundaryError(
+                "holdout evidence refs must be repo-relative and bounded"
+            )
+        if not isinstance(self.taint, tuple) or FINAL_HOLDOUT_TAINT not in self.taint:
+            raise TrustedEvaluatorBoundaryError(
+                "holdout view must carry FINAL_HOLDOUT taint"
+            )
+        payload = self.to_payload()
+        if len(canonical_json(payload)) > _MAX_RESULT_PAYLOAD_BYTES:
+            raise UnboundedResultError(
+                "holdout view payload exceeds the fixed byte bound"
+            )
+        object.__setattr__(self, "view_sha256", canonical_sha256(payload))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": TRUSTED_HOLDOUT_VIEW_SCHEMA,
+            "metrics": [
+                {"name": metric.name, "value": metric.value}
+                for metric in self.metrics
+            ],
+            "counts": [
+                {"name": name, "value": value} for name, value in self.counts
+            ],
+            "sha256s": [
+                {"artifact_id": artifact_id, "sha256": digest}
+                for artifact_id, digest in self.sha256s
+            ],
+            "evidence_refs": list(self.evidence_refs),
+            "taint": list(self.taint),
+        }
+
+    def render_for_prompt(self) -> str:
+        raise PromptAccessDeniedError(
+            "holdout-derived content must never be rendered into a prompt/LLM surface"
+        )
+
+
+class TrustedEvaluatorAdapter:
+    """Low-privilege seam that maps one consumed handle to a bounded view."""
+
+    def __init__(self, *, backend: HoldoutDataBackend) -> None:
+        if not isinstance(backend, HoldoutDataBackend):
+            raise TypeError("backend must be a HoldoutDataBackend")
+        self._backend = backend
+
+    def read(
+        self,
+        handle: HoldoutHandle,
+        *,
+        data_root: TrustedEvaluatorDataRoot,
+        refs: tuple[str, ...] | None = None,
+    ) -> HoldoutView:
+        require_open_holdout_lease(handle)
+        if not isinstance(data_root, TrustedEvaluatorDataRoot):
+            raise TypeError("data_root must be a sealed TrustedEvaluatorDataRoot")
+        selected = data_root.holdout_refs if refs is None else tuple(refs)
+        if not selected:
+            raise TrustedEvaluatorBoundaryError(
+                "at least one registered holdout ref is required"
+            )
+        metrics: list[HoldoutMetric] = []
+        counts: list[tuple[str, int]] = []
+        sha256s: list[tuple[str, str]] = []
+        evidence_refs: list[str] = []
+        for ref in selected:
+            resolved = _resolve_blessed_child(data_root, ref)
+            if _entry_guard._resource_path_has_reparse_point(resolved):
+                raise TrustedEvaluatorPathError(
+                    "holdout path changed to a reparse point before open"
+                )
+            summary = self._backend.read_holdout_summary(
+                path=resolved,
+                holdout_id=handle.consumed.holdout_id,
+                holdout_sha256=handle.consumed.holdout_sha256,
+            )
+            if not isinstance(summary, dict):
+                raise TrustedEvaluatorBoundaryError(
+                    "holdout backend must return a bounded summary dict"
+                )
+            metrics.extend(_parse_metrics(summary.get("metrics", ())))
+            counts.extend(_parse_counts(summary.get("counts", ())))
+            sha256s.extend(_parse_digests(summary.get("sha256s", ())))
+            evidence_refs.extend(
+                _parse_evidence_refs(summary.get("evidence_refs", ()))
+            )
+        return HoldoutView(
+            metrics=tuple(metrics),
+            counts=tuple(counts),
+            sha256s=tuple(sha256s),
+            evidence_refs=tuple(evidence_refs),
+            taint=(FINAL_HOLDOUT_TAINT,),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluatorResult:
+    """Terminal evaluation result: bounded metrics and evidence refs only."""
+
+    request_sha256: str
+    handle_sha256: str
+    view: HoldoutView
+    outcome: str
+    result_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if _HEX64_RE.fullmatch(self.request_sha256) is None:
+            raise TrustedEvaluatorBoundaryError(
+                "result request_sha256 must be a SHA-256 digest"
+            )
+        if _HEX64_RE.fullmatch(self.handle_sha256) is None:
+            raise TrustedEvaluatorBoundaryError(
+                "result handle_sha256 must be a SHA-256 digest"
+            )
+        if not isinstance(self.view, HoldoutView):
+            raise TypeError("result view must be a HoldoutView")
+        if self.outcome not in _ALLOWED_CONSUME_OUTCOMES:
+            raise TrustedEvaluatorBoundaryError(
+                "result outcome must be a terminal consume outcome"
+            )
+        payload = self.to_payload()
+        if len(canonical_json(payload)) > _MAX_RESULT_PAYLOAD_BYTES:
+            raise UnboundedResultError(
+                "evaluation result payload exceeds the fixed byte bound"
+            )
+        object.__setattr__(self, "result_sha256", canonical_sha256(payload))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": TRUSTED_EVALUATOR_RESULT_SCHEMA,
+            "request_sha256": self.request_sha256,
+            "handle_sha256": self.handle_sha256,
+            "view": self.view.to_payload(),
+            "outcome": self.outcome,
+            "taint": list(self.view.taint),
+        }
+
+    def render_for_prompt(self) -> str:
+        raise PromptAccessDeniedError(
+            "evaluation results must never be rendered into a prompt/LLM surface"
+        )
+
+
+class TrustedEvaluator:
+    """Top-level final evaluator: consume once, then open only via the adapter."""
+
+    def __init__(
+        self,
+        *,
+        broker: AuthorityBroker,
+        adapter: TrustedEvaluatorAdapter,
+    ) -> None:
+        if not isinstance(broker, AuthorityBroker):
+            raise TypeError("broker must be an AuthorityBroker")
+        if not isinstance(adapter, TrustedEvaluatorAdapter):
+            raise TypeError("adapter must be a TrustedEvaluatorAdapter")
+        self._broker = broker
+        self._adapter = adapter
+
+    def evaluate(
+        self,
+        request: FinalEvalRequest,
+        *,
+        data_root: TrustedEvaluatorDataRoot,
+        refs: tuple[str, ...] | None = None,
+        outcome: str = "SUCCEEDED",
+        allowed_side_effects: tuple[str, ...] = (OPEN_HOLDOUT_EFFECT,),
+        lease_id: str = "lease-final-1",
+        ticket_id: str = "ticket-final-1",
+    ) -> EvaluatorResult:
+        if not isinstance(request, FinalEvalRequest):
+            raise TypeError("request must be a FinalEvalRequest")
+        require_evaluator_spec_holdout_free(request.execution_spec.execution_spec)
+        consumed = self._broker.consume(request, outcome=outcome)
+        lease = HoldoutLease(
+            lease_id=lease_id,
+            ticket_id=ticket_id,
+            allowed_side_effects=tuple(
+                sorted(str(effect) for effect in allowed_side_effects)
+            ),
+            code_sha256=request.code.code_sha256,
+        )
+        handle = HoldoutHandle(consumed=consumed, lease=lease)
+        view = self._adapter.read(handle, data_root=data_root, refs=refs)
+        return EvaluatorResult(
+            request_sha256=request.request_sha256,
+            handle_sha256=handle.handle_sha256,
+            view=view,
+            outcome=outcome,
+        )
+
+
 _BINDING_TYPES_BY_FIELD = {
     "campaign": (CampaignBinding,),
     "code": (CodeBinding,),
@@ -541,6 +1213,8 @@ __all__ = [
     "ConsumeOnceError",
     "ConsumeOnceReplayError",
     "ConsumeOnceValidationError",
+    "EvaluatorResult",
+    "FINAL_HOLDOUT_TAINT",
     "HoldoutHandle",
     "CampaignBinding",
     "CandidateBinding",
@@ -557,9 +1231,31 @@ __all__ = [
     "HoldoutAlreadyConsumedError",
     "HoldoutBinding",
     "HoldoutConsumed",
+    "HoldoutDataBackend",
+    "HoldoutLease",
+    "HoldoutMetric",
+    "HoldoutView",
     "InMemoryHoldoutStore",
     "ModelBinding",
+    "OPEN_HOLDOUT_EFFECT",
+    "PromptAccessDeniedError",
     "RosterBinding",
     "ThresholdBinding",
+    "TRUSTED_DATA_ROOT_SCHEMA",
+    "TRUSTED_EVALUATOR_RESULT_SCHEMA",
+    "TRUSTED_HOLDOUT_HANDLE_SCHEMA",
+    "TRUSTED_HOLDOUT_VIEW_SCHEMA",
+    "TrustedEvaluator",
+    "TrustedEvaluatorAdapter",
+    "TrustedEvaluatorBoundaryError",
+    "TrustedEvaluatorDataRoot",
+    "TrustedEvaluatorError",
+    "TrustedEvaluatorLeaseError",
+    "TrustedEvaluatorPathError",
     "UnfrozenCandidateError",
+    "UnboundedResultError",
+    "deny_open_holdout_effect",
+    "require_evaluator_spec_holdout_free",
+    "require_open_holdout_lease",
+    "seal_trusted_data_root",
 ]

@@ -1,14 +1,25 @@
-"""Focused TDD tests for P8R2 T2 FinalEvalRequest + T3 AuthorityBroker consume-once."""
+"""Focused TDD tests for P8R2 T2/T3/T4 final evaluator control plane."""
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 from research_automation.control_plane.campaign_roster import RosterManifest
-from research_automation.control_plane.contracts import Actor, IdentityBinding, canonical_sha256
+from research_automation.control_plane.contracts import (
+    Actor,
+    IdentityBinding,
+    SideEffect,
+    canonical_json,
+    canonical_sha256,
+)
 from research_automation.control_plane.final_evaluator import (
     AuthorityBroker,
     CampaignBinding,
@@ -17,7 +28,9 @@ from research_automation.control_plane.final_evaluator import (
     ConsumeOnceError,
     ConsumeOnceReplayError,
     ConsumeOnceValidationError,
+    EvaluatorResult,
     ExecutionSpecBinding,
+    FINAL_HOLDOUT_TAINT,
     FeatureBinding,
     FinalEvalActorError,
     FinalEvalBindingError,
@@ -27,12 +40,29 @@ from research_automation.control_plane.final_evaluator import (
     HoldoutAlreadyConsumedError,
     HoldoutBinding,
     HoldoutConsumed,
+    HoldoutDataBackend,
     HoldoutHandle,
+    HoldoutLease,
+    HoldoutMetric,
+    HoldoutView,
     InMemoryHoldoutStore,
     ModelBinding,
+    OPEN_HOLDOUT_EFFECT,
+    PromptAccessDeniedError,
     RosterBinding,
     ThresholdBinding,
+    TrustedEvaluator,
+    TrustedEvaluatorAdapter,
+    TrustedEvaluatorBoundaryError,
+    TrustedEvaluatorDataRoot,
+    TrustedEvaluatorError,
+    TrustedEvaluatorLeaseError,
+    TrustedEvaluatorPathError,
     UnfrozenCandidateError,
+    UnboundedResultError,
+    deny_open_holdout_effect,
+    require_evaluator_spec_holdout_free,
+    seal_trusted_data_root,
 )
 from research_automation.foundations.protocols import compile_execution_spec
 from tests.test_control_plane_campaign_freeze import _protocol_member
@@ -499,14 +529,26 @@ class AuthorityBrokerHandleAndErrorTests(unittest.TestCase):
     # HoldoutHandle is the canonical name for the consumed handle
     # ------------------------------------------------------------------
 
-    def test_holdout_handle_is_same_type_as_holdout_consumed(self) -> None:
-        """HoldoutHandle must be importable and be the same type as HoldoutConsumed."""
-        self.assertIs(HoldoutHandle, HoldoutConsumed)
+    def test_holdout_handle_is_distinct_frozen_handle(self) -> None:
+        """T4 promotes HoldoutHandle to a distinct frozen handle with a lease."""
+        self.assertIsNot(HoldoutHandle, HoldoutConsumed)
+        consumed = self._broker.consume(self._request, outcome="SUCCEEDED")
+        lease = HoldoutLease(
+            lease_id="lease-final-1",
+            ticket_id="ticket-final-1",
+            allowed_side_effects=(OPEN_HOLDOUT_EFFECT,),
+            code_sha256=self._request.code.code_sha256,
+        )
+        handle = HoldoutHandle(consumed=consumed, lease=lease)
+        self.assertIsInstance(handle, HoldoutHandle)
+        self.assertNotIsInstance(handle, HoldoutConsumed)
+        self.assertEqual(handle.consumed, consumed)
+        self.assertRegex(handle.handle_sha256, _SHA_RE)
 
-    def test_consume_returns_holdout_handle(self) -> None:
-        """AuthorityBroker.consume() returns a HoldoutHandle instance."""
+    def test_consume_returns_holdout_consumed_receipt(self) -> None:
+        """AuthorityBroker.consume() returns the HoldoutConsumed receipt;
+        TrustedEvaluator wraps it into a lease-bound HoldoutHandle."""
         result = self._broker.consume(self._request, outcome="SUCCEEDED")
-        self.assertIsInstance(result, HoldoutHandle)
         self.assertIsInstance(result, HoldoutConsumed)
         self.assertEqual(result.outcome, "SUCCEEDED")
 
@@ -587,6 +629,461 @@ class AuthorityBrokerHandleAndErrorTests(unittest.TestCase):
         """Invalid outcome must raise ConsumeOnceValidationError."""
         with self.assertRaises(ConsumeOnceValidationError):
             self._broker.consume(self._request, outcome="INVALID")
+
+
+class _FakeHoldoutBackend(HoldoutDataBackend):
+    """Bounded fake backend over an injected fixture; never touches real data."""
+
+    def __init__(self, *, canary: str = "CANARY_7f3a9c2b") -> None:
+        self.canary = canary
+        self.opened: list[str] = []
+
+    def read_holdout_summary(
+        self,
+        *,
+        path: Path,
+        holdout_id: str,
+        holdout_sha256: str,
+    ) -> dict[str, object]:
+        self.opened.append(str(path))
+        raw = Path(path).read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        return {
+            "metrics": (
+                {"name": "rows", "value": 24},
+                {"name": "bytes", "value": float(len(raw))},
+            ),
+            "counts": ({"name": "rows", "value": 24},),
+            "sha256s": ({"artifact_id": "holdout", "sha256": digest},),
+            "evidence_refs": (
+                "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t4_fake_summary.json",
+            ),
+        }
+
+
+def _write_t4_fixture(root_path: Path) -> Path:
+    (root_path / "frozen").mkdir()
+    (root_path / "other").mkdir()
+    holdout = root_path / "frozen" / "holdout.parquet"
+    holdout.write_bytes(b"CANARY_7f3a9c2b|" + b"x" * 128)
+    (root_path / "other" / "raw_rows.csv").write_bytes(b"raw,csv|1,2")
+    return holdout
+
+
+class TrustedEvaluatorDataRootTests(unittest.TestCase):
+    """P8R2 T4: sealed data root, path traversal and reparse rejection."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="p8r2_t4_root_")
+        self._root_path = Path(self._tmp)
+        self._holdout = _write_t4_fixture(self._root_path)
+        self._ref = "frozen/holdout.parquet"
+        self._root = seal_trusted_data_root(self._root_path, (self._ref,))
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_seal_accepts_existing_non_reparse_root(self) -> None:
+        self.assertEqual(self._root.holdout_refs, (self._ref,))
+        self.assertRegex(self._root.root_sha256, _SHA_RE)
+        self.assertEqual(Path(self._root.root).resolve(), self._root_path.resolve())
+
+    def test_seal_rejects_missing_root(self) -> None:
+        with self.assertRaises(TrustedEvaluatorPathError):
+            seal_trusted_data_root(self._root_path / "missing", (self._ref,))
+
+    def test_seal_rejects_file_root(self) -> None:
+        with self.assertRaises(TrustedEvaluatorPathError):
+            seal_trusted_data_root(self._holdout, (self._ref,))
+
+    def test_seal_rejects_parent_traversal_root(self) -> None:
+        with self.assertRaises(TrustedEvaluatorPathError):
+            seal_trusted_data_root(str(self._root_path / ".."), (self._ref,))
+
+    def test_child_ref_forbidden_spellings_rejected(self) -> None:
+        vectors = [
+            "../outside",
+            "a/../../outside",
+            "a/.." + chr(92) + "../outside",
+            "/tmp/outside",
+            "C:" + chr(92) + "outside",
+            "//server/share",
+            chr(92) * 2 + "?" + chr(92) + "C:" + chr(92) + "outside",
+            "holdout.parquet:secret",
+            "CON",
+            "name ",
+            "name.",
+            "a" + chr(0) + "name",
+            "a/b/c/d/e/f/g/h/i/j",
+        ]
+        for vector in vectors:
+            with self.assertRaises(
+                (TrustedEvaluatorBoundaryError, TrustedEvaluatorPathError),
+                msg=vector,
+            ):
+                seal_trusted_data_root(self._root_path, (vector,))
+
+    def test_reparse_escape_rejected(self) -> None:
+        outside = self._root_path / "outside"
+        outside.mkdir()
+        (outside / "secret.bin").write_bytes(b"outside-bytes")
+        evil = self._root_path / "evil"
+        try:
+            os.symlink(outside, evil, target_is_directory=True)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"cannot create directory symlink: {error}")
+        data_root = seal_trusted_data_root(
+            self._root_path,
+            ("evil/secret.bin",),
+        )
+        backend = _FakeHoldoutBackend()
+        adapter = TrustedEvaluatorAdapter(backend=backend)
+        request = _request()
+        consumed = AuthorityBroker(store=InMemoryHoldoutStore()).consume(
+            request,
+            outcome="SUCCEEDED",
+        )
+        handle = HoldoutHandle(
+            consumed=consumed,
+            lease=HoldoutLease(
+                lease_id="lease-final-1",
+                ticket_id="ticket-final-1",
+                allowed_side_effects=(OPEN_HOLDOUT_EFFECT,),
+                code_sha256=request.code.code_sha256,
+            ),
+        )
+        with self.assertRaises(TrustedEvaluatorPathError):
+            adapter.read(handle, data_root=data_root)
+        self.assertEqual(backend.opened, [])
+
+
+def _lease_handle(request: FinalEvalRequest, *, effects: tuple = (OPEN_HOLDOUT_EFFECT,), outcome: str = "SUCCEEDED") -> HoldoutHandle:
+    consumed = AuthorityBroker(store=InMemoryHoldoutStore()).consume(
+        request,
+        outcome=outcome,
+    )
+    return HoldoutHandle(
+        consumed=consumed,
+        lease=HoldoutLease(
+            lease_id="lease-final-1",
+            ticket_id="ticket-final-1",
+            allowed_side_effects=effects,
+            code_sha256=request.code.code_sha256,
+        ),
+    )
+
+
+class TrustedEvaluatorLeaseTests(unittest.TestCase):
+    """P8R2 T4: OPEN_HOLDOUT capability is lease-bound and fail-closed."""
+
+    def setUp(self) -> None:
+        self._request = _request()
+
+    def test_deny_open_holdout_effect_rejects_non_evaluator_path(self) -> None:
+        with self.assertRaises(TrustedEvaluatorLeaseError):
+            deny_open_holdout_effect((OPEN_HOLDOUT_EFFECT,))
+        deny_open_holdout_effect(("WRITE_CONTROL_PLANE",))
+
+    def test_deny_open_holdout_effect_rejects_enum_member(self) -> None:
+        """str-Enum members must be normalized; denial must not be fail-open."""
+        with self.assertRaises(TrustedEvaluatorLeaseError):
+            deny_open_holdout_effect((SideEffect.OPEN_HOLDOUT,))
+
+    def test_require_evaluator_spec_holdout_free_passes_for_safe_spec(self) -> None:
+        require_evaluator_spec_holdout_free(_execution_spec())
+
+    def test_require_evaluator_spec_holdout_free_rejects_enum_open_holdout(self) -> None:
+        fake_spec = SimpleNamespace(
+            protocol=SimpleNamespace(
+                allowed_side_effects=(SideEffect.OPEN_HOLDOUT,),
+            )
+        )
+        with self.assertRaises(TrustedEvaluatorLeaseError):
+            require_evaluator_spec_holdout_free(fake_spec)
+
+    def test_holdout_lease_normalizes_enum_members(self) -> None:
+        lease = HoldoutLease(
+            lease_id="lease-final-1",
+            ticket_id="ticket-final-1",
+            allowed_side_effects=(SideEffect.OPEN_HOLDOUT,),
+            code_sha256=self._request.code.code_sha256,
+        )
+        self.assertEqual(lease.allowed_side_effects, (OPEN_HOLDOUT_EFFECT,))
+
+    def test_enum_lease_handle_reads_successfully(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p8r2_t4_enum_")
+        try:
+            _write_t4_fixture(Path(tmp))
+            data_root = seal_trusted_data_root(
+                Path(tmp),
+                ("frozen/holdout.parquet",),
+            )
+            handle = _lease_handle(
+                self._request,
+                effects=(SideEffect.OPEN_HOLDOUT,),
+            )
+            adapter = TrustedEvaluatorAdapter(backend=_FakeHoldoutBackend())
+            view = adapter.read(handle, data_root=data_root)
+            self.assertEqual(view.taint, (FINAL_HOLDOUT_TAINT,))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_handle_without_open_holdout_denied_at_adapter(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p8r2_t4_lease_")
+        try:
+            _write_t4_fixture(Path(tmp))
+            data_root = seal_trusted_data_root(
+                Path(tmp),
+                ("frozen/holdout.parquet",),
+            )
+            handle = _lease_handle(
+                self._request,
+                effects=("WRITE_CONTROL_PLANE",),
+            )
+            adapter = TrustedEvaluatorAdapter(backend=_FakeHoldoutBackend())
+            with self.assertRaises(TrustedEvaluatorLeaseError):
+                adapter.read(handle, data_root=data_root)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_evaluator_lease_denial_consumes_nonce_fail_closed(self) -> None:
+        tmp = tempfile.mkdtemp(prefix="p8r2_t4_lease2_")
+        try:
+            _write_t4_fixture(Path(tmp))
+            data_root = seal_trusted_data_root(
+                Path(tmp),
+                ("frozen/holdout.parquet",),
+            )
+            evaluator = TrustedEvaluator(
+                broker=AuthorityBroker(store=InMemoryHoldoutStore()),
+                adapter=TrustedEvaluatorAdapter(backend=_FakeHoldoutBackend()),
+            )
+            with self.assertRaises(TrustedEvaluatorLeaseError):
+                evaluator.evaluate(
+                    self._request,
+                    data_root=data_root,
+                    allowed_side_effects=("WRITE_CONTROL_PLANE",),
+                )
+            with self.assertRaises(HoldoutAlreadyConsumedError):
+                evaluator.evaluate(
+                    self._request,
+                    data_root=data_root,
+                )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TrustedEvaluatorAdapterTests(unittest.TestCase):
+    """P8R2 T4: bounded view, canary denial, evidence-ref boundaries."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="p8r2_t4_adapter_")
+        self._root_path = Path(self._tmp)
+        self._holdout = _write_t4_fixture(self._root_path)
+        self._data_root = seal_trusted_data_root(
+            self._root_path,
+            ("frozen/holdout.parquet",),
+        )
+        self._request = _request()
+        self._handle = _lease_handle(self._request)
+        self._backend = _FakeHoldoutBackend()
+        self._adapter = TrustedEvaluatorAdapter(backend=self._backend)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_read_returns_bounded_tainted_view(self) -> None:
+        view = self._adapter.read(self._handle, data_root=self._data_root)
+        self.assertIsInstance(view, HoldoutView)
+        self.assertEqual(view.taint, (FINAL_HOLDOUT_TAINT,))
+        self.assertRegex(view.view_sha256, _SHA_RE)
+        names = {metric.name for metric in view.metrics}
+        self.assertIn("rows", names)
+        self.assertEqual(len(view.evidence_refs), 1)
+        self.assertLess(len(canonical_json(view.to_payload())), 256 * 1024)
+
+    def test_read_rejects_unregistered_ref(self) -> None:
+        with self.assertRaises(TrustedEvaluatorBoundaryError):
+            self._adapter.read(
+                self._handle,
+                data_root=self._data_root,
+                refs=("other/raw_rows.csv",),
+            )
+
+    def test_read_rejects_missing_blessed_ref(self) -> None:
+        data_root = seal_trusted_data_root(
+            self._root_path,
+            ("frozen/missing.parquet",),
+        )
+        with self.assertRaises(TrustedEvaluatorPathError):
+            self._adapter.read(self._handle, data_root=data_root)
+
+    def test_canary_and_raw_paths_never_leak(self) -> None:
+        evaluator = TrustedEvaluator(
+            broker=AuthorityBroker(store=InMemoryHoldoutStore()),
+            adapter=TrustedEvaluatorAdapter(backend=self._backend),
+        )
+        result = evaluator.evaluate(self._request, data_root=self._data_root)
+        serialized = canonical_json(result.to_payload())
+        self.assertNotIn("CANARY_7f3a9c2b", serialized)
+        self.assertNotIn("raw_rows", serialized)
+        self.assertNotIn(str(self._root_path), serialized)
+        self.assertNotIn(str(self._holdout), serialized)
+
+    def test_prompt_rendering_denied(self) -> None:
+        view = self._adapter.read(self._handle, data_root=self._data_root)
+        with self.assertRaises(PromptAccessDeniedError):
+            view.render_for_prompt()
+        result = EvaluatorResult(
+            request_sha256=self._request.request_sha256,
+            handle_sha256=self._handle.handle_sha256,
+            view=view,
+            outcome="SUCCEEDED",
+        )
+        with self.assertRaises(PromptAccessDeniedError):
+            result.render_for_prompt()
+
+    def test_escaping_evidence_ref_rejected(self) -> None:
+        class EscapingBackend(_FakeHoldoutBackend):
+            def read_holdout_summary(self, *, path, holdout_id, holdout_sha256):
+                summary = super().read_holdout_summary(
+                    path=path,
+                    holdout_id=holdout_id,
+                    holdout_sha256=holdout_sha256,
+                )
+                summary["evidence_refs"] = ("../escape/evidence.json",)
+                return summary
+
+        adapter = TrustedEvaluatorAdapter(backend=EscapingBackend())
+        with self.assertRaises(TrustedEvaluatorBoundaryError):
+            adapter.read(self._handle, data_root=self._data_root)
+
+    def test_unbounded_metrics_rejected(self) -> None:
+        class HugeBackend(_FakeHoldoutBackend):
+            def read_holdout_summary(self, *, path, holdout_id, holdout_sha256):
+                summary = super().read_holdout_summary(
+                    path=path,
+                    holdout_id=holdout_id,
+                    holdout_sha256=holdout_sha256,
+                )
+                summary["metrics"] = tuple(
+                    {"name": "m" + str(i), "value": float(i)} for i in range(65)
+                )
+                return summary
+
+        adapter = TrustedEvaluatorAdapter(backend=HugeBackend())
+        with self.assertRaises(UnboundedResultError):
+            adapter.read(self._handle, data_root=self._data_root)
+
+
+class _HoldoutOpenSentinel:
+    """Monkeypatches builtins.open so the real holdout path fails loudly."""
+
+    REAL_HOLDOUT = "REAL_FINAL_HOLDOUT_v342.parquet"
+
+    def __init__(self) -> None:
+        self.touched = False
+        self._orig_open = None
+
+    def __enter__(self) -> "_HoldoutOpenSentinel":
+        import builtins
+
+        self._orig_open = builtins.open
+
+        def guarded(*args, **kwargs):
+            name = args[0] if args else kwargs.get("file")
+            if self.REAL_HOLDOUT in str(name):
+                self.touched = True
+                raise AssertionError("real Final Holdout path was opened")
+            return self._orig_open(*args, **kwargs)
+
+        builtins.open = guarded
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        import builtins
+
+        builtins.open = self._orig_open
+        return False
+
+
+class TrustedEvaluatorEndToEndTests(unittest.TestCase):
+    """P8R2 T4: consume-once evaluation over injected fixtures only."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="p8r2_t4_e2e_")
+        self._root_path = Path(self._tmp)
+        self._holdout = _write_t4_fixture(self._root_path)
+        self._data_root = seal_trusted_data_root(
+            self._root_path,
+            ("frozen/holdout.parquet",),
+        )
+        self._request = _request()
+        self._backend = _FakeHoldoutBackend()
+        self._store = InMemoryHoldoutStore()
+        self._evaluator = TrustedEvaluator(
+            broker=AuthorityBroker(store=self._store),
+            adapter=TrustedEvaluatorAdapter(backend=self._backend),
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def test_evaluate_consumes_once_and_returns_bounded_result(self) -> None:
+        result = self._evaluator.evaluate(self._request, data_root=self._data_root)
+        self.assertIsInstance(result, EvaluatorResult)
+        self.assertEqual(result.outcome, "SUCCEEDED")
+        self.assertEqual(result.request_sha256, self._request.request_sha256)
+        self.assertRegex(result.result_sha256, _SHA_RE)
+        payload = result.to_payload()
+        self.assertEqual(
+            payload["schema_version"],
+            "control_plane.trusted_evaluator_result.v1",
+        )
+        self.assertIn("metrics", payload["view"])
+        self.assertIn("evidence_refs", payload["view"])
+        self.assertNotIn("promotion", payload)
+        with self.assertRaises(HoldoutAlreadyConsumedError):
+            self._evaluator.evaluate(self._request, data_root=self._data_root)
+
+    def test_failed_outcome_consumes_permanently(self) -> None:
+        result = self._evaluator.evaluate(
+            self._request,
+            data_root=self._data_root,
+            outcome="FAILED",
+        )
+        self.assertEqual(result.outcome, "FAILED")
+        with self.assertRaises(HoldoutAlreadyConsumedError):
+            self._evaluator.evaluate(self._request, data_root=self._data_root)
+
+    def test_real_holdout_bytes_never_opened(self) -> None:
+        with _HoldoutOpenSentinel() as sentinel:
+            result = self._evaluator.evaluate(
+                self._request,
+                data_root=self._data_root,
+            )
+        self.assertFalse(sentinel.touched)
+        self.assertEqual(len(self._backend.opened), 1)
+        self.assertNotIn(_HoldoutOpenSentinel.REAL_HOLDOUT, self._backend.opened[0])
+
+    def test_result_payload_is_bounded_and_refs_are_repo_relative(self) -> None:
+        result = self._evaluator.evaluate(self._request, data_root=self._data_root)
+        serialized = canonical_json(result.to_payload())
+        self.assertLess(len(serialized), 256 * 1024)
+        for ref in result.view.evidence_refs:
+            self.assertFalse(ref.startswith("/"))
+            self.assertNotIn("..", ref)
+            self.assertNotIn(chr(92), ref)
+            self.assertNotIn(":", ref)
+
+    def test_manual_only_promotion_boundary(self) -> None:
+        result = self._evaluator.evaluate(self._request, data_root=self._data_root)
+        payload = result.to_payload()
+        self.assertEqual(
+            set(payload.keys()),
+            {"schema_version", "request_sha256", "handle_sha256", "view", "outcome", "taint"},
+        )
+        self.assertEqual(payload["taint"], [FINAL_HOLDOUT_TAINT])
 
 
 if __name__ == "__main__":

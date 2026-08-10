@@ -1,0 +1,98 @@
+{
+ "schema_version": "control_plane.p8r2_t4_independent_spec_review.v1",
+ "review_id": "p8r2-t4-independent-spec-review",
+ "receipt_id": "p8r2-t4-independent-spec-review",
+ "reviewed_at": "2026-08-10T13:38:00.000000+00:00",
+ "phase": "P8",
+ "attempt_id": "p8-attempt-001",
+ "task_id": "P8R2-T4-TRUSTED-EVALUATOR-ADAPTER",
+ "reviewer": {
+  "actor_id": "codex-spec-p8r2-t4",
+  "actor_type": "llm",
+  "invocation_id": "codex-spec-p8r2-t4-invocation-20260810",
+  "independent_from_task_actor": true
+ },
+ "verdict": "PASS",
+ "decision": "PASS",
+ "counts_as_trusted_evaluator_adapter_spec_approval": true,
+ "candidate": {
+  "ref": "research_automation/control_plane/final_evaluator.py",
+  "sha256": "26da848ba9ab61b642b46690ed079afe4ad1d160cbce5d6bd3f33240050109cf"
+ },
+ "checks": [
+  {
+   "check_id": "task_spec_and_evidence_binding",
+   "status": "PASS",
+   "detail": "T4 TaskSpec envelope payload_sha256 b1081454cd80d2348bd9238c628f2d55018543f29e27898b95b69efc0416fda7 and task_spec_sha256 d1e0a41ced0ffc11fc7ebf7044a18eb91b10f508d2f8b8cf4802060edd8b7e42 match the committed spec; allowed_files cover final_evaluator.py, the test module and all T4 evidence outputs; baseline and T3-completion evidence references hash-match the live repository files."
+  },
+  {
+   "check_id": "low_privilege_data_root_adapter",
+   "status": "PASS",
+   "detail": "TrustedEvaluatorAdapter owns all data-root filesystem access; TrustedEvaluatorDataRoot is a frozen sealed root (existing, non-reparse, resolved once); seal_trusted_data_root rejects missing/file/unsafe roots; TrustedEvaluator itself performs no direct filesystem access."
+  },
+  {
+   "check_id": "path_traversal_and_reparse_escape_rejection",
+   "status": "PASS",
+   "detail": "_validate_child_ref rejects parent traversal, absolute/UNC/device namespaces, ADS, reserved names, trailing dot/space, control bytes and depth > 8; _resolve_blessed_child revalidates lexically, rejects reparse points before and after resolution, and enforces containment via relative_to; the adapter rechecks reparse status immediately before backend open (TOCTOU mitigation); tests cover traversal vectors and a real directory-symlink escape."
+  },
+  {
+   "check_id": "prompt_llm_access_denial",
+   "status": "PASS",
+   "detail": "HoldoutView.render_for_prompt and EvaluatorResult.render_for_prompt always raise PromptAccessDeniedError; payloads carry only bounded metrics, counts, SHA-256 digests and repo-relative evidence refs; the canary test asserts CANARY_7f3a9c2b, raw file names and filesystem paths never appear in serialized output."
+  },
+  {
+   "check_id": "open_holdout_lease_enforcement",
+   "status": "PASS",
+   "detail": "require_open_holdout_lease gates adapter reads; deny_open_holdout_effect rejects non-evaluator paths declaring OPEN_HOLDOUT; require_evaluator_spec_holdout_free fails closed on the runner-facing ExecutionSpec; side-effect values are normalized for both plain strings and SideEffect str-Enum members (B-1 fix with regression tests); a denied lease still consumes the nonce (fail-closed) so no partial result can escape."
+  },
+  {
+   "check_id": "bounded_result_and_evidence_refs",
+   "status": "PASS",
+   "detail": "HoldoutView and EvaluatorResult enforce 64 metrics, 64 counts, 64 digests, 32 evidence refs and a 256 KiB payload bound; evidence refs must be repo-relative POSIX paths without traversal, backslash, colon or control bytes; FINAL_HOLDOUT taint is mandatory on every view and result."
+  },
+  {
+   "check_id": "holdout_handle_promotion",
+   "status": "PASS",
+   "detail": "HoldoutHandle is a distinct frozen slots dataclass wrapping HoldoutConsumed plus HoldoutLease (lease_id, ticket_id, allowed_side_effects, code_sha256) with a derived handle_sha256; the old alias identity test was replaced by the distinct-type contract test."
+  },
+  {
+   "check_id": "consume_once_bridge",
+   "status": "PASS",
+   "detail": "TrustedEvaluator.evaluate calls AuthorityBroker.consume before any adapter read; SUCCEEDED/FAILED/TIMEOUT/CRASHED all consume permanently; nonce replay and crash-after-consume are rejected; retry requires a genuinely new operator decision (new nonce)."
+  },
+  {
+   "check_id": "phase_and_side_effect_boundaries",
+   "status": "PASS",
+   "detail": "No real data, KBase, Campaign, backtest or Final Holdout bytes were read or written; all fixtures are in-memory or tempdir fakes; the sentinel test proves the real holdout path is never opened; p8_authorized/campaign_authorized/final_holdout_authorized/auto_advance remain false."
+  }
+ ],
+ "findings": [],
+ "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+ "blockers": [],
+ "advisories": [
+  {
+   "id": "B1_ENUM_NORMALIZATION_FIXED",
+   "detail": "Independent quality review found str-Enum fail-open in deny_open_holdout_effect; fixed with _normalize_effect (value-based normalization) in both the lease and the denial guard, plus four regression tests; re-verified 69/69 focused tests pass."
+  },
+  {
+   "id": "N1_IN_MEMORY_HOLDOUT_STORE_HARDCODES_HOLDOUT_IDENTITY",
+   "detail": "InMemoryHoldoutStore hardcodes holdout_id/holdout_sha256; documented test-only store, no current bug; a future production HoldoutStore backend must derive these from the request binding."
+  },
+  {
+   "id": "N2_ROOT_REPARSE_TEST_GAP",
+   "detail": "Reparse escape through a child symlink is tested; the case where the sealed root itself is a symlink is not yet a dedicated test (the code path rejects it). Tracked for T6 matrix verification."
+  },
+  {
+   "id": "N3_LEASE_IS_SELF_ISSUED_IN_FAKE_SCOPE",
+   "detail": "HoldoutLease is constructed inside TrustedEvaluator for the fake-fixtures scope; production integration must validate the lease against the sealed _AuthorityStore (provision, claim, ticket, lease) before granting OPEN_HOLDOUT."
+  },
+  {
+   "id": "N4_DATACLASS_REPR_STRUCTURED_LOGS",
+   "detail": "HoldoutView/EvaluatorResult use default dataclass repr; structured metrics could appear in debug logs (not raw holdout bytes); acceptable within scope, custom repr recommended for production."
+  },
+  {
+   "id": "N5_REF_CHARSET_LEADING_HYPHEN",
+   "detail": "Evidence-ref regex permits a leading hyphen; informational only, repo-relative refs are under version control."
+  }
+ ]
+}

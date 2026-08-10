@@ -1,0 +1,89 @@
+{
+ "schema_version": "control_plane.p8r2_t4_independent_quality_review.v1",
+ "review_id": "p8r2-t4-independent-quality-review",
+ "receipt_id": "p8r2-t4-independent-quality-review",
+ "reviewed_at": "2026-08-10T13:40:00.000000+00:00",
+ "phase": "P8",
+ "attempt_id": "p8-attempt-001",
+ "task_id": "P8R2-T4-TRUSTED-EVALUATOR-ADAPTER",
+ "reviewer": {
+  "actor_id": "codex-quality-p8r2-t4",
+  "actor_type": "llm",
+  "invocation_id": "codex-quality-p8r2-t4-invocation-20260810",
+  "independent_from_task_actor": true
+ },
+ "verdict": "PASS",
+ "decision": "PASS",
+ "counts_as_trusted_evaluator_adapter_quality_approval": true,
+ "candidate": {
+  "ref": "tests/test_control_plane_final_evaluator.py",
+  "sha256": "f940f5998f3462f6c814eaffd10b0146bfd0d32d7e8d8f42115a20ad754ebec2"
+ },
+ "checks": [
+  {
+   "check_id": "error_hierarchy_and_backward_compat",
+   "status": "PASS",
+   "detail": "TrustedEvaluatorError(RuntimeError) is the base with typed subclasses (LeaseError, PathError, BoundaryError, PromptAccessDeniedError, UnboundedResultError); ConsumeOnce hierarchy remains backward compatible; HoldoutHandle is a distinct frozen slots dataclass wrapping HoldoutConsumed and HoldoutLease."
+  },
+  {
+   "check_id": "consume_before_return_atomicity",
+   "status": "PASS",
+   "detail": "test_consume_persists_before_returning verifies the store records the consumption before AuthorityBroker returns the receipt; TrustedEvaluator.evaluate consumes before any adapter read; denied-lease evaluation still consumes the nonce fail-closed."
+  },
+  {
+   "check_id": "side_effect_enum_normalization",
+   "status": "PASS",
+   "detail": "deny_open_holdout_effect and HoldoutLease normalize both plain strings and SideEffect str-Enum members through the value attribute; regression tests cover enum-member denial, enum lease normalization, spec-level OPEN_HOLDOUT rejection and enum lease reads (B-1 resolved)."
+  },
+  {
+   "check_id": "test_coverage_and_fresh_run",
+   "status": "PASS",
+   "detail": "The focused module contains 69 tests; fresh run on the locked runtime reports 69 tests, 0 failures, OK; coverage includes traversal vectors, real directory-symlink reparse escape, nonce replay, crash-after-consume, canary leak denial, escaping evidence refs, unbounded metrics, real-holdout-open sentinel and lease denials."
+  },
+  {
+   "check_id": "diff_boundary_and_noise",
+   "status": "PASS",
+   "detail": "Only research_automation/control_plane/final_evaluator.py and tests/test_control_plane_final_evaluator.py are changed; the four protected user files are untouched noise; no forbidden root is modified."
+  },
+  {
+   "check_id": "canonical_hash_integrity",
+   "status": "PASS",
+   "detail": "All self-hashed dataclasses derive deterministic *_sha256 from canonical_sha256(to_payload()); receipt/review files are valid JSON without BOM; candidate hashes cross-verify against the working-tree files."
+  },
+  {
+   "check_id": "no_todo_or_placeholder",
+   "status": "PASS",
+   "detail": "No TODO, FIXME, XXX, HACK, debug prints, pdb/breakpoint, placeholder ellipsis, bare pass or emoji in the T4 additions."
+  },
+  {
+   "check_id": "holdout_boundary",
+   "status": "PASS",
+   "detail": "No real Final Holdout bytes are opened, read, or imported; fixtures are tempdir fakes; _HoldoutOpenSentinel positively asserts the real holdout path is never opened; p8_authorized/campaign_authorized/final_holdout_authorized/auto_advance remain false."
+  }
+ ],
+ "findings": [],
+ "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+ "blockers": [],
+ "advisories": [
+  {
+   "id": "B1_BLOCKING_FINDING_RESOLVED",
+   "detail": "Initial independent quality review returned FAIL for fail-open str-Enum handling in deny_open_holdout_effect / require_evaluator_spec_holdout_free (B-1) and the lease normalization counterpart (NB-1). Implementer applied _normalize_effect and added four regression tests; re-review of the final working tree passes 69/69 and the guard is now fail-closed for both string and enum shapes."
+  },
+  {
+   "id": "NB2_PRIVATE_API_COUPLING_TO_ENTRY_GUARD",
+   "detail": "seal_trusted_data_root and _resolve_blessed_child call underscore-prefixed entry_guard helpers; behavior is correct and tested; extracting public path-safety helpers is recommended before production."
+  },
+  {
+   "id": "NB3_SYMLINK_TEST_SKIP_CAVEAT",
+   "detail": "test_reparse_escape_rejected skips on hosts without symlink privileges; it passed on this host; an explicit error-path test is recommended for CI."
+  },
+  {
+   "id": "NB4_BOUNDS_COVERAGE",
+   "detail": "_MAX_EVIDENCE_REFS, _MAX_SHA256S and _MAX_COUNTS are enforced but not each driven past their limit in a dedicated test; low risk, tracked for T6."
+  },
+  {
+   "id": "NB5_WINDOWS_NORMCASE",
+   "detail": "Root sealing normalizes case on Windows; consistent with test expectations; keep in mind for future path-equality comparisons."
+  }
+ ]
+}
