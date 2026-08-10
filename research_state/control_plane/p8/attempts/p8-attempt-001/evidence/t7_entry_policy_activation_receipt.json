@@ -1,0 +1,15 @@
+{
+  "schema_version": "control_plane.p8r2_t7_entry_policy_activation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "activated_at": "2026-08-10T15:16:45.823000+00:00",
+  "expected_old_policy_sha256": "d293e13ca4af1719390472b70e6064a5a7953ec63c189296a79e7ce9379d56a7",
+  "new_policy_sha256": "6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da",
+  "ticket_id": "db73600e5ad19e40af6bbb96d4a711526242a4f3114735837ec4b0a5c5b34b69",
+  "task_report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_task_report.json",
+  "task_report_sha256": "c840f50519abd686010803a84dc49c1a730ebb233ad03206ff7d892cf011d2c0",
+  "trusted_receipt_count": 14,
+  "compare_and_swap": "PASS",
+  "verdict": "PASS"
+}

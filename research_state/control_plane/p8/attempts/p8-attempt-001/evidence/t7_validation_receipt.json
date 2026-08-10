@@ -1,0 +1,214 @@
+{
+  "schema_version": "control_plane.p8r2_t7_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T7-FINAL-INVENTORY-POLICY-GATE",
+  "ticket_id": "db73600e5ad19e40af6bbb96d4a711526242a4f3114735837ec4b0a5c5b34b69",
+  "validated_at": "2026-08-10T15:16:45.746465+00:00",
+  "validation_git_head": "56f5f177c2af6eae0ed931ebc410fc5c933951bf",
+  "validation_git_tree": "bc6adaedfab8e82ad8a2b231135ed9f91e9b352f",
+  "independent_reviews": [
+    {
+      "receipt_id": "p8r2-t7-independent-spec-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_independent_spec_review.json",
+      "sha256": "0fb9abeb16d2b1ff95fd0607e8bdc00b10c574135ad709e20c8fbc7c394165f2",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p8r2-t7-independent-quality-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_independent_quality_review.json",
+      "sha256": "7f4b97c57ba213767ce85af96192f18e2458e809a22fe30b14e73f1adc92bc80",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p8r2-t7-gate-regressions",
+      "result": "PASS",
+      "tests_run": 243,
+      "tail": "----------------------------------------------------------------------\nRan 243 tests in 275.180s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p8r2-t7-final-artifact-live-inventory",
+      "result": "PASS",
+      "details": {
+        "inventory_entry_count": 536,
+        "inventory_payload_sha256": "30dd4e9753f4dd81ac92b1714ad1c29da5c2c6569a12e03d2a1eeb9253cf9ce7",
+        "scheduler_status": "VERIFIED",
+        "policy_file_sha256": "6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da",
+        "policy_payload_sha256": "802864f15950f510db72444d488f98af671c32f52be6f99003c33aee32743ad2",
+        "policy_review_receipt_sha256": "43485c3ca2591ea55484182417e9920f35ef2d1b52fef9f3ba5b836e06c8b1ec",
+        "artifact_manifest": [
+          {
+            "label": "code_freeze_manifest",
+            "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_code_freeze_manifest_v2.json",
+            "sha256": "d00a9c4e0669b0a9ec1272de5e65f9672412ca18ea25e6b86e0e8ba6be4a5ecc"
+          },
+          {
+            "label": "external_scheduler_inventory",
+            "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_external_scheduler_inventory.json",
+            "sha256": "04b596439aff917152a7f84c6c1360ddf4224d39c035be00a8ce286a2a4cb433"
+          },
+          {
+            "label": "final_inventory",
+            "ref": "research_state/control_plane/inventories/final_inventory_v342_p8r2_p8-attempt-001_git_v3.json",
+            "sha256": "7cd641a8d7ad5f6c31f1405da0478c8be71f01393f8f451d528d593b775669a5"
+          },
+          {
+            "label": "entry_policy_review_candidate",
+            "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_review_candidate.json",
+            "sha256": "020cc1680078d3b0919623db0ddbd756ea1fb1f4bf63337d79b184f7467ac7d8"
+          },
+          {
+            "label": "entry_policy_independent_review",
+            "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_independent_review.json",
+            "sha256": "462e7084cd5a05eb2285533874211036e80630c0deabdccb0012aef616582f4b"
+          },
+          {
+            "label": "entry_policy_publication_receipt",
+            "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_publication_receipt.json",
+            "sha256": "8be84b69a1e8a585627324faec21126b03dd2c7604c01e5f09222c3fb70623bb"
+          },
+          {
+            "label": "entry_policy_file",
+            "ref": "research_state/control_plane/policies/6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da.json",
+            "sha256": "6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da"
+          }
+        ]
+      }
+    },
+    {
+      "receipt_id": "p8r2-t7-authority-task-report-set",
+      "result": "PASS",
+      "details": {
+        "task_report_records": [
+          {
+            "task_id": "P8R2-T1-CURRENT-SOURCE-ADOPTION",
+            "ticket_id": "714562f3d71b0a5ffa09681892a332447433fb187016cbe9ff6581a5ef82bf07",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t1_task_report.json",
+            "report_sha256": "458e9153ff5e0205bf9f0308dd5bfbb2e6b899b6cfcbcd6efdcaae12e389d566"
+          },
+          {
+            "task_id": "P8R2-T2-FINAL-EVAL-REQUEST-CONTRACT",
+            "ticket_id": "cb0d80974eac293586c6d96e223d2d52b4f81ba0ab7bd25e9da31495423d4455",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t2_task_report.json",
+            "report_sha256": "7b1b5ad0443770bb77d29c5c2ced09a93eb876316348324d562d2ca7007977fd"
+          },
+          {
+            "task_id": "P8R2-T3-AUTHORITY-BROKER-CONSUME-ONCE",
+            "ticket_id": "738e35aa11d9ae93aa98500e5c96bec5264a077f63aa89479e25d95cf03d5b23",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t3_task_report.json",
+            "report_sha256": "c369b10cc8a4ebb17632ef62002afda894e9b9d0480c908f8b18e18aa284872d"
+          },
+          {
+            "task_id": "P8R2-T4-TRUSTED-EVALUATOR-ADAPTER",
+            "ticket_id": "e94920035150968ed28310b909c80e2e6405d6890f9462fbcbf32611f21620af",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t4_task_report.json",
+            "report_sha256": "e45d6ab7b9a255b17064252e445e451a4526f28454a73314d1ab775178da9d90"
+          },
+          {
+            "task_id": "P8R2-T5-TERMINAL-AUDIT-CLOSURE",
+            "ticket_id": "12ab79385152c158f99c99593201c1f87ef5f0d4a76dc9fc71fe9baa47bec0fb",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t5_task_report.json",
+            "report_sha256": "d91a7522b1a80fd7fda859cdef3a40507df1f76b521e13e59a15b8a63b38c316"
+          },
+          {
+            "task_id": "P8R2-T6-INTEGRATION-VERIFICATION",
+            "ticket_id": "4f14051f6fc17814392b72004e3eb2c3bc6775f59883d51c913ac189e64da436",
+            "outcome": "PASS",
+            "report_ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t6_task_report.json",
+            "report_sha256": "dff0f262130498635494b5257ce0adf08e87c03d54ce350ea3db90fef9ae18ec"
+          }
+        ],
+        "count": 6,
+        "note": "T7 task report is created after the Authority task completes and is included in the gate task-report set."
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {},
+    "all_ok": true
+  },
+  "artifact_manifest": [
+    {
+      "label": "code_freeze_manifest",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_code_freeze_manifest_v2.json",
+      "sha256": "d00a9c4e0669b0a9ec1272de5e65f9672412ca18ea25e6b86e0e8ba6be4a5ecc"
+    },
+    {
+      "label": "external_scheduler_inventory",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_external_scheduler_inventory.json",
+      "sha256": "04b596439aff917152a7f84c6c1360ddf4224d39c035be00a8ce286a2a4cb433"
+    },
+    {
+      "label": "final_inventory",
+      "ref": "research_state/control_plane/inventories/final_inventory_v342_p8r2_p8-attempt-001_git_v3.json",
+      "sha256": "7cd641a8d7ad5f6c31f1405da0478c8be71f01393f8f451d528d593b775669a5"
+    },
+    {
+      "label": "entry_policy_review_candidate",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_review_candidate.json",
+      "sha256": "020cc1680078d3b0919623db0ddbd756ea1fb1f4bf63337d79b184f7467ac7d8"
+    },
+    {
+      "label": "entry_policy_independent_review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_independent_review.json",
+      "sha256": "462e7084cd5a05eb2285533874211036e80630c0deabdccb0012aef616582f4b"
+    },
+    {
+      "label": "entry_policy_publication_receipt",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t7_entry_policy_publication_receipt.json",
+      "sha256": "8be84b69a1e8a585627324faec21126b03dd2c7604c01e5f09222c3fb70623bb"
+    },
+    {
+      "label": "entry_policy_file",
+      "ref": "research_state/control_plane/policies/6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da.json",
+      "sha256": "6e921d37d899369ca5e0e2645e496731fb6ca992effe340f370514e9095aa3da"
+    }
+  ],
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_46ebf6d2f7f8c495b42debc398131661",
+    "grant_state": "ACTIVE",
+    "ticket_id": "db73600e5ad19e40af6bbb96d4a711526242a4f3114735837ec4b0a5c5b34b69",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 10,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
