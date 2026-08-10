@@ -16,6 +16,7 @@ import random
 import base64
 import shutil
 import sqlite3
+import msvcrt
 import tempfile
 import functools
 from contextlib import contextmanager
@@ -490,6 +491,29 @@ def _deterministic_root(seed: int, cycles: int) -> Path:
 
 
 @contextmanager
+def _deterministic_root_lock(seed: int, cycles: int):
+    """Serialize one (seed, cycles) simulation across processes."""
+    base = Path(tempfile.gettempdir()).resolve()
+    lock_path = (base / f"v342-c0-deterministic-{seed}-{cycles}.lock").resolve()
+    try:
+        lock_path.relative_to(base)
+    except ValueError as error:
+        raise RuntimeError("deterministic C0 lock path escapes temp dir") from error
+    with lock_path.open("a+b") as handle:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
 def _deterministic_secrets(seed: int):
     """Deterministic secrets token source so cross-process replays are stable.
 
@@ -597,7 +621,7 @@ def _run_main_campaign(
     root_path = _deterministic_root(seed, cycles)
     if root_path.exists():
         shutil.rmtree(root_path)
-    with _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
+    with _deterministic_root_lock(seed, cycles), _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
         _CAMPAIGN_ID,
         root_path,
     ) as (root, _, journal):
