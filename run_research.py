@@ -20,6 +20,7 @@ from research_automation.control_plane.cli_registry import (
     CliAuthorizationContext,
     authorize_cli_command,
 )
+from research_automation.control_plane.campaign_preflight import (CampaignBoundaryError, require_campaign_boundary)
 from research_automation.control_plane.sink_guard import ExecutionAuthorizationError
 
 
@@ -79,6 +80,22 @@ def _cli_preflight(
     )
 
 
+def _campaign_boundary(
+    args: argparse.Namespace,
+    command: str,
+    dry_run: bool = False,
+) -> None:
+    """Route one legacy CLI command through the fail-closed Campaign boundary.
+
+    execute-handoff --dry-run is read-only and remains exempt; every other
+    legacy execution command fails closed until a control-plane Campaign
+    execution context is attached.
+    """
+    if dry_run and command == "execute-handoff":
+        return
+    require_campaign_boundary(surface=f"run_research.py:{command}")
+
+
 def _configure_stdio() -> None:
     """Prefer UTF-8 console streams on Windows shells."""
     for stream in (sys.stdout, sys.stderr):
@@ -111,6 +128,7 @@ def cmd_list(_args: argparse.Namespace) -> None:
 
 def cmd_brainstorm(args: argparse.Namespace) -> None:
     _cli_preflight(args, "brainstorm")
+    _campaign_boundary(args, "brainstorm")
     orch = _orchestrator_class()(profile=args.profile)
     ctx = args.context or ""
     if args.context_file:
@@ -135,6 +153,7 @@ def cmd_brainstorm(args: argparse.Namespace) -> None:
 def cmd_discover(args: argparse.Namespace) -> Path:
     """Run the source-first KBase discovery workflow explicitly."""
     _cli_preflight(args, "discover")
+    _campaign_boundary(args, "discover")
     orch = _orchestrator_class()(profile=args.profile)
     ctx = args.context or ""
     if args.context_file:
@@ -163,6 +182,7 @@ def cmd_discover(args: argparse.Namespace) -> Path:
 def cmd_resume_discover(args: argparse.Namespace) -> Path:
     """Resume the factor handoff from an archived source-first checkpoint."""
     _cli_preflight(args, "resume-discover")
+    _campaign_boundary(args, "resume-discover")
     checkpoint = Path(args.handoff_path).resolve()
     document = yaml.safe_load(checkpoint.read_text(encoding="utf-8")) or {}
     strategy_id = str(document.get("strategy_id") or "")
@@ -187,6 +207,7 @@ def cmd_execute_handoff(args: argparse.Namespace) -> dict:
         "execute-handoff",
         dry_run=bool(args.dry_run),
     )
+    _campaign_boundary(args, "execute-handoff", dry_run=bool(args.dry_run))
     from ag2_research.discovery_handoff import load_latest_approved_discovery
     from research_automation.discovery_execution_bridge import (
         build_execution_plan,
@@ -225,6 +246,7 @@ def cmd_execute_handoff(args: argparse.Namespace) -> dict:
 def cmd_full_cycle(args: argparse.Namespace) -> dict:
     """Run discovery, runner repair when needed, and archived research execution."""
     _cli_preflight(args, "full-cycle", dry_run=bool(args.dry_run))
+    _campaign_boundary(args, "full-cycle", dry_run=bool(args.dry_run))
     from research_automation.kbase_ag2_full_cycle import run_kbase_ag2_full_cycle
 
     context = args.context or ""
@@ -264,6 +286,7 @@ def cmd_full_cycle(args: argparse.Namespace) -> dict:
 def cmd_repair_handoff_runner(args: argparse.Namespace) -> dict:
     """Auto-repair a missing registered Phase 6 runner for an APPROVED handoff."""
     _cli_preflight(args, "repair-handoff-runner", dry_run=bool(args.dry_run))
+    _campaign_boundary(args, "repair-handoff-runner", dry_run=bool(args.dry_run))
     from research_automation.handoff_runner_repair import repair_handoff_runner
 
     result = repair_handoff_runner(
@@ -285,6 +308,7 @@ def cmd_repair_handoff_runner(args: argparse.Namespace) -> dict:
 
 def cmd_review(args: argparse.Namespace) -> None:
     _cli_preflight(args, "review")
+    _campaign_boundary(args, "review")
     orch = _orchestrator_class()(profile=args.profile)
 
     if args.file:
@@ -311,6 +335,7 @@ def cmd_review(args: argparse.Namespace) -> None:
 
 def cmd_chat(args: argparse.Namespace) -> None:
     _cli_preflight(args, "chat")
+    _campaign_boundary(args, "chat")
     orch = _orchestrator_class()(profile=args.profile)
     agent_ids = [a.strip() for a in args.agents.split(",")]
 
@@ -327,6 +352,7 @@ def cmd_chat(args: argparse.Namespace) -> None:
 
 def cmd_roundtable(args: argparse.Namespace) -> None:
     _cli_preflight(args, "roundtable")
+    _campaign_boundary(args, "roundtable")
     orch = _orchestrator_class()()
     ctx = args.context or ""
     if args.context_file:
@@ -365,6 +391,7 @@ def cmd_roundtable(args: argparse.Namespace) -> None:
 
 def cmd_interactive(args: argparse.Namespace) -> None:
     _cli_preflight(args, "interactive")
+    _campaign_boundary(args, "interactive")
     orch = _orchestrator_class()(profile=args.profile)
     print(f"\nAG2 Research Console — profile: {orch.profile}")
     print("Type /help for commands, /quit to exit\n")
@@ -563,7 +590,7 @@ def main(
     }
     try:
         result = commands[args.command](args)
-    except ExecutionAuthorizationError as error:
+    except (ExecutionAuthorizationError, CampaignBoundaryError) as error:
         print(f"[run_research] blocked: {error}", file=sys.stderr)
         return 3
     if args.command == "full-cycle":

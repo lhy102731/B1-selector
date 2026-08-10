@@ -418,5 +418,77 @@ class OutputOwnershipTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class CampaignBoundaryAutomationTests(unittest.TestCase):
+    def test_autonomous_runner_without_campaign_context_fails_before_writes(self):
+        runner = object.__new__(AutonomousRunnerV1)
+        with patch.object(Path, "mkdir", side_effect=AssertionError("write attempted")):
+            with self.assertRaises(AuthorizationError) as caught:
+                runner.run(dry_run=True)
+        self.assertIn("campaign boundary", str(caught.exception).lower())
+
+    def test_controller_without_campaign_context_fails_before_output(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            output_root = root / "experiments"
+            controller = AutomationController(output_root=output_root)
+            actor = Actor(
+                "controller-boundary-test",
+                "automation",
+                "controller-boundary-invocation",
+            )
+            identity = AuthorityIdentity("a" * 64, "b" * 64, "c" * 64)
+            lease = TaskExecutionLease(
+                lease_id="lease-boundary",
+                ticket_id="ticket-boundary",
+                grant_id="grant-boundary",
+                authorization_ref="auth-boundary",
+                phase=Phase.P6,
+                attempt_id="p6-boundary",
+                task_id="BOUNDARY-TEST",
+                entry_policy_sha256="d" * 64,
+                allowed_side_effects=(SideEffect.RUN_RESEARCH,),
+                actor=actor,
+                identity=identity,
+                _bearer_secret=_BearerSecret("test-secret"),
+            )
+            runner = RunnerIdentity(
+                module="research_automation.automation_controller",
+                callable_name="AutomationController.run_from_proposal",
+                source_ref="research_automation/automation_controller.py",
+                source_sha256="e" * 64,
+            )
+            invocation = ExecutionInvocation(
+                intent_ref="intent-boundary",
+                entry_id="entry-boundary",
+                effect=SideEffect.RUN_RESEARCH,
+                operation="AUTONOMOUS",
+                argv=("run_from_proposal",),
+                cwd=str(root),
+                runner=runner,
+                resource_paths=(str(output_root.resolve()),),
+            )
+            controller.execution_lease = lease
+            controller.execution_invocation = invocation
+            permit = SimpleNamespace(
+                operation="AUTONOMOUS",
+                effect=SideEffect.RUN_RESEARCH,
+                resource_paths=(output_root.resolve(),),
+            )
+            with patch(
+                "research_automation.automation_controller."
+                "ExecutionSinkGuard.authorize",
+                return_value=permit,
+            ):
+                result = controller.run_from_proposal(
+                    "boundary-blocked",
+                    {"hypothesis": "bounded", "scope": {}},
+                )
+            self.assertEqual("FAILED", result.status.value)
+            self.assertTrue(
+                any("campaign boundary" in item.lower() for item in result.logs)
+            )
+            self.assertFalse(output_root.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

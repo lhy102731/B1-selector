@@ -28,6 +28,7 @@ from .result_parser import BacktestResultParser
 from .snapshot_updater import SnapshotUpdater
 from .task_queue import ExperimentTask, TaskQueue
 from .control_plane.contracts import SideEffect
+from .control_plane.campaign_preflight import CampaignBoundaryError, require_campaign_boundary
 from .control_plane.sink_guard import (
     ExecutionAuthorizationError,
     ExecutionInvocation,
@@ -115,6 +116,12 @@ class AutomationController:
             raise ExecutionAuthorizationError(
                 "controller output root is not bound by the execution intent"
             )
+        try:
+            require_campaign_boundary(
+                surface="research_automation.automation_controller.AutomationController"
+            )
+        except CampaignBoundaryError as error:
+            raise ExecutionAuthorizationError(str(error)) from error
 
     def run_from_proposal(self, experiment_id: str, proposal: dict) -> Experiment:
         try:

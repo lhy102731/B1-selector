@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from research_automation.control_plane.campaign_preflight import (
+    CampaignBoundaryError,
+    require_campaign_boundary,
     run_campaign_preflight,
 )
 from research_automation.control_plane.memory import (
@@ -176,6 +179,53 @@ class CampaignPreflightTests(unittest.TestCase):
         self.assertEqual(
             result["learning_verdict"]["scoped_block_claims"][0]["claim_id"],
             "committed-partial",
+        )
+
+
+class CampaignBoundaryTests(unittest.TestCase):
+    def test_legacy_surface_without_campaign_context_fails_closed(self) -> None:
+        with self.assertRaises(CampaignBoundaryError) as caught:
+            require_campaign_boundary(surface="run_research.py:brainstorm")
+        self.assertEqual(
+            caught.exception.rejection_codes,
+            ("LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT",),
+        )
+        self.assertIn("run_research.py:brainstorm", str(caught.exception))
+
+    def test_formal_would_accept_passes_boundary(self) -> None:
+        accepted = {"verdict": "WOULD_ACCEPT", "rejection_codes": []}
+        with patch(
+            "research_automation.control_plane.campaign_preflight."
+            "run_campaign_preflight",
+            return_value=accepted,
+        ) as preflight:
+            result = require_campaign_boundary(
+                surface="formal-surface",
+                execution_spec=object(),
+                proposal={"hypothesis": "bounded"},
+            )
+        self.assertIs(result, accepted)
+        preflight.assert_called_once()
+
+    def test_formal_would_reject_raises_with_codes(self) -> None:
+        rejected = {
+            "verdict": "WOULD_REJECT",
+            "rejection_codes": ["LEARNING_HARD_BLOCK"],
+        }
+        with patch(
+            "research_automation.control_plane.campaign_preflight."
+            "run_campaign_preflight",
+            return_value=rejected,
+        ):
+            with self.assertRaises(CampaignBoundaryError) as caught:
+                require_campaign_boundary(
+                    surface="formal-surface",
+                    execution_spec=object(),
+                    proposal={"hypothesis": "bounded"},
+                )
+        self.assertEqual(
+            caught.exception.rejection_codes,
+            ("LEARNING_HARD_BLOCK",),
         )
 
 

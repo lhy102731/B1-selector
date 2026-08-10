@@ -33,6 +33,7 @@ from .safety import output_root
 from .strategies import require_supported
 from .task_queue import TaskQueue
 from .control_plane.contracts import SideEffect
+from .control_plane.campaign_preflight import CampaignBoundaryError, require_campaign_boundary
 from .control_plane.entry_guard import AuthorizationError, EntryGuard
 from .control_plane.sink_guard import (
     ExecutionAuthorizationError,
@@ -141,6 +142,14 @@ class AutonomousRunnerV1:
     # ---- main -------------------------------------------------------------
     def run(self, max_rounds: int = 5, per_round: int = 4, max_minutes: int | None = None,
             resume: bool = False, dry_run: bool = False) -> dict:
+        try:
+            require_campaign_boundary(
+                surface="research_automation.autonomous_runner.AutonomousRunnerV1.run"
+            )
+        except CampaignBoundaryError as error:
+            raise AuthorizationError(
+                f"AutonomousRunnerV1 campaign boundary rejected: {error}"
+            ) from error
         entry_guard = getattr(self, "entry_guard", None)
         if not isinstance(entry_guard, EntryGuard):
             raise AuthorizationError("AutonomousRunnerV1 requires a control-plane entry ticket")

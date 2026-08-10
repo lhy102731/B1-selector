@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +71,68 @@ class CliEntryGuardTests(unittest.TestCase):
         with patch.object(run_research, "_research_config_class", return_value=config_class):
             self.assertEqual(0, run_research.main(["list"]))
         config_class.assert_called_once_with()
+
+
+class CampaignBoundaryCliTests(unittest.TestCase):
+    def test_authorized_legacy_command_still_requires_campaign_boundary(self) -> None:
+        with (
+            patch.object(
+                run_research,
+                "_cli_preflight",
+                return_value=object(),
+            ),
+            patch.object(
+                run_research,
+                "_orchestrator_class",
+                side_effect=AssertionError("Orchestrator constructed"),
+            ),
+        ):
+            status = run_research.main(
+                ["brainstorm", "--topic", "must not start"]
+            )
+        self.assertEqual(3, status)
+
+    def test_execute_handoff_dry_run_skips_campaign_boundary(self) -> None:
+        args = argparse.Namespace(dry_run=True)
+        with patch.object(
+            run_research,
+            "require_campaign_boundary",
+            side_effect=AssertionError("dry-run must not cross the boundary"),
+        ) as boundary:
+            run_research._campaign_boundary(
+                args,
+                "execute-handoff",
+                dry_run=True,
+            )
+        boundary.assert_not_called()
+
+    def test_execute_handoff_without_dry_run_requires_campaign_boundary(self) -> None:
+        args = argparse.Namespace(dry_run=False)
+        with patch.object(
+            run_research,
+            "require_campaign_boundary",
+        ) as boundary:
+            run_research._campaign_boundary(
+                args,
+                "execute-handoff",
+                dry_run=False,
+            )
+        boundary.assert_called_once_with(
+            surface="run_research.py:execute-handoff"
+        )
+
+    def test_full_cycle_dry_run_is_not_a_read_only_exception(self) -> None:
+        args = argparse.Namespace(dry_run=True)
+        with patch.object(
+            run_research,
+            "require_campaign_boundary",
+        ) as boundary:
+            run_research._campaign_boundary(
+                args,
+                "full-cycle",
+                dry_run=True,
+            )
+        boundary.assert_called_once_with(surface="run_research.py:full-cycle")
 
 
 if __name__ == "__main__":

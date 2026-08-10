@@ -1,0 +1,176 @@
+{
+  "schema_version": "control_plane.p6r2_t7_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T7-LEGACY-CLI-PREFLIGHT",
+  "ticket_id": "41a4845c2b5cf20d4b92a8213701361449dab95cc01b929cc136bccf12e0a3ec",
+  "validated_at": "2026-08-10T05:51:13.936123+00:00",
+  "validation_git_head": "3e27482f84096027c17a3be8f95fcc1e74940a05",
+  "validation_git_tree": "6d8ccafa6e7d0df8ac346759cbea759e5e8d3b02",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t7-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t7_independent_spec_review.json",
+      "sha256": "691884308b289309fc6bae48074a4b0dc8649e32562b28f54be5b0742f1d08ec",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t7-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t7_independent_quality_review.json",
+      "sha256": "06d1b215a31cdd3a2b4a62d799c8d1d3ba5957af6d1768635b14da248f5df0a7",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t7-focused-tests",
+      "result": "PASS",
+      "tests_run": 39,
+      "tail": "\n=== LLM Profiles ===\n\n=== Agents ===\n\n=== Workflows ===\n[run_research_cycle] blocked: campaign boundary rejected for run_research_cycle.py:main: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT\n[run_research] blocked: campaign boundary rejected for run_research.py:brainstorm: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT\n[run_research] blocked: CLI command 'brainstorm' requires a programmatic control-plane adapter\n[run_research] blocked: CLI command 'repair-handoff-runner' requires a programmatic control-plane adapter\n----------------------------------------------------------------------\nRan 39 tests in 0.166s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t7-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/automation_controller.py",
+          "research_automation/autonomous_runner.py",
+          "research_automation/control_plane/campaign_preflight.py",
+          "run_research.py",
+          "run_research_cycle.py",
+          "tests/test_automation_resilience.py",
+          "tests/test_cli_entry_guards.py",
+          "tests/test_control_plane_campaign_preflight.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/automation_controller.py",
+          "research_automation/autonomous_runner.py",
+          "research_automation/control_plane/campaign_preflight.py",
+          "run_research.py",
+          "run_research_cycle.py",
+          "tests/test_automation_resilience.py",
+          "tests/test_cli_entry_guards.py",
+          "tests/test_control_plane_campaign_preflight.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/control_plane/campaign_preflight.py": {
+            "class CampaignBoundaryError": true,
+            "def require_campaign_boundary": true,
+            "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT": true
+          },
+          "run_research.py": {
+            "def _campaign_boundary": true,
+            "require_campaign_boundary": true,
+            "CampaignBoundaryError": true
+          },
+          "run_research_cycle.py": {
+            "require_campaign_boundary": true,
+            "CampaignBoundaryError": true
+          },
+          "research_automation/automation_controller.py": {
+            "require_campaign_boundary": true,
+            "CampaignBoundaryError": true
+          },
+          "research_automation/autonomous_runner.py": {
+            "require_campaign_boundary": true,
+            "campaign boundary rejected": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/automation_controller.py",
+      "research_automation/autonomous_runner.py",
+      "research_automation/control_plane/campaign_preflight.py",
+      "run_research.py",
+      "run_research_cycle.py",
+      "tests/test_automation_resilience.py",
+      "tests/test_cli_entry_guards.py",
+      "tests/test_control_plane_campaign_preflight.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/automation_controller.py",
+      "research_automation/autonomous_runner.py",
+      "research_automation/control_plane/campaign_preflight.py",
+      "run_research.py",
+      "run_research_cycle.py",
+      "tests/test_automation_resilience.py",
+      "tests/test_cli_entry_guards.py",
+      "tests/test_control_plane_campaign_preflight.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/control_plane/campaign_preflight.py": {
+        "class CampaignBoundaryError": true,
+        "def require_campaign_boundary": true,
+        "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT": true
+      },
+      "run_research.py": {
+        "def _campaign_boundary": true,
+        "require_campaign_boundary": true,
+        "CampaignBoundaryError": true
+      },
+      "run_research_cycle.py": {
+        "require_campaign_boundary": true,
+        "CampaignBoundaryError": true
+      },
+      "research_automation/automation_controller.py": {
+        "require_campaign_boundary": true,
+        "CampaignBoundaryError": true
+      },
+      "research_automation/autonomous_runner.py": {
+        "require_campaign_boundary": true,
+        "campaign boundary rejected": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "41a4845c2b5cf20d4b92a8213701361449dab95cc01b929cc136bccf12e0a3ec",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 6,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

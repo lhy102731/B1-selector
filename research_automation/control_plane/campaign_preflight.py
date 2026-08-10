@@ -18,6 +18,29 @@ from .memory import (
 )
 
 
+LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT = "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT"
+
+
+class CampaignBoundaryError(RuntimeError):
+    """Raised when a legacy surface crosses the fail-closed Campaign boundary."""
+
+    def __init__(
+        self,
+        *,
+        surface: str,
+        rejection_codes: Sequence[str],
+    ) -> None:
+        message = (
+            "campaign boundary rejected for "
+            + surface
+            + ": "
+            + (",".join(rejection_codes) or "NO_REJECTION_CODES")
+        )
+        super().__init__(message)
+        self.surface = surface
+        self.rejection_codes = tuple(rejection_codes)
+
+
 def run_campaign_preflight(
     *,
     execution_spec: ExecutionSpec,
@@ -73,4 +96,50 @@ def run_campaign_preflight(
     }
 
 
-__all__ = ["run_campaign_preflight"]
+def require_campaign_boundary(
+    *,
+    surface: str,
+    execution_spec: ExecutionSpec | None = None,
+    proposal: Mapping[str, object] | None = None,
+    committed_claims: Sequence[Mapping[str, object]] = (),
+) -> dict[str, object]:
+    """Fail closed unless a formal Campaign preflight would accept the surface.
+
+    Legacy CLI and automation surfaces do not carry a formal Campaign
+    execution context; until a later control-plane slice attaches one they
+    are rejected with LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT. Surfaces that
+    do provide formal inputs are evaluated by run_campaign_preflight and
+    must return a WOULD_ACCEPT verdict.
+    """
+    if execution_spec is None or proposal is None:
+        result: dict[str, object] = {
+            "schema_version": "control_plane.campaign_boundary.v1",
+            "surface": surface,
+            "verdict": "WOULD_REJECT",
+            "rejection_codes": [
+                LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT,
+            ],
+        }
+    else:
+        result = run_campaign_preflight(
+            execution_spec=execution_spec,
+            proposal=proposal,
+            committed_claims=committed_claims,
+        )
+    if result.get("verdict") != "WOULD_ACCEPT":
+        rejection_codes = result.get("rejection_codes")
+        if not isinstance(rejection_codes, list):
+            rejection_codes = []
+        raise CampaignBoundaryError(
+            surface=surface,
+            rejection_codes=rejection_codes,
+        )
+    return result
+
+
+__all__ = [
+    "CampaignBoundaryError",
+    "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT",
+    "require_campaign_boundary",
+    "run_campaign_preflight",
+]

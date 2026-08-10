@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """run_research_cycle.py -- start one autonomous research cycle.
 
 Current status: AutonomousRunnerV1 is retained for compatibility but is
@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from research_automation.autonomous_runner import AutonomousRunnerV1
 from research_automation.strategies import UnsupportedStrategyError, PROFILES
+from research_automation.control_plane.campaign_preflight import (CampaignBoundaryError, require_campaign_boundary)
 
 
 def main() -> int:
@@ -55,6 +56,12 @@ def main() -> int:
                     help="parameter (default, unchanged): ParameterProposer + NoOpCodeChangeExecutor; "
                          "code: ResearchDirector + ProposalGenerator + ClaudePatchExecutor")
     args = ap.parse_args()
+
+    try:
+        require_campaign_boundary(surface="run_research_cycle.py:main")
+    except CampaignBoundaryError as error:
+        print(f"[run_research_cycle] blocked: {error}")
+        return 3
 
     print(
         "[run_research_cycle] blocked: AutonomousRunnerV1 is legacy_unaudited and "
