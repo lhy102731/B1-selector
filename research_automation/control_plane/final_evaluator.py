@@ -1181,7 +1181,7 @@ class TrustedEvaluator:
             lease_id=lease_id,
             ticket_id=ticket_id,
             allowed_side_effects=tuple(
-                sorted(str(effect) for effect in allowed_side_effects)
+                sorted(_normalize_effect(effect) for effect in allowed_side_effects)
             ),
             code_sha256=request.code.code_sha256,
         )
@@ -1193,6 +1193,346 @@ class TrustedEvaluator:
             view=view,
             outcome=outcome,
         )
+
+
+# ---------------------------------------------------------------------------
+# P8R2 T5: terminal audit closure (irreversible Campaign close)
+# ---------------------------------------------------------------------------
+
+TERMINAL_AUDIT_EVENT_SCHEMA = "control_plane.terminal_audit_event.v1"
+CAMPAIGN_CLOSURE_RECEIPT_SCHEMA = "control_plane.campaign_closure_receipt.v1"
+CLOSURE_AUDIT_RECORD_SCHEMA = "control_plane.closure_audit_record.v1"
+_VERDICT_BY_OUTCOME = {
+    "SUCCEEDED": "PASS",
+    "FAILED": "FAIL",
+    "TIMEOUT": "TIMEOUT",
+    "CRASHED": "CRASH",
+}
+_TERMINAL_VERDICTS = frozenset(_VERDICT_BY_OUTCOME.values())
+_CAMPAIGN_STATES = frozenset({"ACTIVE", "COMPLETED", "BLOCKED", "CLOSED"})
+
+
+class CampaignClosedError(TrustedEvaluatorError):
+    """Raised when a closed Campaign rejects further cycles or closure."""
+
+
+class CampaignClosureConflictError(CampaignClosedError):
+    """Raised when an already-CLOSED Campaign is closed with different content."""
+
+
+class CampaignClosureValidationError(CampaignClosedError, ValueError):
+    """Raised when the Campaign state or closure inputs are invalid."""
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalAuditEvent:
+    """Immutable terminal audit event; hashes and identifiers only, never labels."""
+
+    campaign_id: str
+    request_sha256: str
+    holdout_id: str
+    actor_id: str
+    actor_type: str
+    invocation_id: str
+    verdict: str
+    result_payload_sha256: str
+    result_evidence_ref: str
+    closed_at: str
+    promotion_mode: str = "MANUAL_ONLY"
+    event_id: str = field(init=False)
+    event_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for label, value in (
+            ("campaign_id", self.campaign_id),
+            ("holdout_id", self.holdout_id),
+            ("actor_id", self.actor_id),
+            ("actor_type", self.actor_type),
+            ("invocation_id", self.invocation_id),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise CampaignClosureValidationError(
+                    f"{label} must be a non-empty identifier"
+                )
+        for label, value in (
+            ("request_sha256", self.request_sha256),
+            ("result_payload_sha256", self.result_payload_sha256),
+        ):
+            if _HEX64_RE.fullmatch(value) is None:
+                raise CampaignClosureValidationError(
+                    f"{label} must be a 64-character lowercase SHA-256 digest"
+                )
+        if self.verdict not in _TERMINAL_VERDICTS:
+            raise CampaignClosureValidationError(
+                f"verdict must be one of {sorted(_TERMINAL_VERDICTS)}"
+            )
+        if not _is_repo_relative_evidence_ref(self.result_evidence_ref):
+            raise CampaignClosureValidationError(
+                "result_evidence_ref must be a repo-relative bounded path"
+            )
+        try:
+            parsed = datetime.fromisoformat(self.closed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise CampaignClosureValidationError(
+                "closed_at must be a valid ISO-8601 timestamp"
+            ) from error
+        if (
+            parsed.tzinfo is None
+            or self.closed_at
+            != parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        ):
+            raise CampaignClosureValidationError(
+                "closed_at must be a canonical UTC ISO-8601 timestamp ending in Z"
+            )
+        if self.promotion_mode != "MANUAL_ONLY":
+            raise CampaignClosureValidationError(
+                "promotion_mode must be MANUAL_ONLY; production promotion is manual-only"
+            )
+        object.__setattr__(
+            self,
+            "event_id",
+            canonical_sha256(
+                {
+                    "namespace": "control_plane",
+                    "aggregate_type": "FINAL_EVAL_AUDIT",
+                    "role": "FINAL_EVAL_TERMINAL",
+                    "campaign_id": self.campaign_id,
+                }
+            ),
+        )
+        object.__setattr__(self, "event_sha256", canonical_sha256(self.to_payload()))
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": TERMINAL_AUDIT_EVENT_SCHEMA,
+            "campaign_id": self.campaign_id,
+            "request_sha256": self.request_sha256,
+            "holdout_id": self.holdout_id,
+            "actor_id": self.actor_id,
+            "actor_type": self.actor_type,
+            "invocation_id": self.invocation_id,
+            "verdict": self.verdict,
+            "result_payload_sha256": self.result_payload_sha256,
+            "result_evidence_ref": self.result_evidence_ref,
+            "closed_at": self.closed_at,
+            "promotion_mode": self.promotion_mode,
+        }
+
+
+class CampaignClosureBackend:
+    """Injectable contract for atomic terminal-event append and Campaign close."""
+
+    def campaign_state(self, campaign_id: str) -> str:
+        raise NotImplementedError("CampaignClosureBackend is an injectable contract")
+
+    def terminal_events(self, campaign_id: str) -> tuple[TerminalAuditEvent, ...]:
+        raise NotImplementedError("CampaignClosureBackend is an injectable contract")
+
+    def close_campaign(self, *, event: TerminalAuditEvent) -> None:
+        """Append the terminal event and transition the Campaign to CLOSED."""
+        raise NotImplementedError("CampaignClosureBackend is an injectable contract")
+
+    def reject_closed_campaign(self, campaign_id: str) -> None:
+        """Raise CampaignClosedError when the Campaign is already CLOSED."""
+        raise NotImplementedError("CampaignClosureBackend is an injectable contract")
+
+
+class InMemoryCampaignClosureBackend(CampaignClosureBackend):
+    """In-memory closure backend for tests; never used in production."""
+
+    def __init__(self, *, initial_state: str = "COMPLETED") -> None:
+        if initial_state not in _CAMPAIGN_STATES:
+            raise CampaignClosureValidationError(
+                f"initial_state must be one of {sorted(_CAMPAIGN_STATES)}"
+            )
+        self._default_state = initial_state
+        self._states: dict[str, str] = {}
+        self._events: dict[str, list[TerminalAuditEvent]] = {}
+
+    def _state(self, campaign_id: str) -> str:
+        return self._states.get(campaign_id, self._default_state)
+
+    def campaign_state(self, campaign_id: str) -> str:
+        return self._state(campaign_id)
+
+    def terminal_events(self, campaign_id: str) -> tuple[TerminalAuditEvent, ...]:
+        return tuple(self._events.get(campaign_id, ()))
+
+    def close_campaign(self, *, event: TerminalAuditEvent) -> None:
+        if not isinstance(event, TerminalAuditEvent):
+            raise TypeError("event must be a TerminalAuditEvent")
+        state = self._state(event.campaign_id)
+        existing = self._events.get(event.campaign_id, ())
+        if state == "CLOSED":
+            if (
+                existing
+                and existing[-1].request_sha256 == event.request_sha256
+                and existing[-1].result_payload_sha256 == event.result_payload_sha256
+                and existing[-1].verdict == event.verdict
+                and existing[-1].result_evidence_ref == event.result_evidence_ref
+            ):
+                return
+            raise CampaignClosureConflictError(
+                "Campaign is already CLOSED with different terminal content"
+            )
+        if state != "COMPLETED":
+            raise CampaignClosureValidationError(
+                f"Campaign must be COMPLETED before terminal closure; "
+                f"current state is {state}"
+            )
+        if any(
+            prior.request_sha256 != event.request_sha256
+            or prior.result_payload_sha256 != event.result_payload_sha256
+            for prior in existing
+        ):
+            raise CampaignClosureConflictError(
+                "terminal event collision on the same Campaign"
+            )
+        self._events.setdefault(event.campaign_id, []).append(event)
+        self._states[event.campaign_id] = "CLOSED"
+
+    def reject_closed_campaign(self, campaign_id: str) -> None:
+        if self._state(campaign_id) == "CLOSED":
+            raise CampaignClosedError(
+                "Campaign is CLOSED by final evaluation; no further cycles allowed"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class CampaignClosureReceipt:
+    """Receipt proving one Campaign was irreversibly closed by a terminal event."""
+
+    campaign_id: str
+    event_id: str
+    state: str
+    closed_at: str
+    receipt_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.campaign_id, str) or not self.campaign_id.strip():
+            raise CampaignClosureValidationError(
+                "campaign_id must be a non-empty identifier"
+            )
+        if _HEX64_RE.fullmatch(self.event_id) is None:
+            raise CampaignClosureValidationError(
+                "event_id must be a 64-character lowercase SHA-256 digest"
+            )
+        if self.state != "CLOSED":
+            raise CampaignClosureValidationError(
+                "closure receipt state must be CLOSED"
+            )
+        object.__setattr__(
+            self,
+            "receipt_sha256",
+            canonical_sha256(self.to_payload()),
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": CAMPAIGN_CLOSURE_RECEIPT_SCHEMA,
+            "campaign_id": self.campaign_id,
+            "event_id": self.event_id,
+            "state": self.state,
+            "closed_at": self.closed_at,
+        }
+
+
+class TerminalAuditClosure:
+    """Appends the terminal audit event and closes the Campaign irreversibly."""
+
+    def __init__(
+        self,
+        *,
+        backend: CampaignClosureBackend,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if not isinstance(backend, CampaignClosureBackend):
+            raise TypeError("backend must be a CampaignClosureBackend")
+        self._backend = backend
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def close_campaign(
+        self,
+        *,
+        request: FinalEvalRequest,
+        result: EvaluatorResult,
+        evidence_ref: str,
+    ) -> CampaignClosureReceipt:
+        if not isinstance(request, FinalEvalRequest):
+            raise TypeError("request must be a FinalEvalRequest")
+        if not isinstance(result, EvaluatorResult):
+            raise TypeError("result must be an EvaluatorResult")
+        if not isinstance(evidence_ref, str) or not _is_repo_relative_evidence_ref(
+            evidence_ref
+        ):
+            raise CampaignClosureValidationError(
+                "evidence_ref must be a repo-relative bounded path"
+            )
+        if result.outcome not in _VERDICT_BY_OUTCOME:
+            raise CampaignClosureValidationError(
+                f"result outcome must be one of {sorted(_VERDICT_BY_OUTCOME)}"
+            )
+        now = self._clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise CampaignClosureValidationError(
+                "closure clock must return a timezone-aware datetime"
+            )
+        closed_at = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        event = TerminalAuditEvent(
+            campaign_id=request.campaign.campaign_id,
+            request_sha256=request.request_sha256,
+            holdout_id=request.holdout.holdout_id,
+            actor_id=request.actor.actor_id,
+            actor_type=request.actor.actor_type,
+            invocation_id=request.actor.invocation_id,
+            verdict=_VERDICT_BY_OUTCOME[result.outcome],
+            result_payload_sha256=result.result_sha256,
+            result_evidence_ref=evidence_ref,
+            closed_at=closed_at,
+        )
+        self._backend.close_campaign(event=event)
+        return CampaignClosureReceipt(
+            campaign_id=event.campaign_id,
+            event_id=event.event_id,
+            state="CLOSED",
+            closed_at=event.closed_at,
+        )
+
+    def require_campaign_open(self, campaign_id: str) -> None:
+        self._backend.reject_closed_campaign(campaign_id)
+
+
+def build_closure_audit_record(
+    *,
+    event: TerminalAuditEvent,
+    view: HoldoutView,
+) -> dict[str, Any]:
+    """Bounded audit-export record: hashes, refs and metrics; never raw labels."""
+    if not isinstance(event, TerminalAuditEvent):
+        raise TypeError("event must be a TerminalAuditEvent")
+    if not isinstance(view, HoldoutView):
+        raise TypeError("view must be a HoldoutView")
+    return {
+        "schema_version": CLOSURE_AUDIT_RECORD_SCHEMA,
+        "campaign_id": event.campaign_id,
+        "event_id": event.event_id,
+        "verdict": event.verdict,
+        "result_payload_sha256": event.result_payload_sha256,
+        "result_evidence_ref": event.result_evidence_ref,
+        "promotion_mode": event.promotion_mode,
+        "closed_at": event.closed_at,
+        "metrics": [
+            {"name": metric.name, "value": metric.value} for metric in view.metrics
+        ],
+        "counts": [
+            {"name": name, "value": value} for name, value in view.counts
+        ],
+        "sha256s": [
+            {"artifact_id": artifact_id, "sha256": digest}
+            for artifact_id, digest in view.sha256s
+        ],
+        "taint": list(view.taint),
+    }
 
 
 _BINDING_TYPES_BY_FIELD = {
@@ -1210,6 +1550,13 @@ _BINDING_TYPES_BY_FIELD = {
 
 __all__ = [
     "AuthorityBroker",
+    "CAMPAIGN_CLOSURE_RECEIPT_SCHEMA",
+    "CLOSURE_AUDIT_RECORD_SCHEMA",
+    "CampaignClosedError",
+    "CampaignClosureBackend",
+    "CampaignClosureConflictError",
+    "CampaignClosureReceipt",
+    "CampaignClosureValidationError",
     "ConsumeOnceError",
     "ConsumeOnceReplayError",
     "ConsumeOnceValidationError",
@@ -1245,6 +1592,9 @@ __all__ = [
     "TRUSTED_EVALUATOR_RESULT_SCHEMA",
     "TRUSTED_HOLDOUT_HANDLE_SCHEMA",
     "TRUSTED_HOLDOUT_VIEW_SCHEMA",
+    "TERMINAL_AUDIT_EVENT_SCHEMA",
+    "TerminalAuditClosure",
+    "TerminalAuditEvent",
     "TrustedEvaluator",
     "TrustedEvaluatorAdapter",
     "TrustedEvaluatorBoundaryError",
@@ -1254,6 +1604,8 @@ __all__ = [
     "TrustedEvaluatorPathError",
     "UnfrozenCandidateError",
     "UnboundedResultError",
+    "InMemoryCampaignClosureBackend",
+    "build_closure_audit_record",
     "deny_open_holdout_effect",
     "require_evaluator_spec_holdout_free",
     "require_open_holdout_lease",

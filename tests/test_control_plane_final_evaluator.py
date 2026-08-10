@@ -22,6 +22,11 @@ from research_automation.control_plane.contracts import (
 )
 from research_automation.control_plane.final_evaluator import (
     AuthorityBroker,
+    CampaignClosedError,
+    CampaignClosureBackend,
+    CampaignClosureConflictError,
+    CampaignClosureReceipt,
+    CampaignClosureValidationError,
     CampaignBinding,
     CandidateBinding,
     CodeBinding,
@@ -45,6 +50,7 @@ from research_automation.control_plane.final_evaluator import (
     HoldoutLease,
     HoldoutMetric,
     HoldoutView,
+    InMemoryCampaignClosureBackend,
     InMemoryHoldoutStore,
     ModelBinding,
     OPEN_HOLDOUT_EFFECT,
@@ -58,8 +64,11 @@ from research_automation.control_plane.final_evaluator import (
     TrustedEvaluatorError,
     TrustedEvaluatorLeaseError,
     TrustedEvaluatorPathError,
+    TerminalAuditClosure,
+    TerminalAuditEvent,
     UnfrozenCandidateError,
     UnboundedResultError,
+    build_closure_audit_record,
     deny_open_holdout_effect,
     require_evaluator_spec_holdout_free,
     seal_trusted_data_root,
@@ -1084,6 +1093,264 @@ class TrustedEvaluatorEndToEndTests(unittest.TestCase):
             {"schema_version", "request_sha256", "handle_sha256", "view", "outcome", "taint"},
         )
         self.assertEqual(payload["taint"], [FINAL_HOLDOUT_TAINT])
+
+
+def _closure_result(request: FinalEvalRequest, *, outcome: str = "SUCCEEDED") -> EvaluatorResult:
+    view = HoldoutView(
+        metrics=(HoldoutMetric("rows", 24),),
+        counts=(("rows", 24),),
+        sha256s=(("holdout", _sha("holdout")),),
+        evidence_refs=(
+            "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t5_fake_summary.json",
+        ),
+        taint=(FINAL_HOLDOUT_TAINT,),
+    )
+    handle = _lease_handle(request, outcome=outcome)
+    return EvaluatorResult(
+        request_sha256=request.request_sha256,
+        handle_sha256=handle.handle_sha256,
+        view=view,
+        outcome=outcome,
+    )
+
+
+class TerminalAuditClosureTests(unittest.TestCase):
+    """P8R2 T5: terminal audit event and irreversible Campaign closure."""
+
+    def setUp(self) -> None:
+        self._request = _request()
+        self._result = _closure_result(self._request)
+        self._clock = lambda: datetime(2026, 8, 10, 12, 0, 0, tzinfo=timezone.utc)
+        self._backend = InMemoryCampaignClosureBackend()
+        self._closure = TerminalAuditClosure(backend=self._backend, clock=self._clock)
+        self._evidence_ref = (
+            "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t5_result.json"
+        )
+
+    def test_close_campaign_from_completed_writes_terminal_event(self) -> None:
+        receipt = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        self.assertEqual(receipt.state, "CLOSED")
+        self.assertEqual(
+            self._backend.campaign_state(self._request.campaign.campaign_id),
+            "CLOSED",
+        )
+        events = self._backend.terminal_events(self._request.campaign.campaign_id)
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event.verdict, "PASS")
+        self.assertEqual(event.request_sha256, self._request.request_sha256)
+        self.assertEqual(event.result_payload_sha256, self._result.result_sha256)
+        self.assertEqual(event.promotion_mode, "MANUAL_ONLY")
+        self.assertRegex(event.event_id, _SHA_RE)
+        self.assertRegex(event.event_sha256, _SHA_RE)
+
+    def test_close_campaign_twice_same_request_is_idempotent(self) -> None:
+        first = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        second = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        self.assertEqual(first.receipt_sha256, second.receipt_sha256)
+        self.assertEqual(
+            len(self._backend.terminal_events(self._request.campaign.campaign_id)),
+            1,
+        )
+
+    def test_close_campaign_conflict_on_different_request(self) -> None:
+        self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        new_nonce = _sha("nonce-t5-conflict")
+        other_request = _request(
+            holdout=HoldoutBinding(
+                holdout_id="holdout-final-2",
+                holdout_sha256=_sha("holdout-2"),
+                authorization_nonce=new_nonce,
+            )
+        )
+        with self.assertRaises(CampaignClosureConflictError):
+            self._closure.close_campaign(
+                request=other_request,
+                result=_closure_result(other_request),
+                evidence_ref=self._evidence_ref,
+            )
+        events = self._backend.terminal_events(self._request.campaign.campaign_id)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            self._backend.campaign_state(self._request.campaign.campaign_id),
+            "CLOSED",
+        )
+
+    def test_close_campaign_rejects_active_campaign(self) -> None:
+        backend = InMemoryCampaignClosureBackend(initial_state="ACTIVE")
+        closure = TerminalAuditClosure(backend=backend, clock=self._clock)
+        with self.assertRaises(CampaignClosureValidationError):
+            closure.close_campaign(
+                request=self._request,
+                result=self._result,
+                evidence_ref=self._evidence_ref,
+            )
+        self.assertEqual(
+            backend.campaign_state(self._request.campaign.campaign_id),
+            "ACTIVE",
+        )
+
+    def test_close_campaign_rejects_blocked_campaign(self) -> None:
+        backend = InMemoryCampaignClosureBackend(initial_state="BLOCKED")
+        closure = TerminalAuditClosure(backend=backend, clock=self._clock)
+        with self.assertRaises(CampaignClosureValidationError):
+            closure.close_campaign(
+                request=self._request,
+                result=self._result,
+                evidence_ref=self._evidence_ref,
+            )
+
+    def test_closed_campaign_rejects_new_cycle(self) -> None:
+        self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        with self.assertRaises(CampaignClosedError):
+            self._closure.require_campaign_open(self._request.campaign.campaign_id)
+
+    def test_success_and_failure_both_close(self) -> None:
+        for outcome, verdict in (("SUCCEEDED", "PASS"), ("FAILED", "FAIL")):
+            request = _request(holdout=HoldoutBinding(
+                holdout_id="holdout-final-1",
+                holdout_sha256=_sha("holdout"),
+                authorization_nonce=_sha("nonce-" + outcome),
+            ))
+            result = _closure_result(request, outcome=outcome)
+            backend = InMemoryCampaignClosureBackend()
+            closure = TerminalAuditClosure(backend=backend, clock=self._clock)
+            closure.close_campaign(
+                request=request,
+                result=result,
+                evidence_ref=self._evidence_ref,
+            )
+            events = backend.terminal_events(request.campaign.campaign_id)
+            self.assertEqual(events[0].verdict, verdict)
+            self.assertEqual(backend.campaign_state(request.campaign.campaign_id), "CLOSED")
+
+    def test_crash_and_timeout_verdicts_close(self) -> None:
+        for outcome, verdict in (("CRASHED", "CRASH"), ("TIMEOUT", "TIMEOUT")):
+            request = _request(holdout=HoldoutBinding(
+                holdout_id="holdout-final-1",
+                holdout_sha256=_sha("holdout"),
+                authorization_nonce=_sha("nonce-" + outcome),
+            ))
+            result = _closure_result(request, outcome=outcome)
+            backend = InMemoryCampaignClosureBackend()
+            closure = TerminalAuditClosure(backend=backend, clock=self._clock)
+            closure.close_campaign(
+                request=request,
+                result=result,
+                evidence_ref=self._evidence_ref,
+            )
+            events = backend.terminal_events(request.campaign.campaign_id)
+            self.assertEqual(events[0].verdict, verdict)
+
+    def test_terminal_event_contains_no_raw_labels(self) -> None:
+        self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        event = self._backend.terminal_events(self._request.campaign.campaign_id)[0]
+        payload = event.to_payload()
+        self.assertEqual(
+            set(payload.keys()),
+            {
+                "schema_version",
+                "campaign_id",
+                "request_sha256",
+                "holdout_id",
+                "actor_id",
+                "actor_type",
+                "invocation_id",
+                "verdict",
+                "result_payload_sha256",
+                "result_evidence_ref",
+                "closed_at",
+                "promotion_mode",
+            },
+        )
+        serialized = canonical_json(payload)
+        self.assertNotIn("CANARY_7f3a9c2b", serialized)
+        self.assertNotIn("raw_rows", serialized)
+        self.assertNotIn("C:", serialized)
+
+    def test_closure_records_manual_only_promotion(self) -> None:
+        self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        event = self._backend.terminal_events(self._request.campaign.campaign_id)[0]
+        self.assertEqual(event.promotion_mode, "MANUAL_ONLY")
+        self.assertFalse(hasattr(TerminalAuditClosure, "promote"))
+
+    def test_terminal_event_id_is_deterministic(self) -> None:
+        first = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        other_backend = InMemoryCampaignClosureBackend()
+        other_closure = TerminalAuditClosure(backend=other_backend, clock=self._clock)
+        other_request = _request(holdout=HoldoutBinding(
+            holdout_id="holdout-final-1",
+            holdout_sha256=_sha("holdout"),
+            authorization_nonce=_sha("nonce-other"),
+        ))
+        other_closure.close_campaign(
+            request=other_request,
+            result=_closure_result(other_request),
+            evidence_ref=self._evidence_ref,
+        )
+        other_event = other_backend.terminal_events(other_request.campaign.campaign_id)[0]
+        self.assertEqual(first.event_id, other_event.event_id)
+
+    def test_closure_receipt_hash_is_deterministic(self) -> None:
+        first = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        second = self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        self.assertEqual(first.receipt_sha256, second.receipt_sha256)
+        self.assertRegex(first.receipt_sha256, _SHA_RE)
+
+    def test_build_closure_audit_record_bounded_and_redacted(self) -> None:
+        self._closure.close_campaign(
+            request=self._request,
+            result=self._result,
+            evidence_ref=self._evidence_ref,
+        )
+        event = self._backend.terminal_events(self._request.campaign.campaign_id)[0]
+        record = build_closure_audit_record(event=event, view=self._result.view)
+        serialized = canonical_json(record)
+        self.assertNotIn("CANARY_7f3a9c2b", serialized)
+        self.assertNotIn("raw_rows", serialized)
+        self.assertLess(len(serialized), 256 * 1024)
+        self.assertEqual(record["promotion_mode"], "MANUAL_ONLY")
+        self.assertEqual(record["taint"], [FINAL_HOLDOUT_TAINT])
 
 
 if __name__ == "__main__":
