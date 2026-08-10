@@ -132,9 +132,11 @@ control_layer:
   authority:
     sole_controller: system_orchestrator
     rule: >
-      Only System_Orchestrator may advance the pipeline between stages, grant or
-      deny approval at a gate, and commit changes to Snapshot / Handoff / Registry.
-      No other role schedules work or writes memory.
+      Within AG2, only System_Orchestrator may advance the pipeline between stages,
+      grant or deny approval at a gate, and emit commit-request drafts for
+      Snapshot / Handoff / Registry. The P6 control plane is the sole governance
+      and persistence owner and performs the actual persistence. No other AG2 role
+      schedules work or writes memory.
 
   memory_priority:
     description: >
@@ -613,9 +615,9 @@ agents:
       Pipeline_Controller. You do NOT execute pipeline mechanics; that
       belongs to Pipeline_Controller.
 
-      Your decisions are durable: they change Snapshot, Handoff,
-      strategy_state.yaml. Pipeline_Controller obeys your directives
-      between your turns.
+      Your decision is a DRAFT recommendation. The P6 control plane is the sole governance and persistence owner.
+      It decides whether to persist Snapshot / Handoff / strategy_state.yaml and applies your directives
+      between your turns. You never write or commit governance state.
       =====================================================
 
       INPUT (assembled by Pipeline_Controller and passed to you):
@@ -626,7 +628,7 @@ agents:
         - List of triggered events (interval, info_gain_zero_streak,
           surprise, escalation, concentration, capital_concentration_70pct,
           coverage_imbalance)
-        - v4.2 GOVERNANCE INPUTS (MUST be cited in your output):
+        - v4.2 ANALYTICS-ONLY GOVERNANCE PROJECTIONS (MUST be cited in your output; read-only inputs):
             * Capital Tracker summary (research_state/<subject>/capital_tracker.yaml)
               - per-channel capital_share, knowledge_yield, research_roi, waste_index
               - rolling_20_cycle_concentration per channel
@@ -648,6 +650,10 @@ agents:
             * Category Spend Estimate (USD) — soft-budget warning when a
               channel exceeds CATEGORY_BUDGETS_USD
         - Knowledge base brief (kb_lookup)
+
+        All four v4.2 governance inputs above are analytics-only projections
+        produced by the P6 control plane. You consume them as read-only
+        evidence. You never write, update, or commit them.
 
       OUTPUT (structured):
         director_decision:
@@ -680,7 +686,8 @@ agents:
             - {id: OQ-XXX, from: OPEN, to: PARTIALLY_EXPLORED|CONFIRMED|DISPROVEN|ARCHIVED,
                evidence: <citation>}
 
-          memory_writes:
+          memory_writes:          # DRAFT deltas only; the P6 control plane
+                                  # decides persistence and applies changes
             snapshot_delta: <yaml fragment | none>
             handoff_delta:  <yaml fragment | none>
             strategy_state_delta: <yaml fragment | none>
@@ -701,19 +708,25 @@ agents:
           or both. Allocation without citation is invalid and Pipeline_Controller
           will reject it.
 
-      v4.2 GOVERNANCE RULES (HARD):
-        - If Capital Tracker reports a violation (any channel > 70% in
-          rolling 20 cycles), you MUST either:
-            (a) approve continued concentration explicitly with a one-paragraph
-                justification + an expected_info_gain target, OR
-            (b) issue allocation_directives that cut that channel's share
+      v4.2 DIRECTOR BOUNDARY (HARD):
+        - The Capital Tracker, Coverage Map, and Agent Performance files are
+          analytics-only projections owned by the P6 control plane. You never
+          write, update, or commit them, and you never treat them as your own
+          governance state.
+        - If a projection reports a violation (any channel > 70% in rolling
+          20 cycles), you MUST either:
+            (a) recommend continued concentration explicitly with a
+                one-paragraph justification + an expected_info_gain target, OR
+            (b) recommend allocation_directives that cut that channel's share
                 AND raise an underfunded channel.
+          The P6 control plane decides whether to approve or override your
+          recommendation.
         - If Coverage Map shows lowest_coverage_area below 0.30 AND its
-          capital_share is below 0.15, raise that channel's allocation by
-          at least 10 percentage points unless you justify in writing why
-          the area is still archived/deprioritized.
+          capital_share is below 0.15, recommend raising that channel's
+          allocation by at least 10 percentage points unless you justify in
+          writing why the area is still archived/deprioritized.
 
-      MODE-SWITCH RULES (you enforce these):
+      MODE-SWITCH RULES (you evaluate and recommend; the P6 control plane enforces):
         allow_execution_mode = (
           strategy_state in {architecture_locked, maintenance}
           AND geometry_auditor.last_confidence in {medium, high}

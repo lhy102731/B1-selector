@@ -23,6 +23,10 @@ here.
 **v4.0 changes the prompts, the routing, and the operational state files.
 It does not change the runtime control flow of the orchestrator.**
 
+**P6 owner split.** The P6 control plane is the sole governance and persistence owner.
+AG2 roles (including System_Orchestrator) produce draft decisions and deltas;
+Capital Tracker / Coverage Map / Agent Performance files are analytics-only projections.
+
 ---
 
 ## 1. Architecture overview
@@ -111,7 +115,7 @@ state.
 State file: `research_state/<subject>/strategy_state.yaml`
 
 ```yaml
-# managed by Research_Historian, committed by System_Orchestrator
+# managed by Research_Historian; persisted only by the P6 control plane (AG2 roles emit drafts)
 schema_version: "1.0"
 subject: "b1_v3"
 state: "architecture_locked"      # exploring | architecture_locked | maintenance
@@ -489,11 +493,13 @@ efficiency:
 
 ### Rebalance trigger
 
-Each 5 cycles, Director checks `efficiency.info_gain_per_1k_tokens` per
-channel. If any channel produces 0 info_gain over 5 cycles AND consumes
->10% of total tokens, Director cuts that channel's allocation by half
-for the next 5 cycles. If the channel produces info_gain in any of those
-5, restore.
+Each 5 cycles, Director evaluates `efficiency.info_gain_per_1k_tokens` per
+channel (analytics-only projections). If any channel produces 0 info_gain
+over 5 cycles AND consumes >10% of total tokens, Director RECOMMENDS
+cutting that channel's allocation by half for the next 5 cycles. If the
+channel produces info_gain in any of those 5, Director recommends restore.
+The P6 control plane is the sole governance and persistence owner and
+applies allocation changes.
 
 This prevents the system from spinning indefinitely on a sterile channel
 while allowing recovery.
@@ -527,7 +533,9 @@ File: `research_state/<subject>/agent_performance.json`
 }
 ```
 
-This is the input to "is this agent worth its model tier?" decisions.
+This is the input to "is this agent worth its model tier?" decisions --
+analytics-only; the P6 control plane is the sole governance and persistence
+owner and decides enforcement.
 
 ---
 
@@ -656,7 +664,9 @@ Summary:
 
 6. **Step 6 (information gain + capital)**: Research_Historian writes
    info_gain_assessment per cycle. agent_performance.json begins
-   populating. Director starts using these signals to rebalance.
+   populating. Director starts using these analytics-only signals to recommend
+rebalancing; the P6 control plane is the sole governance and persistence
+owner and applies the changes.
 
 7. **Step 7 (code pipeline)**: Insert Code_Reviewer as a hard step in
    `ClaudePatchExecutor.apply()` for any code-mode proposal. Risk

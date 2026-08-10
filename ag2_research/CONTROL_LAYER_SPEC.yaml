@@ -13,6 +13,22 @@ control_layer_spec:
     forbidden-behavior list.
 
   # ----------------------------------------------------------
+  # 0. P6 OWNER SPLIT -- authoritative ownership boundary
+  # ----------------------------------------------------------
+  p6_owner_split:
+    owner: "P6 control plane (research_automation/control_plane)"
+    canonical_rule: "The P6 control plane is the sole governance and persistence owner."
+    ag2_roles_emit: "draft decisions, draft deltas, and commit-request artifacts"
+    analytics_only:
+      - "capital_tracker.yaml"
+      - "coverage_map.yaml"
+      - "agent_performance.json"
+    rules:
+      - "AG2 System_Orchestrator may propose pipeline advancement, gate approvals, and memory deltas inside AG2."
+      - "Only the P6 control plane persists Snapshot, Handoff, Registry, and strategy_state and applies director deltas."
+      - "AG2 roles, including System_Orchestrator, never write or commit Capital Tracker, Coverage Map, or Agent Performance files."
+
+  # ----------------------------------------------------------
   # 1. AUTHORITY -- single controller
   # ----------------------------------------------------------
   authority:
@@ -20,7 +36,7 @@ control_layer_spec:
     rules:
       - "Only System_Orchestrator advances the pipeline from one stage to the next."
       - "Only System_Orchestrator grants or denies approval at a gate."
-      - "Only System_Orchestrator commits changes to Snapshot, Handoff, or Registry."
+      - "Within the AG2 draft workflow, only System_Orchestrator emits commit-request drafts for Snapshot, Handoff, or Registry; the P6 control plane is the sole governance and persistence owner and performs the actual persistence."
       - "Only System_Orchestrator reads memory sources and emits the memory_packet (v0.9 PATCH #2)."
       - "Only System_Orchestrator performs the Registry Gate and issues the registry_verdict; Research_Proposer never classifies the Registry (v0.9 PATCH #1)."
       - "Every other role produces a structured artifact and hands it back; it never schedules or commits."
@@ -270,6 +286,7 @@ control_layer_spec:
   # 7. SUCCESS CRITERIA for the control layer itself
   # ----------------------------------------------------------
   success_criteria:
+    - "AG2 documents and prompts state that the P6 control plane is the sole governance and persistence owner and that Capital Tracker / Coverage Map / Agent Performance are analytics-only."
     - "No proposal can be created without a Registry check, executed ONLY by System_Orchestrator (registry_gate)."
     - "Snapshot determines current state; Code is never the first source read."
     - "System_Orchestrator is the only scheduler, gatekeeper, committer, registry checker, and memory reader."

@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p6r2_t9_independent_quality_review.v1",
+  "review_id": "p6r2-t9-independent-quality-review",
+  "receipt_id": "p6r2-t9-independent-quality-review",
+  "reviewed_at": "2026-08-10T06:18:40.980668+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T9-DIRECTOR-CONTRACT-REFRESH",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t9-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t9-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "checks": [
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "tests/test_ag2_config_capital_projection_contract.py runs 6 tests with 0 failures on the locked runtime; assertions cover the canonical owner-split sentence across all four documents, analytics-only director governance projections, no self-persistence claim, the p6_owner_split section, AG2-internal commit rights, and control-plane-owned rebalancing."
+    },
+    {
+      "check_id": "diff_minimality",
+      "status": "PASS",
+      "detail": "The T9 diff touches exactly the five owned files: four AG2 documents with targeted contract edits and one new read-only contract test module; no unrelated module, dependency, or forbidden path changed."
+    },
+    {
+      "check_id": "no_effect_proof",
+      "status": "PASS",
+      "detail": "The contract tests are read-only document assertions; config.yaml still parses through yaml.safe_load, and no data/KBase/backtest/campaign/holdout surface is touched."
+    },
+    {
+      "check_id": "regression_suite",
+      "status": "PASS",
+      "detail": "A 1098-test regression run passes on the locked runtime, including the full control-plane suite, automation resilience, capital projection, CLI entry guards, legacy harness quarantine, promotion provenance, AG2 orchestration/tool-loop/memory/model/file-security tests, and the new contract module."
+    },
+    {
+      "check_id": "review_independence",
+      "status": "PASS",
+      "detail": "Spec and quality reviewer actor ids are distinct from the task actor and from each other; invocation ids are recorded; external usage is declared UNKNOWN."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_DOCS_AND_CODE_GAP",
+      "detail": "Document contracts now forbid AG2 roles from self-persisting governance state, while the legacy director code path still writes; the gap is tracked for the later control-plane composition slices and does not block this documentation slice."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_PROMPT_LENGTH_GROWTH",
+      "detail": "The director system_message grew by the analytics-only clarification; acceptable for the rare director invocation cadence."
+    }
+  ]
+}

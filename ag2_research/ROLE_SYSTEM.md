@@ -9,6 +9,11 @@ is upgraded into the sole controller, `System_Orchestrator`.
 > reading Snapshot/Handoff/Registry themselves (PATCH #2). The pipeline is **sequential
 > single-pass** with bounded revisions (PATCH #3, #7). Data vs risk concerns are disjoint
 > (PATCH #8). See `CONTROL_LAYER_SPEC.yaml` for the canonical rules.
+>
+> **P6 owner split.** The P6 control plane is the sole governance and persistence owner.
+> AG2 System_Orchestrator's "commit" rights are AG2-internal: it emits commit-request
+> drafts; it never persists Snapshot/Handoff/Registry itself. Capital Tracker / Coverage
+> Map / Agent Performance projections are analytics-only and are never written by AG2 roles.
 
 ---
 
@@ -72,7 +77,7 @@ held final decision authority**.
 - INPUT: Snapshot/Handoff/Registry/Research Memory (it is the ONLY reader) + all role outputs
 - STEP 0: reads memory once per cycle, runs the **Registry Gate**, emits the **memory_packet** (with `registry_verdict`) to the next role.
 - OUTPUT: `control_decision{ current_state, stage, gate_results, revision_attempts, decision, approved_next_role, committed_deltas, reason }`
-- EXCLUSIVE rights: read memory, perform Registry Gate, advance stages, approve/deny gates, commit Snapshot/Handoff/Registry.
+- EXCLUSIVE rights (AG2-internal): read memory, perform Registry Gate, advance stages, approve/deny gates, and emit commit-request drafts for Snapshot/Handoff/Registry. Persistence belongs to the P6 control plane: The P6 control plane is the sole governance and persistence owner. Capital Tracker / Coverage Map / Agent Performance projections are analytics-only and are never written by AG2 roles.
 
 ---
 

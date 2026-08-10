@@ -1,0 +1,166 @@
+{
+  "schema_version": "control_plane.p6r2_t9_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T9-DIRECTOR-CONTRACT-REFRESH",
+  "ticket_id": "060af80f51963f1becdc148f5a7ea9fa1888c293e61b4a00ffb598f0c1a9a7e9",
+  "validated_at": "2026-08-10T06:19:18.148390+00:00",
+  "validation_git_head": "e0821206a685a9e69a94617506687b9c52cf6a1e",
+  "validation_git_tree": "1ee6e6f7a31e812542f14573da7c09cb686a7a9a",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t9-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t9_independent_spec_review.json",
+      "sha256": "5d7064c10eb3745faa476cda876b6248f5512cdf2f97c1a126a309d1f2d596f7",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t9-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t9_independent_quality_review.json",
+      "sha256": "549599afaac82fa503c4f1e20469ba9f6b5f13ee681480ebba742278bad2fbe6",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t9-focused-tests",
+      "result": "PASS",
+      "tests_run": 6,
+      "tail": "----------------------------------------------------------------------\nRan 6 tests in 0.058s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t9-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "ag2_research/AG2_V4_DESIGN.md",
+          "ag2_research/CONTROL_LAYER_SPEC.yaml",
+          "ag2_research/ROLE_SYSTEM.md",
+          "ag2_research/config.yaml",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "ag2_research/AG2_V4_DESIGN.md",
+          "ag2_research/CONTROL_LAYER_SPEC.yaml",
+          "ag2_research/ROLE_SYSTEM.md",
+          "ag2_research/config.yaml",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "ag2_research/config.yaml": {
+            "v4.2 ANALYTICS-ONLY GOVERNANCE PROJECTIONS": true,
+            "v4.2 DIRECTOR BOUNDARY (HARD)": true,
+            "You never write or commit governance state": true,
+            "The P6 control plane is the sole governance and persistence owner": true,
+            "v4.2 GOVERNANCE RULES (HARD)": true
+          },
+          "ag2_research/CONTROL_LAYER_SPEC.yaml": {
+            "p6_owner_split": true,
+            "The P6 control plane is the sole governance and persistence owner": true,
+            "Within the AG2 draft workflow": true,
+            "analytics-only": true
+          },
+          "ag2_research/AG2_V4_DESIGN.md": {
+            "The P6 control plane is the sole governance and persistence owner": true,
+            "RECOMMENDS": true,
+            "persisted only by the P6 control plane": true,
+            "committed by System_Orchestrator": true
+          },
+          "ag2_research/ROLE_SYSTEM.md": {
+            "AG2-internal": true,
+            "commit-request draft": true,
+            "analytics-only": true,
+            "The P6 control plane is the sole governance and persistence owner": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "ag2_research/AG2_V4_DESIGN.md",
+      "ag2_research/CONTROL_LAYER_SPEC.yaml",
+      "ag2_research/ROLE_SYSTEM.md",
+      "ag2_research/config.yaml",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "ag2_research/AG2_V4_DESIGN.md",
+      "ag2_research/CONTROL_LAYER_SPEC.yaml",
+      "ag2_research/ROLE_SYSTEM.md",
+      "ag2_research/config.yaml",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "ag2_research/config.yaml": {
+        "v4.2 ANALYTICS-ONLY GOVERNANCE PROJECTIONS": true,
+        "v4.2 DIRECTOR BOUNDARY (HARD)": true,
+        "You never write or commit governance state": true,
+        "The P6 control plane is the sole governance and persistence owner": true,
+        "v4.2 GOVERNANCE RULES (HARD)": true
+      },
+      "ag2_research/CONTROL_LAYER_SPEC.yaml": {
+        "p6_owner_split": true,
+        "The P6 control plane is the sole governance and persistence owner": true,
+        "Within the AG2 draft workflow": true,
+        "analytics-only": true
+      },
+      "ag2_research/AG2_V4_DESIGN.md": {
+        "The P6 control plane is the sole governance and persistence owner": true,
+        "RECOMMENDS": true,
+        "persisted only by the P6 control plane": true,
+        "committed by System_Orchestrator": true
+      },
+      "ag2_research/ROLE_SYSTEM.md": {
+        "AG2-internal": true,
+        "commit-request draft": true,
+        "analytics-only": true,
+        "The P6 control plane is the sole governance and persistence owner": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "060af80f51963f1becdc148f5a7ea9fa1888c293e61b4a00ffb598f0c1a9a7e9",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 8,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
