@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p7r2_t4_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T4-OPS-CLI-READONLY",
+  "ticket_id": "a886f5f99444672702b94675a74cee18b47e3371ee862fbb68a3b4ad242d5b33",
+  "validated_at": "2026-08-10T09:40:22.713012+00:00",
+  "validation_git_head": "cdc463ecede7d380f835954175f14dc435a68523",
+  "validation_git_tree": "6e068cef85d4511f4ac9ead85cea2338232068f1",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t4-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t4_independent_spec_review.json",
+      "sha256": "bebbd54acab5710fb086018f7f868ad2dcd8d948a5b33278260b05ada9cb8112",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t4-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t4_independent_quality_review.json",
+      "sha256": "4113dec1674d31435862677fb6349f815bc6a377b063366fa22c8cc1d7b56551",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t4-focused-readonly-cli-tests",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": "remaining\": 0,\n    \"reserved\": 0,\n    \"spent\": 0\n  },\n  \"campaign\": {\n    \"active\": false,\n    \"cycles\": 0,\n    \"note\": \"read-only synthetic surface\"\n  },\n  \"evidence\": {\n    \"entries\": 0,\n    \"grade\": \"UNKNOWN\"\n  },\n  \"failure\": {\n    \"causes\": [],\n    \"count\": 0\n  },\n  \"generation\": {\n    \"count\": 0,\n    \"latest\": 0\n  },\n  \"journal\": {\n    \"event_count\": 1073,\n    \"exists\": true,\n    \"journal_mode\": \"delete\",\n    \"max_sequence\": 1073,\n    \"snapshot_error\": null\n  },\n  \"lease\": {\n    \"active\": 0,\n    \"expired\": 0\n  },\n  \"publication\": {\n    \"pending\": 0,\n    \"published\": 0\n  },\n  \"roster\": {\n    \"active\": 0,\n    \"members\": 0\n  },\n  \"usage\": {\n    \"events\": 1073,\n    \"max_sequence\": 1073\n  }\n}\n----------------------------------------------------------------------\nRan 7 tests in 0.830s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t4-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M run_research.py"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M run_research.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M run_research.py"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M run_research.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "a886f5f99444672702b94675a74cee18b47e3371ee862fbb68a3b4ad242d5b33",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 3,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

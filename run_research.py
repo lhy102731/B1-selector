@@ -118,6 +118,44 @@ def cmd_list(_args: argparse.Namespace) -> None:
         p = cfg.profiles[name]
         print(f"  {name}{marker}")
         print(f"      model={p.get('model','?')}  base_url={p.get('base_url','?')}")
+
+
+def cmd_status(_args: argparse.Namespace) -> None:
+    """Read-only control-plane status; never constructs a Runner."""
+
+    from research_automation.control_plane import operations
+
+    status = operations.read_only_status(operations.journal_path(), allow_real=True)
+    print(json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Read-only deterministic audit manifest; never constructs a Runner."""
+
+    from research_automation.control_plane import operations
+
+    manifest = operations.read_only_audit_manifest(
+        Path(getattr(args, "root", None) or operations._repository_root())
+    )
+    print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_doctor(_args: argparse.Namespace) -> None:
+    """Read-only doctor report; never constructs a Runner."""
+
+    from research_automation.control_plane import operations
+
+    report = operations.read_only_doctor_report(operations._repository_root())
+    print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def cmd_export(_args: argparse.Namespace) -> None:
+    """Read-only export references; never constructs a Runner or writes."""
+
+    from research_automation.control_plane import operations
+
+    bundle = operations.read_only_export_bundle(operations._repository_root())
+    print(json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True))
     print("\n=== Agents ===")
     for a in cfg.list_agents():
         print(f"  {a['id']:<22s} {a['name']:<20s} {a['description']}")
@@ -458,6 +496,12 @@ def main(
     # list
     sub.add_parser("list", help="List agents, workflows, and LLM profiles")
 
+    sub.add_parser("status", help="Read-only control-plane status")
+    p_audit = sub.add_parser("audit", help="Read-only deterministic audit manifest")
+    p_audit.add_argument("--root", help="Repository root override (synthetic fixtures only)")
+    sub.add_parser("doctor", help="Read-only control-plane doctor report")
+    sub.add_parser("export", help="Read-only control-plane export references")
+
     # brainstorm
     p_brain = sub.add_parser("brainstorm", help="Run multi-agent brainstorm session")
     _add_profile(p_brain)
@@ -577,6 +621,10 @@ def main(
 
     commands = {
         "list": cmd_list,
+        "status": cmd_status,
+        "audit": cmd_audit,
+        "doctor": cmd_doctor,
+        "export": cmd_export,
         "brainstorm": cmd_brainstorm,
         "discover": cmd_discover,
         "resume-discover": cmd_resume_discover,

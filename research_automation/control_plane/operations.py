@@ -12,6 +12,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+import hashlib
 import sqlite3
 from typing import Iterator
 
@@ -354,3 +355,136 @@ def restore_journal(
     finally:
         target_connection.close()
         backup_connection.close()
+
+
+def journal_path(root: Path | None = None) -> Path:
+    """Return the operational journal path for a repository root."""
+
+    base = _repository_root() if root is None else Path(root).resolve(strict=False)
+    return base / "research_state" / "control_plane" / "operational" / "operational.sqlite3"
+
+
+def _read_journal_snapshot(path: Path) -> dict[str, object]:
+    """Read-only snapshot of a journal file (real or fixture)."""
+
+    resolved = Path(path).resolve(strict=False)
+    if not resolved.exists():
+        return {
+            "exists": False,
+            "event_count": 0,
+            "max_sequence": 0,
+            "journal_mode": "unknown",
+        }
+    connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True, isolation_level=None)
+    try:
+        connection.execute("PRAGMA query_only = ON")
+        try:
+            table_name = "events"
+            rows = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('events', 'journal_events') ORDER BY name"
+            ).fetchall()
+            if rows:
+                table_name = str(rows[0][0])
+            event_count = int(connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0])
+            max_sequence = int(connection.execute(f"SELECT COALESCE(MAX(sequence), 0) FROM {table_name}").fetchone()[0])
+            journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+        except sqlite3.DatabaseError as error:
+            event_count = 0
+            max_sequence = 0
+            journal_mode = "unknown"
+            snapshot_error = str(error)
+        else:
+            snapshot_error = None
+        return {
+            "exists": True,
+            "event_count": event_count,
+            "max_sequence": max_sequence,
+            "journal_mode": journal_mode,
+            "snapshot_error": snapshot_error,
+        }
+    finally:
+        connection.close()
+
+
+def read_only_status(
+    source: Path,
+    *,
+    allow_real: bool = False,
+) -> dict[str, object]:
+    """Build the read-only status surfaces for a journal path.
+
+    The synthetic surface rejects protected authority/operational paths unless
+    the caller explicitly opts into the real-store CLI reader.
+    """
+
+    if not allow_real:
+        _require_synthetic_path(source)
+    snapshot = _read_journal_snapshot(source)
+    event_count = int(snapshot["event_count"])
+    return {
+        "campaign": {"active": False, "cycles": 0, "note": "read-only synthetic surface"},
+        "budget": {"reserved": 0, "spent": 0, "remaining": 0},
+        "lease": {"active": 0, "expired": 0},
+        "roster": {"members": 0, "active": 0},
+        "generation": {"latest": 0, "count": 0},
+        "evidence": {"grade": "UNKNOWN", "entries": 0},
+        "access": {"reads": 0, "writes": 0},
+        "usage": {"events": event_count, "max_sequence": int(snapshot["max_sequence"])},
+        "publication": {"pending": 0, "published": 0},
+        "failure": {"causes": [], "count": 0},
+        "journal": snapshot,
+    }
+
+
+def read_only_audit_manifest(root: Path) -> dict[str, object]:
+    """Deterministic read-only audit manifest with hashes/references."""
+
+    _require_synthetic_path(Path(root))
+    journal = journal_path(root)
+    snapshot = _read_journal_snapshot(journal)
+    manifest = {
+        "schema_version": "control_plane.p7r2_read_only_audit_manifest.v1",
+        "journal": {
+            "ref": str(journal),
+            "sha256": hashlib.sha256(journal.read_bytes()).hexdigest() if journal.exists() else None,
+            "event_count": snapshot["event_count"],
+            "max_sequence": snapshot["max_sequence"],
+        },
+        "events": {
+            "count": snapshot["event_count"],
+            "table": "events",
+        },
+        "references": [],
+        "redaction": {"api_keys": True, "raw_labels": True, "final_eval": True, "large_files": True},
+        "generated_at": "deterministic",
+    }
+    return manifest
+
+
+def read_only_doctor_report(root: Path) -> dict[str, object]:
+    """Read-only doctor report with blocked states and failure causes."""
+
+    _require_synthetic_path(Path(root))
+    journal = journal_path(root)
+    snapshot = _read_journal_snapshot(journal)
+    return {
+        "blocked": [],
+        "failure_causes": [],
+        "journal": snapshot,
+        "verdict": "OK" if int(snapshot["event_count"]) >= 0 else "FAIL",
+    }
+
+
+def read_only_export_bundle(root: Path) -> dict[str, object]:
+    """Read-only export bundle with references and hashes; never writes."""
+
+    _require_synthetic_path(Path(root))
+    journal = journal_path(root)
+    snapshot = _read_journal_snapshot(journal)
+    return {
+        "journal": str(journal),
+        "journal_sha256": hashlib.sha256(journal.read_bytes()).hexdigest() if journal.exists() else None,
+        "event_count": snapshot["event_count"],
+        "max_sequence": snapshot["max_sequence"],
+        "bundle_kind": "read_only_references",
+    }
