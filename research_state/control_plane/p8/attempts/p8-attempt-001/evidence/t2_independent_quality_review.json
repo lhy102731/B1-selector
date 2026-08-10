@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p8r2_t2_independent_quality_review.v1",
+  "review_id": "p8r2-t2-independent-quality-review",
+  "receipt_id": "p8r2-t2-independent-quality-review",
+  "reviewed_at": "2026-08-10T12:25:30.962378+00:00",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T2-FINAL-EVAL-REQUEST-CONTRACT",
+  "reviewer": {
+    "actor_id": "independent-p8r2-t2-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p8r2-t2-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_final_eval_request_quality_approval": true,
+  "candidate": {
+    "ref": "tests/test_control_plane_final_evaluator.py",
+    "sha256": "0fbdd52b1082b001cd3ed06d725c9cf34185502475ac67864ba74b96e47a5145"
+  },
+  "checks": [
+    {
+      "check_id": "implementation_quality",
+      "status": "PASS",
+      "detail": "final_evaluator.py is a pure, deterministic contract module with frozen slots dataclasses, one public behavior (FinalEvalRequest), explicit error hierarchy, canonical identity derivation and no storage, network, subprocess or real-data access."
+    },
+    {
+      "check_id": "test_quality",
+      "status": "PASS",
+      "detail": "14 focused tests cover the valid path, determinism, every fail-closed branch (unfrozen, empty/duplicate/unsorted, wrong hashes, wrong actor types, malformed/missing hashes, wrong identity binding) and the allowed automation actor; tests use only in-memory fake fixtures and never touch real holdout bytes."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Independent spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p8r2-t2-independent-spec-review-20260810 and p8r2-t2-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN (not zero)."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blocker exists across the contract, tests, fresh validation result or evidence files; all follow-ups are explicitly non-blocking and deferred to later P8 slices."
+    },
+    {
+      "check_id": "boundary_and_side_effects",
+      "status": "PASS",
+      "detail": "Only the two owned mutable files plus T2 evidence receipts are in the change set; no protected user files, TCB modules, authority state, policies, inventories, data or KBase content were modified by the implementation."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "LATER_SLICES_DEPEND_ON_NESTED_PAYLOAD",
+      "detail": "The request payload nests campaign/model/generation/holdout bindings; T3-T5 consumers must use the documented to_payload() shape rather than a flat projection."
+    }
+  ]
+}

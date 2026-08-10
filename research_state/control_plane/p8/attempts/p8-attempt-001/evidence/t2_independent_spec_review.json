@@ -1,0 +1,72 @@
+{
+  "schema_version": "control_plane.p8r2_t2_independent_spec_review.v1",
+  "review_id": "p8r2-t2-independent-spec-review",
+  "receipt_id": "p8r2-t2-independent-spec-review",
+  "reviewed_at": "2026-08-10T12:25:30.962378+00:00",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T2-FINAL-EVAL-REQUEST-CONTRACT",
+  "reviewer": {
+    "actor_id": "independent-p8r2-t2-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p8r2-t2-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_final_eval_request_spec_approval": true,
+  "candidate": {
+    "ref": "research_automation/control_plane/final_evaluator.py",
+    "sha256": "e22bed0b29d32b9f50f67985ba1700f702c035e24feef5bab52d4893e35abde9"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 2316718802725ebdde24077cadcf44ff197248ef17754d5c633d3dab934a6b20 is valid; allowed_files cover final_evaluator.py, test_control_plane_final_evaluator.py and all six T2 evidence outputs; baseline 6765acb7... and all four input evidence references hash-match the live repository files."
+    },
+    {
+      "check_id": "red_green_tdd_boundary",
+      "status": "PASS",
+      "detail": "The test module was committed to the workspace first (RED: ModuleNotFoundError for research_automation.control_plane.final_evaluator), then the implementation was written (GREEN: 14/14 focused tests pass). Only the two TaskSpec-owned mutable files were changed."
+    },
+    {
+      "check_id": "request_contract_binding",
+      "status": "PASS",
+      "detail": "FinalEvalRequest binds campaign, sorted frozen candidate set, code, ExecutionSpec, features, model, threshold, roster, generation, holdout, actor and the IdentityBinding (plan/scope/policy hashes); candidate_set_sha256 is the canonical digest of the member (id, hash) tuple, roster_sha256 must equal RosterManifest.manifest_sha256, execution_spec_sha256 must equal the canonical digest of ExecutionSpec.model_dump(mode=json), and request_sha256 is the canonical digest of the complete payload."
+    },
+    {
+      "check_id": "fail_closed_matrix",
+      "status": "PASS",
+      "detail": "Focused tests cover unfrozen candidates, empty/duplicate/unsorted candidate sets, wrong candidate-set hash, wrong roster hash, wrong ExecutionSpec hash, wrong actor types (llm/scheduler/legacy_runner), malformed hashes (non-hex, wrong length, short nonce) and missing hashes; each is rejected before any evaluation handle can exist."
+    },
+    {
+      "check_id": "focused_test_evidence",
+      "status": "PASS",
+      "detail": "Fresh focused suite on the locked runtime: 14 tests run, 0 failures, unittest exit 0."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "No real data, KBase, Campaign, backtest or Final Holdout bytes were read or written; phase_boundary records p9_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is T2-completion ready: authorization auth_ded3611c60155e8bb872d7773094160e CLAIMED, grant grant_46ebf6d2f7f8c495b42debc398131661 ACTIVE, ticket cb0d8097 ISSUED with zero trusted receipts, one open ticket, pending outbox 0 and no P8 phase-gate closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "EXECUTION_SPEC_HASH_METHOD",
+      "detail": "ExecutionSpecBinding defines the ExecutionSpec identity as canonical_sha256(ExecutionSpec.model_dump(mode=json)); this is a deliberate pure-contract choice and is documented in the module docstring and quality review."
+    },
+    {
+      "id": "EXTERNAL_USAGE_UNKNOWN",
+      "detail": "Independent review invocations are declared with usage UNKNOWN (not zero) in the completion report, matching the plan's accounting rule."
+    }
+  ]
+}
