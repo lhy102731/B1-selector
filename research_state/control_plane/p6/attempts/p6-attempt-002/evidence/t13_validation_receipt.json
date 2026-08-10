@@ -1,0 +1,98 @@
+{
+  "schema_version": "control_plane.p6r2_t13_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T13-INTEGRATION-VERIFICATION",
+  "ticket_id": "c2e89cc0ff0f1c45a4ec780a13f4c9494f096a9ab98512d37b0f5d593945040c",
+  "validated_at": "2026-08-10T07:42:13.485724+00:00",
+  "validation_git_head": "06c3e44f9d71086ba183d19759c9545a1feb3772",
+  "validation_git_tree": "4e1c30f6a9b7cfc05bea33822bddf8c635372c91",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t13-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t13_independent_spec_review.json",
+      "sha256": "5e574d005ea8d9e4b575962d5fec9a1bfba327189a3358a273e6a26de804467a",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t13-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t13_independent_quality_review.json",
+      "sha256": "19f5e1f4187dffed87ef1bfb71bfca43b4dace50f8c8080982906752deed8e90",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t13-focused-tests",
+      "result": "PASS",
+      "tests_run": 1330,
+      "tail": "e-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\n----------------------------------------------------------------------\nRan 1330 tests in 444.227s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t13-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {},
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {},
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "c2e89cc0ff0f1c45a4ec780a13f4c9494f096a9ab98512d37b0f5d593945040c",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 12,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

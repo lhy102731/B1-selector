@@ -1,0 +1,48 @@
+{
+  "schema_version": "control_plane.p6r2_t13_independent_quality_review.v1",
+  "review_id": "p6r2-t13-independent-quality-review",
+  "receipt_id": "p6r2-t13-independent-quality-review",
+  "reviewed_at": "2026-08-10T10:05:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T13-INTEGRATION-VERIFICATION",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t13-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t13-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "checks": [
+    {
+      "check_id": "full_suite_quality",
+      "status": "PASS",
+      "detail": "The complete locked-runtime matrix passes: 1,577 tests across 48 modules with 0 failures/errors; this includes the full control-plane suite (access, budget, campaign, context, controller, freeze, invocation binding, lease, lifecycle, metering, mutation, roster, store, two-cycle, entry guard, evidence learning, memory, runner control), automation resilience, capital projection, CLI entry guards, legacy guards/harness, promotion provenance, and foundations."
+    },
+    {
+      "check_id": "no_change_proof",
+      "status": "PASS",
+      "detail": "T13 introduced no source or test changes: git tracked dirt remained exactly the four protected user files; HEAD advanced only by the T13 issue commit; no temporary candidate, freeze, inventory, policy, or gate artifact was generated."
+    },
+    {
+      "check_id": "review_independence",
+      "status": "PASS",
+      "detail": "Spec and quality reviewer actor ids are distinct from the task actor and from each other; invocation ids are recorded; external usage is declared UNKNOWN."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_RUNTIME_GAP",
+      "detail": "The pandas-dependent and subprocess-CLI modules are excluded from the locked-runtime matrix; the full discovery-based suite is not runnable in this environment, but every in-scope module for P6 is green."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_FINAL_GATE_PENDING",
+      "detail": "T14 will build the single final freeze/inventory/policy candidate and close the P6 Gate; T13 leaves the Authority at 12 succeeded tickets with no open tickets."
+    }
+  ]
+}
