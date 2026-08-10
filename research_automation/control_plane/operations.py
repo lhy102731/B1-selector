@@ -900,3 +900,84 @@ def retention_cleanup_report(
         "cleanup_candidates": list(candidates),
         "preserved_scientific": preserved_scientific,
     }
+
+
+def _validate_explanation_payload(
+    value: object,
+    *,
+    kind: str,
+) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise TypeError(f"{kind} payload must be a dict")
+    conflict_id = value.get(kind + "_id")
+    summary_or_reason = value.get("summary", value.get("reason"))
+    evidence_refs = value.get("evidence_refs")
+    if not isinstance(conflict_id, str) or not conflict_id:
+        raise ValueError(f"{kind}_id must be a non-empty string")
+    if not isinstance(summary_or_reason, str) or not summary_or_reason:
+        raise ValueError(f"{kind} requires a non-empty summary/reason string")
+    if evidence_refs is None:
+        evidence_refs = []
+    if not isinstance(evidence_refs, (list, tuple)):
+        raise TypeError("evidence_refs must be a sequence")
+    normalized_refs: list[str] = []
+    for ref in evidence_refs:
+        if not isinstance(ref, str) or not ref:
+            raise ValueError("evidence reference must be a non-empty string")
+        normalized_refs.append(ref)
+    return {
+        f"{kind}_id": conflict_id,
+        "summary_or_reason": summary_or_reason,
+        "evidence_refs": tuple(sorted(normalized_refs)),
+    }
+
+
+def explain_conflict(value: object) -> dict[str, object]:
+    """Deterministic human-readable explanation for a synthetic conflict.
+
+    Returns the conflict id, kind, explanation text, and direct evidence
+    references. Never reads real research, data, Authority, or KBase content.
+    """
+
+    payload = _validate_explanation_payload(value, kind="conflict")
+    kind_name = value.get("kind")
+    if not isinstance(kind_name, str) or not kind_name:
+        raise ValueError("conflict requires a non-empty kind string")
+    explanation = (
+        f"Conflict {payload['conflict_id']} ({kind_name}): "
+        f"{payload['summary_or_reason']}. "
+        "Direct evidence references: " + "; ".join(payload["evidence_refs"]) + "."
+        if payload["evidence_refs"]
+        else f"Conflict {payload['conflict_id']} ({kind_name}): {payload['summary_or_reason']}."
+    )
+    return {
+        "schema_version": "control_plane.p7r2_conflict_explanation.v1",
+        "conflict_id": payload["conflict_id"],
+        "kind": kind_name,
+        "explanation": explanation,
+        "evidence_references": list(payload["evidence_refs"]),
+        "real_data": False,
+    }
+
+
+def explain_blocked(value: object) -> dict[str, object]:
+    """Deterministic human-readable explanation for a synthetic blocked state.
+
+    Returns the blocked id, reason text, explanation, and direct evidence
+    references. Never reads real research, data, Authority, or KBase content.
+    """
+
+    payload = _validate_explanation_payload(value, kind="blocked")
+    explanation = (
+        f"Blocked {payload['blocked_id']}: {payload['summary_or_reason']}. "
+        "Direct evidence references: " + "; ".join(payload["evidence_refs"]) + "."
+        if payload["evidence_refs"]
+        else f"Blocked {payload['blocked_id']}: {payload['summary_or_reason']}."
+    )
+    return {
+        "schema_version": "control_plane.p7r2_blocked_explanation.v1",
+        "blocked_id": payload["blocked_id"],
+        "explanation": explanation,
+        "evidence_references": list(payload["evidence_refs"]),
+        "real_data": False,
+    }

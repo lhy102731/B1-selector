@@ -278,5 +278,82 @@ class BackfillAdapterTests(unittest.TestCase):
             operations.BackfillAdapter(self.root / "missing-fixture")
 
 
+class ConflictExplanationTests(unittest.TestCase):
+    """P7R2-T8: human-readable conflict/blocked explanations with direct
+    evidence references on a synthetic fixture surface."""
+
+    def test_conflict_explanation_is_human_readable_with_evidence_refs(self) -> None:
+        result = operations.explain_conflict(
+            {
+                "conflict_id": "conflict-001",
+                "kind": "SCOPE_OVERLAP",
+                "summary": "two claims overlap on the same universe and time window",
+                "evidence_refs": [
+                    "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_completion_receipt.json",
+                    "docs/superpowers/plans/2026-07-26-v342-07-operations.md",
+                ],
+            }
+        )
+        self.assertIsInstance(result["explanation"], str)
+        self.assertIn("two claims overlap", result["explanation"])
+        self.assertIn("SCOPE_OVERLAP", result["explanation"])
+        self.assertEqual(
+            [
+                "docs/superpowers/plans/2026-07-26-v342-07-operations.md",
+                "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_completion_receipt.json",
+            ],
+            result["evidence_references"],
+        )
+
+    def test_blocked_explanation_includes_direct_evidence(self) -> None:
+        result = operations.explain_blocked(
+            {
+                "blocked_id": "blocked-001",
+                "reason": "campaign boundary rejected for legacy surface",
+                "evidence_refs": [
+                    "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_completion_receipt.json"
+                ],
+            }
+        )
+        self.assertIn("campaign boundary rejected", result["explanation"])
+        self.assertEqual(
+            ["research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_completion_receipt.json"],
+            result["evidence_references"],
+        )
+
+    def test_explanations_reject_malformed_input(self) -> None:
+        with self.assertRaises(ValueError):
+            operations.explain_conflict({"conflict_id": "conflict-001"})
+        with self.assertRaises(ValueError):
+            operations.explain_blocked({"blocked_id": "blocked-001"})
+        with self.assertRaises(TypeError):
+            operations.explain_conflict(None)
+        with self.assertRaises(TypeError):
+            operations.explain_blocked(None)
+
+    def test_explanations_are_deterministic_and_synthetic(self) -> None:
+        conflict = {
+            "conflict_id": "conflict-001",
+            "kind": "SCOPE_OVERLAP",
+            "summary": "two claims overlap",
+            "evidence_refs": ["evidence/a.json"],
+        }
+        blocked = {
+            "blocked_id": "blocked-001",
+            "reason": "campaign boundary",
+            "evidence_refs": ["evidence/b.json"],
+        }
+        first_conflict = operations.explain_conflict(conflict)
+        second_conflict = operations.explain_conflict(conflict)
+        first_blocked = operations.explain_blocked(blocked)
+        second_blocked = operations.explain_blocked(blocked)
+        self.assertEqual(first_conflict, second_conflict)
+        self.assertEqual(first_blocked, second_blocked)
+        self.assertFalse(first_conflict["real_data"])
+        self.assertFalse(first_blocked["real_data"])
+        self.assertEqual("control_plane.p7r2_conflict_explanation.v1", first_conflict["schema_version"])
+        self.assertEqual("control_plane.p7r2_blocked_explanation.v1", first_blocked["schema_version"])
+
+
 if __name__ == "__main__":
     unittest.main()
