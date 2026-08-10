@@ -97,5 +97,65 @@ class ReadOnlyOpsCliTests(unittest.TestCase):
         self.assertEqual(0, status)
 
 
+class AuditBundleTests(unittest.TestCase):
+    """P7R2-T5: deterministic audit bundle with exclusion of secrets, raw
+    labels, Final Holdout, and unrelated large files."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        (self.root / "normal.txt").write_text("hello audit", encoding="utf-8")
+        (self.root / "secret.env").write_text("API_KEY=super-secret-value", encoding="utf-8")
+        (self.root / "raw_labels.csv").write_text("raw_label,value", encoding="utf-8")
+        (self.root / "final_holdout.parquet").write_text("holdout-bytes", encoding="utf-8")
+        (self.root / "big.bin").write_bytes(b"x" * (2_000_000))
+        (self.root / "nested").mkdir()
+        (self.root / "nested" / "reference.json").write_text('{"ref": "ok"}', encoding="utf-8")
+        journal = self.root / "journal.sqlite3"
+        connection = sqlite3.connect(journal)
+        try:
+            connection.execute("CREATE TABLE events (sequence INTEGER PRIMARY KEY, event_type TEXT NOT NULL)")
+            connection.execute("INSERT INTO events(sequence, event_type) VALUES (1, 'E')")
+            connection.commit()
+        finally:
+            connection.close()
+
+    def test_bundle_is_deterministic(self) -> None:
+        first = operations.build_audit_bundle(self.root)
+        second = operations.build_audit_bundle(self.root)
+        self.assertEqual(first, second)
+        self.assertEqual(
+            json.dumps(first, sort_keys=True),
+            json.dumps(second, sort_keys=True),
+        )
+
+    def test_bundle_excludes_secret_raw_holdout_and_large(self) -> None:
+        bundle = operations.build_audit_bundle(self.root)
+        refs = [entry["path"] for entry in bundle["entries"]]
+        self.assertIn("normal.txt", refs)
+        self.assertIn("nested/reference.json", refs)
+        self.assertIn("journal.sqlite3", refs)
+        for excluded in ("secret.env", "raw_labels.csv", "final_holdout.parquet", "big.bin"):
+            self.assertNotIn(excluded, refs)
+        text = json.dumps(bundle, sort_keys=True).lower()
+        self.assertNotIn("super-secret-value", text)
+        self.assertNotIn("holdout-bytes", text)
+
+    def test_bundle_has_hashes_and_references(self) -> None:
+        bundle = operations.build_audit_bundle(self.root)
+        self.assertEqual("control_plane.p7r2_audit_bundle.v1", bundle["schema_version"])
+        entry = next(item for item in bundle["entries"] if item["path"] == "normal.txt")
+        self.assertEqual(64, len(entry["sha256"]))
+        self.assertEqual(entry["size_bytes"], (self.root / "normal.txt").stat().st_size)
+        self.assertEqual("secrets", next(item for item in bundle["exclusions"] if item["path"] == "secret.env")["reason"])
+
+    def test_bundle_rejects_protected_roots(self) -> None:
+        for protected in ("research_state/control_plane/authority", "research_state/control_plane/operational"):
+            with self.assertRaises(operations.ProtectedStoreError):
+                operations.build_audit_bundle(Path(protected))
+
+
+
 if __name__ == "__main__":
     unittest.main()

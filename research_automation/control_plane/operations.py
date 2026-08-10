@@ -436,10 +436,15 @@ def read_only_status(
     }
 
 
-def read_only_audit_manifest(root: Path) -> dict[str, object]:
+def read_only_audit_manifest(
+    root: Path,
+    *,
+    allow_real: bool = False,
+) -> dict[str, object]:
     """Deterministic read-only audit manifest with hashes/references."""
 
-    _require_synthetic_path(Path(root))
+    if not allow_real:
+        _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     manifest = {
@@ -461,10 +466,107 @@ def read_only_audit_manifest(root: Path) -> dict[str, object]:
     return manifest
 
 
-def read_only_doctor_report(root: Path) -> dict[str, object]:
+_SECRET_NAME_MARKERS = (
+    ".env",
+    "secret",
+    "api_key",
+    "apikey",
+    "token",
+    "password",
+    "credential",
+    "bearer",
+)
+_RAW_LABEL_MARKERS = (
+    "raw_label",
+    "raw-label",
+    "rawlabels",
+)
+_HOLDOUT_MARKERS = (
+    "holdout",
+    "final_eval",
+    "final-eval",
+    "finaleval",
+)
+
+
+def _audit_exclusion_reason(relative_name: str) -> str | None:
+    lowered = relative_name.lower()
+    if any(marker in lowered for marker in _SECRET_NAME_MARKERS):
+        return "secrets"
+    if any(marker in lowered for marker in _RAW_LABEL_MARKERS):
+        return "raw_labels"
+    if any(marker in lowered for marker in _HOLDOUT_MARKERS):
+        return "final_holdout"
+    return None
+
+
+def build_audit_bundle(
+    root: Path,
+    *,
+    max_bytes: int = 1_000_000,
+) -> dict[str, object]:
+    """Deterministic read-only audit bundle for a synthetic fixture root.
+
+    Includes sorted hashed entries and explicit exclusion reasons; never reads
+    secrets, raw labels, Final Holdout, or unrelated large files.
+    """
+
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+    resolved_root = Path(root).resolve(strict=False)
+    if resolved_root == _repository_root():
+        raise ProtectedStoreError(
+            "repository root is not a synthetic audit fixture root"
+        )
+    _require_synthetic_path(resolved_root)
+    if not resolved_root.exists():
+        raise FileNotFoundError(f"audit fixture root is missing: {resolved_root}")
+    entries: list[dict[str, object]] = []
+    exclusions: list[dict[str, object]] = []
+    for path in sorted(resolved_root.rglob("*")):
+        if not path.is_file():
+            continue
+        relative_name = path.relative_to(resolved_root).as_posix()
+        size_bytes = path.stat().st_size
+        reason = _audit_exclusion_reason(relative_name)
+        if reason is not None:
+            exclusions.append({
+                "path": relative_name,
+                "reason": reason,
+                "size_bytes": size_bytes,
+            })
+            continue
+        if size_bytes > max_bytes:
+            exclusions.append({
+                "path": relative_name,
+                "reason": "large_files",
+                "size_bytes": size_bytes,
+            })
+            continue
+        entries.append({
+            "path": relative_name,
+            "size_bytes": size_bytes,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        })
+    return {
+        "schema_version": "control_plane.p7r2_audit_bundle.v1",
+        "root": str(resolved_root),
+        "entries": entries,
+        "exclusions": exclusions,
+        "max_bytes": max_bytes,
+        "generated_at": "deterministic",
+    }
+
+
+def read_only_doctor_report(
+    root: Path,
+    *,
+    allow_real: bool = False,
+) -> dict[str, object]:
     """Read-only doctor report with blocked states and failure causes."""
 
-    _require_synthetic_path(Path(root))
+    if not allow_real:
+        _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     return {
@@ -475,10 +577,15 @@ def read_only_doctor_report(root: Path) -> dict[str, object]:
     }
 
 
-def read_only_export_bundle(root: Path) -> dict[str, object]:
+def read_only_export_bundle(
+    root: Path,
+    *,
+    allow_real: bool = False,
+) -> dict[str, object]:
     """Read-only export bundle with references and hashes; never writes."""
 
-    _require_synthetic_path(Path(root))
+    if not allow_real:
+        _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     return {

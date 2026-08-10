@@ -1,0 +1,65 @@
+{
+  "schema_version": "control_plane.p7r2_t5_independent_quality_review.v1",
+  "review_id": "p7r2-t5-independent-quality-review",
+  "receipt_id": "p7r2-t5-independent-quality-review",
+  "reviewed_at": "2026-08-10T09:43:57.448232+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T5-OPS-AUDIT-BUNDLE",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t5-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t5-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_quality_approval": true,
+  "candidate": {
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "6d19acd87a83afe02b135c9a0e393f2517f1a27f148c7556e4881a71acb6126d",
+    "test_ref": "tests/test_control_plane_ops_cli.py",
+    "test_sha256": "4cae21a5504e6cd73af2c409444977c69319eb791c900529676247880f3457df"
+  },
+  "checks": [
+    {
+      "check_id": "implementation_quality",
+      "status": "PASS",
+      "detail": "The bundle builder is a single deterministic walk with name-based exclusion markers and a byte-size threshold; entries and exclusions are sorted, hashes are computed per file, and no mutation API exists on the audit path."
+    },
+    {
+      "check_id": "redaction_quality",
+      "status": "PASS",
+      "detail": "Excluded content is never read into the manifest (only name/size/reason are recorded), so secret and holdout bytes cannot leak into the output; tests assert absence of both marker content and values."
+    },
+    {
+      "check_id": "fixture_isolation",
+      "status": "PASS",
+      "detail": "All tests create temp directories and never touch real data, authority, operational, policies, inventories, research, or KBase content; real-store read-only CLI paths opt in explicitly and only read."
+    },
+    {
+      "check_id": "regression_evidence",
+      "status": "PASS",
+      "detail": "Focused ops CLI suite passes 11/11 (T5 bundle tests 4/4 plus T4 read-only tests 7/7); test_cli_entry_guards + test_control_plane_operations pass 24; the 80-test access/budget/mutation/runner/promotion regression group passes."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p7r2-t5-independent-spec-review-20260810 and p7r2-t5-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blockers exist in the diff, tests, or contract review; no advisory requires follow-up for T5."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "AUDIT_CLI_WIRING_DEFERRED",
+      "detail": "The audit --root CLI path still uses the T4 read-only manifest until a later run_research.py-owning slice wires build_audit_bundle; non-blocking and recorded in the follow-up pool."
+    }
+  ]
+}
