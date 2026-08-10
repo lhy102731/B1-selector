@@ -1,0 +1,77 @@
+{
+  "schema_version": "control_plane.p7r2_t7_independent_spec_review.v1",
+  "review_id": "p7r2-t7-independent-spec-review",
+  "receipt_id": "p7r2-t7-independent-spec-review",
+  "reviewed_at": "2026-08-10T09:57:58.932041+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T7-OPS-RETENTION-METADATA",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t7-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t7-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_spec_approval": true,
+  "candidate": {
+    "memory_ref": "research_automation/control_plane/memory.py",
+    "memory_sha256": "26148c8def345e56b5ff633eb65a1263150d42a06bf59034d261a97d7d26a617",
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "e881484742c10fdb95a0e410a9654b863f38c983be1747bf420ff5fd2714a210",
+    "test_ref": "tests/test_control_plane_memory.py",
+    "test_sha256": "856e645f56f74bbb43b8b833a8d153b6558cb1309bb85a9612d931c087437868"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 matches the committed T7 spec; allowed_files cover memory.py, operations.py, the memory test, and all evidence outputs; baseline and nine input evidence references hash-match live files."
+    },
+    {
+      "check_id": "retention_metadata_contract",
+      "status": "PASS",
+      "detail": "LearningPacketRetentionMetadata is an immutable dataclass recording retention_class (RetentionClass member), last_referenced_at (date), and archive_eligible (bool); invalid packet_id, class, date, or bool values fail closed in __post_init__."
+    },
+    {
+      "check_id": "explicit_ttl_cleanup_contract",
+      "status": "PASS",
+      "detail": "retention_cleanup_candidates computes age from last_referenced_at and returns only expired preview/staging packet ids sorted deterministically; preview and staging TTLs are separate positive integers and invalid TTLs raise ValueError."
+    },
+    {
+      "check_id": "scientific_packet_safety",
+      "status": "PASS",
+      "detail": "Scientific entries are skipped regardless of age or archive_eligible, so scientific packets are never deleted by age; the operations report also returns preserved_scientific explicitly."
+    },
+    {
+      "check_id": "synthetic_operations_report",
+      "status": "PASS",
+      "detail": "operations.retention_cleanup_report validates entries, delegates to memory, returns a deterministic schema-versioned report with priority='low' and real_data=False, and never reads or mutates real learning packets, data, or KBase content."
+    },
+    {
+      "check_id": "diff_boundary",
+      "status": "PASS",
+      "detail": "The only tracked source changes are memory.py, operations.py, and tests/test_control_plane_memory.py; no sealed TCB, policy, inventory, authority, store, run_research.py, or CLI file changed."
+    },
+    {
+      "check_id": "red_green_test_quality",
+      "status": "PASS",
+      "detail": "All six new retention tests failed before implementation (AttributeError on the missing surface), then passed 6/6 after implementation; focused memory suite is 100/100."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is slice-completion ready: authorization CLAIMED, grant ACTIVE, T7 ticket ISSUED with zero trusted receipts, one open ticket, succeeded=(T1..T6), no failed/in-doubt, pending outbox 0, no P7 closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "RETENTION_CLI_WIRING_DEFERRED",
+      "detail": "run_research.py is outside T7 allowed_files; exposing the retention report through a CLI command is a non-blocking follow-up for a slice that owns run_research.py."
+    }
+  ]
+}

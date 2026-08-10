@@ -1,0 +1,108 @@
+{
+  "schema_version": "control_plane.p7r2_t7_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T7-OPS-RETENTION-METADATA",
+  "ticket_id": "dd6786b2574099427f99d545f7121bb223f41a52fd34954a471f74496198f6f6",
+  "validated_at": "2026-08-10T09:58:07.437408+00:00",
+  "validation_git_head": "dd4e84de491924361c94c6ac4837ace08b88a29a",
+  "validation_git_tree": "89eec8872c7088c2160fe55570ab8c99c1353181",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t7-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t7_independent_spec_review.json",
+      "sha256": "f1da6211fdd67cf0d3918bd2083a2646b93379cba5606599b2100e922934cd09",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t7-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t7_independent_quality_review.json",
+      "sha256": "dadda1afc1e7f447a19bc8d79f624ff9a94f6425bc29e8007b0af48e169b8404",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t7-focused-retention-tests",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": "site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\n----------------------------------------------------------------------\nRan 100 tests in 4.547s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t7-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/memory.py",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_memory.py"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/memory.py",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_memory.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/memory.py",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_memory.py"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/memory.py",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_memory.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "dd6786b2574099427f99d545f7121bb223f41a52fd34954a471f74496198f6f6",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 6,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

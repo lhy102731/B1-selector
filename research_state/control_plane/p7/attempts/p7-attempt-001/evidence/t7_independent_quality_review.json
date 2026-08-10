@@ -1,0 +1,67 @@
+{
+  "schema_version": "control_plane.p7r2_t7_independent_quality_review.v1",
+  "review_id": "p7r2-t7-independent-quality-review",
+  "receipt_id": "p7r2-t7-independent-quality-review",
+  "reviewed_at": "2026-08-10T09:57:58.932041+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T7-OPS-RETENTION-METADATA",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t7-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t7-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_slice_quality_approval": true,
+  "candidate": {
+    "memory_ref": "research_automation/control_plane/memory.py",
+    "memory_sha256": "26148c8def345e56b5ff633eb65a1263150d42a06bf59034d261a97d7d26a617",
+    "operations_ref": "research_automation/control_plane/operations.py",
+    "operations_sha256": "e881484742c10fdb95a0e410a9654b863f38c983be1747bf420ff5fd2714a210",
+    "test_ref": "tests/test_control_plane_memory.py",
+    "test_sha256": "856e645f56f74bbb43b8b833a8d153b6558cb1309bb85a9612d931c087437868"
+  },
+  "checks": [
+    {
+      "check_id": "implementation_quality",
+      "status": "PASS",
+      "detail": "The retention surface is small and focused: an immutable metadata dataclass, a deterministic TTL candidate function, and a thin synthetic ops report; no mutation API exists and scientific safety is enforced in the core function."
+    },
+    {
+      "check_id": "determinism_and_boundary_quality",
+      "status": "PASS",
+      "detail": "Candidates are sorted, the report has a fixed schema and no wall-clock timestamp when now is injected, and real_data is explicitly False; invalid inputs fail closed with typed errors."
+    },
+    {
+      "check_id": "fixture_isolation",
+      "status": "PASS",
+      "detail": "All tests create temp directories and only construct in-memory metadata entries; no real learning packet, authority, operational, policy, inventory, research, campaign, data, or KBase content is read or mutated."
+    },
+    {
+      "check_id": "regression_evidence",
+      "status": "PASS",
+      "detail": "Focused memory suite passes 100/100; the 122-test regression group (ops CLI, control_plane_operations, cli_entry_guards, access, budget, mutation, runner_control, promotion_legacy_provenance) passes."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p7r2-t7-independent-spec-review-20260810 and p7r2-t7-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blockers exist in the diff, tests, or contract review; the only advisory is the deferred CLI wiring for run_research.py, which is recorded in the follow-up pool."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "RETENTION_CLI_WIRING_DEFERRED",
+      "detail": "The retention report is not yet wired into run_research.py because that file is outside T7 allowed_files; non-blocking and recorded in the follow-up pool."
+    }
+  ]
+}

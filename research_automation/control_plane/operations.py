@@ -846,3 +846,57 @@ class BackfillAdapter:
             "fixture_root": str(self._fixture_root),
             "real_backfill": False,
         }
+
+
+def retention_cleanup_report(
+    metadata_entries: object,
+    *,
+    now: object | None = None,
+    preview_ttl_days: int = 7,
+    staging_ttl_days: int = 30,
+) -> dict[str, object]:
+    """Deterministic synthetic retention cleanup report.
+
+    Delegates TTL eligibility to memory.retention_cleanup_candidates and
+    never reads or mutates real learning packets, data, or KBase content.
+    Scientific packets are always preserved.
+    """
+
+    from datetime import date
+
+    from research_automation.control_plane import memory
+
+    if not isinstance(metadata_entries, (list, tuple)):
+        raise TypeError("metadata_entries must be a sequence")
+    normalized: list[memory.LearningPacketRetentionMetadata] = []
+    for entry in metadata_entries:
+        if not isinstance(entry, memory.LearningPacketRetentionMetadata):
+            raise TypeError(
+                "metadata entry must be LearningPacketRetentionMetadata"
+            )
+        normalized.append(entry)
+    reference_date = now if now is not None else date.today()
+    if not isinstance(reference_date, date):
+        raise ValueError("now must be a date or None")
+    candidates = memory.retention_cleanup_candidates(
+        normalized,
+        now=reference_date,
+        preview_ttl_days=preview_ttl_days,
+        staging_ttl_days=staging_ttl_days,
+    )
+    preserved_scientific = sorted(
+        entry.packet_id
+        for entry in normalized
+        if entry.retention_class is memory.RetentionClass.SCIENTIFIC
+    )
+    return {
+        "schema_version": "control_plane.p7r2_retention_cleanup_report.v1",
+        "priority": "low",
+        "real_data": False,
+        "now": reference_date.isoformat(),
+        "preview_ttl_days": preview_ttl_days,
+        "staging_ttl_days": staging_ttl_days,
+        "metadata_count": len(normalized),
+        "cleanup_candidates": list(candidates),
+        "preserved_scientific": preserved_scientific,
+    }

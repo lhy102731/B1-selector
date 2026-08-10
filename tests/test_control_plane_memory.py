@@ -3222,5 +3222,125 @@ class LearningContextRouterTests(unittest.TestCase):
         self.assertEqual([], result["learning_memory"]["claims"])
 
 
+class RetentionMetadataTests(unittest.TestCase):
+    """P7R2-T7: synthetic learning-packet retention metadata with explicit
+    preview/staging TTL cleanup and scientific packet safety."""
+
+    def setUp(self) -> None:
+        from datetime import date, timedelta
+
+        from research_automation.control_plane import memory
+
+        self.today = date(2026, 8, 10)
+        self.memory = memory
+        self.metadata = [
+            memory.LearningPacketRetentionMetadata(
+                packet_id="scientific-old",
+                retention_class=memory.RetentionClass.SCIENTIFIC,
+                last_referenced_at=self.today - timedelta(days=500),
+                archive_eligible=True,
+            ),
+            memory.LearningPacketRetentionMetadata(
+                packet_id="preview-expired",
+                retention_class=memory.RetentionClass.PREVIEW,
+                last_referenced_at=self.today - timedelta(days=10),
+                archive_eligible=True,
+            ),
+            memory.LearningPacketRetentionMetadata(
+                packet_id="preview-fresh",
+                retention_class=memory.RetentionClass.PREVIEW,
+                last_referenced_at=self.today - timedelta(days=2),
+                archive_eligible=True,
+            ),
+            memory.LearningPacketRetentionMetadata(
+                packet_id="staging-expired",
+                retention_class=memory.RetentionClass.STAGING,
+                last_referenced_at=self.today - timedelta(days=31),
+                archive_eligible=False,
+            ),
+            memory.LearningPacketRetentionMetadata(
+                packet_id="staging-fresh",
+                retention_class=memory.RetentionClass.STAGING,
+                last_referenced_at=self.today - timedelta(days=1),
+                archive_eligible=True,
+            ),
+        ]
+
+    def test_metadata_records_retention_fields(self) -> None:
+        entry = self.metadata[0]
+        self.assertEqual("scientific-old", entry.packet_id)
+        self.assertEqual(self.memory.RetentionClass.SCIENTIFIC, entry.retention_class)
+        self.assertEqual(self.today - __import__("datetime").timedelta(days=500), entry.last_referenced_at)
+        self.assertTrue(entry.archive_eligible)
+
+    def test_preview_ttl_cleanup_removes_only_expired_preview(self) -> None:
+        candidates = self.memory.retention_cleanup_candidates(
+            self.metadata,
+            now=self.today,
+            preview_ttl_days=7,
+            staging_ttl_days=30,
+        )
+        self.assertIn("preview-expired", candidates)
+        self.assertNotIn("preview-fresh", candidates)
+        self.assertNotIn("scientific-old", candidates)
+
+    def test_staging_ttl_cleanup_removes_only_expired_staging(self) -> None:
+        candidates = self.memory.retention_cleanup_candidates(
+            self.metadata,
+            now=self.today,
+            preview_ttl_days=7,
+            staging_ttl_days=30,
+        )
+        self.assertIn("staging-expired", candidates)
+        self.assertNotIn("staging-fresh", candidates)
+        self.assertNotIn("preview-fresh", candidates)
+
+    def test_scientific_packets_are_never_deleted_by_age(self) -> None:
+        candidates = self.memory.retention_cleanup_candidates(
+            self.metadata,
+            now=self.today,
+            preview_ttl_days=1,
+            staging_ttl_days=1,
+        )
+        self.assertNotIn("scientific-old", candidates)
+
+    def test_invalid_ttl_or_retention_class_fails_closed(self) -> None:
+        with self.assertRaises(ValueError):
+            self.memory.retention_cleanup_candidates(
+                self.metadata,
+                now=self.today,
+                preview_ttl_days=0,
+                staging_ttl_days=30,
+            )
+        with self.assertRaises(ValueError):
+            self.memory.LearningPacketRetentionMetadata(
+                packet_id="bad",
+                retention_class="UNKNOWN",
+                last_referenced_at=self.today,
+                archive_eligible=False,
+            )
+
+    def test_operations_retention_report_is_synthetic_and_deterministic(self) -> None:
+        from research_automation.control_plane import operations
+
+        first = operations.retention_cleanup_report(
+            self.metadata,
+            now=self.today,
+            preview_ttl_days=7,
+            staging_ttl_days=30,
+        )
+        second = operations.retention_cleanup_report(
+            self.metadata,
+            now=self.today,
+            preview_ttl_days=7,
+            staging_ttl_days=30,
+        )
+        self.assertEqual(first, second)
+        self.assertFalse(first["real_data"])
+        self.assertEqual(["preview-expired", "staging-expired"], first["cleanup_candidates"])
+        self.assertNotIn("scientific-old", first["cleanup_candidates"])
+        self.assertEqual("low", first["priority"])
+
+
 if __name__ == "__main__":
     unittest.main()

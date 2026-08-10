@@ -2214,6 +2214,80 @@ class LearningContextRouter:
         }
 
 
+class RetentionClass(str, Enum):
+    """Retention class of a learning packet metadata entry."""
+
+    SCIENTIFIC = "scientific"
+    PREVIEW = "preview"
+    STAGING = "staging"
+
+
+@dataclass(frozen=True)
+class LearningPacketRetentionMetadata:
+    """Immutable synthetic learning-packet retention metadata.
+
+    Fields: retention_class, last_referenced_at, archive_eligible. Scientific
+    packets are never deleted by age; only preview/staging packets receive
+    explicit TTL cleanup.
+    """
+
+    packet_id: str
+    retention_class: RetentionClass
+    last_referenced_at: date
+    archive_eligible: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.packet_id, str) or not self.packet_id:
+            raise ValueError("packet_id must be a non-empty string")
+        if not isinstance(self.retention_class, RetentionClass):
+            raise ValueError("retention_class must be a RetentionClass member")
+        if not isinstance(self.last_referenced_at, date):
+            raise ValueError("last_referenced_at must be a date")
+        if type(self.archive_eligible) is not bool:
+            raise ValueError("archive_eligible must be a bool")
+
+
+def retention_cleanup_candidates(
+    metadata_entries: Sequence[LearningPacketRetentionMetadata],
+    *,
+    now: date,
+    preview_ttl_days: int,
+    staging_ttl_days: int,
+) -> tuple[str, ...]:
+    """Return sorted packet ids eligible for explicit TTL cleanup.
+
+    Only preview/staging entries are considered. Scientific entries are never
+    deleted by age regardless of archive_eligibility or elapsed time.
+    """
+
+    if not isinstance(now, date):
+        raise ValueError("now must be a date")
+    for ttl_name, ttl_days in (
+        ("preview_ttl_days", preview_ttl_days),
+        ("staging_ttl_days", staging_ttl_days),
+    ):
+        if type(ttl_days) is not int or ttl_days < 1:
+            raise ValueError(f"{ttl_name} must be a positive integer")
+    candidates: list[str] = []
+    for entry in metadata_entries:
+        if not isinstance(entry, LearningPacketRetentionMetadata):
+            raise TypeError("metadata entry must be LearningPacketRetentionMetadata")
+        if entry.retention_class is RetentionClass.SCIENTIFIC:
+            continue
+        if entry.retention_class is RetentionClass.PREVIEW:
+            ttl_days = preview_ttl_days
+        elif entry.retention_class is RetentionClass.STAGING:
+            ttl_days = staging_ttl_days
+        else:
+            raise ValueError(
+                f"unsupported retention class: {entry.retention_class!r}"
+            )
+        age = now - entry.last_referenced_at
+        if age.days >= ttl_days:
+            candidates.append(entry.packet_id)
+    return tuple(sorted(candidates))
+
+
 __all__ = [
     "AG2TokenizerAdapter",
     "ClaimScope",
@@ -2221,11 +2295,14 @@ __all__ = [
     "ConflictClassifier",
     "ContextAssembler",
     "ContextProjection",
+    "LearningPacketRetentionMetadata",
     "LearningGate",
     "LearningContextRouter",
     "learning_execution_identity",
     "learning_semantic_identity",
     "ReopenPredicateEvaluator",
+    "RetentionClass",
+    "retention_cleanup_candidates",
     "ScopeMatch",
     "TimeWindow",
     "TiktokenTokenizerAdapter",
