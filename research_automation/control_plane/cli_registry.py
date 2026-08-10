@@ -49,6 +49,12 @@ COMMAND_SPECS: dict[str, CliCommandSpec] = {
     "chat": CliCommandSpec("chat", "cmd_chat", SideEffect.NETWORK_EGRESS),
     "roundtable": CliCommandSpec("roundtable", "cmd_roundtable", SideEffect.NETWORK_EGRESS),
     "interactive": CliCommandSpec("interactive", "cmd_interactive", SideEffect.NETWORK_EGRESS),
+    "rollout": CliCommandSpec(
+        "rollout",
+        "cmd_rollout",
+        SideEffect.WRITE_CONTROL_PLANE,
+        authority_required=False,
+    ),
 }
 
 

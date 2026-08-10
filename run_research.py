@@ -371,6 +371,60 @@ def cmd_review(args: argparse.Namespace) -> None:
     orch.run_review(strategy_description=strategy_desc, research_context=ctx)
 
 
+def cmd_rollout(args: argparse.Namespace) -> int:
+    """Run the offline C0 rollout chaos simulation and publish its canonical report."""
+    _cli_preflight(args, "rollout")
+    from research_automation.control_plane import rollout_chaos
+
+    stage = getattr(args, "stage", None)
+    if stage != "c0":
+        print(f"[run_research] unsupported rollout stage: {stage}", file=sys.stderr)
+        return 2
+    outcome = rollout_chaos.run_c0_simulation(
+        seed=getattr(args, "seed", 20260811),
+        cycles=getattr(args, "cycles", 24),
+    )
+    payload = outcome.to_payload()
+    if not payload["pass"]:
+        print("[run_research] C0 simulation FAILED", file=sys.stderr)
+        for item in payload["invariants"]:
+            if not item["passed"]:
+                print(f"  invariant {item['name']}: {item['detail']}", file=sys.stderr)
+        for item in payload["negative_scenarios"]:
+            if not item["passed"]:
+                print(f"  negative {item['category']}: {item['detail']}", file=sys.stderr)
+        return 1
+    root = Path(__file__).resolve().parent
+    evidence = (
+        root
+        / "research_state/control_plane/rollout/c0/attempts/c0-attempt-001/evidence"
+    )
+    evidence.mkdir(parents=True, exist_ok=True)
+    report = evidence / "c0_chaos_simulation_report.json"
+    report.write_text(rollout_chaos.serialize_report(outcome), encoding="utf-8")
+    print(
+        json.dumps(
+            {
+                "schema_version": "C0_RUN_RECEIPT_V1",
+                "stage": "C0",
+                "attempt_id": payload["attempt_id"],
+                "seed": payload["seed"],
+                "cycles_requested": payload["cycles_requested"],
+                "cycles_completed": payload["cycles_completed"],
+                "campaign_status": payload["campaign_status"],
+                "final_state_digest": payload["final_state_digest"],
+                "offline_only": payload["offline_only"],
+                "pass": True,
+                "report_ref": str(report.relative_to(root)).replace("\\", "/"),
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def cmd_chat(args: argparse.Namespace) -> None:
     _cli_preflight(args, "chat")
     _campaign_boundary(args, "chat")
@@ -610,6 +664,20 @@ def main(
     p_int = sub.add_parser("interactive", help="Interactive research console")
     _add_profile(p_int)
 
+    # offline rollout stages
+    p_rollout = sub.add_parser(
+        "rollout",
+        help="Run an offline C0 rollout-stage chaos simulation",
+    )
+    p_rollout.add_argument(
+        "--stage",
+        required=True,
+        choices=["c0"],
+        help="Rollout stage (only c0 is currently authorized)",
+    )
+    p_rollout.add_argument("--seed", type=int, default=20260811)
+    p_rollout.add_argument("--cycles", type=int, default=24)
+
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
     args._control_plane_authorization = authorization
@@ -635,6 +703,7 @@ def main(
         "review": cmd_review,
         "chat": cmd_chat,
         "interactive": cmd_interactive,
+        "rollout": cmd_rollout,
     }
     try:
         result = commands[args.command](args)
@@ -645,6 +714,8 @@ def main(
         from research_automation.kbase_ag2_full_cycle import cycle_exit_code
 
         return cycle_exit_code(result)
+    if args.command == "rollout":
+        return int(result)
     return 0
 
 
