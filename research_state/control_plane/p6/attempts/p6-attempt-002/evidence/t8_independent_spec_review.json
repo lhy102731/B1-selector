@@ -1,0 +1,63 @@
+{
+  "schema_version": "control_plane.p6r2_t8_independent_spec_review.v1",
+  "review_id": "p6r2-t8-independent-spec-review",
+  "receipt_id": "p6r2-t8-independent-spec-review",
+  "reviewed_at": "2026-08-10T06:00:22.613495+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T8-LEGACY-CANDIDATE-CONCENTRATION",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t8-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t8-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_spec_approval": true,
+  "checks": [
+    {
+      "check_id": "task_spec_binding",
+      "status": "PASS",
+      "detail": "T8 TaskSpec envelope binds allowed_files (six t8 evidence files, autonomous_runner.py, and test_automation_resilience.py), forbids every other campaign/control-plane module, data/KBase, scheduler/ACL, user files, strategy, requirements, and non-owned tests; payload_sha256 matches canonical serialization."
+    },
+    {
+      "check_id": "evidence_binding",
+      "status": "PASS",
+      "detail": "All eighteen input evidence references hash-match the live repository: P6 approval, scope manifest, implementation baseline, T1 task report/validation/completion, and T2 through T7 task reports and completions; baseline_sha256 matches implementation_baseline.json."
+    },
+    {
+      "check_id": "source_boundary",
+      "status": "PASS",
+      "detail": "The only tracked source changes are autonomous_runner.py and tests/test_automation_resilience.py; data, KBase, strategy, policy, scheduler/ACL, user files, and all other control-plane modules are untouched."
+    },
+    {
+      "check_id": "unstamped_candidate_quarantine",
+      "status": "PASS",
+      "detail": "_require_legacy_candidate_stamp enforces the immutable provenance stamp (controller_created=False, trust_state=legacy_unaudited, promotion_eligible=False) before a candidate may be consumed; _drain refuses an unstamped pool result before any cycle-log write, and _recent_candidates refuses unstamped pool content before it can enter a memory packet."
+    },
+    {
+      "check_id": "concentration_analytics_only",
+      "status": "PASS",
+      "detail": "_drain no longer attempts capital_tracker.record_experiment or coverage_map.update_from_entry writes; concentration projections are read through check_concentration_violation/check_coverage_imbalance and only feed advisory director reasons, never an execution gate."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "p7_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false; no real data/KBase read or update, no scheduler/ACL mutation, no daily update/backtest/research/campaign/holdout started."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_RECENT_CANDIDATES_QUARANTINE",
+      "detail": "A candidate_pool.yaml containing any unstamped entry now fails closed when read by the runner; existing legacy pools that predate stamping would need a control-plane migration before the runner can consume them."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_DIRECTOR_GOVERNANCE_RETAINED",
+      "detail": "The legacy director path still writes stamped director_decisions.yaml and strategy_state deltas; quarantining those surfaces is outside this slice and belongs to the later control-plane composition slices."
+    }
+  ]
+}

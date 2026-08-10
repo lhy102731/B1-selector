@@ -7,8 +7,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 from research_automation.task_queue import ExperimentTask, QueuePersistenceError, TaskQueue
-from research_automation.autonomous_runner import AutonomousRunnerV1, _kbase_writeback_enabled
+from research_automation.autonomous_runner import (
+    AutonomousRunnerV1,
+    _kbase_writeback_enabled,
+    _require_legacy_candidate_stamp,
+)
 from research_automation.automation_controller import AutomationController
 from research_automation.experiment import StandardMetrics
 from research_automation.experiment_runner import RealBacktestExecutor
@@ -488,6 +494,198 @@ class CampaignBoundaryAutomationTests(unittest.TestCase):
                 any("campaign boundary" in item.lower() for item in result.logs)
             )
             self.assertFalse(output_root.exists())
+
+
+class LegacyCandidateQuarantineTests(unittest.TestCase):
+    def test_unstamped_candidate_dict_is_refused(self) -> None:
+        with self.assertRaises(AuthorizationError):
+            _require_legacy_candidate_stamp({"experiment_id": "unstamped"})
+
+    def test_stamped_candidate_dict_passes(self) -> None:
+        stamped = {
+            "experiment_id": "stamped",
+            "controller_created": False,
+            "trust_state": "legacy_unaudited",
+            "promotion_eligible": False,
+        }
+        self.assertIsNone(_require_legacy_candidate_stamp(stamped))
+
+    def test_drain_refuses_unstamped_pool_entry_before_further_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            queue = TaskQueue(persist_path=root / "queue.json")
+            queue.enqueue(ExperimentTask("t1", "b1", {"hypothesis": "bounded"}))
+            runner = object.__new__(AutonomousRunnerV1)
+            runner.strategy = "b1"
+            runner._current_cycle_id = "cycle-quarantine"
+            runner._current_round = 0
+            runner.evaluator = SimpleNamespace(
+                evaluate=lambda exp, baseline: "tested"
+            )
+            runner.pool = SimpleNamespace(
+                add=lambda *args, **kwargs: {"experiment_id": "unstamped"}
+            )
+            metrics = StandardMetrics(
+                source="metrics_json", sharpe=1.2, extra={"total_return": 0.1}
+            )
+            exp = SimpleNamespace(
+                status=SimpleNamespace(value="COMPLETED"),
+                metrics=metrics,
+            )
+            controller = SimpleNamespace(
+                run_from_proposal=lambda *a, **k: exp
+            )
+            baseline = StandardMetrics(
+                source="metrics_json", sharpe=1.0, extra={"total_return": 0.0}
+            )
+            with patch(
+                "research_automation.cycle_log.write_cycle_log",
+                side_effect=AssertionError("cycle log must not be written"),
+            ) as clog:
+                with self.assertRaises(AuthorizationError):
+                    runner._drain(queue, controller, baseline, 0, None)
+            clog.assert_not_called()
+
+    def test_drain_keeps_concentration_analytics_only(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            queue = TaskQueue(persist_path=root / "queue.json")
+            queue.enqueue(ExperimentTask("t1", "b1", {"hypothesis": "bounded"}))
+            runner = object.__new__(AutonomousRunnerV1)
+            runner.strategy = "b1"
+            runner._current_cycle_id = "cycle-quarantine"
+            runner._current_round = 0
+            runner.evaluator = SimpleNamespace(
+                evaluate=lambda exp, baseline: "tested"
+            )
+            stamped = {
+                "experiment_id": "stamped",
+                "controller_created": False,
+                "trust_state": "legacy_unaudited",
+                "promotion_eligible": False,
+            }
+            runner.pool = SimpleNamespace(
+                add=lambda *args, **kwargs: dict(stamped)
+            )
+            metrics = StandardMetrics(
+                source="metrics_json", sharpe=1.2, extra={"total_return": 0.1}
+            )
+            exp = SimpleNamespace(
+                status=SimpleNamespace(value="COMPLETED"),
+                metrics=metrics,
+            )
+            controller = SimpleNamespace(
+                run_from_proposal=lambda *a, **k: exp
+            )
+            baseline = StandardMetrics(
+                source="metrics_json", sharpe=1.0, extra={"total_return": 0.0}
+            )
+            with (
+                patch(
+                    "research_automation.autonomous_runner._kbase_writeback_enabled",
+                    return_value=False,
+                ),
+                patch(
+                    "research_automation.cycle_log.write_cycle_log",
+                    return_value=root / "cycle_log.yaml",
+                ),
+                patch(
+                    "research_automation.capital_tracker.record_experiment",
+                    side_effect=AssertionError("capital write attempted"),
+                ) as cap,
+                patch(
+                    "research_automation.coverage_map.update_from_entry",
+                    side_effect=AssertionError("coverage write attempted"),
+                ) as cov,
+            ):
+                out = runner._drain(queue, controller, baseline, 0, None)
+            cap.assert_not_called()
+            cov.assert_not_called()
+            self.assertEqual(1, len(out))
+            self.assertEqual("stamped", out[0]["experiment_id"])
+
+    def test_recent_candidates_refuses_unstamped_pool_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pool_path = Path(td) / "candidate_pool.yaml"
+            pool_path.write_text(
+                yaml.safe_dump(
+                    {"candidates": [{"experiment_id": "unstamped"}]}
+                ),
+                encoding="utf-8",
+            )
+            runner = object.__new__(AutonomousRunnerV1)
+            runner.pool = SimpleNamespace(path=pool_path)
+            with self.assertRaises(AuthorizationError):
+                runner._recent_candidates(5)
+
+    def test_recent_candidates_accepts_stamped_pool_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pool_path = Path(td) / "candidate_pool.yaml"
+            entry = {
+                "experiment_id": "stamped",
+                "promotion_status": "tested",
+                "params": {"pe": 30},
+                "controller_created": False,
+                "trust_state": "legacy_unaudited",
+                "promotion_eligible": False,
+            }
+            pool_path.write_text(
+                yaml.safe_dump({"candidates": [entry]}),
+                encoding="utf-8",
+            )
+            runner = object.__new__(AutonomousRunnerV1)
+            runner.pool = SimpleNamespace(path=pool_path)
+            recent = runner._recent_candidates(5)
+            self.assertEqual(
+                [
+                    {
+                        "experiment_id": "stamped",
+                        "promotion_status": "tested",
+                        "params": {"pe": 30},
+                    }
+                ],
+                recent,
+            )
+
+    def test_concentration_signals_remain_advisory(self) -> None:
+        runner = object.__new__(AutonomousRunnerV1)
+        runner.strategy = "b1"
+        events = {
+            "info_gain_zero_streak": 0,
+            "max_surprise_last_5": 0.0,
+            "escalation_fired_this_round": False,
+            "phase_concentration_over_limit": True,
+            "revision_loop_hit_limit": False,
+            "capital_concentration_violation": {"over_limit": True},
+            "coverage_imbalance": {"imbalance": True},
+        }
+        should, reasons = runner._should_invoke_director(1, events)
+        self.assertTrue(should)
+        self.assertIn("capital_concentration_70pct", reasons)
+        self.assertIn("coverage_imbalance", reasons)
+
+    def test_collect_recent_events_reads_concentration_as_analytics(self) -> None:
+        runner = object.__new__(AutonomousRunnerV1)
+        runner.strategy = "b1"
+        with (
+            patch(
+                "research_automation.capital_tracker.check_concentration_violation",
+                return_value={"subject": "b1_v3", "over_limit": True},
+            ),
+            patch(
+                "research_automation.coverage_map.check_coverage_imbalance",
+                return_value={"subject": "b1_v3", "imbalance": True},
+            ),
+        ):
+            events = runner._collect_recent_events()
+        self.assertEqual(
+            {"subject": "b1_v3", "over_limit": True},
+            events["capital_concentration_violation"],
+        )
+        self.assertEqual(
+            {"subject": "b1_v3", "imbalance": True},
+            events["coverage_imbalance"],
+        )
 
 
 if __name__ == "__main__":

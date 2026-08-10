@@ -1,4 +1,4 @@
-"""autonomous_runner.py -- AutonomousRunnerV1.
+﻿"""autonomous_runner.py -- AutonomousRunnerV1.
 
 Drives the closed research loop with: hybrid task sourcing (your ideas first, then
 auto), stateless rounds with a BOUNDED memory_packet (no context growth), per-experiment
@@ -59,6 +59,32 @@ def _kbase_writeback_enabled() -> bool:
         "no",
         "off",
     }
+
+
+LEGACY_CANDIDATE_STAMP_REQUIRED = {
+    "controller_created": False,
+    "trust_state": "legacy_unaudited",
+    "promotion_eligible": False,
+}
+
+
+def _require_legacy_candidate_stamp(entry: dict) -> None:
+    """Quarantine unstamped candidates.
+
+    Legacy candidates must already carry the immutable control-plane
+    provenance stamp before they enter the candidate pool, memory packet,
+    or report.  A legacy runner may not self-stamp; unstamped entries fail
+    closed.
+    """
+    if (
+        entry.get("controller_created") is not False
+        or entry.get("trust_state") != "legacy_unaudited"
+        or entry.get("promotion_eligible") is not False
+    ):
+        raise AuthorizationError(
+            "unstamped legacy candidate refused: immutable control-plane "
+            "provenance stamp is required"
+        )
 
 
 class AutonomousRunnerV1:
@@ -419,10 +445,7 @@ class AutonomousRunnerV1:
                baseline: StandardMetrics, t0: float, max_minutes: int | None) -> list[dict]:
         out = []
         # v4.1: cycle_log writer subject + cycle_id
-        from .cycle_log import write_cycle_log, _info_gain_from_entry
-        # v4.2: governance trackers
-        from .capital_tracker import record_experiment as cap_record
-        from .coverage_map import update_from_entry as cov_update
+        from .cycle_log import write_cycle_log
         kb_subject = "b1_v3" if self.strategy == "b1" else self.strategy
         while True:
             if self._stop_requested() or self._time_up(t0, max_minutes):
@@ -438,6 +461,7 @@ class AutonomousRunnerV1:
             status = self.evaluator.evaluate(exp, baseline)
             delta = self._delta(exp.metrics, baseline)
             entry = self.pool.add(exp, status, baseline, delta)
+            _require_legacy_candidate_stamp(entry)
             entry["_experiment_status"] = exp.status.value  # real status (COMPLETED/FAILED), not promotion
             out.append(entry)
             queue.mark_done(task.task_id)
@@ -479,18 +503,9 @@ class AutonomousRunnerV1:
                     entry["kbase_output_path"] = str(kbase_output)
                 except Exception as e:
                     print(f"    KBase writeback failed (non-fatal): {e}")
-            # v4.2: governance — capital + coverage tracking
-            try:
-                ig = _info_gain_from_entry(entry)
-                cap_record(kb_subject,
-                           getattr(self, "_current_cycle_id", "unknown"),
-                           getattr(self, "_current_round", 0),
-                           entry, info_gain=ig)
-                cov_update(kb_subject, entry,
-                           cycle_id=getattr(self, "_current_cycle_id", "unknown"),
-                           info_gain=ig)
-            except Exception as e:
-                print(f"    capital/coverage write failed (non-fatal): {e}")
+            # Concentration stays analytics-only: the P6 control plane owns
+            # capital/coverage persistence; legacy write attempts are
+            # quarantined and never started here.
             print(f"    {task.task_id}: {exp.status.value} -> promotion={status} delta={delta}")
         return out
 
@@ -517,7 +532,7 @@ class AutonomousRunnerV1:
     def _run_code_rounds(self, max_rounds: int, per_round: int,
                          controller: AutomationController, baseline: StandardMetrics,
                          t0: float, max_minutes: int | None, cycle_dir: Path) -> list[dict]:
-        """Code mode: Director → Proposal Generator → Claude → Backtest → feedback loop."""
+        """Code mode: Director 鈫?Proposal Generator 鈫?Claude 鈫?Backtest 鈫?feedback loop."""
         from .research_proposal_generator import ResearchProposalGenerator
         from .task_queue import ExperimentTask
 
@@ -764,7 +779,7 @@ class AutonomousRunnerV1:
         """Aggregate signals from cycle_log files + v4.2 governance trackers.
 
         Reads research_state/<subject>/cycle_log_*.yaml if present, else
-        returns zeros. Always safe — never blocks the pipeline if files
+        returns zeros. Always safe 鈥?never blocks the pipeline if files
         are missing.
         """
         out = {
@@ -960,8 +975,11 @@ class AutonomousRunnerV1:
         if not path.exists():
             return []
         pool = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("candidates", [])
+        recent = pool[-n:]
+        for entry in recent:
+            _require_legacy_candidate_stamp(entry)
         return [{"experiment_id": c["experiment_id"], "promotion_status": c.get("promotion_status"),
-                 "params": c.get("params")} for c in pool[-n:]]
+                 "params": c.get("params")} for c in recent]
 
     @staticmethod
     def _delta(m: StandardMetrics, baseline: StandardMetrics) -> dict:

@@ -1,0 +1,120 @@
+{
+  "schema_version": "control_plane.p6r2_t8_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T8-LEGACY-CANDIDATE-CONCENTRATION",
+  "ticket_id": "a86466c376f11bc63b27ef73d7ef08401b8f809580c61eeb62ef0b44cfa59f71",
+  "validated_at": "2026-08-10T06:01:31.259115+00:00",
+  "validation_git_head": "b90bb24ee2e07dd2aa877d67c121c96755f67510",
+  "validation_git_tree": "fcc1a0f37a20258a732ed991d56bf22d67366c72",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t8-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t8_independent_spec_review.json",
+      "sha256": "b7fe1ef0fd6cd8c55068cff1b31d395a4e86e74a97483c7d5ce91b7b6c50fcc5",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t8-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t8_independent_quality_review.json",
+      "sha256": "d5798393888e9d77f7aafc627d2edc7d0e5e3200ab8152597e82c534aa755a23",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t8-focused-tests",
+      "result": "PASS",
+      "tests_run": 31,
+      "tail": "[run_research_cycle] blocked: campaign boundary rejected for run_research_cycle.py:main: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT\n    t1: COMPLETED -> promotion=tested delta={'sharpe': 0.2, 'total_return': 0.1, 'max_drawdown': None, 'trades': None}\n----------------------------------------------------------------------\nRan 31 tests in 0.094s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t8-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/autonomous_runner.py",
+          "tests/test_automation_resilience.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/autonomous_runner.py",
+          "tests/test_automation_resilience.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/autonomous_runner.py": {
+            "def _require_legacy_candidate_stamp": true,
+            "LEGACY_CANDIDATE_STAMP_REQUIRED": true,
+            "unstamped legacy candidate refused": true,
+            "Concentration stays analytics-only": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/autonomous_runner.py",
+      "tests/test_automation_resilience.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/autonomous_runner.py",
+      "tests/test_automation_resilience.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/autonomous_runner.py": {
+        "def _require_legacy_candidate_stamp": true,
+        "LEGACY_CANDIDATE_STAMP_REQUIRED": true,
+        "unstamped legacy candidate refused": true,
+        "Concentration stays analytics-only": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "a86466c376f11bc63b27ef73d7ef08401b8f809580c61eeb62ef0b44cfa59f71",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 7,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
