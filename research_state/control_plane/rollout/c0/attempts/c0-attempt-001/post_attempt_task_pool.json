@@ -1,0 +1,45 @@
+{
+  "schema_version": "C0_POST_ATTEMPT_TASK_POOL_V1",
+  "attempt_id": "c0-attempt-001",
+  "plan_version": "V3.4.2-P0R2",
+  "stage": "C0",
+  "created_at": "2026-08-11T01:20:00Z",
+  "entries": [
+    {
+      "id": "C0-POOL-001",
+      "source": "quality-review-R1",
+      "severity": "non_blocking",
+      "status": "OPEN",
+      "title": "C1+ rollout CLI should refuse overwriting an existing evidence report without --force or version by timestamp",
+      "detail": "The fixed-path evidence report is overwritten on each run; for real-LLM C1+ stages this must be append-only or versioned.",
+      "proposed_stage": "C1"
+    },
+    {
+      "id": "C0-POOL-002",
+      "source": "spec-review-R1",
+      "severity": "non_blocking",
+      "status": "OPEN",
+      "title": "Manifest/code chaos category naming alignment",
+      "detail": "scope_manifest.json chaos_categories now lists the 8 granular names matching rollout_chaos._CHAOS_CATEGORIES; retained as a hygiene reminder to keep manifest and driver in lockstep.",
+      "proposed_stage": "C0 gate"
+    },
+    {
+      "id": "C0-POOL-003",
+      "source": "spec-review-R1",
+      "severity": "non_blocking",
+      "status": "OPEN",
+      "title": "Driver invariant output now names all 7 manifest invariants plus per-event exactly-once entries",
+      "detail": "Future stages should keep the manifest-to-report mapping one-to-one; automated schema lint recommended for C1+.",
+      "proposed_stage": "C1"
+    },
+    {
+      "id": "C0-POOL-004",
+      "source": "quality-review-R1",
+      "severity": "non_blocking",
+      "status": "OPEN",
+      "title": "offline_only is asserted, not runtime-enforced",
+      "detail": "The driver structurally uses fake providers and temp-rooted stores; a stronger guard (network/import audit or sandbox) may be added before C1 real-LLM stages.",
+      "proposed_stage": "C1"
+    }
+  ]
+}
