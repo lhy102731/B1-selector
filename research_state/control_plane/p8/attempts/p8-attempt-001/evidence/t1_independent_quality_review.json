@@ -1,0 +1,67 @@
+{
+  "schema_version": "control_plane.p8r2_t1_independent_quality_review.v1",
+  "review_id": "p8r2-t1-independent-quality-review",
+  "receipt_id": "p8r2-t1-independent-quality-review",
+  "reviewed_at": "2026-08-10T12:12:11.612228+00:00",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T1-CURRENT-SOURCE-ADOPTION",
+  "reviewer": {
+    "actor_id": "independent-p8r2-t1-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p8r2-t1-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "candidate": {
+    "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t1_current_source_manifest.json",
+    "sha256": "c1ab40345c105574fd61fcd5627b95ca14740d50471ce01fdf67d5e506b3f2e0"
+  },
+  "checks": [
+    {
+      "check_id": "range_review_artifact_quality",
+      "status": "PASS",
+      "detail": "All 13 range digest files exist and their SHA-256 values match the manifest anchors exactly; each contains commit list, changed paths, stat summary and plan mapping; no digest is missing or stale."
+    },
+    {
+      "check_id": "mechanical_review_verification",
+      "status": "PASS",
+      "detail": "Manifest mechanical_review_verification rows (26) verify exact digest SHA-256 anchors plus SPEC/QUALITY PASS per disjoint range; result ALL_OK and all rows READY."
+    },
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "Fresh focused suite executed 862 tests across 6 groups with 0 failures on the locked runtime; per-group results 80/140/78/279/135/150 all PASS; lock pins (psutil==7.2.2, tenacity==8.5.0) and pip check are clean."
+    },
+    {
+      "check_id": "evidence_artifact_quality",
+      "status": "PASS",
+      "detail": "Manifest schema control_plane.p8r2_t1_current_source_manifest.v1 parses strictly; verdict READY_FOR_T1_COMPLETION; all 13 partitions carry expected/actual commit counts with plan mappings; consolidated_range_review_status all_spec_pass=true and all_quality_pass=true; side_effect_bounds are all false."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Independent spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p8r2-t1-independent-spec-review-20260810 and p8r2-t1-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN (not zero) in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blocker exists across the 13 range reviews, the retained digests, the fresh validation result, or the manifest; all follow-ups are explicitly non-blocking and deferred to later slices."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "A13_CLOSURE_RECEIPT_APPEND_ONLY",
+      "detail": "P8-A13 contains 1 commit rewriting official_p7_closure_receipt_v342_p7r2.json; final state at 8a6091c is canonical. History noise only; recommended follow-up is a git-hygiene documentation slice, not a rewrite."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_TEST_SUITE",
+      "detail": "Some groups emit third-party DeprecationWarnings from autogen import utilities; tests still pass and no source change is required for adoption."
+    }
+  ]
+}

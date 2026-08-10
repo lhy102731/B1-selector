@@ -1,0 +1,248 @@
+{
+  "schema_version": "control_plane.p8r2_t1_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T1-CURRENT-SOURCE-ADOPTION",
+  "ticket_id": "714562f3d71b0a5ffa09681892a332447433fb187016cbe9ff6581a5ef82bf07",
+  "validated_at": "2026-08-10T12:12:15.575406+00:00",
+  "validation_git_head": "96dd98bd1b02f3bfc4ae383b23a51ce318670a4b",
+  "validation_git_tree": "2030943d3e2b76791c11348387327cfd03a49f6d",
+  "manifest": {
+    "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t1_current_source_manifest.json",
+    "sha256": "c1ab40345c105574fd61fcd5627b95ca14740d50471ce01fdf67d5e506b3f2e0"
+  },
+  "independent_reviews": [
+    {
+      "receipt_id": "p8r2-t1-independent-spec-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t1_independent_spec_review.json",
+      "sha256": "4c2473f352ae9c8068459ccd2d033b02baa6ff4915b09ae4574681c6e09de850",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p8r2-t1-independent-quality-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t1_independent_quality_review.json",
+      "sha256": "6ae029ae2f04c1b8acdd6f9c39984fa2ec092f6d74e415bc9237ff21cbdd2790",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p8r2-t1-commit-inventory-validation",
+      "result": "PASS",
+      "current_source_inventory": true,
+      "ast_boundary": true,
+      "lock_runtime": true,
+      "pip_check": true
+    },
+    {
+      "receipt_id": "p8r2-t1-focused-current-source-tests",
+      "result": "PASS",
+      "groups": [
+        {
+          "group": 1,
+          "modules": [
+            "tests.test_control_plane_access",
+            "tests.test_control_plane_budget",
+            "tests.test_control_plane_mutation",
+            "tests.test_control_plane_runner_control",
+            "tests.test_promotion_legacy_provenance"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_access tests.test_control_plane_budget tests.test_control_plane_mutation tests.test_control_plane_runner_control tests.test_promotion_legacy_provenance -q",
+          "tests_run": 80,
+          "exit_code": 0,
+          "duration_seconds": 14.228,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 80 tests in 14.037s\n\nOK\n"
+        },
+        {
+          "group": 2,
+          "modules": [
+            "tests.test_control_plane_campaign"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign -q",
+          "tests_run": 140,
+          "exit_code": 0,
+          "duration_seconds": 8.877,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 140 tests in 8.701s\n\nOK\n"
+        },
+        {
+          "group": 3,
+          "modules": [
+            "tests.test_control_plane_campaign_store"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_store -q",
+          "tests_run": 78,
+          "exit_code": 0,
+          "duration_seconds": 4.66,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 78 tests in 4.474s\n\nOK\n"
+        },
+        {
+          "group": 4,
+          "modules": [
+            "tests.test_control_plane_campaign_controller"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_controller -q",
+          "tests_run": 279,
+          "exit_code": 0,
+          "duration_seconds": 171.12,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 279 tests in 170.674s\n\nOK\n"
+        },
+        {
+          "group": 5,
+          "modules": [
+            "tests.test_control_plane_campaign_context",
+            "tests.test_control_plane_campaign_lease",
+            "tests.test_control_plane_campaign_preflight",
+            "tests.test_control_plane_campaign_two_cycle",
+            "tests.test_control_plane_campaign_roster",
+            "tests.test_control_plane_campaign_freeze"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_context tests.test_control_plane_campaign_lease tests.test_control_plane_campaign_preflight tests.test_control_plane_campaign_two_cycle tests.test_control_plane_campaign_roster tests.test_control_plane_campaign_freeze -q",
+          "tests_run": 135,
+          "exit_code": 0,
+          "duration_seconds": 19.984,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 135 tests in 19.478s\n\nOK\n"
+        },
+        {
+          "group": 6,
+          "modules": [
+            "tests.test_control_plane_evidence_learning",
+            "tests.test_control_plane_memory"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_evidence_learning tests.test_control_plane_memory -q",
+          "tests_run": 150,
+          "exit_code": 0,
+          "duration_seconds": 7.745,
+          "result": "PASS",
+          "tail": "erencing library, which provides more compliant referencing behavior as well as more flexible APIs for customization. A future release will remove RefResolver. Please file a feature request (on referencing) if you are missing an API for the kind of customization you need.\n  from jsonschema import Draft7Validator, RefResolver\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\n----------------------------------------------------------------------\nRan 150 tests in 7.384s\n\nOK\n"
+        }
+      ],
+      "total_tests_run": 862,
+      "tests_failed": 0
+    }
+  ],
+  "deterministic_receipt_prevalidation": {
+    "test": 2,
+    "review": 2,
+    "evidence": 11,
+    "result": "PASS"
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_46ebf6d2f7f8c495b42debc398131661",
+    "grant_state": "ACTIVE",
+    "ticket_id": "714562f3d71b0a5ffa09681892a332447433fb187016cbe9ff6581a5ef82bf07",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 0,
+    "failed_ticket_count": 0,
+    "in_doubt_ticket_count": 0,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "range_review_provenance": {
+    "segment_count": 13,
+    "all_spec_pass": true,
+    "all_quality_pass": true,
+    "retained_artifacts": [
+      {
+        "range_id": "P8-A01-AUTHORITY-ACTIVATION",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A01-AUTHORITY-ACTIVATION.txt",
+        "sha256": "6d975b1cc87ade5150ac02c9770d14755317f43dab93230cf58e212b626c40bf"
+      },
+      {
+        "range_id": "P8-A02-T1-ADOPTION",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A02-T1-ADOPTION.txt",
+        "sha256": "7755e4ee6efda47833a1f248e07bb0e66a24f2f5baf57415fe64a8261edaefca"
+      },
+      {
+        "range_id": "P8-A03-T2-OPS-JOURNAL-DURABILITY",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A03-T2-OPS-JOURNAL-DURABILITY.txt",
+        "sha256": "b35ae6049471bb840a8ab5ce389cc4d9d65acdee9b144fc37cd535e69c050391"
+      },
+      {
+        "range_id": "P8-A04-T3-OPS-PROJECTION-RECOVERY",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A04-T3-OPS-PROJECTION-RECOVERY.txt",
+        "sha256": "4ebaa2f9676283fad03f8dac61024f8a65de92f6664059a036b33f599a738500"
+      },
+      {
+        "range_id": "P8-A05-T4-OPS-CLI-READONLY",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A05-T4-OPS-CLI-READONLY.txt",
+        "sha256": "b04c712f2e28c9828487f049688a0a676f774806ea5d67786280e1f0f338916c"
+      },
+      {
+        "range_id": "P8-A06-T5-OPS-AUDIT-BUNDLE",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A06-T5-OPS-AUDIT-BUNDLE.txt",
+        "sha256": "80a6fc19c544f0bbb55a9173df6a8c55f308b87e769556f046184da79215a737"
+      },
+      {
+        "range_id": "P8-A07-T6-OPS-BACKFILL-ADAPTER",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A07-T6-OPS-BACKFILL-ADAPTER.txt",
+        "sha256": "3a03ed71ecaf790e826bc69b380dc976bb0e4f7c38ad5ca7372c698209a3a7db"
+      },
+      {
+        "range_id": "P8-A08-T7-OPS-RETENTION-METADATA",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A08-T7-OPS-RETENTION-METADATA.txt",
+        "sha256": "ef8537f677b3e50e52a2932bbed5278a67b5a29cb7251ff35a40c80b29bb9d4d"
+      },
+      {
+        "range_id": "P8-A09-T8-OPS-CONFLICT-EXPLANATION",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A09-T8-OPS-CONFLICT-EXPLANATION.txt",
+        "sha256": "9cbf4e544f1aafe46da83929bc294b5c22e07f8a6d5814f9a83f65508623fbb2"
+      },
+      {
+        "range_id": "P8-A10-T9-OPS-PERFORMANCE-GATE",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A10-T9-OPS-PERFORMANCE-GATE.txt",
+        "sha256": "8ba20fdf6840955be365187b8988f97e3fe03e38f438c78edcaeb9174c99c479"
+      },
+      {
+        "range_id": "P8-A11-T10-INTEGRATION",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A11-T10-INTEGRATION.txt",
+        "sha256": "4efe664d7824f10dd8179f92b6c3141163da235170b6881178553dd6cdef8412"
+      },
+      {
+        "range_id": "P8-A12-T11-GATE",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A12-T11-GATE.txt",
+        "sha256": "866f270d74b079b031099722ac0dd66e5910f06b8651836457d686d9916a8bc7"
+      },
+      {
+        "range_id": "P8-A13-CLOSURE-RECEIPT",
+        "kind": "SPEC_AND_QUALITY_DIGESTS",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p8r2_t1_range_digests/P8-A13-CLOSURE-RECEIPT.txt",
+        "sha256": "9a1009d79989cf3b59eeb417a03d53994c294773c13f5b23cf10d385e9f952aa"
+      }
+    ],
+    "lost_artifacts": []
+  },
+  "phase_boundary": {
+    "p9_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "source_code_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
