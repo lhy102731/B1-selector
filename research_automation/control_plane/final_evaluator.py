@@ -6,20 +6,28 @@ actor together with every identity hash.  Validation is fail-closed: missing,
 malformed or mismatched hashes, unfrozen candidates and non-operator actors
 are all rejected before any evaluation can start.
 
-Later P8 slices extend this module with the consume-once AuthorityBroker
-(T3), the low-privilege TrustedEvaluator adapter (T4) and terminal audit
-closure (T5).
+T3 slice: AuthorityBroker consumes the Final Holdout nonce permanently
+before returning any handle.  Success, failure, timeout and crash all
+consume; nonce replay and crash-after-consume are rejected.  The broker
+uses an injectable HoldoutStore backend so tests can verify consume-once
+semantics without touching real Authority storage.
+
+Later P8 slices extend this module with the low-privilege TrustedEvaluator
+adapter (T4) and terminal audit closure (T5).
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 from research_automation.control_plane.campaign_roster import RosterManifest
 from research_automation.control_plane.contracts import (
     Actor,
     IdentityBinding,
+    Phase,
+    SideEffect,
     canonical_sha256,
 )
 from research_automation.foundations.protocols import ExecutionSpec
@@ -45,6 +53,18 @@ class FinalEvalActorError(FinalEvalRequestError):
 
 class UnfrozenCandidateError(FinalEvalRequestError):
     """Raised when the candidate set contains an unfrozen candidate."""
+
+
+class ConsumeOnceError(RuntimeError):
+    """Base error for AuthorityBroker consume-once operations."""
+
+
+class ConsumeOnceReplayError(ConsumeOnceError):
+    """A nonce was already permanently consumed; retry needs a new operator decision."""
+
+
+class ConsumeOnceValidationError(ConsumeOnceError, FinalEvalRequestError):
+    """The consume request or outcome failed validation."""
 
 
 def _require_sha256(value: str, field_name: str) -> str:
@@ -317,6 +337,192 @@ class FinalEvalRequest:
         }
 
 
+HOLDOUT_CONSUMED_SCHEMA = "control_plane.holdout_consumed.v1"
+
+_ALLOWED_CONSUME_OUTCOMES = frozenset({"SUCCEEDED", "FAILED", "TIMEOUT", "CRASHED"})
+
+
+class HoldoutAlreadyConsumedError(ConsumeOnceReplayError):
+    """Raised when a holdout authorization_nonce was already permanently consumed."""
+
+
+@dataclass(frozen=True, slots=True)
+class HoldoutConsumed:
+    """Immutable, self-hashed receipt proving one Final Holdout nonce was consumed.
+
+    This is the handle returned by the AuthorityBroker after the nonce has
+    been permanently recorded.  The ``consumed_sha256`` is the canonical
+    digest of the full receipt payload.
+    """
+
+    holdout_id: str
+    holdout_sha256: str
+    authorization_nonce: str
+    request_sha256: str
+    consumed_at: str
+    outcome: str
+    consumed_sha256: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "holdout_id", _require_identifier(self.holdout_id, "holdout_id"))
+        object.__setattr__(self, "holdout_sha256", _require_sha256(self.holdout_sha256, "holdout_sha256"))
+        object.__setattr__(
+            self,
+            "authorization_nonce",
+            _require_sha256(self.authorization_nonce, "authorization_nonce"),
+        )
+        object.__setattr__(
+            self,
+            "request_sha256",
+            _require_sha256(self.request_sha256, "request_sha256"),
+        )
+        if not isinstance(self.consumed_at, str) or not self.consumed_at.strip():
+            raise FinalEvalRequestError("consumed_at must be a non-empty string")
+        try:
+            parsed = datetime.fromisoformat(self.consumed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise FinalEvalRequestError("consumed_at must be a valid ISO-8601 timestamp") from error
+        if parsed.tzinfo is None or self.consumed_at != parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"):
+            raise FinalEvalRequestError("consumed_at must be a canonical UTC ISO-8601 timestamp ending in Z")
+        if self.outcome not in _ALLOWED_CONSUME_OUTCOMES:
+            raise FinalEvalRequestError(
+                f"outcome must be one of {sorted(_ALLOWED_CONSUME_OUTCOMES)}"
+            )
+        object.__setattr__(self, "consumed_sha256", canonical_sha256(self.to_payload()))
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return the deterministic JSON-safe payload without the derived hash."""
+        return {
+            "schema_version": HOLDOUT_CONSUMED_SCHEMA,
+            "holdout_id": self.holdout_id,
+            "holdout_sha256": self.holdout_sha256,
+            "authorization_nonce": self.authorization_nonce,
+            "request_sha256": self.request_sha256,
+            "consumed_at": self.consumed_at,
+            "outcome": self.outcome,
+        }
+
+
+# HoldoutHandle is the canonical name for the consumed handle returned by the broker.
+HoldoutHandle = HoldoutConsumed
+
+
+class HoldoutStore:
+    """Injectable persistence contract for holdout consume-once semantics.
+
+    The store is the single atomic decision point: once a nonce is recorded
+    the holdout is permanently consumed regardless of what the caller does
+    with the returned handle.
+    """
+
+    def consume(
+        self,
+        *,
+        nonce: str,
+        request_sha256: str,
+        outcome: str,
+    ) -> HoldoutConsumed:
+        """Atomically consume one holdout nonce.
+
+        Returns a ``HoldoutConsumed`` receipt proving the nonce was spent.
+        Raises ``HoldoutAlreadyConsumedError`` if the nonce was already
+        consumed.
+        """
+        raise NotImplementedError("HoldoutStore is an injectable contract")
+
+
+class InMemoryHoldoutStore(HoldoutStore):
+    """In-memory holdout store for testing; never used in production.
+
+    Each instance is fully isolated.  The clock is injectable so tests can
+    assert deterministic timestamps on consumed receipts.
+    """
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._consumed: dict[str, HoldoutConsumed] = {}
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def consume(
+        self,
+        *,
+        nonce: str,
+        request_sha256: str,
+        outcome: str,
+    ) -> HoldoutConsumed:
+        if nonce in self._consumed:
+            existing = self._consumed[nonce]
+            raise HoldoutAlreadyConsumedError(
+                f"Holdout nonce {nonce} was already permanently consumed "
+                f"with outcome {existing.outcome}"
+            )
+        now = self._clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise FinalEvalRequestError("store clock must return a timezone-aware datetime")
+        consumed_at = now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        consumed = HoldoutConsumed(
+            holdout_id="holdout-final-1",
+            holdout_sha256=_require_sha256(
+                _sha_dummy("holdout"),
+                "holdout_sha256",
+            ),
+            authorization_nonce=nonce,
+            request_sha256=request_sha256,
+            consumed_at=consumed_at,
+            outcome=outcome,
+        )
+        self._consumed[nonce] = consumed
+        return consumed
+
+
+class AuthorityBroker:
+    """Consumes the Final Holdout nonce permanently before returning any handle.
+
+    Success, failure, timeout and crash all consume.  Nonce replay and
+    crash-after-consume are both rejected with ``HoldoutAlreadyConsumedError``.
+
+    The broker delegates the atomic consume decision to an injectable
+    ``HoldoutStore`` so that tests can verify the contract without touching
+    real Authority storage.
+    """
+
+    def __init__(self, *, store: HoldoutStore) -> None:
+        if not isinstance(store, HoldoutStore):
+            raise TypeError("store must be a HoldoutStore")
+        self._store = store
+
+    def consume(self, request: FinalEvalRequest, *, outcome: str) -> HoldoutConsumed:
+        """Consume the holdout nonce and return a ``HoldoutConsumed`` receipt.
+
+        The nonce is consumed atomically in the store *before* this method
+        returns.  All terminal outcomes (SUCCEEDED, FAILED, TIMEOUT,
+        CRASHED) consume permanently.
+
+        Raises ``HoldoutAlreadyConsumedError`` when the nonce was already
+        consumed (nonce replay or crash-after-consume).
+        """
+        if not isinstance(request, FinalEvalRequest):
+            raise TypeError("request must be a FinalEvalRequest")
+        if outcome not in _ALLOWED_CONSUME_OUTCOMES:
+            raise ConsumeOnceValidationError(
+                f"outcome must be one of {sorted(_ALLOWED_CONSUME_OUTCOMES)}"
+            )
+        return self._store.consume(
+            nonce=request.holdout.authorization_nonce,
+            request_sha256=request.request_sha256,
+            outcome=outcome,
+        )
+
+
+def _sha_dummy(value: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 _BINDING_TYPES_BY_FIELD = {
     "campaign": (CampaignBinding,),
     "code": (CodeBinding,),
@@ -331,6 +537,11 @@ _BINDING_TYPES_BY_FIELD = {
 
 
 __all__ = [
+    "AuthorityBroker",
+    "ConsumeOnceError",
+    "ConsumeOnceReplayError",
+    "ConsumeOnceValidationError",
+    "HoldoutHandle",
     "CampaignBinding",
     "CandidateBinding",
     "CodeBinding",
@@ -342,7 +553,11 @@ __all__ = [
     "FinalEvalRequest",
     "FinalEvalRequestError",
     "GenerationBinding",
+    "HOLDOUT_CONSUMED_SCHEMA",
+    "HoldoutAlreadyConsumedError",
     "HoldoutBinding",
+    "HoldoutConsumed",
+    "InMemoryHoldoutStore",
     "ModelBinding",
     "RosterBinding",
     "ThresholdBinding",

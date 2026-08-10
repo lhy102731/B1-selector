@@ -1,0 +1,76 @@
+{
+  "schema_version": "control_plane.p8r2_t3_independent_spec_review.v1",
+  "review_id": "p8r2-t3-independent-spec-review",
+  "receipt_id": "p8r2-t3-independent-spec-review",
+  "reviewed_at": "2026-08-10T13:03:08.142240+00:00",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T3-AUTHORITY-BROKER-CONSUME-ONCE",
+  "reviewer": {
+    "actor_id": "codex-spec-p8r2-t3",
+    "actor_type": "llm",
+    "invocation_id": "codex-spec-p8r2-t3-invocation-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_authority_broker_consume_once_spec_approval": true,
+  "candidate": {
+    "ref": "research_automation/control_plane/final_evaluator.py",
+    "sha256": "6e5d51ae194777d37ea108923457cf41183aa26ffa54322a73d7927560537fd9"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 213ee6960e64f8349844833ab81e9edfd5168c82e728af7567df33b4d086a714 is valid; task_spec_sha256 bde0e2475f7e5d9a1225e04e8eaf191ec9f44ebd0bbeb1dfe18c2c446f676f66 is the raw SHA-256 of the committed spec file (T1 convention); allowed_files cover final_evaluator.py, test_control_plane_final_evaluator.py and all T3 evidence outputs; baseline 6765acb7e2510c4c4190df48e09188ff3f472634f4fb58b77c002cccf5ce4dc1 and all four input evidence references hash-match the live repository files."
+    },
+    {
+      "check_id": "red_green_tdd_boundary",
+      "status": "PASS",
+      "detail": "The T3 seat ran RED first (9 new tests plus 5 imports fail with ImportError: cannot import name ConsumeOnceError), then GREEN (43/43 focused tests pass). Only the two TaskSpec-owned mutable files were changed; no git writes and no external APIs were used by the seat."
+    },
+    {
+      "check_id": "consume_once_semantics",
+      "status": "PASS",
+      "detail": "AuthorityBroker.consume persists the HoldoutConsumed receipt before returning any handle; SUCCEEDED, FAILED, TIMEOUT and CRASHED all consume the attempt; nonce replay, replay across outcomes/brokers and crash-after-consume are rejected with ConsumeOnceReplayError; a genuinely new operator decision (new nonce) is accepted."
+    },
+    {
+      "check_id": "fail_closed_matrix",
+      "status": "PASS",
+      "detail": "Tests cover invalid outcomes, malformed/missing hashes, empty holdout id, non-UTC timestamps, non-FinalEvalRequest inputs, same-nonce-different-holdout replay and crash-then-success replay; every rejection occurs before any evaluation handle can exist."
+    },
+    {
+      "check_id": "focused_test_evidence",
+      "status": "PASS",
+      "detail": "Fresh focused suite on the locked runtime: 43 tests run, 0 failures, unittest exit 0; the 14 T2 FinalEvalRequest contract tests continue to pass with no regression."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "No real data, KBase, Campaign, backtest or Final Holdout bytes were read or written; HoldoutConsumed carries only holdout_id/holdout_sha256/authorization_nonce; phase_boundary records p9_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is exactly T3-completion ready: authorization auth_ded3611c60155e8bb872d7773094160e CLAIMED, grant grant_46ebf6d2f7f8c495b42debc398131661 ACTIVE, ticket 738e35aa11d9ae93aa98500e5c96bec5264a077f63aa89479e25d95cf03d5b23 ISSUED with zero trusted receipts, one open ticket, prior T1/T2 tickets succeeded, pending outbox 0, and no P8 phase-gate closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "AUTHORITY_STORE_BRIDGE_DEFERRED_TO_T4",
+      "detail": "The ticket scopes T3 to the in-memory HoldoutStore contract; bridging HoldoutStore to the sealed _AuthorityStore (provision -> claim -> ticket -> lease) is T4's TrustedEvaluator adapter work and does not block this slice."
+    },
+    {
+      "id": "HOLDOUT_HANDLE_ALIAS",
+      "detail": "HoldoutHandle is currently an alias of HoldoutConsumed; T4 may promote it to a distinct frozen dataclass when the _AuthorityStore lease integration lands. The alias is canonical for this slice."
+    },
+    {
+      "id": "TASK_SPEC_SHA256_RAW_FILE_CONVENTION",
+      "detail": "task_spec_sha256 is recorded as the raw SHA-256 of the committed spec file, matching the T1 convention and the T3 ticket receipt value bde0e2475f7e5d9a1225e04e8eaf191ec9f44ebd0bbeb1dfe18c2c446f676f66."
+    }
+  ]
+}

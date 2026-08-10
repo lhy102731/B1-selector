@@ -1,0 +1,72 @@
+{
+  "schema_version": "control_plane.p8r2_t3_independent_quality_review.v1",
+  "review_id": "p8r2-t3-independent-quality-review",
+  "receipt_id": "p8r2-t3-independent-quality-review",
+  "reviewed_at": "2026-08-10T13:03:08.142240+00:00",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T3-AUTHORITY-BROKER-CONSUME-ONCE",
+  "reviewer": {
+    "actor_id": "codex-quality-p8r2-t3",
+    "actor_type": "llm",
+    "invocation_id": "codex-quality-p8r2-t3-invocation-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_authority_broker_consume_once_quality_approval": true,
+  "candidate": {
+    "ref": "tests/test_control_plane_final_evaluator.py",
+    "sha256": "d8263e87728e6c7ab80b4f95ccc1d1f0635751dbec75eb26f66312207610df76"
+  },
+  "checks": [
+    {
+      "check_id": "error_hierarchy_and_backward_compat",
+      "status": "PASS",
+      "detail": "ConsumeOnceError(RuntimeError) is the base; ConsumeOnceReplayError and ConsumeOnceValidationError derive from it; HoldoutAlreadyConsumedError now inherits ConsumeOnceReplayError while remaining catchable as HoldoutAlreadyConsumedError for existing callers."
+    },
+    {
+      "check_id": "consume_before_return_atomicity",
+      "status": "PASS",
+      "detail": "test_consume_persists_before_returning verifies the store records the consumption before AuthorityBroker returns the handle; the handle type identity is verified as HoldoutHandle is HoldoutConsumed."
+    },
+    {
+      "check_id": "test_coverage_and_fresh_run",
+      "status": "PASS",
+      "detail": "The focused module contains 43 tests (14 T2 contract + 20 existing T3 + 9 new AuthorityBrokerHandleAndErrorTests); fresh run on the locked runtime reports 43 tests, 0 failures, OK."
+    },
+    {
+      "check_id": "diff_boundary_and_noise",
+      "status": "PASS",
+      "detail": "Only research_automation/control_plane/final_evaluator.py and tests/test_control_plane_final_evaluator.py are changed; the four protected user files (CHANGELOG.md, daily_run.py, daily_select.py, docs/b1_v3_results.md) are untouched noise; no forbidden root is modified."
+    },
+    {
+      "check_id": "canonical_hash_integrity",
+      "status": "PASS",
+      "detail": "HoldoutConsumed.canonical_hash is deterministic and round-trip stable; receipt files are valid JSON without BOM; task_spec_sha256, task_payload_sha256 and evidence references cross-verify against the committed blobs."
+    },
+    {
+      "check_id": "no_todo_or_placeholder",
+      "status": "PASS",
+      "detail": "No TODO, FIXME, XXX, NotImplemented, placeholder ellipsis or bare pass in the T3 additions to final_evaluator.py or its tests."
+    },
+    {
+      "check_id": "holdout_boundary",
+      "status": "PASS",
+      "detail": "No real Final Holdout bytes are opened, read, or imported; HoldoutConsumed stores identity references only; all T3 fixtures are in-memory fakes; receipts record final_holdout_authorized=false."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "OPEN_HOLDOUT_ENFORCEMENT_DEFERRED_TO_T4",
+      "detail": "SideEffect.OPEN_HOLDOUT is declared in contracts but not yet enforced at broker level; the T4 TrustedEvaluator adapter must bind the lease allowed_side_effects before any real holdout capability can be granted."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_SCOPE_GAPS",
+      "detail": "Expired-authorization and consume-time identity-mismatch tests are specific to the _AuthorityStore flow and are covered by T4; they are explicitly out of scope for the in-memory store contract in T3."
+    }
+  ]
+}

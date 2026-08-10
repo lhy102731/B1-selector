@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p8r2_t3_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P8",
+  "attempt_id": "p8-attempt-001",
+  "task_id": "P8R2-T3-AUTHORITY-BROKER-CONSUME-ONCE",
+  "ticket_id": "738e35aa11d9ae93aa98500e5c96bec5264a077f63aa89479e25d95cf03d5b23",
+  "validated_at": "2026-08-10T13:08:30.451353+00:00",
+  "validation_git_head": "a75c24e2a2460f684f7ffccc90b1e6e3e05778a4",
+  "validation_git_tree": "a75dd78c42a4c68b9a638bc33b0ed7b21bb9924d",
+  "independent_reviews": [
+    {
+      "receipt_id": "p8r2-t3-independent-spec-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t3_independent_spec_review.json",
+      "sha256": "0615aa12fd3cfc3a908b0927f4ab8f284a74d56ea4a6f429de46128015217e8a",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p8r2-t3-independent-quality-review",
+      "ref": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/t3_independent_quality_review.json",
+      "sha256": "4503b15f4370420201c50acb1834bb9a6445f9fb8f1de700ea348934f4558247",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p8r2-t3-focused-authority-broker-consume-once-tests",
+      "result": "PASS",
+      "tests_run": 43,
+      "tail": "...........................................\n----------------------------------------------------------------------\nRan 43 tests in 0.540s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p8r2-t3-diff-boundary",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/final_evaluator.py",
+          " M tests/test_control_plane_final_evaluator.py"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/final_evaluator.py",
+          " M tests/test_control_plane_final_evaluator.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/final_evaluator.py",
+      " M tests/test_control_plane_final_evaluator.py"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/final_evaluator.py",
+      " M tests/test_control_plane_final_evaluator.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_46ebf6d2f7f8c495b42debc398131661",
+    "grant_state": "ACTIVE",
+    "ticket_id": "738e35aa11d9ae93aa98500e5c96bec5264a077f63aa89479e25d95cf03d5b23",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 2,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
