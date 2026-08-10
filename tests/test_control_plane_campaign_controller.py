@@ -10851,6 +10851,90 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             )
             self.assertTrue(executed.verified_response.event_id)
 
+    def test_controller_requires_invocation_binding_before_provider_construction(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-invocation-binding"
+        protocol = _protocol()
+        execution_spec = compile_execution_spec(
+            protocol,
+            approved_protocol=protocol,
+            approval=_approval(protocol),
+            amendment=None,
+        )
+        prompt = {"instruction": "Return one bounded synthetic result"}
+        member = replace(
+            _protocol_member(),
+            prompt_sha256=operational_prompt_sha256(prompt),
+        )
+        task = ExperimentTask(
+            task_id="cycle-001",
+            strategy="b1",
+            proposal={
+                "hypothesis": "Provider identity must bind before provider construction",
+                "scope": _scope(generation="generation-1"),
+            },
+            source="synthetic-test",
+        )
+        owner = ProcessIdentity("host-controller", 131, 31_000)
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=100,
+                    max_output_tokens=50,
+                    max_cost="1",
+                    max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
+                    max_tool_attempts=2,
+                ),
+                identity_provider=_FakeProcessIdentityProvider(owner),
+                monotonic_ns=lambda: 100,
+            )
+            controller.prepare_cycle(
+                task=task,
+                cycle_number=1,
+                execution_spec=execution_spec,
+                roster_members=(member,),
+                reservation_limits=CycleReservationLimits(
+                    currency="USD",
+                    max_input_tokens=20,
+                    max_output_tokens=10,
+                    max_cost="0.1",
+                    max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
+                    max_tool_attempts=2,
+                ),
+            )
+            execution = controller.start_execution(
+                cycle_id=task.task_id,
+                acquisition_id="execute-binding-attempt",
+            )
+
+            class _BareProvider:
+                def invoke(self, request: object) -> object:
+                    return request
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "provider binding identity is invalid",
+            ):
+                controller.invoke_member_json(
+                    execution=execution,
+                    member_id=member.member_id,
+                    provider=_BareProvider(),
+                    prompt=prompt,
+                    limits=_FAKE_CALL_LIMITS,
+                )
+            self.assertEqual(
+                OperationalUsageJournal(
+                    journal=journal,
+                    cycle_id=task.task_id,
+                ).list_attempts(),
+                (),
+            )
+
     def test_provider_request_model_drift_persists_and_atomically_blocks(
         self,
     ) -> None:

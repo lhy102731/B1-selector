@@ -68,6 +68,10 @@ from .campaign_freeze import (
     FrozenCycleInputs,
     OperationalCycleFreezeJournal,
 )
+from .campaign_invocation_binding import (
+    require_invocation_binding,
+    verify_spawn_identity,
+)
 from .campaign_metering import (
     ResourceObservation,
     ResourceObservationLimitError,
@@ -1458,28 +1462,12 @@ class OperationalCampaignController:
         )
         if member is None:
             raise ValueError("member_id is not present in the frozen roster")
-        if not callable(getattr(provider, "invoke", None)):
-            raise TypeError("provider must expose a callable invoke method")
-        provider_identity = tuple(
-            getattr(provider, field_name, None)
-            for field_name in (
-                "provider_name",
-                "profile",
-                "model",
-                "config_sha256",
-                "capability_sha256",
-            )
+        binding = require_invocation_binding(
+            provider=provider,
+            member=member,
+            limits=limits,
+            identity_provider=self._leases._identity_provider,
         )
-        if any(type(value) is not str for value in provider_identity):
-            raise TypeError("provider binding identity is invalid")
-        if provider_identity != (
-            member.provider,
-            member.profile,
-            member.model,
-            member.config_sha256,
-            member.capability_sha256,
-        ):
-            raise ValueError("provider binding conflicts with the frozen roster")
         prompt_text = _canonical_json_text(prompt, "operational prompt")
         if len(prompt_text.encode("utf-8")) > _MAX_OPERATIONAL_PROMPT_BYTES:
             raise ValueError("operational prompt exceeds the bounded size")
@@ -1547,6 +1535,10 @@ class OperationalCampaignController:
             preflight_executor = None
             preflight_error: Exception | None = None
             if preflight_required:
+                verify_spawn_identity(
+                    binding,
+                    self._leases._identity_provider,
+                )
                 try:
                     preflight_executor = SpawnedProviderExecutor(provider)
                 except Exception as error:

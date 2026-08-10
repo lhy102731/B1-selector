@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p6r2_t10_independent_quality_review.v1",
+  "review_id": "p6r2-t10-independent-quality-review",
+  "receipt_id": "p6r2-t10-independent-quality-review",
+  "reviewed_at": "2026-08-10T06:30:48.735856+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T10-TRUSTED-INVOCATION-BINDING",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t10-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t10-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "checks": [
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "19 focused tests pass on the locked runtime: 17 module tests cover canonical binding payload/sha stability and drift, matching and drifted providers, missing identity fields, non-invokable providers, invalid profile/pricing/retry, missing limits, non-identity providers, composed gates, construct_provider acceptance/rejection, and spawn-identity drift; 2 controller tests cover the new binding gate before construction and the unchanged frozen-member invocation path."
+    },
+    {
+      "check_id": "diff_minimality",
+      "status": "PASS",
+      "detail": "The T10 diff touches exactly the four owned files: campaign_controller.py (imports plus the binding gate replacement and spawn re-verification), tests/test_control_plane_campaign_controller.py (one new test), and the two new files (binding module and its test module); no unrelated module, dependency, or forbidden path changed."
+    },
+    {
+      "check_id": "no_effect_proof",
+      "status": "PASS",
+      "detail": "The new module performs no I/O, no subprocesses, and no provider SDK imports; the controller binding gate raises before any provider executor construction and before any usage write, and the new controller test asserts zero persisted attempts after rejection."
+    },
+    {
+      "check_id": "regression_suite",
+      "status": "PASS",
+      "detail": "A 1116-test regression run passes on the locked runtime, including the full control-plane suite (with the complete campaign_controller module and the new binding module), automation resilience, capital projection, CLI entry guards, legacy harness quarantine, promotion provenance, and AG2 orchestration/tool-loop/memory/model/file-security tests."
+    },
+    {
+      "check_id": "review_independence",
+      "status": "PASS",
+      "detail": "Spec and quality reviewer actor ids are distinct from the task actor and from each other; invocation ids are recorded; external usage is declared UNKNOWN."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_SCHEMA_COMPATIBILITY",
+      "detail": "The operational model-call event schema remains v2; the binding sha is intentionally not persisted so replay compatibility is preserved for existing operational journals."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_PROCESS_DRIFT_WINDOW",
+      "detail": "verify_spawn_identity narrows the process-drift window to immediately before executor construction; a process identity change earlier in the same call is already rejected by the lease fence."
+    }
+  ]
+}

@@ -1,0 +1,132 @@
+{
+  "schema_version": "control_plane.p6r2_t10_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T10-TRUSTED-INVOCATION-BINDING",
+  "ticket_id": "bbc2a760541094ee7245f4d33a4faac6f2bc05cd2447e14e594312541381e71a",
+  "validated_at": "2026-08-10T06:33:16.489290+00:00",
+  "validation_git_head": "2f380bb20dc4d548ce82ef89ec3cb0f00b592318",
+  "validation_git_tree": "46f154708e87d9739a3ce38523f6fd76b9e684d1",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t10-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t10_independent_spec_review.json",
+      "sha256": "9d7aee6252d620b169ea08a7f2acc9cd8305f8df0cd4f7fa55d7c3b26557a8cb",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t10-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t10_independent_quality_review.json",
+      "sha256": "5192e420a1e826f98839005f1f2f33b3997fe9328f048588ff0472bdb0bf3601",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t10-focused-tests",
+      "result": "PASS",
+      "tests_run": 295,
+      "tail": "----------------------------------------------------------------------\nRan 295 tests in 141.819s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t10-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "tests/test_control_plane_campaign_controller.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "tests/test_control_plane_campaign_controller.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/control_plane/campaign_controller.py": {
+            "require_invocation_binding(": true,
+            "verify_spawn_identity(": true,
+            "provider must expose a callable invoke method": true
+          },
+          "research_automation/control_plane/campaign_invocation_binding.py": {
+            "class TrustedInvocationBinding": true,
+            "def require_invocation_binding": true,
+            "def verify_spawn_identity": true,
+            "def construct_provider": true,
+            "provider binding conflicts with the frozen roster": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "tests/test_control_plane_campaign_controller.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "tests/test_control_plane_campaign_controller.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/control_plane/campaign_controller.py": {
+        "require_invocation_binding(": true,
+        "verify_spawn_identity(": true,
+        "provider must expose a callable invoke method": true
+      },
+      "research_automation/control_plane/campaign_invocation_binding.py": {
+        "class TrustedInvocationBinding": true,
+        "def require_invocation_binding": true,
+        "def verify_spawn_identity": true,
+        "def construct_provider": true,
+        "provider binding conflicts with the frozen roster": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "bbc2a760541094ee7245f4d33a4faac6f2bc05cd2447e14e594312541381e71a",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 9,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
