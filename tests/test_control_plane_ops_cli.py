@@ -157,5 +157,126 @@ class AuditBundleTests(unittest.TestCase):
 
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1_000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class BackfillAdapterTests(unittest.TestCase):
+    """P7R2-T6: rate-limited, sharded, low-priority, pausable historical
+    backfill adapter against synthetic fixtures only."""
+
+    def setUp(self) -> None:
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        self.processed: list[int] = []
+
+    def test_build_plan_shards_total_and_low_priority(self) -> None:
+        adapter = operations.BackfillAdapter(self.root)
+        plan = adapter.build_plan(total_items=25, shard_count=4)
+        self.assertEqual(25, plan.total_items)
+        self.assertEqual("low", plan.priority)
+        self.assertEqual(4, len(plan.shards))
+        self.assertEqual((0, 7), (plan.shards[0].start, plan.shards[0].end))
+        self.assertEqual(25, sum(shard.item_count for shard in plan.shards))
+        with self.assertRaises(ValueError):
+            adapter.build_plan(total_items=10, shard_count=2, priority="high")
+
+    def test_run_processes_all_shards_with_injected_worker(self) -> None:
+        adapter = operations.BackfillAdapter(
+            self.root,
+            limiter=operations.TokenBucketLimiter(capacity=1000, refill_per_second=1.0),
+        )
+        plan = adapter.build_plan(total_items=10, shard_count=2)
+        result = adapter.run(lambda item_index: self.processed.append(item_index))
+        self.assertEqual(list(range(10)), self.processed)
+        self.assertEqual("COMPLETED", result.status)
+        self.assertFalse(result.paused)
+        self.assertFalse(result.throttled)
+        self.assertEqual(2, len(result.completed_shard_ids))
+        self.assertEqual(10, result.processed_items)
+        self.assertFalse(adapter.status()["real_backfill"])
+
+    def test_token_bucket_limiter_enforces_capacity(self) -> None:
+        clock = _FakeClock()
+        limiter = operations.TokenBucketLimiter(
+            capacity=3,
+            refill_per_second=1.0,
+            clock=clock,
+        )
+        self.assertTrue(limiter.try_acquire())
+        self.assertTrue(limiter.try_acquire())
+        self.assertTrue(limiter.try_acquire())
+        self.assertFalse(limiter.try_acquire())
+        clock.advance(2.0)
+        self.assertTrue(limiter.try_acquire())
+        self.assertTrue(limiter.try_acquire())
+        self.assertFalse(limiter.try_acquire())
+
+    def test_run_is_throttled_and_resumes_from_checkpoint(self) -> None:
+        clock = _FakeClock()
+        limiter = operations.TokenBucketLimiter(
+            capacity=2,
+            refill_per_second=1.0,
+            clock=clock,
+        )
+        adapter = operations.BackfillAdapter(self.root, limiter=limiter)
+        plan = adapter.build_plan(total_items=5, shard_count=1)
+        first = adapter.run(lambda item_index: self.processed.append(item_index))
+        self.assertEqual([0, 1], self.processed)
+        self.assertTrue(first.throttled)
+        self.assertFalse(first.paused)
+        self.assertEqual("THROTTLED", first.status)
+        self.assertEqual([], list(first.completed_shard_ids))
+        clock.advance(10.0)
+        second = adapter.run(lambda item_index: self.processed.append(item_index))
+        self.assertEqual([0, 1, 2, 3], self.processed)
+        self.assertTrue(second.throttled)
+        clock.advance(10.0)
+        third = adapter.run(lambda item_index: self.processed.append(item_index))
+        self.assertEqual([0, 1, 2, 3, 4], self.processed)
+        self.assertEqual("COMPLETED", third.status)
+        self.assertEqual(1, len(third.completed_shard_ids))
+
+    def test_pause_between_shards_and_resume_continues(self) -> None:
+        adapter = operations.BackfillAdapter(self.root)
+        plan = adapter.build_plan(total_items=10, shard_count=2)
+
+        def worker(item_index: int) -> None:
+            self.processed.append(item_index)
+            if len(self.processed) == 5:
+                adapter.pause()
+
+        first = adapter.run(worker)
+        self.assertTrue(first.paused)
+        self.assertFalse(first.throttled)
+        self.assertEqual("PAUSED", first.status)
+        self.assertEqual([0, 1, 2, 3, 4], self.processed)
+        self.assertEqual(1, len(first.completed_shard_ids))
+        adapter.resume()
+        second = adapter.run(worker)
+        self.assertEqual(list(range(10)), self.processed)
+        self.assertEqual("COMPLETED", second.status)
+
+    def test_adapter_rejects_protected_and_repository_roots(self) -> None:
+        for protected in ("research_state/control_plane/authority", "research_state/control_plane/operational"):
+            with self.assertRaises(operations.ProtectedStoreError):
+                operations.BackfillAdapter(Path(protected))
+        repository_root = Path(__file__).resolve().parents[1]
+        with self.assertRaises(operations.ProtectedStoreError):
+            operations.BackfillAdapter(repository_root)
+
+    def test_adapter_requires_existing_synthetic_fixture(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            operations.BackfillAdapter(self.root / "missing-fixture")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,104 @@
+{
+  "schema_version": "control_plane.p7r2_t6_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T6-OPS-BACKFILL-ADAPTER",
+  "ticket_id": "3b89657a13c581ef6195476365884c83cee8374f20cedec6b5046ac91a3637b4",
+  "validated_at": "2026-08-10T09:54:29.977378+00:00",
+  "validation_git_head": "551b218d50b3c0a6528b767e5b6511fe6ea1ce50",
+  "validation_git_tree": "534e32b0236c42f462756bcf77c37f01f6ea293d",
+  "independent_reviews": [
+    {
+      "receipt_id": "p7r2-t6-independent-spec-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t6_independent_spec_review.json",
+      "sha256": "640384b2c0b273ec8003a89b900b989e2761115d170c0a27727f3c267a32ad81",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p7r2-t6-independent-quality-review",
+      "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t6_independent_quality_review.json",
+      "sha256": "f9725287988caaf5e61f4a9db97688087924df1a6fff2199c7bd7f1052e34d52",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p7r2-t6-focused-backfill-tests",
+      "result": "PASS",
+      "tests_run": 0,
+      "tail": "emaining\": 0,\n    \"reserved\": 0,\n    \"spent\": 0\n  },\n  \"campaign\": {\n    \"active\": false,\n    \"cycles\": 0,\n    \"note\": \"read-only synthetic surface\"\n  },\n  \"evidence\": {\n    \"entries\": 0,\n    \"grade\": \"UNKNOWN\"\n  },\n  \"failure\": {\n    \"causes\": [],\n    \"count\": 0\n  },\n  \"generation\": {\n    \"count\": 0,\n    \"latest\": 0\n  },\n  \"journal\": {\n    \"event_count\": 1100,\n    \"exists\": true,\n    \"journal_mode\": \"delete\",\n    \"max_sequence\": 1100,\n    \"snapshot_error\": null\n  },\n  \"lease\": {\n    \"active\": 0,\n    \"expired\": 0\n  },\n  \"publication\": {\n    \"pending\": 0,\n    \"published\": 0\n  },\n  \"roster\": {\n    \"active\": 0,\n    \"members\": 0\n  },\n  \"usage\": {\n    \"events\": 1100,\n    \"max_sequence\": 1100\n  }\n}\n----------------------------------------------------------------------\nRan 18 tests in 0.890s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p7r2-t6-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_ops_cli.py"
+        ],
+        "actual": [
+          " M CHANGELOG.md",
+          " M daily_run.py",
+          " M daily_select.py",
+          " M docs/b1_v3_results.md",
+          " M research_automation/control_plane/operations.py",
+          " M tests/test_control_plane_ops_cli.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_ops_cli.py"
+    ],
+    "actual": [
+      " M CHANGELOG.md",
+      " M daily_run.py",
+      " M daily_select.py",
+      " M docs/b1_v3_results.md",
+      " M research_automation/control_plane/operations.py",
+      " M tests/test_control_plane_ops_cli.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "grant_state": "ACTIVE",
+    "ticket_id": "3b89657a13c581ef6195476365884c83cee8374f20cedec6b5046ac91a3637b4",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 5,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p8_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

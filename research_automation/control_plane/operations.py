@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import sqlite3
+import time
 from typing import Iterator
 
 
@@ -595,3 +596,253 @@ def read_only_export_bundle(
         "max_sequence": snapshot["max_sequence"],
         "bundle_kind": "read_only_references",
     }
+
+
+@dataclass(frozen=True)
+class BackfillShard:
+    """Immutable shard of a synthetic backfill plan."""
+
+    shard_id: str
+    start: int
+    end: int
+    item_count: int
+
+
+@dataclass(frozen=True)
+class BackfillPlan:
+    """Immutable synthetic backfill plan with shards and low priority."""
+
+    plan_id: str
+    total_items: int
+    shards: tuple[BackfillShard, ...]
+    priority: str
+    status: str = "CREATED"
+
+
+@dataclass(frozen=True)
+class BackfillRunResult:
+    """Immutable result of one adapter run; resumes from checkpoints."""
+
+    plan_id: str
+    status: str
+    processed_items: int
+    completed_shard_ids: tuple[str, ...]
+    paused: bool
+    throttled: bool
+
+
+class TokenBucketLimiter:
+    """Deterministic token bucket used by the synthetic backfill adapter.
+
+    The clock is injectable so tests can advance time without sleeping.
+    """
+
+    def __init__(
+        self,
+        capacity: int,
+        refill_per_second: float = 1.0,
+        *,
+        clock: object | None = None,
+    ) -> None:
+        if type(capacity) is not int or capacity < 1:
+            raise ValueError("capacity must be a positive integer")
+        if not isinstance(refill_per_second, (int, float)) or refill_per_second <= 0:
+            raise ValueError("refill_per_second must be positive")
+        self._capacity = float(capacity)
+        self._refill_per_second = float(refill_per_second)
+        self._clock = clock if clock is not None else time.monotonic
+        if not callable(self._clock):
+            raise TypeError("clock must be callable or None")
+        self._tokens = float(capacity)
+        self._last = self._clock()
+
+    def try_acquire(self) -> bool:
+        now = self._clock()
+        elapsed = now - self._last
+        if elapsed > 0:
+            self._tokens = min(
+                self._capacity,
+                self._tokens + elapsed * self._refill_per_second,
+            )
+            self._last = now
+        if self._tokens >= 1.0:
+            self._tokens -= 1.0
+            return True
+        return False
+
+
+class BackfillAdapter:
+    """Synthetic-only historical backfill adapter.
+
+    The adapter never reads or writes real research, data, KBase, Authority,
+    operational, policy, inventory, or campaign content. It only orchestrates
+    a caller-injected worker over a caller-owned synthetic plan; P7 does not
+    run bulk historical backfill.
+    """
+
+    def __init__(
+        self,
+        fixture_root: Path,
+        *,
+        limiter: TokenBucketLimiter | None = None,
+    ) -> None:
+        resolved = Path(fixture_root).resolve(strict=False)
+        if resolved == _repository_root():
+            raise ProtectedStoreError(
+                "repository root is not a synthetic backfill fixture root"
+            )
+        _require_synthetic_path(resolved)
+        if not resolved.exists():
+            raise FileNotFoundError(
+                f"backfill fixture root is missing: {resolved}"
+            )
+        if limiter is not None and not isinstance(limiter, TokenBucketLimiter):
+            raise TypeError("limiter must be a TokenBucketLimiter or None")
+        self._fixture_root = resolved
+        self._limiter = limiter or TokenBucketLimiter(
+            capacity=1_000,
+            refill_per_second=10_000.0,
+        )
+        self._plan: BackfillPlan | None = None
+        self._completed: list[str] = []
+        self._shard_cursors: dict[str, int] = {}
+        self._processed_items = 0
+        self._paused = False
+        self._throttled = False
+
+    def build_plan(
+        self,
+        total_items: int,
+        *,
+        shard_count: int | None = None,
+        priority: str = "low",
+    ) -> BackfillPlan:
+        if type(total_items) is not int or total_items < 1:
+            raise ValueError("total_items must be a positive integer")
+        if priority != "low":
+            raise ValueError(
+                "P7 synthetic backfill adapter only supports priority='low'"
+            )
+        if shard_count is None:
+            shard_count = min(total_items, 100)
+        if type(shard_count) is not int or shard_count < 1 or shard_count > total_items:
+            raise ValueError("shard_count must be between 1 and total_items")
+        base = total_items // shard_count
+        extra = total_items % shard_count
+        shards: list[BackfillShard] = []
+        start = 0
+        for index in range(shard_count):
+            item_count = base + (1 if index < extra else 0)
+            shards.append(
+                BackfillShard(
+                    shard_id=f"shard-{index}",
+                    start=start,
+                    end=start + item_count,
+                    item_count=item_count,
+                )
+            )
+            start += item_count
+        plan = BackfillPlan(
+            plan_id="synthetic-backfill-plan",
+            total_items=total_items,
+            shards=tuple(shards),
+            priority=priority,
+        )
+        self._plan = plan
+        self._completed = []
+        self._shard_cursors = {
+            shard.shard_id: shard.start for shard in plan.shards
+        }
+        self._processed_items = 0
+        self._paused = False
+        self._throttled = False
+        return plan
+
+    def pause(self) -> None:
+        self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def run(self, worker: object) -> BackfillRunResult:
+        if self._plan is None:
+            raise RuntimeError("backfill plan has not been built")
+        if not callable(worker):
+            raise TypeError("worker must be callable")
+        self._throttled = False
+        for shard in self._plan.shards:
+            if shard.shard_id in self._completed:
+                continue
+            if self._paused:
+                break
+            cursor = self._shard_cursors.get(shard.shard_id, shard.start)
+            for item_index in range(cursor, shard.end):
+                if self._paused:
+                    break
+                if not self._limiter.try_acquire():
+                    self._throttled = True
+                    break
+                worker(item_index)
+                self._processed_items += 1
+                self._shard_cursors[shard.shard_id] = item_index + 1
+                if self._paused:
+                    break
+            if self._shard_cursors.get(shard.shard_id, shard.start) == shard.end:
+                self._completed.append(shard.shard_id)
+            if self._paused or self._throttled:
+                break
+        return self._result()
+
+    def _result(self) -> BackfillRunResult:
+        assert self._plan is not None
+        completed = tuple(self._completed)
+        if self._paused:
+            status = "PAUSED"
+        elif self._throttled:
+            status = "THROTTLED"
+        elif len(completed) == len(self._plan.shards):
+            status = "COMPLETED"
+        else:
+            status = "RUNNING"
+        return BackfillRunResult(
+            plan_id=self._plan.plan_id,
+            status=status,
+            processed_items=self._processed_items,
+            completed_shard_ids=completed,
+            paused=self._paused,
+            throttled=self._throttled,
+        )
+
+    def status(self) -> dict[str, object]:
+        if self._plan is None:
+            return {
+                "schema_version": "control_plane.p7r2_backfill_status.v1",
+                "plan_id": None,
+                "priority": "low",
+                "paused": False,
+                "throttled": False,
+                "processed_items": 0,
+                "total_items": 0,
+                "completed_shard_ids": [],
+                "remaining_items": 0,
+                "fixture_root": str(self._fixture_root),
+                "real_backfill": False,
+            }
+        result = self._result()
+        return {
+            "schema_version": "control_plane.p7r2_backfill_status.v1",
+            "plan_id": result.plan_id,
+            "priority": self._plan.priority,
+            "paused": result.paused,
+            "throttled": result.throttled,
+            "processed_items": result.processed_items,
+            "total_items": self._plan.total_items,
+            "completed_shard_ids": list(result.completed_shard_ids),
+            "remaining_items": self._plan.total_items - result.processed_items,
+            "fixture_root": str(self._fixture_root),
+            "real_backfill": False,
+        }
