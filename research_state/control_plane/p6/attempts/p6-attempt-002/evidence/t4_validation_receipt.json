@@ -1,0 +1,112 @@
+{
+  "schema_version": "control_plane.p6r2_t4_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T4-LEGACY-HARNESS-QUARANTINE",
+  "ticket_id": "6df19c1771da4914c88037d615e87cc3a88c4d7262bfc7f4a7f57956740a6dd5",
+  "validated_at": "2026-08-10T05:09:26.005555+00:00",
+  "validation_git_head": "9cdd806c0c4e9c835f928ecee9ab2fc5bf27920f",
+  "validation_git_tree": "8199f50e8938fb01a30664fd226b570b0346936c",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t4-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t4_independent_spec_review.json",
+      "sha256": "fa19271652fe85d705b1b8dd6855a895ef911f4ef1dab39765c5675f674abe95",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t4-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t4_independent_quality_review.json",
+      "sha256": "f412d8010ed7f18f6047df238e9b6a8ae5716341d9e4546b99414545dc850843",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t4-focused-tests",
+      "result": "PASS",
+      "tests_run": 5,
+      "tail": "----------------------------------------------------------------------\nRan 5 tests in 0.137s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t4-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/verify_full_research_cycle.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/verify_full_research_cycle.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/verify_full_research_cycle.py": {
+            "import subprocess": true,
+            "QUARANTINE_EXIT_CODE": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/verify_full_research_cycle.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/verify_full_research_cycle.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/verify_full_research_cycle.py": {
+        "import subprocess": true,
+        "QUARANTINE_EXIT_CODE": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "6df19c1771da4914c88037d615e87cc3a88c4d7262bfc7f4a7f57956740a6dd5",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 3,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

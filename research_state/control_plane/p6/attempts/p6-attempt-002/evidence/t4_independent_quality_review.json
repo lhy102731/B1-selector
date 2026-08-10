@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p6r2_t4_independent_quality_review.v1",
+  "review_id": "p6r2-t4-independent-quality-review",
+  "receipt_id": "p6r2-t4-independent-quality-review",
+  "reviewed_at": "2026-08-10T05:09:10.241616+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T4-LEGACY-HARNESS-QUARANTINE",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t4-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t4-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "checks": [
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "tests.test_legacy_full_cycle_harness runs 5 tests with 0 failures on the locked runtime: no subprocess import, no legacy-runner import, fail-closed exit with QUARANTINED output, no output-runs directory creation, and unchanged production boundary hashes."
+    },
+    {
+      "check_id": "diff_minimality",
+      "status": "PASS",
+      "detail": "The T4 diff is one rewritten harness module (112 insertions, 132 deletions) and one new 5-test module; no existing production module, test, dependency, or forbidden path changed."
+    },
+    {
+      "check_id": "no_effect_proof",
+      "status": "PASS",
+      "detail": "Tests patch subprocess.run to raise if called and prove the output root entry set is unchanged; snapshot_production_boundary only reads four strategy/config files and never writes them."
+    },
+    {
+      "check_id": "fail_closed_determinism",
+      "status": "PASS",
+      "detail": "QUARANTINE_EXIT_CODE is a module constant set to 3 matching run_research_cycle.py's legacy block; the harness exposes no execution path, CLI flag, or opt-out that can start the legacy cycle."
+    },
+    {
+      "check_id": "review_independence",
+      "status": "PASS",
+      "detail": "Spec and quality reviewer actor ids are distinct from the task actor and from each other; invocation ids are recorded; external usage is declared UNKNOWN."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_READ_ONLY_BOUNDARY_READS",
+      "detail": "snapshot_production_boundary reads bytes of four production files for evidence; the reads are read-only and the tests assert the hashes do not change."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_RETURN_CODE_SEMANTICS",
+      "detail": "The harness always exits 3 while quarantined; automation that treats non-zero as failure will see the quarantine as red, which is the intended fail-closed signal."
+    }
+  ]
+}
