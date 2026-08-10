@@ -107,7 +107,7 @@ class EntryInventoryTests(unittest.TestCase):
         paths = {record.path for record in records}
 
         self.assertIn("run_research.py", paths)
-        self.assertIn("tools/data/backfill_fund_flow.py", paths)
+        self.assertIn("tools/data/fetch_active_cap.py", paths)
         self.assertIn("apps/web_server.py", paths)
         self.assertIn("research_automation/control_plane/entry_guard.py", paths)
         self.assertIn("ag2_research/orchestrator.py", paths)

@@ -1,0 +1,54 @@
+{
+  "schema_version": "control_plane.p6r2_t2_independent_spec_review.v1",
+  "review_id": "p6r2-t2-independent-spec-review",
+  "receipt_id": "p6r2-t2-independent-spec-review",
+  "reviewed_at": "2026-08-10T04:55:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T2-WORKTREE-ENTRY-INVENTORY-CONTRACT",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t2-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t2-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_spec_approval": true,
+  "checks": [
+    {
+      "check_id": "task_spec_binding",
+      "status": "PASS",
+      "detail": "T2 TaskSpec envelope binds allowed_files (ticket receipt, validation receipt, two independent reviews, task report, completion receipt, tests/test_control_plane_entry_guard.py), forbids all production and control-plane files, and its payload_sha256 matches canonical serialization."
+    },
+    {
+      "check_id": "evidence_binding",
+      "status": "PASS",
+      "detail": "All six input evidence references hash-match the live repository: P6 approval, scope manifest, implementation baseline, T1 task report, T1 validation receipt, and T1 completion receipt; baseline_sha256 matches implementation_baseline.json."
+    },
+    {
+      "check_id": "source_boundary",
+      "status": "PASS",
+      "detail": "The only tracked modification beyond the four protected user files is tests/test_control_plane_entry_guard.py; the fixture assertion now references the tracked tools/data/fetch_active_cap.py and no longer references the untracked tools/data/backfill_fund_flow.py; no production source, test scope, or data file changed."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is exactly slice-completion ready: T2 ticket 3e0f86a3... ISSUED with zero trusted receipts, T1 ticket SUCCEEDED, grant ACTIVE, pending outbox 0, no P6 phase-gate closure."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "p7_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false; no real data/KBase read, no scheduler/ACL mutation, no daily update/backtest/research/campaign/holdout started."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_UNTRACKED_ADMIN_SCRIPT",
+      "detail": "tools/data/backfill_fund_flow.py remains an untracked admin script in the worktree; T2 removes the test's dependency on it but does not delete or commit it."
+    }
+  ]
+}
