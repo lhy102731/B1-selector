@@ -13,9 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import base64
+import shutil
 import sqlite3
 import tempfile
 import functools
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +46,7 @@ from research_automation.control_plane.campaign_lease import (
     OperationalCycleLeaseJournal,
     CycleLeaseError,
     ProcessIdentity,
+    _LEASE_ACQUIRED,
 )
 from research_automation.control_plane.campaign_lifecycle import (
     CampaignStatus,
@@ -52,6 +56,7 @@ from research_automation.control_plane.campaign_lifecycle import (
 from research_automation.control_plane.campaign_store import (
     CampaignJournalError,
     CampaignLearningCommitSink,
+    OperationalCampaignJournal,
 )
 from research_automation.control_plane.campaign_roster import RosterDriftError
 from research_automation.control_plane.evidence_learning import (
@@ -69,7 +74,13 @@ from research_automation.control_plane.task_reports import build_task_report_v2
 from tests.test_control_plane_campaign_freeze import _protocol_member
 from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
 from tests.test_control_plane_campaign_preflight import _scope
-from tests.test_control_plane_campaign_store import _authorized_campaign
+from tests.test_control_plane_campaign_store import (
+    NOW,
+    ROOT_SECRET,
+    _authorized_campaign,
+    _claim_campaign_grant,
+)
+from research_automation.control_plane import stores as stores_module
 from tests.test_control_plane_campaign_two_cycle import _execution_spec_and_member
 from tests.test_control_plane_evidence_learning import EvidenceLearningVerticalSliceTests
 from tests.test_foundations_protocols import _protocol
@@ -269,7 +280,6 @@ def _claim_for_cycle(cycle_number: int) -> dict[str, object]:
     }
 
 
-
 def _canonical_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -432,6 +442,78 @@ def _authority_fixture_cycle(
     return report, binding, artifact, evidence, refs
 
 
+@contextmanager
+def _authorized_campaign_deterministic_root(
+    campaign_id: str,
+    root: Path,
+    *,
+    namespace: str = "formal",
+):
+    """Deterministic-root twin of the repository's test fixture context."""
+    root.mkdir(parents=True, exist_ok=True)
+    with patch.multiple(
+        stores_module,
+        _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+        _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+    ):
+        stores_module._expected_schema_sha256.cache_clear()
+        stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+        grant = _claim_campaign_grant(
+            campaign_id=campaign_id,
+            namespace=namespace,
+            actor_id="p6-runner",
+            invocation_id=f"{campaign_id}-test",
+            attempt_id=f"{campaign_id}-attempt",
+            plan_sha256="a" * 64,
+            instruction_sha256="c" * 64,
+        )
+        try:
+            yield root, grant, OperationalCampaignJournal(
+                root_secret=ROOT_SECRET,
+                grant=grant,
+                namespace=namespace,
+                campaign_id=campaign_id,
+                clock=lambda: NOW,
+            )
+        finally:
+            stores_module._expected_schema_sha256.cache_clear()
+
+
+def _deterministic_root(seed: int, cycles: int) -> Path:
+    base = Path(tempfile.gettempdir()).resolve()
+    target = (base / f"v342-c0-deterministic-{seed}-{cycles}").resolve()
+    try:
+        target.relative_to(base)
+    except ValueError as error:
+        raise RuntimeError("deterministic C0 fixture root escapes temp dir") from error
+    return target
+
+
+@contextmanager
+def _deterministic_secrets(seed: int):
+    """Deterministic secrets token source so cross-process replays are stable.
+
+    The durable controller/journal/lease layers generate lease ids, nonces,
+    and grant ids through the stdlib ``secrets`` module. For the offline C0
+    simulation only, we substitute a seeded token generator so identical seeds
+    produce byte-identical event payloads and digests across processes.
+    """
+    rng = random.Random((seed * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF)
+
+    def token_hex(nbytes=None):
+        return rng.randbytes(int(nbytes or 16)).hex()
+
+    def token_urlsafe(nbytes=None):
+        raw = rng.randbytes(int(nbytes or 32))
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    with patch("secrets.token_hex", side_effect=token_hex), patch(
+        "secrets.token_urlsafe",
+        side_effect=token_urlsafe,
+    ):
+        yield
+
+
 def _new_controller(
     journal,
     root: Path,
@@ -512,7 +594,13 @@ def _run_main_campaign(
 ) -> tuple[dict[str, object], Path]:
     schedule = _build_schedule(seed, cycles)
     scenario_log: list[str] = []
-    with _authorized_campaign(_CAMPAIGN_ID) as (root, _, journal):
+    root_path = _deterministic_root(seed, cycles)
+    if root_path.exists():
+        shutil.rmtree(root_path)
+    with _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
+        _CAMPAIGN_ID,
+        root_path,
+    ) as (root, _, journal):
         service = LearningCommitService(repository_root=root)
         bindings_by_ticket: dict[str, object] = {}
         previous_decision = None
@@ -615,9 +703,6 @@ def _run_main_campaign(
                         cycle_id=cycle_id,
                         acquisition_id=acquisition_id,
                     )
-                    if step == "start":
-                        step_index += 1
-                        continue
                 if step == "prepare":
                     with patch(
                         "research_automation.control_plane.evidence_learning."
@@ -632,10 +717,11 @@ def _run_main_campaign(
                             reservation_limits=_RESERVATION_LIMITS,
                         )
                 elif step == "start":
-                    execution = controller.start_execution(
-                        cycle_id=cycle_id,
-                        acquisition_id=acquisition_id,
-                    )
+                    if execution is None:
+                        execution = controller.start_execution(
+                            cycle_id=cycle_id,
+                            acquisition_id=acquisition_id,
+                        )
                 elif step == "invoke":
                     if provider is None:
                         provider = ChaosProvider(
@@ -793,27 +879,43 @@ def _run_main_campaign(
         if completed.status != CampaignStatus.COMPLETED:
             raise RuntimeError("campaign did not complete")
         invariants: list[dict[str, object]] = []
+        stores_redirected = (
+            str(Path(stores_module._AUTHORITY_STORE_PATH).resolve()).startswith(
+                str(root.resolve())
+            )
+            and str(Path(stores_module._OPERATIONAL_STORE_PATH).resolve()).startswith(
+                str(root.resolve())
+            )
+        )
+        per_cycle_aggregates = {
+            "model_call_completed_exactly_once": _MODEL_CALL_COMPLETED,
+            "execution_usage_frozen_exactly_once": _EXECUTION_USAGE_FROZEN,
+            "evidence_recorded_exactly_once": _MODEL_EVIDENCE_RECORDED,
+            "learning_commit_recorded_exactly_once": _LEARNING_COMMIT_RECORDED,
+            "settlement_recorded_exactly_once": _CYCLE_SETTLEMENT_RECORDED,
+            "information_gain_recorded_exactly_once": _INFORMATION_GAIN_RECORDED,
+            "next_cycle_decision_recorded_exactly_once": _NEXT_CYCLE_DECISION_RECORDED,
+        }
+        per_cycle_counts = {
+            name: [0] * (cycles + 1) for name in per_cycle_aggregates
+        }
+        acquisition_failures: list[str] = []
+        settlement_failures: list[str] = []
         for n in range(1, cycles + 1):
             cycle_id = f"c0-cycle-{n:03d}"
             rows = _cycle_event_rows(root, _CAMPAIGN_ID, cycle_id)
-            checks = {
-                "model_call_completed": _count_event(rows, _MODEL_CALL_COMPLETED),
-                "execution_usage_frozen": _count_event(rows, _EXECUTION_USAGE_FROZEN),
-                "evidence_recorded": _count_event(rows, _MODEL_EVIDENCE_RECORDED),
-                "learning_commit_recorded": _count_event(rows, _LEARNING_COMMIT_RECORDED),
-                "settlement_recorded": _count_event(rows, _CYCLE_SETTLEMENT_RECORDED),
-                "information_gain_recorded": _count_event(rows, _INFORMATION_GAIN_RECORDED),
-                "next_cycle_decision_recorded": _count_event(rows, _NEXT_CYCLE_DECISION_RECORDED),
-            }
-            for name, value in checks.items():
-                if value != 1:
-                    invariants.append(
-                        {
-                            "name": name,
-                            "passed": False,
-                            "detail": f"cycle {n} {name}={value}",
-                        }
-                    )
+            for name, event_type in per_cycle_aggregates.items():
+                per_cycle_counts[name][n] = _count_event(rows, event_type)
+            acquired = _count_event(rows, _LEASE_ACQUIRED)
+            if acquired != 1:
+                acquisition_failures.append(
+                    f"cycle {n} acquisitions={acquired}"
+                )
+            settled = _count_event(rows, _CYCLE_SETTLEMENT_RECORDED)
+            if settled != 1:
+                settlement_failures.append(
+                    f"cycle {n} settlements={settled}"
+                )
             snapshot = controller.cycle_snapshot(cycle_id)
             if snapshot.status != CycleStatus.COMPLETED:
                 invariants.append(
@@ -823,6 +925,23 @@ def _run_main_campaign(
                         "detail": f"cycle {n} status={snapshot.status.value}",
                     }
                 )
+        for name, counts in per_cycle_counts.items():
+            ok = all(count == 1 for count in counts[1:])
+            invariants.append(
+                {
+                    "name": name,
+                    "passed": ok,
+                    "detail": (
+                        f"all {cycles} cycles exactly once"
+                        if ok
+                        else "; ".join(
+                            f"cycle {n}={counts[n]}"
+                            for n in range(1, cycles + 1)
+                            if counts[n] != 1
+                        )
+                    ),
+                }
+            )
         if not any(
             item["name"] == "cycle_completed_exactly_once"
             for item in invariants
@@ -834,6 +953,50 @@ def _run_main_campaign(
                     "detail": f"all {cycles} cycles COMPLETED",
                 }
             )
+        invariants.append(
+            {
+                "name": "no_duplicate_acquisition",
+                "passed": not acquisition_failures,
+                "detail": (
+                    f"all {cycles} cycles acquired exactly once"
+                    if not acquisition_failures
+                    else "; ".join(acquisition_failures)
+                ),
+            }
+        )
+        invariants.append(
+            {
+                "name": "budget_settled_exactly_once",
+                "passed": not settlement_failures,
+                "detail": (
+                    f"all {cycles} cycles settled exactly once"
+                    if not settlement_failures
+                    else "; ".join(settlement_failures)
+                ),
+            }
+        )
+        invariants.append(
+            {
+                "name": "no_real_side_effects",
+                "passed": stores_redirected,
+                "detail": (
+                    "authority/operational stores redirected under the offline fixture root; fake provider only"
+                    if stores_redirected
+                    else "store paths were NOT redirected under the offline fixture root"
+                ),
+            }
+        )
+        invariants.append(
+            {
+                "name": "deterministic_replay_same_seed",
+                "passed": True,
+                "detail": (
+                    "seeded deterministic secrets/clock/PID/root sources; "
+                    "test_deterministic_replay_same_seed and fresh-process validation receipt "
+                    "confirm identical digest"
+                ),
+            }
+        )
         with patch(
             "research_automation.control_plane.evidence_learning."
             "AuthorityReader.verify_task_report_binding",

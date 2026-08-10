@@ -47,7 +47,11 @@ class C0RolloutChaosTests(unittest.TestCase):
         )
 
     def test_deterministic_replay_same_seed(self) -> None:
+        rollout_chaos._run_main_campaign.cache_clear()
+        rollout_chaos._run_negative_scenarios.cache_clear()
         first = rollout_chaos.run_c0_simulation(seed=20260811, cycles=24).to_payload()
+        rollout_chaos._run_main_campaign.cache_clear()
+        rollout_chaos._run_negative_scenarios.cache_clear()
         second = rollout_chaos.run_c0_simulation(seed=20260811, cycles=24).to_payload()
 
         self.assertEqual(first["scenario_log"], second["scenario_log"])

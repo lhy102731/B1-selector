@@ -380,10 +380,14 @@ def cmd_rollout(args: argparse.Namespace) -> int:
     if stage != "c0":
         print(f"[run_research] unsupported rollout stage: {stage}", file=sys.stderr)
         return 2
-    outcome = rollout_chaos.run_c0_simulation(
-        seed=getattr(args, "seed", 20260811),
-        cycles=getattr(args, "cycles", 24),
-    )
+    try:
+        outcome = rollout_chaos.run_c0_simulation(
+            seed=getattr(args, "seed", 20260811),
+            cycles=getattr(args, "cycles", 24),
+        )
+    except ValueError as error:
+        print(f"[run_research] invalid rollout parameters: {error}", file=sys.stderr)
+        return 2
     payload = outcome.to_payload()
     if not payload["pass"]:
         print("[run_research] C0 simulation FAILED", file=sys.stderr)
