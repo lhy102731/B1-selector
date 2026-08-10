@@ -1,0 +1,72 @@
+{
+  "schema_version": "control_plane.p7r2_t1_independent_spec_review.v1",
+  "review_id": "p7r2-t1-independent-spec-review",
+  "receipt_id": "p7r2-t1-independent-spec-review",
+  "reviewed_at": "2026-08-10T09:25:07.558763+00:00",
+  "phase": "P7",
+  "attempt_id": "p7-attempt-001",
+  "task_id": "P7R2-T1-CURRENT-SOURCE-ADOPTION",
+  "reviewer": {
+    "actor_id": "independent-p7r2-t1-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p7r2-t1-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_spec_approval": true,
+  "candidate": {
+    "ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_current_source_manifest.json",
+    "sha256": "a8f31990138bda0451f9149b4d7e478ee5616d1cb6ecc77c9bb6d2002cd80d0f"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 75e4cc3b...db9405 is valid; allowed_files cover all six T1 evidence outputs; baseline 95e40b1d...f2eb and all 11 input evidence references hash-match the live repository files."
+    },
+    {
+      "check_id": "source_range_integrity",
+      "status": "PASS",
+      "detail": "Exact 55-commit current-source range 8f6b6964..0ca73e3 with 151 changed paths and trees 6815b3e6/e466880d; 16 disjoint partitions tile the range with no gaps or overlaps; per-partition commit counts and plan mappings match the inventory; fresh mechanical validation of commit order, sequence hash, changed-path set and hash all PASS."
+    },
+    {
+      "check_id": "range_review_provenance",
+      "status": "PASS",
+      "detail": "All 16 disjoint range digest files (P7-A01..P7-A16) are retained in Temp with exact SHA-256 anchors; every partition records SPEC_PASS and QUALITY_PASS verdicts; mechanical_review_verification has 32 rows all READY and result ALL_OK."
+    },
+    {
+      "check_id": "ast_and_source_boundary",
+      "status": "PASS",
+      "detail": "Fresh AST-boundary check compares all 151 changed paths at HEAD 10493dd7 against source head 0ca73e3: 151/151 identical (Python AST hashes equal, non-Python bytes equal), zero mismatches; the adoption task changed no source or test file."
+    },
+    {
+      "check_id": "fresh_validation_facts",
+      "status": "PASS",
+      "detail": "Fresh validation at 2026-08-10T09:18:21Z on HEAD 10493dd7/tree e0a28f51 reports current_source_inventory PASS, ast_boundary PASS, lock_runtime PASS (Python 3.13.12, psutil 7.2.2, tenacity 8.5.0, lock pins present, pip check clean), and focused tests PASS: 6 groups, 856 tests run, 0 failures."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "Manifest side_effect_bounds are all false: source/tests unchanged, no real data or KBase reads, no campaign/research started, scheduler/ACL untouched, final holdout not accessed; phase_boundary records p8_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is exactly T1-completion ready: authorization auth_66c26b86 CLAIMED, grant grant_072b4c8e ACTIVE, ticket 8c8f8842 ISSUED with zero trusted receipts, one open ticket, no succeeded/failed/in-doubt tickets, pending outbox 0, and no P7 phase-gate closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "A16_CLOSURE_RECEIPT_APPEND_ONLY",
+      "detail": "P7-A16 contains 23 commits rewriting official_p6_closure_receipt_v342_p6r2.json; final state at 0ca73e3 is canonical and the receipt is Authority-valid. History noise only; a future git-hygiene slice may squash or document it."
+    },
+    {
+      "id": "AUTHORIZATION_CONTINUITY_NOTE",
+      "detail": "The P7 authorization record's expires_at is enforced at claim time only; the T1 ticket was issued before expiry and completion proceeds under the operator's continuous P0-P8/P9 approval recorded in p7_execution_goal_receipt.json."
+    }
+  ]
+}

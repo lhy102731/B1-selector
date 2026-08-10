@@ -1,0 +1,690 @@
+{
+  "schema_version": "control_plane.p7r2_t1_current_source_manifest.v1",
+  "attempt_id": "p7-attempt-001",
+  "phase": "P7",
+  "plan_version": "V3.4.2-P0R2",
+  "identity_binding": {
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "ba7e77329d448f309a4f1b17135092e1638f6ddf564b5f1f6a593cfb6cb0d470"
+  },
+  "task_binding": {
+    "task_id": "P7R2-T1-CURRENT-SOURCE-ADOPTION",
+    "idempotency_key": "p7-attempt-001-t1-current-source-adoption",
+    "authorization_ref": "auth_66c26b8665fd5a8773462a3423f9327c",
+    "grant_id": "grant_072b4c8edc25de3f3a0d1f7c8436ab38",
+    "ticket_id": "8c8f884262d0c61da628f19b86815d56fde42e381c5544370e6fc9635359962d",
+    "task_spec_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/task_specs/p7-attempt-001-t1-current-source-adoption.json",
+    "task_spec_sha256": "cfe183e67694a46fe8a600f8b5c740e221576d2b86f752f2ca9df13e9c583e89",
+    "task_payload_sha256": "75e4cc3bf56b34ff40e124e6ba471d0e2369302d8a7ff5e025f8811127db9405",
+    "ticket_receipt_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_ticket_receipt.json",
+    "ticket_receipt_sha256": "3a5d1cb510f3e90d6e7533290b5112a7f77b9bd84cfb31e668cbe35c3013ac47"
+  },
+  "source_range": {
+    "base_exclusive": "8f6b69647d2070fa40ee5c32084d48be1db61564",
+    "base_tree": "6815b3e6d46066dbcceace1e248fe8e25158f9b9",
+    "head_inclusive": "0ca73e335295dcea8043d0b88c0f2292c07afb08",
+    "head_tree": "e466880d9012a570ccdc178aff6e53751d6b0539",
+    "commit_count": 55,
+    "changed_path_count": 151,
+    "commit_inventory_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/current_source_commit_inventory.json",
+    "commit_inventory_sha256": "a34efbca352514c343c2b8fe9cb0e3adf4162783a9d8ae6fb143d4a34043e43c"
+  },
+  "partitions": [
+    {
+      "range_id": "P7-A01-AUTHORITY-ACTIVATION",
+      "base_exclusive": "8f6b69647d2070fa40ee5c32084d48be1db61564",
+      "head_inclusive": "db927154f72bcde872cc34b9e5caf19fcb9d0706",
+      "expected_commit_count": 3,
+      "actual_commit_count": 3,
+      "plan_mapping": [
+        "p7_authority_activation",
+        "continuous_authority_receipt"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A01-AUTHORITY-ACTIVATION.txt",
+        "artifact_sha256": "d2b8a4ced85a205837b1a2c12fef551da8a8045df79873f30c82742932ddfa47",
+        "final_text_sha256_anchor": "d2b8a4ced85a...ddfa47",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A01-AUTHORITY-ACTIVATION.txt",
+        "artifact_sha256": "d2b8a4ced85a205837b1a2c12fef551da8a8045df79873f30c82742932ddfa47",
+        "final_text_sha256_anchor": "d2b8a4ced85a...ddfa47",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A02-T1-ADOPTION",
+      "base_exclusive": "db927154f72bcde872cc34b9e5caf19fcb9d0706",
+      "head_inclusive": "8b60f5102f2e8b72f25d9a9ce1a53af56a9d61a5",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t1_current_source_adoption"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A02-T1-ADOPTION.txt",
+        "artifact_sha256": "a85735e4154f8ec70a15305f2613146daa7fce7ee96f655d7f29d1b827f0a1fc",
+        "final_text_sha256_anchor": "a85735e4154f...f0a1fc",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A02-T1-ADOPTION.txt",
+        "artifact_sha256": "a85735e4154f8ec70a15305f2613146daa7fce7ee96f655d7f29d1b827f0a1fc",
+        "final_text_sha256_anchor": "a85735e4154f...f0a1fc",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A03-T2-WORKTREE-CONTRACT",
+      "base_exclusive": "8b60f5102f2e8b72f25d9a9ce1a53af56a9d61a5",
+      "head_inclusive": "9c2dbe0524ac405731c51c32d3116d46632d320e",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t2_worktree_entry_inventory_contract"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A03-T2-WORKTREE-CONTRACT.txt",
+        "artifact_sha256": "d4a6671a3457763353d15f5b622973e7f5231f3d1082449295c60a1e8baaf055",
+        "final_text_sha256_anchor": "d4a6671a3457...aaf055",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A03-T2-WORKTREE-CONTRACT.txt",
+        "artifact_sha256": "d4a6671a3457763353d15f5b622973e7f5231f3d1082449295c60a1e8baaf055",
+        "final_text_sha256_anchor": "d4a6671a3457...aaf055",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A04-T3-PROVIDER-ADAPTERS",
+      "base_exclusive": "9c2dbe0524ac405731c51c32d3116d46632d320e",
+      "head_inclusive": "a34ffa6ca2f196160b244938f3cbc872d6b3011c",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t3_provider_adapters"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A04-T3-PROVIDER-ADAPTERS.txt",
+        "artifact_sha256": "5e3dbc7bf41557393443bb7556a5ed2a412cdfc9de8973e4141c177292515a2b",
+        "final_text_sha256_anchor": "5e3dbc7bf415...515a2b",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A04-T3-PROVIDER-ADAPTERS.txt",
+        "artifact_sha256": "5e3dbc7bf41557393443bb7556a5ed2a412cdfc9de8973e4141c177292515a2b",
+        "final_text_sha256_anchor": "5e3dbc7bf415...515a2b",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A05-T4-HARNESS-QUARANTINE",
+      "base_exclusive": "a34ffa6ca2f196160b244938f3cbc872d6b3011c",
+      "head_inclusive": "9cdd806c0c4e9c835f928ecee9ab2fc5bf27920f",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t4_legacy_harness_quarantine"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A05-T4-HARNESS-QUARANTINE.txt",
+        "artifact_sha256": "3d56d541051265f730488941c667c4ca02aaab49652edcc75c479022038257e6",
+        "final_text_sha256_anchor": "3d56d5410512...8257e6",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A05-T4-HARNESS-QUARANTINE.txt",
+        "artifact_sha256": "3d56d541051265f730488941c667c4ca02aaab49652edcc75c479022038257e6",
+        "final_text_sha256_anchor": "3d56d5410512...8257e6",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A06-T5-CAPITAL-PROJECTION",
+      "base_exclusive": "9cdd806c0c4e9c835f928ecee9ab2fc5bf27920f",
+      "head_inclusive": "60718c13bb9bd9adeb36741cd621c9f6dfab7198",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t5_capital_projection"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A06-T5-CAPITAL-PROJECTION.txt",
+        "artifact_sha256": "12dc6d14641592179f656ac4c7daefc672b1996b7cf89e9f6cdcd8b11a6d2100",
+        "final_text_sha256_anchor": "12dc6d146415...6d2100",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A06-T5-CAPITAL-PROJECTION.txt",
+        "artifact_sha256": "12dc6d14641592179f656ac4c7daefc672b1996b7cf89e9f6cdcd8b11a6d2100",
+        "final_text_sha256_anchor": "12dc6d146415...6d2100",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A07-T6-RESOURCE-METERING",
+      "base_exclusive": "60718c13bb9bd9adeb36741cd621c9f6dfab7198",
+      "head_inclusive": "39cc8c0368b46be818cfe372f8d6fc1284fc8821",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t6_resource_metering"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A07-T6-RESOURCE-METERING.txt",
+        "artifact_sha256": "43582dcc3d69fac4511aaca7cecbeea23f1e39edd2bc22e5c04d205f43dfca6e",
+        "final_text_sha256_anchor": "43582dcc3d69...dfca6e",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A07-T6-RESOURCE-METERING.txt",
+        "artifact_sha256": "43582dcc3d69fac4511aaca7cecbeea23f1e39edd2bc22e5c04d205f43dfca6e",
+        "final_text_sha256_anchor": "43582dcc3d69...dfca6e",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A08-T7-LEGACY-CLI-PREFLIGHT",
+      "base_exclusive": "39cc8c0368b46be818cfe372f8d6fc1284fc8821",
+      "head_inclusive": "3e27482f84096027c17a3be8f95fcc1e74940a05",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t7_legacy_cli_preflight"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A08-T7-LEGACY-CLI-PREFLIGHT.txt",
+        "artifact_sha256": "968563e7ae4d9288bf2de022fd28d3aa3320d38ebc15cefb36f49f5782e32d5e",
+        "final_text_sha256_anchor": "968563e7ae4d...e32d5e",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A08-T7-LEGACY-CLI-PREFLIGHT.txt",
+        "artifact_sha256": "968563e7ae4d9288bf2de022fd28d3aa3320d38ebc15cefb36f49f5782e32d5e",
+        "final_text_sha256_anchor": "968563e7ae4d...e32d5e",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A09-T8-CANDIDATE-CONCENTRATION",
+      "base_exclusive": "3e27482f84096027c17a3be8f95fcc1e74940a05",
+      "head_inclusive": "b90bb24ee2e07dd2aa877d67c121c96755f67510",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t8_legacy_candidate_concentration"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A09-T8-CANDIDATE-CONCENTRATION.txt",
+        "artifact_sha256": "f4ebb25f5ee29aebcfe639582775a45c07251fdc72c1eab72c88227fcafbb1ec",
+        "final_text_sha256_anchor": "f4ebb25f5ee2...fbb1ec",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A09-T8-CANDIDATE-CONCENTRATION.txt",
+        "artifact_sha256": "f4ebb25f5ee29aebcfe639582775a45c07251fdc72c1eab72c88227fcafbb1ec",
+        "final_text_sha256_anchor": "f4ebb25f5ee2...fbb1ec",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A10-T9-DIRECTOR-CONTRACT",
+      "base_exclusive": "b90bb24ee2e07dd2aa877d67c121c96755f67510",
+      "head_inclusive": "e0821206a685a9e69a94617506687b9c52cf6a1e",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t9_director_contract_refresh"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A10-T9-DIRECTOR-CONTRACT.txt",
+        "artifact_sha256": "b824aa1d553ecc119bc6eee3bd24e8b5d6b8e6521b99f85b1a56cd098f18542a",
+        "final_text_sha256_anchor": "b824aa1d553e...18542a",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A10-T9-DIRECTOR-CONTRACT.txt",
+        "artifact_sha256": "b824aa1d553ecc119bc6eee3bd24e8b5d6b8e6521b99f85b1a56cd098f18542a",
+        "final_text_sha256_anchor": "b824aa1d553e...18542a",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A11-T10-INVOCATION-BINDING",
+      "base_exclusive": "e0821206a685a9e69a94617506687b9c52cf6a1e",
+      "head_inclusive": "2f380bb20dc4d548ce82ef89ec3cb0f00b592318",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t10_trusted_invocation_binding"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A11-T10-INVOCATION-BINDING.txt",
+        "artifact_sha256": "42183f44fc22e44638ab9c5cc452fb66306c0f806c8c374ec03b6e17352f0409",
+        "final_text_sha256_anchor": "42183f44fc22...2f0409",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A11-T10-INVOCATION-BINDING.txt",
+        "artifact_sha256": "42183f44fc22e44638ab9c5cc452fb66306c0f806c8c374ec03b6e17352f0409",
+        "final_text_sha256_anchor": "42183f44fc22...2f0409",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A12-T11-HOLDOUT-EXCLUSION",
+      "base_exclusive": "2f380bb20dc4d548ce82ef89ec3cb0f00b592318",
+      "head_inclusive": "66344b0388ff6869a6b5560bb3e04d52c115bc69",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t11_final_holdout_exclusion_proof"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A12-T11-HOLDOUT-EXCLUSION.txt",
+        "artifact_sha256": "b47b00e52bd41d926c802e7e51466c3f2d2808ed60ab48bc3db1b4f04c15dc55",
+        "final_text_sha256_anchor": "b47b00e52bd4...15dc55",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A12-T11-HOLDOUT-EXCLUSION.txt",
+        "artifact_sha256": "b47b00e52bd41d926c802e7e51466c3f2d2808ed60ab48bc3db1b4f04c15dc55",
+        "final_text_sha256_anchor": "b47b00e52bd4...15dc55",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A13-T12-DRY-RUN-BOUNDARY",
+      "base_exclusive": "66344b0388ff6869a6b5560bb3e04d52c115bc69",
+      "head_inclusive": "7303f41de9f341f37d4aa213bced727c96e47a9c",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t12_full_dry_run_boundary"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A13-T12-DRY-RUN-BOUNDARY.txt",
+        "artifact_sha256": "a03f70bf14a36018dc2de75d06fe157b6fcecb78d3370625dc81ef008110bf7d",
+        "final_text_sha256_anchor": "a03f70bf14a3...10bf7d",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A13-T12-DRY-RUN-BOUNDARY.txt",
+        "artifact_sha256": "a03f70bf14a36018dc2de75d06fe157b6fcecb78d3370625dc81ef008110bf7d",
+        "final_text_sha256_anchor": "a03f70bf14a3...10bf7d",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A14-T13-INTEGRATION",
+      "base_exclusive": "7303f41de9f341f37d4aa213bced727c96e47a9c",
+      "head_inclusive": "06c3e44f9d71086ba183d19759c9545a1feb3772",
+      "expected_commit_count": 2,
+      "actual_commit_count": 2,
+      "plan_mapping": [
+        "t13_integration_verification"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A14-T13-INTEGRATION.txt",
+        "artifact_sha256": "3d99afe0fc11ebccf90b0ad10169341f2468dab14a6edfe570ec7d60a075ec6d",
+        "final_text_sha256_anchor": "3d99afe0fc11...75ec6d",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A14-T13-INTEGRATION.txt",
+        "artifact_sha256": "3d99afe0fc11ebccf90b0ad10169341f2468dab14a6edfe570ec7d60a075ec6d",
+        "final_text_sha256_anchor": "3d99afe0fc11...75ec6d",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A15-T14-GATE",
+      "base_exclusive": "06c3e44f9d71086ba183d19759c9545a1feb3772",
+      "head_inclusive": "cb8beb038f8443c7fdc8e8799cd2cbe6cb4495c6",
+      "expected_commit_count": 3,
+      "actual_commit_count": 3,
+      "plan_mapping": [
+        "t14_final_inventory_policy_gate"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A15-T14-GATE.txt",
+        "artifact_sha256": "00b5a4ee73e57afed5f4fc3ea822a1dc21f0f5349cf6680509d0fd0d63ee0a18",
+        "final_text_sha256_anchor": "00b5a4ee73e5...ee0a18",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A15-T14-GATE.txt",
+        "artifact_sha256": "00b5a4ee73e57afed5f4fc3ea822a1dc21f0f5349cf6680509d0fd0d63ee0a18",
+        "final_text_sha256_anchor": "00b5a4ee73e5...ee0a18",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    },
+    {
+      "range_id": "P7-A16-CLOSURE-RECEIPT",
+      "base_exclusive": "cb8beb038f8443c7fdc8e8799cd2cbe6cb4495c6",
+      "head_inclusive": "0ca73e335295dcea8043d0b88c0f2292c07afb08",
+      "expected_commit_count": 23,
+      "actual_commit_count": 23,
+      "plan_mapping": [
+        "p6_gate_closure_receipt_append_only"
+      ],
+      "spec_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A16-CLOSURE-RECEIPT.txt",
+        "artifact_sha256": "12a6cca6eb52073806e273940ea52d3eab231c4624bf5c75db7227d87f186fa9",
+        "final_text_sha256_anchor": "12a6cca6eb52...186fa9",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      },
+      "quality_review": {
+        "artifact_state": "REVIEW_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_range_digests/P7-A16-CLOSURE-RECEIPT.txt",
+        "artifact_sha256": "12a6cca6eb52073806e273940ea52d3eab231c4624bf5c75db7227d87f186fa9",
+        "final_text_sha256_anchor": "12a6cca6eb52...186fa9",
+        "verdict": "PASS",
+        "reviewed_at": "2026-08-10T09:19:14.991893+00:00"
+      }
+    }
+  ],
+  "consolidated_range_review_status": {
+    "segment_count": 16,
+    "all_spec_pass": true,
+    "all_quality_pass": true,
+    "disjoint_ranges": true,
+    "duplicate_diff_review_forbidden": true
+  },
+  "mechanical_review_verification": {
+    "method": "exact per-range digest SHA-256 anchors plus SPEC_PASS/QUALITY_PASS verdicts for all 16 disjoint ranges; digest content generated from git commit/stat facts and independently spot-checked",
+    "result": "ALL_OK",
+    "verified_at": "2026-08-10T09:19:14.991893+00:00",
+    "rows": [
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "d2b8a4ced85a205837b1a2c12fef551da8a8045df79873f30c82742932ddfa47",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "d2b8a4ced85a205837b1a2c12fef551da8a8045df79873f30c82742932ddfa47",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "a85735e4154f8ec70a15305f2613146daa7fce7ee96f655d7f29d1b827f0a1fc",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "a85735e4154f8ec70a15305f2613146daa7fce7ee96f655d7f29d1b827f0a1fc",
+        "status": "READY"
+      },
+      {
+        "segment": "ACT",
+        "kind": "SPEC",
+        "sha256": "d4a6671a3457763353d15f5b622973e7f5231f3d1082449295c60a1e8baaf055",
+        "status": "READY"
+      },
+      {
+        "segment": "ACT",
+        "kind": "QUALITY",
+        "sha256": "d4a6671a3457763353d15f5b622973e7f5231f3d1082449295c60a1e8baaf055",
+        "status": "READY"
+      },
+      {
+        "segment": "ERS",
+        "kind": "SPEC",
+        "sha256": "5e3dbc7bf41557393443bb7556a5ed2a412cdfc9de8973e4141c177292515a2b",
+        "status": "READY"
+      },
+      {
+        "segment": "ERS",
+        "kind": "QUALITY",
+        "sha256": "5e3dbc7bf41557393443bb7556a5ed2a412cdfc9de8973e4141c177292515a2b",
+        "status": "READY"
+      },
+      {
+        "segment": "INE",
+        "kind": "SPEC",
+        "sha256": "3d56d541051265f730488941c667c4ca02aaab49652edcc75c479022038257e6",
+        "status": "READY"
+      },
+      {
+        "segment": "INE",
+        "kind": "QUALITY",
+        "sha256": "3d56d541051265f730488941c667c4ca02aaab49652edcc75c479022038257e6",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "12dc6d14641592179f656ac4c7daefc672b1996b7cf89e9f6cdcd8b11a6d2100",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "12dc6d14641592179f656ac4c7daefc672b1996b7cf89e9f6cdcd8b11a6d2100",
+        "status": "READY"
+      },
+      {
+        "segment": "ING",
+        "kind": "SPEC",
+        "sha256": "43582dcc3d69fac4511aaca7cecbeea23f1e39edd2bc22e5c04d205f43dfca6e",
+        "status": "READY"
+      },
+      {
+        "segment": "ING",
+        "kind": "QUALITY",
+        "sha256": "43582dcc3d69fac4511aaca7cecbeea23f1e39edd2bc22e5c04d205f43dfca6e",
+        "status": "READY"
+      },
+      {
+        "segment": "GHT",
+        "kind": "SPEC",
+        "sha256": "968563e7ae4d9288bf2de022fd28d3aa3320d38ebc15cefb36f49f5782e32d5e",
+        "status": "READY"
+      },
+      {
+        "segment": "GHT",
+        "kind": "QUALITY",
+        "sha256": "968563e7ae4d9288bf2de022fd28d3aa3320d38ebc15cefb36f49f5782e32d5e",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "f4ebb25f5ee29aebcfe639582775a45c07251fdc72c1eab72c88227fcafbb1ec",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "f4ebb25f5ee29aebcfe639582775a45c07251fdc72c1eab72c88227fcafbb1ec",
+        "status": "READY"
+      },
+      {
+        "segment": "ACT",
+        "kind": "SPEC",
+        "sha256": "b824aa1d553ecc119bc6eee3bd24e8b5d6b8e6521b99f85b1a56cd098f18542a",
+        "status": "READY"
+      },
+      {
+        "segment": "ACT",
+        "kind": "QUALITY",
+        "sha256": "b824aa1d553ecc119bc6eee3bd24e8b5d6b8e6521b99f85b1a56cd098f18542a",
+        "status": "READY"
+      },
+      {
+        "segment": "ING",
+        "kind": "SPEC",
+        "sha256": "42183f44fc22e44638ab9c5cc452fb66306c0f806c8c374ec03b6e17352f0409",
+        "status": "READY"
+      },
+      {
+        "segment": "ING",
+        "kind": "QUALITY",
+        "sha256": "42183f44fc22e44638ab9c5cc452fb66306c0f806c8c374ec03b6e17352f0409",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "b47b00e52bd41d926c802e7e51466c3f2d2808ed60ab48bc3db1b4f04c15dc55",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "b47b00e52bd41d926c802e7e51466c3f2d2808ed60ab48bc3db1b4f04c15dc55",
+        "status": "READY"
+      },
+      {
+        "segment": "ARY",
+        "kind": "SPEC",
+        "sha256": "a03f70bf14a36018dc2de75d06fe157b6fcecb78d3370625dc81ef008110bf7d",
+        "status": "READY"
+      },
+      {
+        "segment": "ARY",
+        "kind": "QUALITY",
+        "sha256": "a03f70bf14a36018dc2de75d06fe157b6fcecb78d3370625dc81ef008110bf7d",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "SPEC",
+        "sha256": "3d99afe0fc11ebccf90b0ad10169341f2468dab14a6edfe570ec7d60a075ec6d",
+        "status": "READY"
+      },
+      {
+        "segment": "ION",
+        "kind": "QUALITY",
+        "sha256": "3d99afe0fc11ebccf90b0ad10169341f2468dab14a6edfe570ec7d60a075ec6d",
+        "status": "READY"
+      },
+      {
+        "segment": "ATE",
+        "kind": "SPEC",
+        "sha256": "00b5a4ee73e57afed5f4fc3ea822a1dc21f0f5349cf6680509d0fd0d63ee0a18",
+        "status": "READY"
+      },
+      {
+        "segment": "ATE",
+        "kind": "QUALITY",
+        "sha256": "00b5a4ee73e57afed5f4fc3ea822a1dc21f0f5349cf6680509d0fd0d63ee0a18",
+        "status": "READY"
+      },
+      {
+        "segment": "IPT",
+        "kind": "SPEC",
+        "sha256": "12a6cca6eb52073806e273940ea52d3eab231c4624bf5c75db7227d87f186fa9",
+        "status": "READY"
+      },
+      {
+        "segment": "IPT",
+        "kind": "QUALITY",
+        "sha256": "12a6cca6eb52073806e273940ea52d3eab231c4624bf5c75db7227d87f186fa9",
+        "status": "READY"
+      }
+    ]
+  },
+  "fresh_validation": {
+    "validated_at": "2026-08-10T09:18:21.504214+00:00",
+    "git_head": "10493dd7d165c76265cccec09c6a27b462ea8b2b",
+    "git_tree": "e0a28f51650311afa1500c9a87ed9e540933ead7",
+    "current_source_inventory": "PASS",
+    "ast_boundary": "PASS",
+    "lock_runtime": "PASS",
+    "pip_check": "PASS",
+    "focused_tests": {
+      "result": "PASS",
+      "groups": [
+        80,
+        140,
+        78,
+        279,
+        135,
+        144
+      ],
+      "total_tests_run": 856,
+      "tests_failed": 0
+    },
+    "raw_result_ref": "C:/Users/Administrator/AppData/Local/Temp/p7r2_t1_fresh_validation_20260810.json"
+  },
+  "side_effect_bounds": {
+    "source_or_tests_changed": false,
+    "real_data_or_kbase_read": false,
+    "campaign_or_research_started": false,
+    "scheduler_or_acl_mutated": false,
+    "final_holdout_accessed": false,
+    "authority_writes": "deferred_to_T1_completion_controller"
+  },
+  "verdict": "READY_FOR_T1_COMPLETION"
+}
