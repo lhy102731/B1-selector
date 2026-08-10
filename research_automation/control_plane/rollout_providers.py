@@ -8,6 +8,12 @@ into a status string and never raises into the C1 driver.
 
 from __future__ import annotations
 
+import json
+import os
+import socket
+import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -53,7 +59,10 @@ class ProviderCallResult:
 
 
 def provider_spec(model: str) -> ProviderSpec:
-    raise NotImplementedError("C1 provider slice pending implementation")
+    try:
+        return REGISTRY[model]
+    except KeyError:
+        raise ValueError(f"unknown model: {model!r}") from None
 
 
 def call_llm(
@@ -65,17 +74,105 @@ def call_llm(
     base_url: str | None = None,
     api_key: str | None = None,
 ) -> ProviderCallResult:
-    raise NotImplementedError("C1 provider slice pending implementation")
+    started = time.monotonic()
+
+    def result(status: str, text: str = "", **tokens: int) -> ProviderCallResult:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return ProviderCallResult(
+            model=model,
+            status=status,
+            text=text,
+            input_tokens=tokens.get("input_tokens", 0),
+            output_tokens=tokens.get("output_tokens", 0),
+            total_tokens=tokens.get("input_tokens", 0) + tokens.get("output_tokens", 0),
+            wall_time_ms=elapsed_ms,
+            detail=tokens.get("detail", ""),
+        )
+
+    try:
+        spec = provider_spec(model)
+    except ValueError:
+        raise
+    base = base_url or spec.base_url
+    key = api_key or os.environ.get(spec.api_key_env, "")
+    if not key and spec.provider == "volcano_relay":
+        key = "relay-token"
+
+    try:
+        if spec.provider == "volcano_relay":
+            url = base.rstrip("/") + "/v1/messages"
+            headers = {
+                "content-type": "application/json",
+                "authorization": "Bearer " + key,
+            }
+            body = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            }
+        else:
+            url = base.rstrip("/") + "/chat/completions"
+            headers = {
+                "content-type": "application/json",
+                "authorization": "Bearer " + key,
+            }
+            body = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout_ms / 1000.0) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        if spec.provider == "volcano_relay":
+            text = payload["content"][0]["text"]
+            input_tokens, output_tokens = parse_anthropic_usage(payload)
+        else:
+            text = payload["choices"][0]["message"]["content"]
+            input_tokens, output_tokens = parse_openai_usage(payload)
+        return result(
+            "ok",
+            text,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    except urllib.error.HTTPError as exc:
+        status = "http_429" if exc.code == 429 else "http_error"
+        detail = f"HTTP {exc.code} {exc.reason}"
+        return result(status, detail=detail)
+    except (socket.timeout, TimeoutError):
+        detail = f"request timed out after {timeout_ms}ms"
+        return result("timeout", detail=detail)
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (socket.timeout, TimeoutError)):
+            detail = f"request timed out after {timeout_ms}ms"
+            return result("timeout", detail=detail)
+        detail = f"url error: {exc.reason}"
+        return result("error", detail=detail)
+    except json.JSONDecodeError as exc:
+        detail = f"malformed json response: {exc}"
+        return result("malformed_json", detail=detail)
+    except Exception as exc:  # noqa: BLE001 - never raise into the C1 driver
+        detail = f"{type(exc).__name__}: {exc}"
+        return result("error", detail=detail)
 
 
 def parse_anthropic_usage(payload: Mapping) -> tuple[int, int]:
-    raise NotImplementedError("C1 provider slice pending implementation")
+    usage = payload.get("usage") or {}
+    return usage.get("input_tokens", 0), usage.get("output_tokens", 0)
 
 
 def parse_openai_usage(payload: Mapping) -> tuple[int, int]:
-    raise NotImplementedError("C1 provider slice pending implementation")
+    usage = payload.get("usage") or {}
+    return usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
 
 
 def ping_llm(model: str, *, timeout_ms: int = 25_000, max_tokens: int = 4) -> ProviderCallResult:
     """Lightweight read-only availability probe for one model."""
-    raise NotImplementedError("C1 provider slice pending implementation")
+    return call_llm(model, "ping", max_tokens=max_tokens, timeout_ms=timeout_ms)
