@@ -6,6 +6,13 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from research_automation.control_plane.access import (
+    AccessEvent,
+    AccessOperation,
+    DatasetRole,
+    FinalHoldoutUnavailable,
+    Taint,
+)
 from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
     CampaignJournalError,
@@ -736,6 +743,144 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
             self.assertEqual(
                 final_recovered.cycle_snapshot("cycle-002").status,
                 CycleStatus.COMPLETED,
+            )
+
+    def test_derivation_with_final_holdout_output_taint_is_unavailable(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            FinalHoldoutUnavailable,
+            "FINAL_HOLDOUT taint is unavailable",
+        ):
+            AccessEvent(
+                event_id="derive-holdout-proof",
+                operation=AccessOperation.DERIVE,
+                actor_id="trusted",
+                actor_type="human",
+                invocation_id="p6r2-t11",
+                run_id="run-holdout-proof",
+                dataset_role=DatasetRole.FINAL_HOLDOUT,
+                input_artifact_refs=("artifact:abc",),
+                output_artifact_refs=("artifact:def",),
+                taint_in=(),
+                taint_out=(Taint.FINAL_HOLDOUT,),
+            )
+
+    def test_derivation_with_final_holdout_input_taint_is_unavailable(
+        self,
+    ) -> None:
+        with self.assertRaisesRegex(
+            FinalHoldoutUnavailable,
+            "FINAL_HOLDOUT taint is unavailable",
+        ):
+            AccessEvent(
+                event_id="derive-holdout-proof",
+                operation=AccessOperation.DERIVE,
+                actor_id="trusted",
+                actor_type="human",
+                invocation_id="p6r2-t11",
+                run_id="run-holdout-proof",
+                dataset_role=DatasetRole.FINAL_HOLDOUT,
+                input_artifact_refs=("artifact:abc",),
+                output_artifact_refs=("artifact:def",),
+                taint_in=(Taint.FINAL_HOLDOUT,),
+                taint_out=(Taint.CLEAN,),
+            )
+
+    def test_final_holdout_unavailable_is_catchable_as_runtime_error(
+        self,
+    ) -> None:
+        self.assertTrue(issubclass(FinalHoldoutUnavailable, RuntimeError))
+
+    def test_synthetic_two_cycle_context_projects_no_final_holdout_references(
+        self,
+    ) -> None:
+        campaign_id = "campaign-controller-final-holdout-exclusion-proof"
+        claim_scope = _scope(generation="generation-1")
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic scoped finding with no holdout data",
+            "scope": json.dumps(
+                claim_scope,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "parent_lineage": [],
+            "reopen_predicate": "[]",
+            "future_usage_guidance": (
+                '{"conclusion":"AVOID","directional_status":"avoid"}'
+            ),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            report, binding, artifact, _, _ = (
+                evidence_fixtures.EvidenceLearningVerticalSliceTests()
+                ._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_protocol().model_dump(mode="json"),
+                )
+            )
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=_FakeProcessIdentityProvider(
+                    ProcessIdentity("host-holdout-proof", 221, 221_000)
+                ),
+                monotonic_ns=_FakeMonotonicClock(
+                    100,
+                    1_000_000,
+                    2_000_000,
+                ),
+            )
+            with patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            ):
+                _, execution, learning, information_gain = (
+                    self._complete_authority_learning_cycle(
+                        controller=controller,
+                        journal=journal,
+                        root=root,
+                        cycle_id="cycle-001",
+                        cycle_number=1,
+                        claim_scope=claim_scope,
+                        report=report,
+                        binding=binding,
+                        artifact=artifact,
+                    )
+                )
+                projection_input = CommittedLearningLedgerReader(
+                    root
+                ).read_projection_input()
+                decision = controller.decide_next_cycle(
+                    execution=execution,
+                    information_gain_receipt=information_gain,
+                )
+            projected_text = json.dumps(projection_input, sort_keys=True)
+            self.assertNotIn("FINAL_HOLDOUT", projected_text)
+            self.assertNotIn("holdout", projected_text.lower())
+            self.assertEqual(decision.decision, "CONTINUE")
+            synthetic_event = AccessEvent(
+                event_id="derive-synthetic-proof",
+                operation=AccessOperation.DERIVE,
+                actor_id="trusted",
+                actor_type="human",
+                invocation_id="p6r2-t11",
+                run_id="run-holdout-proof",
+                dataset_role=DatasetRole.TRAIN,
+                input_artifact_refs=("artifact:abc",),
+                output_artifact_refs=("artifact:def",),
+                taint_in=(),
+                taint_out=(Taint.TEST_DERIVED,),
+            )
+            self.assertEqual(synthetic_event.dataset_role, DatasetRole.TRAIN)
+            self.assertNotIn(Taint.FINAL_HOLDOUT, synthetic_event.taint_out)
+            self.assertEqual(
+                learning.packet_hash,
+                projection_input["claims"][0]["claim_id"],
             )
 
 

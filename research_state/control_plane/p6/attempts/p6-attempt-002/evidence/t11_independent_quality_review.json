@@ -1,0 +1,58 @@
+{
+  "schema_version": "control_plane.p6r2_t11_independent_quality_review.v1",
+  "review_id": "p6r2-t11-independent-quality-review",
+  "receipt_id": "p6r2-t11-independent-quality-review",
+  "reviewed_at": "2026-08-10T08:30:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T11-FINAL-HOLDOUT-EXCLUSION-PROOF",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t11-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t11-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "checks": [
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "9 focused tests pass on the locked runtime: the 5 existing offline two-cycle proofs plus 4 new final-holdout exclusion tests (taint_in rejection, taint_out rejection, catchability as RuntimeError, and the synthetic one-cycle projection that stays holdout-free while a non-holdout AccessEvent remains expressible)."
+    },
+    {
+      "check_id": "diff_minimality",
+      "status": "PASS",
+      "detail": "The T11 diff touches exactly one owned file: tests/test_control_plane_campaign_two_cycle.py (imports plus 4 tests); no unrelated module, dependency, or forbidden path changed."
+    },
+    {
+      "check_id": "no_effect_proof",
+      "status": "PASS",
+      "detail": "The slice performs no I/O, no subprocesses, and no real provider or data access; AccessEvent construction fails before any artifact or journal write, and the projection assertion reads only the synthetic offline journal."
+    },
+    {
+      "check_id": "regression_suite",
+      "status": "PASS",
+      "detail": "A 1,573-test regression run across 48 modules passes on the locked runtime, including the entire control-plane suite with the modified two-cycle module, automation resilience, capital projection, CLI entry guards, legacy harness quarantine, promotion provenance, and AG2 orchestration/tool-loop/memory/model/file-security tests."
+    },
+    {
+      "check_id": "review_independence",
+      "status": "PASS",
+      "detail": "Spec and quality reviewer actor ids are distinct from the task actor and from each other; invocation ids are recorded; external usage is declared UNKNOWN."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_CHARACTERIZATION_SCOPE",
+      "detail": "The new tests characterize the existing P3 access contract rather than adding production behavior; later composition slices remain responsible for wiring the access gate into dry-run namespaces."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_PROJECTION_DEPTH",
+      "detail": "The projection assertion covers the committed learning packet and excluded-claims surfaces; nested operational journal bytes are covered by the existing journal replay tests."
+    }
+  ]
+}
