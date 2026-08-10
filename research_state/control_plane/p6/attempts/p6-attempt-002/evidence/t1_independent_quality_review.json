@@ -1,0 +1,67 @@
+{
+  "schema_version": "control_plane.p6r2_t1_independent_quality_review.v1",
+  "review_id": "p6r2-t1-independent-quality-review",
+  "receipt_id": "p6r2-t1-independent-quality-review",
+  "reviewed_at": "2026-08-10T04:40:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T1-CURRENT-SOURCE-ADOPTION",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t1-quality-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t1-independent-quality-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_quality_approval": true,
+  "candidate": {
+    "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_current_source_manifest.json",
+    "sha256": "47fe08d646d1697227137eeb0b89d1e4d402be7f3beed1444c6a462616a5a87e"
+  },
+  "checks": [
+    {
+      "check_id": "recovery_artifact_quality",
+      "status": "PASS",
+      "detail": "A03 quality recovery (p6r2-t1-a03-quality-recovery-20260810.json, sha256 c8743398...4e72b) contains a complete QUALITY_REVIEW VERDICT PASS, no blockers, and four non-blocking follow-ups; A07 full recovery (p6r2-t1-a07-full-recovery-20260810.json, sha256 479fca0d...f9136) contains SPEC and QUALITY PASS, no blockers, and two non-blocking follow-ups; both recovery_reason fields are LOST_UNPERSISTED_OUTPUT and result.txt anchors hash-match the manifest."
+    },
+    {
+      "check_id": "mechanical_review_verification",
+      "status": "PASS",
+      "detail": "Manifest mechanical_review_verification rows (10) verify exact final-text SHA-256 anchors plus SPEC_PASS/QUALITY_PASS verdicts per disjoint range review; result is ALL_OK with all rows READY/SPEC_PASS/QUALITY_PASS."
+    },
+    {
+      "check_id": "focused_test_quality",
+      "status": "PASS",
+      "detail": "Fresh focused suite executed 840 tests across 6 groups with 0 failures and 0 errors on the locked runtime; per-group results 80/140/78/273/125/144 all PASS; durations and command tails are recorded in the raw validation result; lock pins (psutil==7.2.2, tenacity==8.5.0) and pip check are clean."
+    },
+    {
+      "check_id": "evidence_artifact_quality",
+      "status": "PASS",
+      "detail": "Manifest schema control_plane.p6r2_t1_current_source_manifest.v1 parses strictly; verdict READY_FOR_T1_COMPLETION; all nine partitions carry expected/actual commit counts with plan mappings; consolidated_range_review_status all_spec_pass=true and all_quality_pass=true; side_effect_bounds are all false."
+    },
+    {
+      "check_id": "review_independence_and_attribution",
+      "status": "PASS",
+      "detail": "Independent spec/quality reviewer actor ids are distinct from the task actor and from each other; invocation ids p6r2-t1-independent-spec-review-20260810 and p6r2-t1-independent-quality-review-20260810 are recorded; external usage is declared UNKNOWN (not zero) in the completion report."
+    },
+    {
+      "check_id": "no_blocking_findings",
+      "status": "PASS",
+      "detail": "No blocker exists across the nine range reviews, both recovery artifacts, the fresh validation result, or the manifest; all follow-ups are explicitly non-blocking and deferred to later slices."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_TEST_SUITE",
+      "detail": "Group 6 emits third-party DeprecationWarnings (jsonschema.__version__) from autogen import utilities; tests still pass and no source change is required for adoption."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_AUTHORIZATION_CONTINUITY",
+      "detail": "The P6 authorization record predates the machine expiry timestamp; completion receipt will record authorization_continuity with expires_at_note explaining claim-time enforcement and the operator's continuous approval."
+    }
+  ]
+}

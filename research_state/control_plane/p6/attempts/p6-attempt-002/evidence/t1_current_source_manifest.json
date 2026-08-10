@@ -1,0 +1,362 @@
+{
+  "schema_version": "control_plane.p6r2_t1_current_source_manifest.v1",
+  "attempt_id": "p6-attempt-002",
+  "phase": "P6",
+  "plan_version": "V3.4.2-P0R2",
+  "identity_binding": {
+    "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+    "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+    "scope_hash": "d328a2cf7e366963e2231e48e8020f075b09a37d88df16d2c5de79169d01a4dd"
+  },
+  "task_binding": {
+    "task_id": "P6R2-T1-CURRENT-SOURCE-ADOPTION",
+    "idempotency_key": "p6-attempt-002-t1-current-source-adoption",
+    "authorization_ref": "auth_b7326cf5b223bcb693681e2f7a79daee",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "ticket_id": "a75a9eb31e93e79ad105b2969473b20eac4a2b0e642f76a31693e421ac34d57e",
+    "task_spec_ref": "research_state/control_plane/p6/attempts/p6-attempt-002/task_specs/p6-attempt-002-t1-current-source-adoption.json",
+    "task_spec_sha256": "bdbca6cc57edb1a7610fc65528506797f22b00161fe1dbdc9d3103ef00bfdeca",
+    "task_payload_sha256": "36580c0eb735e30b5f1a5736187f6cb8ef1ac649e34466d54d2ad608adc4a697",
+    "ticket_receipt_ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_ticket_receipt.json",
+    "ticket_receipt_sha256": "188e1243b8aba37f7a77fa4c0253c71c6c10da35ea09bec0c941a0bcd55e7f78"
+  },
+  "source_range": {
+    "base_exclusive": "d14ead08e4fbdf0d17a01e7e5766bb976607ae0a",
+    "base_tree": "f1d372b4acc9c6d26a47ae9686b67b832dfe95a7",
+    "head_inclusive": "8f6b69647d2070fa40ee5c32084d48be1db61564",
+    "head_tree": "6815b3e6d46066dbcceace1e248fe8e25158f9b9",
+    "commit_count": 103,
+    "changed_path_count": 34,
+    "commit_inventory_ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/current_source_commit_inventory.json",
+    "commit_inventory_sha256": "21a723e7e723724610e90006de8a04b442718592c351a576a4f0a7e91717dcfe"
+  },
+  "partitions": [
+    {
+      "range_id": "P6-A01-INVOCATION-USAGE",
+      "base_exclusive": "d14ead08e4fbdf0d17a01e7e5766bb976607ae0a",
+      "head_inclusive": "d58fc18cc0ffdb67af2621e0af0e3edd80d95954",
+      "expected_commit_count": 6,
+      "actual_commit_count": 6,
+      "plan_mapping": [
+        "model_invocation",
+        "usage_envelope",
+        "logical_retry"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "c5c13632babc...fe164989"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "c5c13632babc...fe164989"
+      }
+    },
+    {
+      "range_id": "P6-A02-BUDGET-JOURNAL",
+      "base_exclusive": "d58fc18cc0ffdb67af2621e0af0e3edd80d95954",
+      "head_inclusive": "ec6af7363470ba2db56aa11d957ac9d2e6b8f1bf",
+      "expected_commit_count": 3,
+      "actual_commit_count": 3,
+      "plan_mapping": [
+        "atomic_budget_reservation",
+        "operational_journal_v3"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "49c9781386c5...c9094"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "49c9781386c5...c9094"
+      }
+    },
+    {
+      "range_id": "P6-A03-LIFECYCLE-ROSTER-LEASE",
+      "base_exclusive": "ec6af7363470ba2db56aa11d957ac9d2e6b8f1bf",
+      "head_inclusive": "ac8267c43b0c84995a58eceac5a54a070e70d608",
+      "expected_commit_count": 8,
+      "actual_commit_count": 8,
+      "plan_mapping": [
+        "campaign_lifecycle",
+        "roster_binding",
+        "lease_fencing"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "ada6873158c7...3aca5d"
+      },
+      "quality_review": {
+        "verdict": "PASS",
+        "artifact_state": "RECOVERY_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2-t1-a03-quality-recovery-20260810.result.txt",
+        "artifact_sha256": "a31304be89d4534f0f9dddb71c5c927181746a52f6a61618fcb5dde8bae75c0c",
+        "recovery_reason": "LOST_UNPERSISTED_OUTPUT"
+      }
+    },
+    {
+      "range_id": "P6-A04-PREFLIGHT-RESOURCE-CONTEXT",
+      "base_exclusive": "ac8267c43b0c84995a58eceac5a54a070e70d608",
+      "head_inclusive": "916d8e5ee7300ea189954f0639afa743c473e356",
+      "expected_commit_count": 9,
+      "actual_commit_count": 9,
+      "plan_mapping": [
+        "preflight",
+        "resource_budget",
+        "safe_context"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "45a74b931cda...45357"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "45a74b931cda...45357"
+      }
+    },
+    {
+      "range_id": "P6-A05-DURABLE-TWO-CYCLE",
+      "base_exclusive": "916d8e5ee7300ea189954f0639afa743c473e356",
+      "head_inclusive": "8fa3bec4736b0dc234e5f359850b187322103af8",
+      "expected_commit_count": 13,
+      "actual_commit_count": 13,
+      "plan_mapping": [
+        "durable_controller",
+        "offline_two_cycle_proof"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "5ebdcc82a048...9f6d"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "5ebdcc82a048...9f6d"
+      }
+    },
+    {
+      "range_id": "P6-A06-OUTPUT-CURRENCY-RECOVERY",
+      "base_exclusive": "8fa3bec4736b0dc234e5f359850b187322103af8",
+      "head_inclusive": "665c51f134a1164a2dc99f8e2a4aca2ca70fe58a",
+      "expected_commit_count": 26,
+      "actual_commit_count": 26,
+      "plan_mapping": [
+        "usage_currency",
+        "crash_recovery",
+        "idempotent_replay"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "618f3cd62883...2619",
+        "original_source": "rollout-2026-07-30T08-03-14 cell 75053"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "618f3cd62883...2619",
+        "original_source": "rollout-2026-07-30T08-03-14 cell 75053"
+      }
+    },
+    {
+      "range_id": "P6-A07-LOGICAL-DEADLINE",
+      "base_exclusive": "665c51f134a1164a2dc99f8e2a4aca2ca70fe58a",
+      "head_inclusive": "1c86888cc21646d2075f1399e6799c7f4b0bcafe",
+      "expected_commit_count": 19,
+      "actual_commit_count": 19,
+      "plan_mapping": [
+        "logical_deadline",
+        "pause_boundary",
+        "lease_recovery"
+      ],
+      "spec_review": {
+        "verdict": "PASS",
+        "artifact_state": "RECOVERY_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2-t1-a07-full-recovery-20260810.result.txt",
+        "artifact_sha256": "72321433aa0cd983126efc5360fad8cb639e8319e0fe4c6392c0fc4415d1853f",
+        "recovery_reason": "LOST_UNPERSISTED_OUTPUT"
+      },
+      "quality_review": {
+        "verdict": "PASS",
+        "artifact_state": "RECOVERY_FILE_RETAINED",
+        "artifact_ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2-t1-a07-full-recovery-20260810.result.txt",
+        "artifact_sha256": "72321433aa0cd983126efc5360fad8cb639e8319e0fe4c6392c0fc4415d1853f",
+        "recovery_reason": "LOST_UNPERSISTED_OUTPUT"
+      }
+    },
+    {
+      "range_id": "P6-A08-FROZEN-LEARNING",
+      "base_exclusive": "1c86888cc21646d2075f1399e6799c7f4b0bcafe",
+      "head_inclusive": "e8d8512b00fb43071bdf40aa51e168b0c5bf0089",
+      "expected_commit_count": 11,
+      "actual_commit_count": 11,
+      "plan_mapping": [
+        "frozen_learning",
+        "next_cycle_context",
+        "scoped_commit"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "be20bc1d2df9...2bac74"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "be20bc1d2df9...2bac74"
+      }
+    },
+    {
+      "range_id": "P6-A09-FINAL-HARDENING",
+      "base_exclusive": "e8d8512b00fb43071bdf40aa51e168b0c5bf0089",
+      "head_inclusive": "8f6b69647d2070fa40ee5c32084d48be1db61564",
+      "expected_commit_count": 8,
+      "actual_commit_count": 8,
+      "plan_mapping": [
+        "fail_closed_hardening",
+        "legacy_quarantine",
+        "concurrency"
+      ],
+      "spec_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "75bf22e60910...474a3",
+        "original_source": "rollout-2026-07-30T08-03-14 cell 75053"
+      },
+      "quality_review": {
+        "artifact_state": "COMPLETED_ARTIFACT_LOST",
+        "recovery_reason": null,
+        "verdict": "PASS",
+        "final_text_sha256_anchor": "75bf22e60910...474a3",
+        "original_source": "rollout-2026-07-30T08-03-14 cell 75053"
+      }
+    }
+  ],
+  "consolidated_range_review_status": {
+    "segment_count": 9,
+    "all_spec_pass": true,
+    "all_quality_pass": true,
+    "disjoint_ranges": true,
+    "duplicate_diff_review_forbidden": true
+  },
+  "mechanical_review_verification": {
+    "method": "exact final-text SHA-256 + SPEC_PASS/QUALITY_PASS verdicts per disjoint range review",
+    "result": "ALL_OK",
+    "verified_at": "2026-08-10T04:26:45+00:00",
+    "rows": [
+      {
+        "segment": "A01",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "c5c13632babc...fe164989",
+        "status": "READY"
+      },
+      {
+        "segment": "A02",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "49c9781386c5...c9094",
+        "status": "READY"
+      },
+      {
+        "segment": "A03",
+        "kind": "SPEC",
+        "sha_anchor": "ada6873158c7...3aca5d",
+        "status": "SPEC_PASS"
+      },
+      {
+        "segment": "A03",
+        "kind": "QUALITY_RECOVERY",
+        "sha256": "a31304be89d4534f0f9dddb71c5c927181746a52f6a61618fcb5dde8bae75c0c",
+        "status": "QUALITY_PASS"
+      },
+      {
+        "segment": "A04",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "45a74b931cda...45357",
+        "status": "READY"
+      },
+      {
+        "segment": "A05",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "5ebdcc82a048...9f6d",
+        "status": "READY"
+      },
+      {
+        "segment": "A06",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "618f3cd62883...2619",
+        "status": "READY"
+      },
+      {
+        "segment": "A07",
+        "kind": "SPEC_AND_QUALITY_RECOVERY",
+        "sha256": "72321433aa0cd983126efc5360fad8cb639e8319e0fe4c6392c0fc4415d1853f",
+        "status": "READY"
+      },
+      {
+        "segment": "A08",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "be20bc1d2df9...2bac74",
+        "status": "READY"
+      },
+      {
+        "segment": "A09",
+        "kind": "SPEC_AND_QUALITY",
+        "sha_anchor": "75bf22e60910...474a3",
+        "status": "READY"
+      }
+    ]
+  },
+  "fresh_validation": {
+    "validated_at": "2026-08-10T04:26:45.063105+00:00",
+    "git_head": "8b60f5102f2e8b72f25d9a9ce1a53af56a9d61a5",
+    "git_tree": "2704ebb2a2e2bd7cb5a6ca1b6ba6932dc0b8d678",
+    "current_source_inventory": "PASS",
+    "ast_boundary": "PASS",
+    "lock_runtime": "PASS",
+    "pip_check": "PASS",
+    "focused_tests": {
+      "result": "PASS",
+      "groups": [
+        80,
+        140,
+        78,
+        273,
+        125,
+        144
+      ],
+      "total_tests_run": 840,
+      "tests_failed": 0
+    },
+    "raw_result_ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2_t1_fresh_validation_20260810.json"
+  },
+  "side_effect_bounds": {
+    "source_or_tests_changed": false,
+    "real_data_or_kbase_read": false,
+    "campaign_or_research_started": false,
+    "scheduler_or_acl_mutated": false,
+    "final_holdout_accessed": false,
+    "authority_writes": "deferred_to_T1_completion_controller"
+  },
+  "verdict": "READY_FOR_T1_COMPLETION"
+}

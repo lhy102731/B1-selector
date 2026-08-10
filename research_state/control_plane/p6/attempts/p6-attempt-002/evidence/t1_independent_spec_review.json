@@ -1,0 +1,76 @@
+{
+  "schema_version": "control_plane.p6r2_t1_independent_spec_review.v1",
+  "review_id": "p6r2-t1-independent-spec-review",
+  "receipt_id": "p6r2-t1-independent-spec-review",
+  "reviewed_at": "2026-08-10T04:40:00+00:00",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T1-CURRENT-SOURCE-ADOPTION",
+  "reviewer": {
+    "actor_id": "independent-p6r2-t1-spec-reviewer",
+    "actor_type": "llm",
+    "invocation_id": "p6r2-t1-independent-spec-review-20260810",
+    "independent_from_task_actor": true
+  },
+  "verdict": "PASS",
+  "decision": "PASS",
+  "counts_as_adoption_spec_approval": true,
+  "candidate": {
+    "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_current_source_manifest.json",
+    "sha256": "47fe08d646d1697227137eeb0b89d1e4d402be7f3beed1444c6a462616a5a87e"
+  },
+  "checks": [
+    {
+      "check_id": "task_spec_and_evidence_binding",
+      "status": "PASS",
+      "detail": "TaskSpec envelope payload_sha256 36580c0e...c4a697 is valid; allowed_files cover all six T1 evidence outputs; baseline b044cbc2...da62b69 and all seven input evidence references hash-match the live repository files."
+    },
+    {
+      "check_id": "source_range_integrity",
+      "status": "PASS",
+      "detail": "Exact 103-commit current-source range d14ead08..8f6b6964 with 34 changed paths; nine disjoint partitions tile the range with no gaps or overlaps; per-partition commit counts and commit-range mappings match the inventory; fresh mechanical validation of commit order, sequence hash, changed-path set and hash all PASS."
+    },
+    {
+      "check_id": "range_review_provenance",
+      "status": "PASS",
+      "detail": "All nine disjoint range reviews (P6-A01..A09) report SPEC_PASS and QUALITY_PASS; A03 quality review is recovered and retained (recovery_reason=LOST_UNPERSISTED_OUTPUT, artifact_sha256 a31304be...75c0c); A07 spec+quality review is recovered and retained (artifact_sha256 72321433...1853f); the manifest records RECOVERY_FILE_RETAINED with exact anchors and mechanical verification result ALL_OK."
+    },
+    {
+      "check_id": "ast_and_source_boundary",
+      "status": "PASS",
+      "detail": "Fresh AST-boundary check compares all 34 changed paths against source head 8f6b6964: 34/34 identical (Python AST hashes equal, non-Python bytes equal), zero mismatches; no source file or test file was changed by the adoption task."
+    },
+    {
+      "check_id": "fresh_validation_facts",
+      "status": "PASS",
+      "detail": "Fresh validation at 2026-08-10T04:26:45Z on HEAD 8b60f510/tree 2704ebb2 reports current_source_inventory PASS, ast_boundary PASS, lock_runtime PASS (Python 3.13.12, psutil 7.2.2, tenacity 8.5.0, lock pins present, pip check clean), and focused tests PASS: 6 groups, 840 tests run, 0 failures."
+    },
+    {
+      "check_id": "phase_and_side_effect_boundaries",
+      "status": "PASS",
+      "detail": "Manifest side_effect_bounds are all false: source/tests unchanged, no real data or KBase reads, no campaign/research started, scheduler/ACL untouched, final holdout not accessed; phase_boundary records p7_authorized=false, campaign_authorized=false, final_holdout_authorized=false, auto_advance=false."
+    },
+    {
+      "check_id": "authority_pre_state",
+      "status": "PASS",
+      "detail": "Authority pre-state is exactly T1-completion ready: authorization CLAIMED, grant ACTIVE, ticket a75a9eb3... ISSUED with zero trusted receipts, one open ticket, no succeeded/failed/in-doubt tickets, pending outbox 0, and no P6 phase-gate closure."
+    }
+  ],
+  "findings": [],
+  "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b",
+  "blockers": [],
+  "advisories": [
+    {
+      "id": "KNOWN_NONBLOCKING_A03_FOLLOWUPS",
+      "detail": "Carry forward from P6-A03 quality review: (1) _drift_reason checks model drift before outcome validity; (2) _reported_cost can build a large intermediate string before bounded-cost rejection; (3) pause v1->v2 event-id migration applies only to pre-deployment history; (4) heartbeat cycle-status gate is EXECUTING-only while recover accepts the wider owned-status set."
+    },
+    {
+      "id": "KNOWN_NONBLOCKING_A07_FOLLOWUPS",
+      "detail": "Carry forward from P6-A07 full review: two non-blocking follow-ups remain for later slices; they do not affect the adoption verdict and are recorded in the retained recovery artifact."
+    },
+    {
+      "id": "AUTHORIZATION_CONTINUITY_NOTE",
+      "detail": "authorizations_v2.expires_at (2026-08-09T01:26:21Z) is enforced at claim time only; the T1 ticket was issued before expiry and completion proceeds under the operator's continuous P0-P8/P9 approval recorded in p6_execution_goal_receipt.json and p6_current_source_recovery_approval_receipt.json."
+    }
+  ]
+}

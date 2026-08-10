@@ -1,0 +1,191 @@
+{
+  "schema_version": "control_plane.p6r2_t1_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T1-CURRENT-SOURCE-ADOPTION",
+  "ticket_id": "a75a9eb31e93e79ad105b2969473b20eac4a2b0e642f76a31693e421ac34d57e",
+  "validated_at": "2026-08-10T04:38:51.015755+00:00",
+  "validation_git_head": "8b60f5102f2e8b72f25d9a9ce1a53af56a9d61a5",
+  "validation_git_tree": "2704ebb2a2e2bd7cb5a6ca1b6ba6932dc0b8d678",
+  "manifest": {
+    "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_current_source_manifest.json",
+    "sha256": "47fe08d646d1697227137eeb0b89d1e4d402be7f3beed1444c6a462616a5a87e"
+  },
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t1-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_independent_spec_review.json",
+      "sha256": "22f231a6d05051d74e550b69ba2c93a212738b005a177080848a2324431da9a0",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t1-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t1_independent_quality_review.json",
+      "sha256": "b34428fe56655c11dfa029841b78997ca6a1edd7fe72f256a28eb999db45b614",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t1-commit-inventory-validation",
+      "result": "PASS",
+      "current_source_inventory": true,
+      "ast_boundary": true,
+      "lock_runtime": true,
+      "pip_check": true
+    },
+    {
+      "receipt_id": "p6r2-t1-focused-current-source-tests",
+      "result": "PASS",
+      "groups": [
+        {
+          "group": 1,
+          "modules": [
+            "tests.test_control_plane_access",
+            "tests.test_control_plane_budget",
+            "tests.test_control_plane_mutation",
+            "tests.test_control_plane_runner_control",
+            "tests.test_promotion_legacy_provenance"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_access tests.test_control_plane_budget tests.test_control_plane_mutation tests.test_control_plane_runner_control tests.test_promotion_legacy_provenance -q",
+          "tests_run": 80,
+          "exit_code": 0,
+          "duration_seconds": 13.57,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 80 tests in 13.405s\n\nOK\n"
+        },
+        {
+          "group": 2,
+          "modules": [
+            "tests.test_control_plane_campaign"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign -q",
+          "tests_run": 140,
+          "exit_code": 0,
+          "duration_seconds": 8.516,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 140 tests in 8.354s\n\nOK\n"
+        },
+        {
+          "group": 3,
+          "modules": [
+            "tests.test_control_plane_campaign_store"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_store -q",
+          "tests_run": 78,
+          "exit_code": 0,
+          "duration_seconds": 3.994,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 78 tests in 3.826s\n\nOK\n"
+        },
+        {
+          "group": 4,
+          "modules": [
+            "tests.test_control_plane_campaign_controller"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_controller -q",
+          "tests_run": 273,
+          "exit_code": 0,
+          "duration_seconds": 130.094,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 273 tests in 129.797s\n\nOK\n"
+        },
+        {
+          "group": 5,
+          "modules": [
+            "tests.test_control_plane_campaign_context",
+            "tests.test_control_plane_campaign_lease",
+            "tests.test_control_plane_campaign_preflight",
+            "tests.test_control_plane_campaign_two_cycle",
+            "tests.test_control_plane_campaign_roster",
+            "tests.test_control_plane_campaign_freeze"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_campaign_context tests.test_control_plane_campaign_lease tests.test_control_plane_campaign_preflight tests.test_control_plane_campaign_two_cycle tests.test_control_plane_campaign_roster tests.test_control_plane_campaign_freeze -q",
+          "tests_run": 125,
+          "exit_code": 0,
+          "duration_seconds": 14.14,
+          "result": "PASS",
+          "tail": "----------------------------------------------------------------------\nRan 125 tests in 13.836s\n\nOK\n"
+        },
+        {
+          "group": 6,
+          "modules": [
+            "tests.test_control_plane_evidence_learning",
+            "tests.test_control_plane_memory"
+          ],
+          "command": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Scripts\\python.exe -B -m unittest tests.test_control_plane_evidence_learning tests.test_control_plane_memory -q",
+          "tests_run": 144,
+          "exit_code": 0,
+          "duration_seconds": 6.871,
+          "result": "PASS",
+          "tail": "chema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\nC:\\Users\\Administrator\\AppData\\Local\\Temp\\codex-p1-t2-locked-runtime\\Lib\\site-packages\\autogen\\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.\n  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], \"__version__\") else None\n----------------------------------------------------------------------\nRan 144 tests in 6.624s\n\nOK\n"
+        }
+      ],
+      "total_tests_run": 840,
+      "tests_failed": 0
+    }
+  ],
+  "deterministic_receipt_prevalidation": {
+    "test": 2,
+    "review": 2,
+    "evidence": 7,
+    "result": "PASS"
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "a75a9eb31e93e79ad105b2969473b20eac4a2b0e642f76a31693e421ac34d57e",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 0,
+    "failed_ticket_count": 0,
+    "in_doubt_ticket_count": 0,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "range_review_provenance": {
+    "segment_count": 9,
+    "all_spec_pass": true,
+    "all_quality_pass": true,
+    "retained_artifacts": [
+      {
+        "range_id": "P6-A03-LIFECYCLE-ROSTER-LEASE",
+        "kind": "QUALITY_RECOVERY",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2-t1-a03-quality-recovery-20260810.json",
+        "sha256": "c8743398ed864701381920e08e166261f8b6639b11ae1cc55422b91265b4e72b"
+      },
+      {
+        "range_id": "P6-A07-LOGICAL-DEADLINE",
+        "kind": "SPEC_AND_QUALITY_RECOVERY",
+        "ref": "C:/Users/Administrator/AppData/Local/Temp/p6r2-t1-a07-full-recovery-20260810.json",
+        "sha256": "479fca0dc6eb51af6a18800168dcd4f3ae95d78794ca70302bf1ff69c35f9136"
+      }
+    ],
+    "lost_artifacts": [
+      "P6-A01",
+      "P6-A02",
+      "P6-A03-SPEC",
+      "P6-A04",
+      "P6-A05",
+      "P6-A06",
+      "P6-A08",
+      "P6-A09"
+    ]
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "source_code_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}
