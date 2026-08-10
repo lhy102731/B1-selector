@@ -19,6 +19,9 @@ from unittest.mock import patch
 from research_automation.control_plane import campaign_controller as campaign_controller_module
 from research_automation.control_plane import campaign_context as campaign_context_module
 from research_automation.control_plane import campaign_freeze as campaign_freeze_module
+from research_automation.control_plane.campaign_metering import (
+    ResourceObservation,
+)
 from research_automation.control_plane.campaign_controller import (
     CampaignBudgetLimits,
     CycleReservationLimits,
@@ -782,6 +785,11 @@ def _completed_evidence_model_call(
     campaign_max_cost: str = "1",
     reservation_max_cost: str = "0.1",
     call_max_cost: str = "0.1",
+    resource_observation: ResourceObservation | None = None,
+    campaign_max_data_exposures: int = 0,
+    campaign_max_disk_growth_bytes: int = 0,
+    reservation_max_data_exposures: int = 0,
+    reservation_max_disk_growth_bytes: int = 0,
 ):
     protocol = _protocol()
     execution_spec = compile_execution_spec(
@@ -816,6 +824,8 @@ def _completed_evidence_model_call(
             max_cost=campaign_max_cost,
             max_wall_time_ms=_SPAWN_CAMPAIGN_WALL_TIME_MS,
             max_tool_attempts=2,
+            max_data_exposures=campaign_max_data_exposures,
+            max_disk_growth_bytes=campaign_max_disk_growth_bytes,
         ),
         identity_provider=_FakeProcessIdentityProvider(owner),
         monotonic_ns=_FakeMonotonicClock(
@@ -836,6 +846,8 @@ def _completed_evidence_model_call(
             max_cost=reservation_max_cost,
             max_wall_time_ms=_SPAWN_CALL_WALL_TIME_MS,
             max_tool_attempts=2,
+            max_data_exposures=reservation_max_data_exposures,
+            max_disk_growth_bytes=reservation_max_disk_growth_bytes,
         ),
     )
     execution = controller.start_execution(
@@ -849,7 +861,10 @@ def _completed_evidence_model_call(
         prompt=prompt,
         limits=replace(_FAKE_CALL_LIMITS, max_cost=call_max_cost),
     )
-    usage = controller.complete_model_execution(execution=execution)
+    usage = controller.complete_model_execution(
+        execution=execution,
+        resource_observation=resource_observation,
+    )
     return controller, execution, member, usage
 
 
@@ -19030,6 +19045,86 @@ class OperationalCampaignControllerTests(unittest.TestCase):
             self.assertEqual(completed.status, CampaignStatus.COMPLETED)
             self.assertEqual(replayed, decision)
             self.assertEqual(replayed.decision, "STOP")
+
+    def test_complete_model_execution_binds_resource_observation(self) -> None:
+        campaign_id = "campaign-controller-resource-observation-bound"
+        observation = ResourceObservation(
+            tool_attempts=1,
+            data_exposures=2,
+            disk_growth_bytes=500,
+        )
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, _member, usage = _completed_evidence_model_call(
+                root,
+                journal,
+                campaign_id=campaign_id,
+                resource_observation=observation,
+                campaign_max_data_exposures=2,
+                campaign_max_disk_growth_bytes=1000,
+                reservation_max_data_exposures=2,
+                reservation_max_disk_growth_bytes=1000,
+            )
+            self.assertEqual(usage.tool_attempts, 1)
+            self.assertEqual(usage.data_exposures, 2)
+            self.assertEqual(usage.disk_growth_bytes, 500)
+            replayed = controller.complete_model_execution(
+                execution=execution,
+                resource_observation=observation,
+            )
+            self.assertEqual(replayed, usage)
+
+    def test_default_resource_observation_is_zero(self) -> None:
+        campaign_id = "campaign-controller-resource-observation-default-zero"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, _member, usage = _completed_evidence_model_call(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            self.assertEqual(usage.tool_attempts, 1)
+            self.assertEqual(usage.data_exposures, 0)
+            self.assertEqual(usage.disk_growth_bytes, 0)
+            replayed = controller.complete_model_execution(execution=execution)
+            self.assertEqual(replayed, usage)
+
+    def test_resource_observation_tool_attempt_mismatch_fails_closed(self) -> None:
+        campaign_id = "campaign-controller-resource-observation-attempt-drift"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, _member, _usage = _completed_evidence_model_call(
+                root,
+                journal,
+                campaign_id=campaign_id,
+            )
+            with self.assertRaisesRegex(
+                CampaignJournalError,
+                "resource observation tool attempts conflict",
+            ):
+                controller.complete_model_execution(
+                    execution=execution,
+                    resource_observation=ResourceObservation(2, 0, 0),
+                )
+
+    def test_resource_observation_over_limit_fails_closed(self) -> None:
+        campaign_id = "campaign-controller-resource-observation-over-limit"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller, execution, _member, _usage = _completed_evidence_model_call(
+                root,
+                journal,
+                campaign_id=campaign_id,
+                campaign_max_data_exposures=1,
+                campaign_max_disk_growth_bytes=100,
+                reservation_max_data_exposures=1,
+                reservation_max_disk_growth_bytes=100,
+            )
+            with self.assertRaisesRegex(
+                BudgetExceededError,
+                "resource observation exceeds its reservation limits",
+            ):
+                controller.complete_model_execution(
+                    execution=execution,
+                    resource_observation=ResourceObservation(1, 2, 0),
+                )
+
 
 
 if __name__ == "__main__":

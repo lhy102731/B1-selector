@@ -1,0 +1,136 @@
+{
+  "schema_version": "control_plane.p6r2_t6_validation_receipt.v1",
+  "plan_version": "V3.4.2-P0R2",
+  "phase": "P6",
+  "attempt_id": "p6-attempt-002",
+  "task_id": "P6R2-T6-RESOURCE-METERING",
+  "ticket_id": "f378b3c2dd87b6cbfb649079be9b8be4877c4e880fb03460560ad9ed09b0d485",
+  "validated_at": "2026-08-10T05:33:03.145970+00:00",
+  "validation_git_head": "39cc8c0368b46be818cfe372f8d6fc1284fc8821",
+  "validation_git_tree": "058a41d4fe6d41249b8207d50adbaf2c18648ef1",
+  "independent_reviews": [
+    {
+      "receipt_id": "p6r2-t6-independent-spec-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t6_independent_spec_review.json",
+      "sha256": "b9ae01a74d616832c9bcf71c3666418c258f7771014a05c98365a57c41f1e51f",
+      "decision": "PASS"
+    },
+    {
+      "receipt_id": "p6r2-t6-independent-quality-review",
+      "ref": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/t6_independent_quality_review.json",
+      "sha256": "b08a51daed0550fc326f0aa48aa3412c71e69b114d9a469c3b1fe23b1a8bc6a9",
+      "decision": "PASS"
+    }
+  ],
+  "test_receipts": [
+    {
+      "receipt_id": "p6r2-t6-focused-tests",
+      "result": "PASS",
+      "tests_run": 285,
+      "tail": "----------------------------------------------------------------------\nRan 285 tests in 142.135s\n\nOK\n"
+    },
+    {
+      "receipt_id": "p6r2-t6-diff-boundary-tests",
+      "result": "PASS",
+      "details": {
+        "expected": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "research_automation/control_plane/campaign_metering.py",
+          "tests/test_control_plane_campaign_controller.py",
+          "tests/test_control_plane_campaign_metering.py"
+        ],
+        "actual": [
+          "CHANGELOG.md",
+          "daily_run.py",
+          "daily_select.py",
+          "docs/b1_v3_results.md",
+          "research_automation/control_plane/campaign_controller.py",
+          "research_automation/control_plane/campaign_metering.py",
+          "tests/test_control_plane_campaign_controller.py",
+          "tests/test_control_plane_campaign_metering.py"
+        ],
+        "unexpected": [],
+        "missing": [],
+        "semantic_checks": {
+          "research_automation/control_plane/campaign_metering.py": {
+            "import subprocess": true,
+            "ResourceObservationLimitError": true,
+            "def validate_resource_observation": true
+          },
+          "research_automation/control_plane/campaign_controller.py": {
+            "from .campaign_metering import": true,
+            "def complete_model_execution": true,
+            "resource_observation": true
+          }
+        },
+        "all_ok": true
+      }
+    }
+  ],
+  "source_boundary": {
+    "expected": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "research_automation/control_plane/campaign_metering.py",
+      "tests/test_control_plane_campaign_controller.py",
+      "tests/test_control_plane_campaign_metering.py"
+    ],
+    "actual": [
+      "CHANGELOG.md",
+      "daily_run.py",
+      "daily_select.py",
+      "docs/b1_v3_results.md",
+      "research_automation/control_plane/campaign_controller.py",
+      "research_automation/control_plane/campaign_metering.py",
+      "tests/test_control_plane_campaign_controller.py",
+      "tests/test_control_plane_campaign_metering.py"
+    ],
+    "unexpected": [],
+    "missing": [],
+    "semantic_checks": {
+      "research_automation/control_plane/campaign_metering.py": {
+        "import subprocess": true,
+        "ResourceObservationLimitError": true,
+        "def validate_resource_observation": true
+      },
+      "research_automation/control_plane/campaign_controller.py": {
+        "from .campaign_metering import": true,
+        "def complete_model_execution": true,
+        "resource_observation": true
+      }
+    },
+    "all_ok": true
+  },
+  "authority_pre_state": {
+    "authorization_state": "CLAIMED",
+    "grant_id": "grant_44627140765b20e805bf7eddf0de1f6c",
+    "grant_state": "ACTIVE",
+    "ticket_id": "f378b3c2dd87b6cbfb649079be9b8be4877c4e880fb03460560ad9ed09b0d485",
+    "ticket_state": "ISSUED",
+    "trusted_receipt_count": 0,
+    "open_ticket_count": 1,
+    "succeeded_ticket_count": 5,
+    "pending_outbox_count": 0,
+    "phase_gate_closed": false
+  },
+  "phase_boundary": {
+    "p7_authorized": false,
+    "campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "auto_advance": false
+  },
+  "environment": {
+    "data_or_kbase_content_read_or_mutated": false,
+    "scheduler_or_acl_mutated": false,
+    "production_source_mutated": false,
+    "daily_update_backtest_research_campaign_or_holdout_started": false
+  },
+  "verdict": "PASS"
+}

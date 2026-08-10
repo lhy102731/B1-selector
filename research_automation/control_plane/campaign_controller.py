@@ -68,6 +68,11 @@ from .campaign_freeze import (
     FrozenCycleInputs,
     OperationalCycleFreezeJournal,
 )
+from .campaign_metering import (
+    ResourceObservation,
+    ResourceObservationLimitError,
+    validate_resource_observation,
+)
 from .campaign_lease import (
     CycleLease,
     CycleLeaseConflictError,
@@ -1692,6 +1697,7 @@ class OperationalCampaignController:
         self,
         *,
         execution: ExecutingOperationalCycle,
+        resource_observation: ResourceObservation | None = None,
     ) -> OperationalExecutionUsage:
         self._journal._authorize()
         cycle_id = self._require_active_execution(execution)
@@ -1727,6 +1733,7 @@ class OperationalCampaignController:
             context=context,
             roster=manifest,
             roster_completion=roster_completion,
+            resource_observation=resource_observation,
         )
 
     def record_model_evidence(
@@ -3502,7 +3509,15 @@ class OperationalCampaignController:
         context: CycleContextReceipt,
         roster: RosterManifest,
         roster_completion: RosterCompletion,
+        resource_observation: ResourceObservation | None,
     ) -> OperationalExecutionUsage:
+        _DEFAULT_RESOURCE_OBSERVATION = object()
+        resolved_observation = (
+            resource_observation
+            if resource_observation is not None
+            else _DEFAULT_RESOURCE_OBSERVATION
+        )
+
         def record(connection) -> OperationalExecutionUsage:
             self._require_active_execution_in_transaction(
                 connection,
@@ -3608,6 +3623,36 @@ class OperationalCampaignController:
                     "execution usage attempt inventory conflicts"
                 )
 
+            if resolved_observation is _DEFAULT_RESOURCE_OBSERVATION:
+                resolved = ResourceObservation(
+                    tool_attempts=len(all_attempts),
+                    data_exposures=0,
+                    disk_growth_bytes=0,
+                )
+            else:
+                resolved = resolved_observation
+            if type(resolved) is not ResourceObservation:
+                raise TypeError(
+                    "resource_observation must be a ResourceObservation"
+                )
+            if resolved.tool_attempts != len(all_attempts):
+                raise CampaignJournalError(
+                    "resource observation tool attempts conflict "
+                    "with usage attempts"
+                )
+            try:
+                validate_resource_observation(
+                    resolved,
+                    max_tool_attempts=self._budget._max_tool_attempts,
+                    max_data_exposures=self._budget._max_data_exposures,
+                    max_disk_growth_bytes=(
+                        self._budget._max_disk_growth_bytes
+                    ),
+                )
+            except ResourceObservationLimitError as error:
+                raise BudgetExceededError(
+                    "resource observation exceeds its reservation limits"
+                ) from error
             identity = self._execution_usage_identity(
                 cycle_id=cycle_id,
                 canonical_currency=self._budget._currency,
@@ -3619,6 +3664,7 @@ class OperationalCampaignController:
                 roster_completion_event_id=roster_completion.event_id,
                 model_calls=model_calls,
                 all_attempts=all_attempts,
+                resource_observation=resolved,
             )
             usage_status = UsageStatus(str(identity["usage_status"]))
             input_tokens = identity["input_tokens"]
@@ -3688,9 +3734,9 @@ class OperationalCampaignController:
                 cost=cost,
                 currency=currency,
                 wall_time_ms=wall_time_ms,
-                tool_attempts=len(all_attempts),
-                data_exposures=0,
-                disk_growth_bytes=0,
+                tool_attempts=resolved.tool_attempts,
+                data_exposures=resolved.data_exposures,
+                disk_growth_bytes=resolved.disk_growth_bytes,
                 model_calls=model_calls,
                 roster_completion=roster_completion,
                 manifest_sha256=manifest_sha256,
@@ -3710,6 +3756,7 @@ class OperationalCampaignController:
         roster_completion_event_id: str,
         model_calls: tuple[ExecutedOperationalModelCall, ...],
         all_attempts: tuple[RecordedModelAttempt, ...],
+        resource_observation: ResourceObservation,
     ) -> dict[str, object]:
         def sum_tokens(field_name: str) -> int | None:
             values = [
@@ -3786,9 +3833,9 @@ class OperationalCampaignController:
             "cost": cost,
             "currency": canonical_currency,
             "wall_time_ms": wall_time_ms,
-            "tool_attempts": len(all_attempts),
-            "data_exposures": 0,
-            "disk_growth_bytes": 0,
+            "tool_attempts": resource_observation.tool_attempts,
+            "data_exposures": resource_observation.data_exposures,
+            "disk_growth_bytes": resource_observation.disk_growth_bytes,
         }
 
     def _model_call_for_member_in_transaction(
@@ -4132,6 +4179,11 @@ class OperationalCampaignController:
             raise CampaignJournalError(
                 "frozen operational execution usage conflicts"
             )
+        resource_observation = ResourceObservation(
+            tool_attempts=payload["tool_attempts"],
+            data_exposures=payload["data_exposures"],
+            disk_growth_bytes=payload["disk_growth_bytes"],
+        )
         expected_identity = self._execution_usage_identity(
             cycle_id=cycle_id,
             canonical_currency=self._budget._currency,
@@ -4141,6 +4193,7 @@ class OperationalCampaignController:
             roster_completion_event_id=roster_history.terminal_event_id,
             model_calls=model_calls,
             all_attempts=all_attempts,
+            resource_observation=resource_observation,
         )
         expected_payload = {
             **expected_identity,
