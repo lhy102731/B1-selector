@@ -1,0 +1,173 @@
+{
+  "computed": {
+    "payload_sha256": "8df3643a0d4b154663fa3718eae8adbe38a28ab4bb51ead778b1d6e793210996"
+  },
+  "payload": {
+    "attempt_id": "p7-attempt-001",
+    "identity_binding": {
+      "instruction_policy_hash": "5240492cecbbbda29afca4cb1ce2a6dd482218e69efbe8cbee23b5287f81dbe5",
+      "plan_hash": "10341b366eb99ace250d8f49f9662da295a90f35369eb4722d0d9b59a6f91972",
+      "plan_version": "V3.4.2-P0R2",
+      "scope_hash": "ba7e77329d448f309a4f1b17135092e1638f6ddf564b5f1f6a593cfb6cb0d470"
+    },
+    "phase": "P7",
+    "plan_version": "V3.4.2-P0R2",
+    "schema_version": "control_plane.task_spec_payload.v1",
+    "task": {
+      "allowed_files": [
+        "research_automation/control_plane/operations.py",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_completion_receipt.json",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_independent_quality_review.json",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_independent_spec_review.json",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_task_report.json",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_ticket_receipt.json",
+        "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t5_validation_receipt.json",
+        "tests/test_control_plane_ops_cli.py"
+      ],
+      "baseline_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/implementation_baseline.json",
+      "baseline_sha256": "95e40b1d84cc82852200dc8c496c886b98c7d943a6ea5fa4bcf44e956be1f2eb",
+      "dependencies": [
+        "P7R2-T4-OPS-CLI-READONLY"
+      ],
+      "forbidden_files": [
+        ".env",
+        "CHANGELOG.md",
+        "D:/KBase/",
+        "ag2_research/",
+        "artifacts/",
+        "config/",
+        "daily_run.py",
+        "daily_select.py",
+        "data/",
+        "data_ths/",
+        "docs/b1_v3_results.md",
+        "docs/superpowers/plans/2026-07-26-v342-07-operations.md",
+        "models/",
+        "outputs/",
+        "requirements/control-plane.in",
+        "requirements/control-plane.lock",
+        "research_automation/control_plane/access.py",
+        "research_automation/control_plane/artifact_semantics.py",
+        "research_automation/control_plane/budget.py",
+        "research_automation/control_plane/campaign.py",
+        "research_automation/control_plane/campaign_adapters.py",
+        "research_automation/control_plane/campaign_context.py",
+        "research_automation/control_plane/campaign_controller.py",
+        "research_automation/control_plane/campaign_freeze.py",
+        "research_automation/control_plane/campaign_invocation_binding.py",
+        "research_automation/control_plane/campaign_lease.py",
+        "research_automation/control_plane/campaign_lifecycle.py",
+        "research_automation/control_plane/campaign_metering.py",
+        "research_automation/control_plane/campaign_preflight.py",
+        "research_automation/control_plane/campaign_roster.py",
+        "research_automation/control_plane/campaign_store.py",
+        "research_automation/control_plane/cli.py",
+        "research_automation/control_plane/cli_registry.py",
+        "research_automation/control_plane/contracts.py",
+        "research_automation/control_plane/entry_guard.py",
+        "research_automation/control_plane/evidence_learning.py",
+        "research_automation/control_plane/gates.py",
+        "research_automation/control_plane/inventory.py",
+        "research_automation/control_plane/mutation.py",
+        "research_automation/control_plane/runner_control.py",
+        "research_automation/control_plane/sqlite_uow.py",
+        "research_automation/control_plane/stores.py",
+        "research_automation/control_plane/task_reports.py",
+        "research_automation/promotion.py",
+        "research_state/control_plane/authority/",
+        "research_state/control_plane/inventories/",
+        "research_state/control_plane/operational/",
+        "research_state/control_plane/policies/",
+        "run_research_cycle.py",
+        "strategy/",
+        "tests/test_control_plane_access.py",
+        "tests/test_control_plane_budget.py",
+        "tests/test_control_plane_campaign.py",
+        "tests/test_control_plane_campaign_adapters.py",
+        "tests/test_control_plane_campaign_context.py",
+        "tests/test_control_plane_campaign_controller.py",
+        "tests/test_control_plane_campaign_freeze.py",
+        "tests/test_control_plane_campaign_invocation_binding.py",
+        "tests/test_control_plane_campaign_lease.py",
+        "tests/test_control_plane_campaign_metering.py",
+        "tests/test_control_plane_campaign_preflight.py",
+        "tests/test_control_plane_campaign_roster.py",
+        "tests/test_control_plane_campaign_store.py",
+        "tests/test_control_plane_campaign_two_cycle.py",
+        "tests/test_control_plane_entry_guard.py",
+        "tests/test_control_plane_evidence_learning.py",
+        "tests/test_control_plane_mutation.py",
+        "tests/test_control_plane_runner_control.py",
+        "tests/test_promotion_legacy_provenance.py"
+      ],
+      "idempotency_key": "p7-attempt-001-t5-ops-audit-bundle",
+      "input_evidence_refs": [
+        {
+          "evidence_id": "p7r2-t5-approval",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/implementation_authorization_receipt.json",
+          "evidence_sha256": "5dc47a0ffcba53ff0fe25217b96a3a16fd5a2fbcbb0bde7d3d8ae1acb6bff26c",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-scope",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/scope_manifest.json",
+          "evidence_sha256": "dc5cd1c19d3c53d4c2147af2825b8959d8337c4b69f98054a0036d2ee82dc621",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-baseline",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/implementation_baseline.json",
+          "evidence_sha256": "95e40b1d84cc82852200dc8c496c886b98c7d943a6ea5fa4bcf44e956be1f2eb",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-t1-completion",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t1_completion_receipt.json",
+          "evidence_sha256": "62889eda599b1f464e083e6691e7201d0a1b0570b8ed1bb31b0e378267e84788",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-t2-completion",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t2_completion_receipt.json",
+          "evidence_sha256": "ec16c78e27e4286404a6323095face20cd211b58fb1d6d3860409b3f644a0adb",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-t3-completion",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t3_completion_receipt.json",
+          "evidence_sha256": "b9b523caba655fcd4cbb777b52dff1b6851ae39ace4e84dd3e85dabc34e28a15",
+          "status": "VERIFIED"
+        },
+        {
+          "evidence_id": "p7r2-t5-t4-completion",
+          "evidence_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/t4_completion_receipt.json",
+          "evidence_sha256": "6ae497e4228887cfbeab5d4a53bcd8eaf75798a2fdfdf137e25659d050714285",
+          "status": "VERIFIED"
+        }
+      ],
+      "objective": "Implement and verify a deterministic audit bundle manifest with hashes and references that excludes secrets, raw labels, Final Holdout, and unrelated large files; exercised on synthetic fixture directories only. No real data, authority, operational, policy, inventory, research, or KBase content is read or mutated.",
+      "requirements": {
+        "required_evidence_ids": [
+          "p7r2-t5-approval",
+          "p7r2-t5-scope",
+          "p7r2-t5-baseline",
+          "p7r2-t5-t1-completion",
+          "p7r2-t5-t2-completion",
+          "p7r2-t5-t3-completion",
+          "p7r2-t5-t4-completion"
+        ],
+        "required_review_receipt_ids": [
+          "p7r2-t5-independent-spec-review",
+          "p7r2-t5-independent-quality-review"
+        ],
+        "required_test_receipt_ids": [
+          "p7r2-t5-focused-audit-bundle-tests",
+          "p7r2-t5-diff-boundary-tests"
+        ]
+      },
+      "task_id": "P7R2-T5-OPS-AUDIT-BUNDLE",
+      "task_spec_ref": "research_state/control_plane/p7/attempts/p7-attempt-001/task_specs/p7-attempt-001-t5-ops-audit-bundle.json"
+    }
+  },
+  "schema_version": "control_plane.task_spec_envelope.v1"
+}
