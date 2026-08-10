@@ -15,11 +15,26 @@ class DryRunContext:
 
 
 def build_dry_run_context(model: str, cycle_index: int = 1) -> DryRunContext:
-    raise NotImplementedError("C1 context slice pending implementation")
+    prompt = (
+        "Control-plane C1 dry run cycle "
+        + str(cycle_index)
+        + " for model "
+        + model
+        + ". Reply with exactly: DRY_RUN_OK"
+    )
+    return DryRunContext(
+        model=model,
+        cycle_index=cycle_index,
+        prompt=prompt,
+        prompt_chars=len(prompt),
+        prompt_tokens_estimate=estimate_tokens(prompt),
+    )
 
 
 def estimate_tokens(text: str) -> int:
-    raise NotImplementedError("C1 context slice pending implementation")
+    if not text:
+        raise ValueError("text must be non-empty")
+    return max(1, (len(text) + 3) // 4)
 
 
 def verify_context(
@@ -28,8 +43,19 @@ def verify_context(
     expected_model: str,
     expected_cycle: int = 1,
 ) -> bool:
-    raise NotImplementedError("C1 context slice pending implementation")
+    return (
+        context.model == expected_model
+        and context.cycle_index == expected_cycle
+        and is_data_free_prompt(context.prompt)
+        and estimate_tokens(context.prompt) == context.prompt_tokens_estimate
+    )
 
 
 def is_data_free_prompt(prompt: str) -> bool:
-    raise NotImplementedError("C1 context slice pending implementation")
+    if not prompt:
+        return False
+    if "DRY_RUN" not in prompt:
+        return False
+    forbidden = ("kbase", ".csv", ".parquet", "strategy", "stock", "data/")
+    lowered = prompt.lower()
+    return not any(substring in lowered for substring in forbidden)
