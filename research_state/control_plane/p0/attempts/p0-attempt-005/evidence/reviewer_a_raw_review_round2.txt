@@ -1,0 +1,19 @@
+BLOCKER: CR-001: Delta 1 violates CR contract — activation_coordinator.py reads envelope manifest via “committed reader” but accepts out-of-scope working-tree delta rejection as sufficient; CR requires absolute rejection of ANY uncommitted blob, yet git_evidence.py only rejects uncommitted paths when explicitly read, not globally fencing the repository state at activation time.
+BLOCKER: CR-002: Delta 2 stores nonce_fingerprint in final_eval_authorizations_v1 UNIQUE constraint — CR contract explicitly prohibits raw nonce/secret/path storage, but fingerprint is derived from root_secret + nonce; while not raw, the UNIQUE on fingerprint creates a searchable derived secret breadcrumb violating the “no secret leakage” clause.
+MUST_FIX: CR-003: Delta 3 migration anchor — original event rows never rewritten, but if access event table has a sequence gap or out-of-order timestamp in historical data, the canonical chain build silently assigns row order; CR requires verifiable sequence-order integrity, not implicit reordering.
+OK: CR-004: Delta 1 single-process coordinator with forward-only phase machine and crash matrix (pre-BEGIN zero change, post-BEGIN ticket IN_PROGRESS, post-fast-forward no reset, post-FINISH idempotent outbox) matches CR crash semantics precisely.
+OK: CR-005: Delta 1 v1 bootstrap vs migration separation — bootstrap rejects authority v2 stores (14/14 coordinator tests), migration requires terminal source ticket, single parent process, no effect overlap — compliant.
+OK: CR-006: Delta 1 no shell concatenation — fixed argv vectors and committed-blob-only reader with traversal/OID/NUL rejection — clean implementation of CR contract.
+OK: CR-007: Delta 2 versioned CAS transitions — begin (ISSUED->IN_PROGRESS + AUTHORIZED->CONSUMED) in single writer transaction, advance rejects skip/backward/wrong-version — matches CR “versioned CAS” clause.
+OK: CR-008: Delta 2 recovery lease bounds — FinalEvalRecoveryLease independent from maintenance TaskExecutionLease, no OPEN_HOLDOUT, only close/terminal/outbox — compliant with CR bounds.
+OK: CR-009: Delta 3 WAL/NORMAL per connection — require_wal flag, bounded busy timeout, journal_mode verification before BEGIN on every v4 connection — compliant.
+OK: CR-010: Delta 3 derived tables non-authorizing — no ticket/secret/lease/grant columns in ops_projection_checkpoint, ops_campaign_projection, ops_backfill_checkpoint, ops_retention_metadata — compliant.
+OK: CR-011: Delta 3 sealed integrity chain — same-transaction anchor append, recompute fail-closed on missing/count/row-hash/timestamp/root mismatch — compliant.
+OK: CR-012: Delta 3 atomic migration — WAL switch verified outside transaction, one BEGIN IMMEDIATE creates schema + chain, rollback on anchor failure — compliant.
+OK: CR-013: Delta 3 narrow migration coordinator — read-only quiescence, no arbitrary SQL/target/process termination, SQLite-backup-API only, validated publish — compliant.
+OK: CR-014: Test coverage — 317 focused OK, 1593 discovery OK, coordinator 14/14 crash matrix, secret scan zero hits, reviewer B fix (v1 bootstrap on v2) covered — sufficient for acceptance.
+OK: CR-015: No scope violation — httpx pin is documented deviation for ag2/mootdx conflict, not a CR file change; production locks untouched; no set_param/reset/rollback, no user files — compliant.
+OK: CR-016: No degradation — samples not reduced, full 1593 discovery in fresh venv, no CPU fallback, user approval documented — compliant.
+
+VERDICT: FAIL
+RATIONALE: Two blockers — Delta 1 does not globally fence uncommitted repository state at activation (only rejects when read), and Delta 2’s UNIQUE on nonce_fingerprint constitutes derived secret storage; both violate explicit CR clauses.

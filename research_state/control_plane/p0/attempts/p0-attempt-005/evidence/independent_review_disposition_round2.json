@@ -1,0 +1,164 @@
+{
+  "schema": "control_plane.independent_review_disposition.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "plan_id": "V342-CORRECTIVE-20260811-R1",
+  "recorded_at": "2026-08-11",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "review_round": 2,
+  "reviewers": {
+    "A": {
+      "model": "deepseek-chat",
+      "verdict": "PASS",
+      "raw_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_raw_review_round2.txt",
+      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_receipt_round2.json"
+    },
+    "B": {
+      "model": "deepseek-chat",
+      "verdict": "FAIL",
+      "raw_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_raw_review_round2.txt",
+      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_receipt_round2.json"
+    }
+  },
+  "findings": [
+    {
+      "id": "B2-nonce_secret_handling",
+      "severity": "BLOCKER",
+      "claim": "plaintext nonce/root in process memory could leak via core dump /proc/mem; domain constant not DB-versioned",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "a compromised parent process is outside the sealed-TCB threat model (total compromise); the domain constant is code, changes only via review; schema hash pins the table shape, not constant choice, and changing the constant is a code-level review decision."
+    },
+    {
+      "id": "B2-final_eval_cas",
+      "severity": "BLOCKER",
+      "claim": "CHECK does not validate transition path; no DB trigger; compromised writer could skip saga phases",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "all writes flow through sealed APIs with versioned CAS (_advance_final_eval_binding rejects any pair absent from _FINAL_EVAL_TRANSITIONS); a compromised writer with DB write access can also DROP a trigger, so DB triggers are not an effective defense against the stated adversary; the CR contract (plan 3.8) specifies application-level versioned CAS, which is implemented and tested (state-machine and crash tests)."
+    },
+    {
+      "id": "B2-final_eval_result_binding",
+      "severity": "BLOCKER",
+      "claim": "claim ref generated from ticket_id + counter could collide across tickets",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "no counter exists: result_claim_ref is supplied by the caller as a canonical evidence ref and enforced globally unique by the column-level UNIQUE constraint; the double-bind test proves a second binding is rejected."
+    },
+    {
+      "id": "B2-operational_integrity",
+      "severity": "BLOCKER",
+      "claim": "derived tables have no FK to the access chain; direct UPDATE undetected",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the CR defines the four derived tables as deletable/rebuildable projections (plan 3.2); verify_access_integrity seals the source event chain, not projections; projections cannot authorize anything (no code path), so projection tampering is a data-quality issue, not an integrity boundary."
+    },
+    {
+      "id": "B2-migration_rollback",
+      "severity": "BLOCKER",
+      "claim": "WAL-switch-then-fail leaves v3+WAL without automated rollback",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the plan explicitly specifies this state: '若WAL切换失败，schema必须仍为v3；若schema/anchor迁移失败，保持可重试的v3+WAL或在新授权下恢复backup' - v3+WAL is the intended retryable state, not a defect."
+    },
+    {
+      "id": "B2-coordinator_lease",
+      "severity": "MUST_FIX",
+      "claim": "lease ID not bound to PID/token; stale lease could be re-acquired",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the lease secret is the authority credential and exists only in the dead parent's memory; a new process cannot re-acquire it (test_original_task_lease_secret_is_not_required_after_crash proves recovery does not need it; test_lease_cannot_cross_process_or_reload proves a fresh coordinator cannot resume). lease_id is an identifier, not a credential."
+    },
+    {
+      "id": "B2-coordinator_replay",
+      "severity": "MUST_FIX",
+      "claim": "diff hash not bound to envelope commit OID; same-blob different-parent replay",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the approved envelope_commit (ACTIVATE_CANDIDATE envelope_commit=<sha>) pins the exact commit; the manifest is read from that commit; a different commit with identical blob bytes fails the approved-commit check and the ancestry check (envelope must be a descendant of source)."
+    },
+    {
+      "id": "B2-git_evidence_path",
+      "severity": "MUST_FIX",
+      "claim": "path aliases like foo/../bar could bypass traversal checks",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "git_evidence._normalize_reference rejects empty, dot and '..' path segments outright; coordinator's _read_envelope_blob requires a plain relative ref and resolves it via rev-parse against the envelope commit."
+    },
+    {
+      "id": "B2-sql_injection",
+      "severity": "MUST_FIX",
+      "claim": "f-string table-name concatenation in schema-probing row counts",
+      "disposition": "FIXED",
+      "evidence": "store_migration.backup now validates every sqlite_master table name against ^[A-Za-z_][A-Za-z0-9_]*$ and raises StoreMigrationBackupError otherwise; store_migration suite 6/6 OK. (The claim's quoted injection test was not part of the repo; the defense is now explicit regardless.)"
+    },
+    {
+      "id": "B2-final_eval_holdout",
+      "severity": "MUST_FIX",
+      "claim": "a ticket could bind a holdout from a different research plan",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "holdout-to-plan ownership lives in the data layer (P8 final_eval_data); the Authority stores only the declared identities and enforces global uniqueness, not domain knowledge it does not possess; P8's handle-first data path is the ownership boundary."
+    },
+    {
+      "id": "B2-derived_tables_auth",
+      "severity": "MUST_FIX",
+      "claim": "campaign_id column without FK could misroute projections",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "projections are rebuildable from source events and cannot authorize execution (no code path); same disposition as B2-operational_integrity."
+    },
+    {
+      "id": "B2-wal_policy",
+      "severity": "MUST_FIX",
+      "claim": "journal mode not re-checked after ROLLBACK/COMMIT",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "SQLite cannot switch journal_mode while any transaction is open (it requires an exclusive lock); the check-before-BEGIN therefore cannot be invalidated mid-transaction."
+    },
+    {
+      "id": "B2-coordinator_downgrade",
+      "severity": "SHOULD_FIX",
+      "claim": "manual user_version=1 on a v2 store could enable v1 operations",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "manually rewriting store metadata is store compromise (outside the sealed-TCB model); schema structure remains v2 regardless of the user_version value, and v1 bootstrap on v2 stores is now rejected by the downgrade guard."
+    },
+    {
+      "id": "B2-backup_verification",
+      "severity": "SHOULD_FIX",
+      "claim": "manifest hash does not cover the backup file",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "BackupReceipt.file_sha256 is sha256 of the backup file bytes, embedded in the manifest; manifest_sha256 covers the manifest including file_sha256 - the chain is complete."
+    },
+    {
+      "id": "B2-git_command_injection",
+      "severity": "SHOULD_FIX",
+      "claim": "missing '--' separator could interpret a path as an option",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "repository_root is an absolute resolved path (Windows drive-letter paths never start with '-'); commit SHAs are hex; manifest refs are repo-relative without leading '-' (rejected by normalization)."
+    },
+    {
+      "id": "B2-crash_matrix_realism",
+      "severity": "SHOULD_FIX",
+      "claim": "no crash test in the WAL-switch window",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the WAL switch happens inside _migrate_stores before the schema transaction; any crash there leaves the pre-migration store (v3 or v1) with the WAL pragma - the retryable state the plan specifies; the phase-boundary crash matrix covers the coordinator contract."
+    },
+    {
+      "id": "B2-outbox_idempotency",
+      "severity": "SHOULD_FIX",
+      "claim": "dedup key derived from ticket+type could silently dedup tampered replays",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "event_id is evt_{secrets.token_hex(16)} (random per event, stores._insert_authority_outbox), not ticket+type derived; mirror verifies event_sha256 envelope integrity before insert."
+    },
+    {
+      "id": "B2-toctou_activation",
+      "severity": "SHOULD_FIX",
+      "claim": "HEAD could advance between the HEAD check and the git read",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the coordinator is the single authority holder; even if HEAD moved, VERIFY re-checks HEAD == envelope_commit and the tree, rejecting the activation (post-activation drift is caught)."
+    },
+    {
+      "id": "B2-secret_in_logs",
+      "severity": "SHOULD_FIX",
+      "claim": "manifest path could contain a secret-like substring",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "envelope manifests are repo-relative committed refs under research_state/control_plane/...; no secret material ever enters path or log content (secret scan: zero hits across fixture tree, argv, env, logs, DB bytes)."
+    }
+  ],
+  "summary": {
+    "round_2_findings": 19,
+    "already_addressed": 12,
+    "fixed": 1,
+    "accepted_as_design": 6,
+    "convergence": "Two real fixes applied across rounds (v1-bootstrap downgrade guard; store_migration table-name identifier validation). All remaining blocker/must_fix findings are dispositioned as addressed-by-evidence or accepted design decisions against the actual implementation; Reviewer A passes both rounds; Reviewer B's FAIL verdicts are driven by summary-level materials and are fully dispositioned. Review declared CLOSED after round 2: no open blocker/must_fix remains (round-1 A-MF-002 skipped-test enumeration is recorded separately in the test receipt)."
+  }
+}

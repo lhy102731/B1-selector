@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
@@ -214,9 +215,14 @@ class StoreMigrationCoordinator:
                 "SELECT name FROM sqlite_master WHERE type = 'table' "
                 "AND name NOT LIKE 'sqlite_%' ORDER BY name"
             ).fetchall():
-                row_counts[str(table)] = int(
+                table_name = str(table)
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table_name) is None:
+                    raise StoreMigrationBackupError(
+                        "store contains a non-identifier table name"
+                    )
+                row_counts[table_name] = int(
                     connection.execute(
-                        f"SELECT COUNT(*) FROM {table}"
+                        f"SELECT COUNT(*) FROM {table_name}"
                     ).fetchone()[0]
                 )
         finally:
