@@ -975,6 +975,37 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 scheduler_record["status"] = "VERIFIED"
                 draft["authority_snapshot"] = snapshot_dict
                 report = PhaseGateBuilder(clock=lambda: now).build(draft)
+                # P0-CR-008: gate evidence is read from committed blobs. Ensure a
+                # git repo exists (idempotent for the git_source_identity=True path)
+                # and commit the evidence files so the reader can resolve them.
+                subprocess.run(
+                    ["git", "init", "--quiet"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "add", "research_state"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Control Plane Tests",
+                        "-c",
+                        "user.email=control-plane@example.invalid",
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        "record gate evidence",
+                    ],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
                 verifier = PhaseGateVerifier(
                     authority_reader=reader,
                     repository_root=root,
@@ -1156,7 +1187,54 @@ class PhaseGateBuilderTests(unittest.TestCase):
             / "gate-second.json"
         )
         path.write_text(canonical_json(report), encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "research_state/control_plane/p0r2/reports"],
+            cwd=fixture.root,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Control Plane Tests",
+                "-c",
+                "user.email=control-plane@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record second task report",
+            ],
+            cwd=fixture.root,
+            check=True,
+            capture_output=True,
+        )
         return path
+
+    def _commit_gate_report(self, fixture: _TrustedGateFixture, filename: str) -> None:
+        """Commit a gate report written into the fixture repo root."""
+        subprocess.run(
+            ["git", "add", filename],
+            cwd=fixture.root,
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Control Plane Tests",
+                "-c",
+                "user.email=control-plane@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "record gate report",
+            ],
+            cwd=fixture.root,
+            check=True,
+            capture_output=True,
+        )
 
     def test_verifier_requeries_the_authority_snapshot(self) -> None:
         with self._trusted_gate_fixture() as fixture:
@@ -1336,10 +1414,44 @@ class PhaseGateBuilderTests(unittest.TestCase):
             forged_draft["objective"] = "Forged gate task objective."
             forged_task_report = build_task_report_v2(forged_draft)
             forged_bytes = canonical_json(forged_task_report).encode("utf-8")
-            fixture.task_report_path.write_bytes(forged_bytes)
+            forged_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "reports"
+                / "gate-forged.json"
+            )
+            forged_path.parent.mkdir(parents=True, exist_ok=True)
+            forged_path.write_bytes(forged_bytes)
+            subprocess.run(
+                ["git", "add", "research_state/control_plane/p0r2/reports"],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Control Plane Tests",
+                    "-c",
+                    "user.email=control-plane@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "record forged task report",
+                ],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
 
             gate_draft = dict(fixture.draft)
             task_report_ref = dict(fixture.draft["task_reports"][0])
+            task_report_ref["report_ref"] = (
+                "research_state/control_plane/p0r2/reports/gate-forged.json"
+            )
             task_report_ref["report_sha256"] = hashlib.sha256(
                 forged_bytes
             ).hexdigest()
@@ -1465,15 +1577,45 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_task_report_must_bind_the_same_implementation_baseline(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            baseline_bytes = fixture.artifact_paths[
-                "implementation_baseline"
-            ].read_bytes() + b"\n"
+            original = json.loads(
+                fixture.artifact_paths["implementation_baseline"].read_bytes()
+            )
+            member = dict(original["baseline"])
+            member["git_head"] = "f" * 40
+            copied_payload = dict(original)
+            copied_payload["baseline"] = member
+            copied_payload["baseline_payload_sha256"] = hashlib.sha256(
+                canonical_json(member).encode("utf-8")
+            ).hexdigest()
+            baseline_bytes = canonical_json(copied_payload).encode("utf-8")
             copied_ref = (
                 "research_state/control_plane/p0r2/"
                 "implementation_baseline_copy.json"
             )
             copied_path = fixture.root / copied_ref
             copied_path.write_bytes(baseline_bytes)
+            subprocess.run(
+                ["git", "add", "research_state/control_plane/p0r2"],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Control Plane Tests",
+                    "-c",
+                    "user.email=control-plane@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "record copied implementation baseline",
+                ],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
             draft = dict(fixture.draft)
             draft["implementation_baseline"] = {
                 "ref": copied_ref,
@@ -1609,11 +1751,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_verifies_a_passing_gate_read_only(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -1870,16 +2022,46 @@ class PhaseGateBuilderTests(unittest.TestCase):
         ):
             with self.subTest(size=size):
                 with self._trusted_gate_fixture() as fixture:
-                    artifact_path = fixture.artifact_paths[
-                        "scheduler_inventory"
-                    ]
-                    scheduler_payload = json.loads(
-                        artifact_path.read_text(encoding="utf-8")
+                    original_scheduler = json.loads(
+                        fixture.artifact_paths[
+                            "scheduler_inventory"
+                        ].read_text(encoding="utf-8")
                     )
+                    scheduler_payload = dict(original_scheduler)
                     scheduler_payload["unresolved_risk"] = "x" * size
-                    artifact_path.write_bytes(
-                        canonical_json(scheduler_payload).encode("utf-8")
+                    sized_bytes = canonical_json(scheduler_payload).encode("utf-8")
+                    sized_ref = (
+                        "research_state/control_plane/p0r2/"
+                        f"scheduler_sized_{size}.json"
                     )
+                    sized_path = fixture.root / sized_ref
+                    sized_path.write_bytes(sized_bytes)
+                    subprocess.run(
+                        ["git", "add", "research_state/control_plane/p0r2"],
+                        cwd=fixture.root,
+                        check=True,
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        [
+                            "git",
+                            "-c",
+                            "user.name=Control Plane Tests",
+                            "-c",
+                            "user.email=control-plane@example.invalid",
+                            "commit",
+                            "--quiet",
+                            "-m",
+                            "record sized scheduler inventory",
+                        ],
+                        cwd=fixture.root,
+                        check=True,
+                        capture_output=True,
+                    )
+                    fixture.draft["scheduler_inventory"] = {
+                        "ref": sized_ref,
+                        "sha256": hashlib.sha256(sized_bytes).hexdigest(),
+                    }
                     output_path = fixture.root / f"built-{size}.json"
                     stdout = StringIO()
                     stderr = StringIO()
@@ -1989,11 +2171,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_reports_identity_mismatch_with_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2022,11 +2214,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
     def test_cli_returns_exit_code_two_for_a_verified_computed_fail(self) -> None:
         with self._trusted_gate_fixture(activate_policy=False) as fixture:
             fail_report = fixture.report
-            report_path = fixture.root / "gate-fail-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-fail-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fail_report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-fail-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2054,8 +2256,18 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_returns_exit_code_three_for_corrupt_gate_evidence(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "corrupt-gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "corrupt-gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_bytes(b"not-json")
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/corrupt-gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2083,11 +2295,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_returns_exit_code_five_for_unavailable_authority_store(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             (fixture.root / "authority.sqlite3").unlink()
             stdout = StringIO()
             stderr = StringIO()
@@ -2115,11 +2337,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_closes_a_gate_with_capability_from_stdin(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2149,11 +2381,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
 
     def test_cli_maps_invalid_close_capability_to_exit_code_four(self) -> None:
         with self._trusted_gate_fixture() as fixture:
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2192,11 +2434,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     tzinfo=timezone.utc,
                 )
             ).build(fixture.draft)
-            report_path = fixture.root / "different-gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "different-gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(different_report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/different-gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
 
@@ -2232,11 +2484,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     self.requested_size = size
                     return super().read(size)
 
-            report_path = fixture.root / "gate-report.json"
+            report_path = (
+                fixture.root
+                / "research_state"
+                / "control_plane"
+                / "p0r2"
+                / "gates"
+                / "gate-report.json"
+            )
+            report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(
                 canonical_json(fixture.report),
                 encoding="utf-8",
             )
+
+            self._commit_gate_report(fixture, 'research_state/control_plane/p0r2/gates/gate-report.json')
             stdout = StringIO()
             stderr = StringIO()
             capability_stdin = TrackingStdin("x" * 10_000)

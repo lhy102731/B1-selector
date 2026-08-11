@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from .contracts import Phase, canonical_json
+from .git_evidence import GitEvidenceError, GitBlobReader
 from .artifact_semantics import (
     ArtifactBindingError,
     ArtifactSemanticError,
@@ -712,28 +713,18 @@ class PhaseGateVerifier:
         max_bytes: int,
         evidence_name: str,
     ) -> bytes:
-        candidate = self._repository_root.joinpath(*reference.split("/"))
+        """Read canonical evidence from committed regular Git blobs only.
+
+        A dirty, uncommitted, symlinked or traversing reference fails closed.
+        """
         try:
-            resolved = candidate.resolve(strict=True)
-            resolved.relative_to(self._repository_root)
-            if not resolved.is_file():
-                raise GateEvidenceError(
-                    f"{evidence_name} reference is not a file"
-                )
-            with resolved.open("rb") as stream:
-                raw = stream.read(max_bytes + 1)
-        except GateEvidenceError:
-            raise
-        except (OSError, ValueError) as error:
-            raise GateEvidenceError(
-                f"{evidence_name} reference is unavailable or outside "
-                "the repository"
-            ) from error
-        if len(raw) > max_bytes:
-            raise GateEvidenceError(
-                f"{evidence_name} evidence exceeds its size limit"
-            )
-        return raw
+            return GitBlobReader(self._repository_root).read(
+                reference,
+                max_bytes=max_bytes,
+                evidence_name=evidence_name,
+            ).raw
+        except GitEvidenceError as error:
+            raise GateEvidenceError(str(error)) from error
 
     def _verify_task_report_files(
         self,

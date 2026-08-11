@@ -31,6 +31,7 @@ from .gates import (
     _project_task_report_evidence,
     parse_gate_report_v1_bytes,
 )
+from .git_evidence import GitEvidenceError, GitBlobReader
 from .inventory import UnstableInventoryError, verify_current_git_inventory
 from .sqlite_uow import SqliteUnitOfWorkError
 from .stores import (
@@ -127,21 +128,15 @@ def _read_repository_file(
     if type(max_bytes) is not int or max_bytes <= 0:
         raise ValueError("max_bytes must be a positive integer")
     root = repository_root.resolve(strict=True)
-    resolved = _resolve_repository_path(path_text, root, strict=True)
+    reference = _repository_reference(path_text, root)
     try:
-        if not resolved.is_file():
-            raise GateEvidenceError("gate report path is not a file")
-        with resolved.open("rb") as stream:
-            raw = stream.read(max_bytes + 1)
-    except GateEvidenceError:
-        raise
-    except (OSError, ValueError) as error:
-        raise GateEvidenceError(
-            "gate report path is unavailable or outside the repository"
-        ) from error
-    if len(raw) > max_bytes:
-        raise GateEvidenceError("repository evidence exceeds its byte limit")
-    return raw
+        return GitBlobReader(root).read(
+            reference,
+            max_bytes=max_bytes,
+            evidence_name="repository evidence",
+        ).raw
+    except GitEvidenceError as error:
+        raise GateEvidenceError(str(error)) from error
 
 
 def _resolve_repository_path(
