@@ -417,7 +417,7 @@ class ActivationCoordinator:
         allowed: list[str],
         quarantine: frozenset[str],
     ) -> str | None:
-        for line in status.splitlines():
+        for line in status.split("\x00"):
             if len(line) < 4:
                 continue
             path = line[3:].strip()
@@ -567,7 +567,9 @@ class ActivationCoordinator:
             str(path) for path in manifest.get("allowed_files", [])
         ]
         quarantine = self._quarantine_paths(manifest)
-        status = self._git("status", "--porcelain", "--untracked-files=all")
+        status = self._git(
+            "status", "--porcelain", "-z", "--untracked-files=all"
+        )
         out_of_scope = self._out_of_scope_delta(
             status,
             allowed=allowed,
@@ -795,7 +797,9 @@ class ActivationCoordinator:
             != self._git("rev-parse", f"{envelope_commit}^{{tree}}")
         ):
             raise ActivationEnvelopeError("HEAD tree drifted after activation")
-        status = self._git("status", "--porcelain", "--untracked-files=all")
+        status = self._git(
+            "status", "--porcelain", "-z", "--untracked-files=all"
+        )
         allowed = [str(path) for path in manifest.get("allowed_files", [])]
         quarantine = self._quarantine_paths(manifest)
         out_of_scope = self._out_of_scope_delta(
