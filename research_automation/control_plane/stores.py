@@ -64,12 +64,15 @@ _TASK_SPEC_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_AUTHORITY_SCHEMA_VERSION = 1
-_OPERATIONAL_SCHEMA_VERSION = 3
+_AUTHORITY_SCHEMA_VERSION = 2
+_AUTHORITY_SCHEMA_VERSION_V1 = 1
+_OPERATIONAL_SCHEMA_VERSION = 4
+_OPERATIONAL_SCHEMA_VERSION_V3 = 3
+_OPERATIONAL_SCHEMA_VERSION_V4 = 4
 MAX_REVIEWED_POLICY_BYTES = 4 * 1024 * 1024
 _POLICY_NAMESPACE = ("research_state", "control_plane", "policies")
 _POLICY_FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
-_AUTHORITY_SCHEMA = (
+_AUTHORITY_SCHEMA_V1 = (
     """
     CREATE TABLE authorizations_v2 (
         authorization_ref TEXT PRIMARY KEY,
@@ -211,6 +214,37 @@ _AUTHORITY_SCHEMA = (
     )
     """,
 )
+_FINAL_EVAL_AUTHORIZATIONS_DDL = """
+    CREATE TABLE final_eval_authorizations_v1 (
+        ticket_id TEXT PRIMARY KEY REFERENCES task_tickets_v2(ticket_id),
+        request_sha256 TEXT NOT NULL UNIQUE,
+        authority_plan_hash TEXT NOT NULL,
+        research_plan_sha256 TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        campaign_sha256 TEXT NOT NULL,
+        holdout_id TEXT NOT NULL,
+        holdout_sha256 TEXT NOT NULL,
+        nonce_fingerprint TEXT NOT NULL UNIQUE,
+        saga_state TEXT NOT NULL CHECK(
+            saga_state IN (
+                'AUTHORIZED', 'CONSUMED', 'EVALUATING',
+                'RESULT_STAGED', 'CLOSED', 'AUTHORITY_TERMINAL'
+            )
+        ),
+        saga_version INTEGER NOT NULL CHECK(saga_version >= 1),
+        result_object_ref TEXT,
+        result_object_sha256 TEXT,
+        result_claim_ref TEXT UNIQUE,
+        result_claim_sha256 TEXT,
+        terminal_binding TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(research_plan_sha256, holdout_id),
+        UNIQUE(research_plan_sha256, holdout_sha256),
+        CHECK(created_at <= updated_at)
+    ) WITHOUT ROWID
+    """
+_AUTHORITY_SCHEMA = _AUTHORITY_SCHEMA_V1 + (_FINAL_EVAL_AUTHORIZATIONS_DDL,)
 _OPERATIONAL_SCHEMA_V1 = (
     """
     CREATE TABLE journal_events (
@@ -282,7 +316,7 @@ _OPERATIONAL_SCHEMA_V2 = _OPERATIONAL_SCHEMA_V1 + (
     ) WITHOUT ROWID
     """,
 )
-_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V2 + (
+_OPERATIONAL_SCHEMA_V3 = _OPERATIONAL_SCHEMA_V2 + (
     """
     CREATE TABLE campaign_events (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,6 +337,121 @@ _OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V2 + (
     ON campaign_events(namespace, aggregate_type, aggregate_id, sequence)
     """,
 )
+_OPS_PROJECTION_CHECKPOINT_DDL = """
+    CREATE TABLE ops_projection_checkpoint (
+        namespace TEXT NOT NULL,
+        aggregate_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        checkpoint_sequence INTEGER NOT NULL CHECK(checkpoint_sequence >= 0),
+        checkpoint_at TEXT NOT NULL,
+        payload_sha256 TEXT NOT NULL,
+        PRIMARY KEY(namespace, aggregate_type, aggregate_id)
+    ) WITHOUT ROWID
+    """
+_OPS_CAMPAIGN_PROJECTION_DDL = """
+    CREATE TABLE ops_campaign_projection (
+        namespace TEXT NOT NULL,
+        campaign_id TEXT NOT NULL,
+        cycle_id TEXT,
+        aggregate_type TEXT NOT NULL,
+        aggregate_id TEXT NOT NULL,
+        last_sequence INTEGER NOT NULL CHECK(last_sequence >= 0),
+        snapshot_json TEXT NOT NULL,
+        snapshot_sha256 TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(namespace, campaign_id, aggregate_type, aggregate_id)
+    ) WITHOUT ROWID
+    """
+_OPS_BACKFILL_CHECKPOINT_DDL = """
+    CREATE TABLE ops_backfill_checkpoint (
+        backfill_id TEXT PRIMARY KEY,
+        target_table TEXT NOT NULL CHECK(
+            target_table IN ('campaign_events', 'access_events', 'journal_events')
+        ),
+        from_sequence INTEGER NOT NULL CHECK(from_sequence >= 0),
+        to_sequence INTEGER NOT NULL CHECK(to_sequence >= 0),
+        state TEXT NOT NULL CHECK(state IN ('PREVIEW', 'STAGING', 'PUBLISHED', 'FAILED')),
+        completed_at TEXT,
+        updated_at TEXT NOT NULL
+    ) WITHOUT ROWID
+    """
+_OPS_RETENTION_METADATA_DDL = """
+    CREATE TABLE ops_retention_metadata (
+        retention_id TEXT PRIMARY KEY,
+        target_table TEXT NOT NULL CHECK(
+            target_table IN ('campaign_events', 'access_events', 'journal_events')
+        ),
+        policy_sha256 TEXT NOT NULL,
+        preserved_from_sequence INTEGER NOT NULL CHECK(preserved_from_sequence >= 0),
+        preserved_to_sequence INTEGER NOT NULL CHECK(preserved_to_sequence >= 0),
+        applied_at TEXT NOT NULL,
+        CHECK(preserved_from_sequence <= preserved_to_sequence)
+    ) WITHOUT ROWID
+    """
+_OPS_ACCESS_EVENT_INTEGRITY_DDL = """
+    CREATE TABLE ops_access_event_integrity (
+        sequence INTEGER PRIMARY KEY,
+        event_id TEXT NOT NULL UNIQUE,
+        row_sha256 TEXT NOT NULL,
+        prefix_sha256 TEXT NOT NULL,
+        occurred_at TEXT NOT NULL
+    ) WITHOUT ROWID
+    """
+_OPERATIONAL_SCHEMA_V4 = _OPERATIONAL_SCHEMA_V3 + (
+    _OPS_PROJECTION_CHECKPOINT_DDL,
+    _OPS_CAMPAIGN_PROJECTION_DDL,
+    _OPS_BACKFILL_CHECKPOINT_DDL,
+    _OPS_RETENTION_METADATA_DDL,
+    _OPS_ACCESS_EVENT_INTEGRITY_DDL,
+)
+_OPERATIONAL_SCHEMA = _OPERATIONAL_SCHEMA_V4
+_ACCESS_ROW_FIELDS = (
+    "event_id",
+    "operation",
+    "actor_id",
+    "actor_type",
+    "invocation_id",
+    "run_id",
+    "generation_id",
+    "dataset_role",
+    "fields_json",
+    "date_start",
+    "date_end",
+    "input_refs_json",
+    "output_refs_json",
+    "taint_in_json",
+    "taint_out_json",
+    "metadata_json",
+    "payload_sha256",
+    "occurred_at",
+    "sequence",
+)
+_ACCESS_EMPTY_CHAIN_ROOT = hashlib.sha256(
+    b"control_plane.access_chain.v1\0"
+).hexdigest()
+
+
+def _access_row_sha256(row: Mapping[str, object]) -> str:
+    payload = {
+        field: (None if row.get(field) is None else str(row.get(field)))
+        for field in _ACCESS_ROW_FIELDS
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(
+        b"control_plane.access_row.v1\0" + canonical.encode("utf-8")
+    ).hexdigest()
+
+
+def _access_prefix_sha256(previous_prefix: str, row_sha256: str) -> str:
+    return hashlib.sha256(
+        previous_prefix.encode("ascii") + row_sha256.encode("ascii")
+    ).hexdigest()
 
 
 class StoreError(RuntimeError):
@@ -335,6 +484,41 @@ class StoreBootstrapInProgressError(StoreBootstrapError):
 
 class AuthorityRootError(StoreError):
     """Raised when a trusted writer lacks the installation root capability."""
+
+
+class OperationalWalError(StoreError):
+    """Raised when the Operational journal refuses WAL journal mode."""
+
+
+class AccessIntegrityError(StoreError):
+    """Raised when the sealed access integrity chain cannot be verified."""
+
+
+@dataclass(frozen=True)
+class AccessIntegrityVerification:
+    anchored_rows: int
+    access_rows: int
+    root_matches: bool
+    chain_root: str
+    stored_root: str
+    first_sequence: int | None
+    last_sequence: int | None
+
+
+class FinalEvalBindingError(StoreError):
+    """Base error for Authority v2 FinalEval bindings."""
+
+
+class FinalEvalBindingConflictError(FinalEvalBindingError):
+    """Raised when a global uniqueness constraint rejects a binding."""
+
+
+class FinalEvalBindingStateError(FinalEvalBindingError):
+    """Raised when a versioned binding CAS transition is illegal."""
+
+
+class FinalEvalRecoveryError(FinalEvalBindingError):
+    """Raised when a recovery lease cannot complete its bounded actions."""
 
 
 class AuthorizationError(StoreError):
@@ -814,17 +998,37 @@ def _provision_store(
         )
         for statement in schema:
             connection.execute(statement)
+        metadata_rows = [
+            ("installation_id", installation_id),
+            ("root_capability_sha256", root_capability_sha256),
+            ("schema_version", str(schema_version)),
+            ("store_kind", store_kind),
+        ]
+        if (
+            store_kind == "OPERATIONAL_JOURNAL"
+            and schema_version == _OPERATIONAL_SCHEMA_VERSION_V4
+        ):
+            metadata_rows.append(
+                ("access_integrity_root", _ACCESS_EMPTY_CHAIN_ROOT)
+            )
         connection.executemany(
             f"INSERT INTO {metadata_table}(key, value) VALUES (?, ?)",
-            (
-                ("installation_id", installation_id),
-                ("root_capability_sha256", root_capability_sha256),
-                ("schema_version", str(schema_version)),
-                ("store_kind", store_kind),
-            ),
+            metadata_rows,
         )
         connection.execute(f"PRAGMA user_version = {schema_version}")
         connection.commit()
+        if (
+            store_kind == "OPERATIONAL_JOURNAL"
+            and schema_version == _OPERATIONAL_SCHEMA_VERSION_V4
+        ):
+            mode = str(
+                connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            )
+            if mode != "wal":
+                raise StoreBootstrapError(
+                    "operational journal refused WAL mode"
+                )
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         connection.close()
 
@@ -1142,6 +1346,43 @@ def _read_store_identity(spec: _StoreSpec) -> StoreIdentity:
         store_kind=spec.store_kind,
         schema_version=spec.schema_version,
     )
+
+
+def _read_installation_id(spec: _StoreSpec) -> str:
+    """Read only the installation id without validating the target schema.
+
+    Migrations must be able to read a legacy store whose schema predates the
+    current spec, so this helper deliberately skips schema validation.
+    """
+
+    connection = sqlite3.connect(
+        f"{spec.path.as_uri()}?mode=ro",
+        uri=True,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.set_authorizer(_sqlite_authorizer)
+    try:
+        row = connection.execute(
+            f"SELECT value FROM {spec.metadata_table} "
+            "WHERE key = 'installation_id'"
+        ).fetchone()
+        if row is None:
+            raise StoreBootstrapError("control-plane store identity is invalid")
+        installation_id = str(row[0])
+        if (
+            len(installation_id) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in installation_id
+            )
+        ):
+            raise StoreBootstrapError(
+                "control-plane store identity is invalid"
+            )
+        return installation_id
+    finally:
+        connection.close()
 
 
 def _require_store_root(spec: _StoreSpec, root_secret: str) -> None:
@@ -1541,6 +1782,105 @@ class OperationalReader:
             )
         )
 
+    def verify_access_integrity(self) -> AccessIntegrityVerification:
+        """Recompute the sealed access chain; fail closed on any mismatch."""
+
+        def verify(
+            connection: sqlite3.Connection,
+        ) -> AccessIntegrityVerification:
+            stored_row = connection.execute(
+                "SELECT value FROM operational_meta "
+                "WHERE key = 'access_integrity_root'"
+            ).fetchone()
+            if stored_row is None:
+                raise AccessIntegrityError(
+                    "access integrity anchor is missing"
+                )
+            stored_root = str(stored_row[0])
+            anchors = {
+                int(row["sequence"]): row
+                for row in connection.execute(
+                    "SELECT * FROM ops_access_event_integrity "
+                    "ORDER BY sequence"
+                ).fetchall()
+            }
+            rows = connection.execute(
+                "SELECT * FROM access_events ORDER BY sequence"
+            ).fetchall()
+            if len(anchors) != len(rows):
+                raise AccessIntegrityError(
+                    "access integrity anchor count mismatch"
+                )
+            previous_prefix = _ACCESS_EMPTY_CHAIN_ROOT
+            first_sequence: int | None = None
+            last_sequence: int | None = None
+            for row in rows:
+                sequence = int(row["sequence"])
+                anchor = anchors.get(sequence)
+                if anchor is None:
+                    raise AccessIntegrityError(
+                        "access integrity anchor is missing"
+                    )
+                row_sha256 = _access_row_sha256(
+                    {field: row[field] for field in _ACCESS_ROW_FIELDS}
+                )
+                if not hmac.compare_digest(
+                    str(anchor["row_sha256"]),
+                    row_sha256,
+                ):
+                    raise AccessIntegrityError(
+                        "access row hash mismatch"
+                    )
+                if not hmac.compare_digest(
+                    str(anchor["occurred_at"]),
+                    str(row["occurred_at"]),
+                ):
+                    raise AccessIntegrityError(
+                        "access integrity timestamp mismatch"
+                    )
+                expected_prefix = _access_prefix_sha256(
+                    previous_prefix,
+                    row_sha256,
+                )
+                if not hmac.compare_digest(
+                    str(anchor["prefix_sha256"]),
+                    expected_prefix,
+                ):
+                    raise AccessIntegrityError(
+                        "access integrity chain mismatch"
+                    )
+                previous_prefix = expected_prefix
+                first_sequence = first_sequence if first_sequence is not None else sequence
+                last_sequence = sequence
+            if not hmac.compare_digest(previous_prefix, stored_root):
+                raise AccessIntegrityError(
+                    "access integrity root mismatch"
+                )
+            return AccessIntegrityVerification(
+                anchored_rows=len(rows),
+                access_rows=len(rows),
+                root_matches=True,
+                chain_root=previous_prefix,
+                stored_root=stored_root,
+                first_sequence=first_sequence,
+                last_sequence=last_sequence,
+            )
+
+        return _SqliteUnitOfWork(_operational_spec())._read(verify)
+
+
+def _authority_v1_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_AUTHORITY_STORE_PATH,
+        store_kind="AUTHORITY_STORE",
+        metadata_table="authority_meta",
+        schema_version=_AUTHORITY_SCHEMA_VERSION_V1,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("authority_meta"),)
+            + _AUTHORITY_SCHEMA_V1
+        ),
+    )
+
 
 def _authority_spec() -> _StoreSpec:
     return _StoreSpec(
@@ -1565,6 +1905,7 @@ def _operational_spec() -> _StoreSpec:
             "OPERATIONAL_JOURNAL",
             "operational_meta",
         ),
+        require_wal=True,
     )
 
 
@@ -1594,27 +1935,44 @@ def _operational_v2_spec() -> _StoreSpec:
     )
 
 
-def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
-    """Atomically migrate the fixed OperationalJournal from v1/v2 to v3."""
+def _operational_v3_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_OPERATIONAL_STORE_PATH,
+        store_kind="OPERATIONAL_JOURNAL",
+        metadata_table="operational_meta",
+        schema_version=_OPERATIONAL_SCHEMA_VERSION_V3,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("operational_meta"),)
+            + _OPERATIONAL_SCHEMA_V3
+        ),
+    )
+
+
+def _migrate_operational_journal_v3(
+    *,
+    root_secret: str,
+    path: Path | None = None,
+) -> bool:
+    """Atomically migrate a fixed OperationalJournal from v1/v2 to v3."""
 
     supplied_sha256 = _root_secret_sha256(root_secret)
-    path = Path(_OPERATIONAL_STORE_PATH).resolve(strict=False)
-    if _path_identity(path) == _path_identity(_AUTHORITY_STORE_PATH):
+    resolved = Path(path or _OPERATIONAL_STORE_PATH).resolve(strict=False)
+    if _path_identity(resolved) == _path_identity(_AUTHORITY_STORE_PATH):
         raise StoreConfigurationError(
             "authority and operational stores must use different SQLite files"
         )
     try:
-        if os.path.samefile(path, Path(_AUTHORITY_STORE_PATH)):
+        if os.path.samefile(resolved, Path(_AUTHORITY_STORE_PATH)):
             raise StoreConfigurationError(
                 "authority and operational stores must use different SQLite files"
             )
     except FileNotFoundError:
         pass
-    if not os.path.lexists(path):
+    if not os.path.lexists(resolved):
         raise StoreBootstrapIncompleteError("operational journal is missing")
-    authority_installation_id = _read_store_identity(_authority_spec()).installation_id
+    authority_installation_id = _read_installation_id(_authority_spec())
     connection = sqlite3.connect(
-        f"{path.as_uri()}?mode=rw",
+        f"{resolved.as_uri()}?mode=rw",
         uri=True,
         isolation_level=None,
     )
@@ -1625,7 +1983,148 @@ def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
         connection.execute("BEGIN IMMEDIATE")
         transaction_started = True
         try:
-            if os.path.samefile(path, Path(_AUTHORITY_STORE_PATH)):
+            if os.path.samefile(resolved, Path(_AUTHORITY_STORE_PATH)):
+                raise StoreConfigurationError(
+                    "authority and operational stores must use different SQLite files"
+                )
+        except FileNotFoundError as error:
+            raise StoreBootstrapIncompleteError("operational journal disappeared") from error
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if user_version > _OPERATIONAL_SCHEMA_VERSION_V3:
+            raise SqliteFutureSchemaError("future store schema is not supported")
+        metadata = {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute(
+                "SELECT key, value FROM operational_meta"
+            )
+        }
+        if metadata.get("store_kind") != "OPERATIONAL_JOURNAL":
+            raise SqliteSchemaError(
+                "control-plane store schema identity mismatch"
+            )
+        if metadata.get("installation_id") != authority_installation_id:
+            raise StoreConfigurationError("authority and operational installation identities differ")
+        stored_root = metadata.get("root_capability_sha256")
+        if stored_root is None or not hmac.compare_digest(
+            stored_root,
+            supplied_sha256,
+        ):
+            raise AuthorityRootError("authority root capability is invalid")
+        if user_version == _OPERATIONAL_SCHEMA_VERSION_V3:
+            if (
+                metadata.get("schema_version")
+                != str(_OPERATIONAL_SCHEMA_VERSION_V3)
+                or _schema_sha256(connection)
+                != _operational_v3_spec().expected_schema_sha256
+            ):
+                raise SqliteSchemaError(
+                    "control-plane store schema structure mismatch"
+                )
+            connection.rollback()
+            transaction_started = False
+            return False
+        prior_specs = {
+            1: (_operational_v1_spec(), len(_OPERATIONAL_SCHEMA_V1)),
+            2: (_operational_v2_spec(), len(_OPERATIONAL_SCHEMA_V2)),
+        }
+        prior = prior_specs.get(user_version)
+        if prior is None:
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        prior_spec, migration_offset = prior
+        if (
+            metadata.get("schema_version") != str(user_version)
+            or _schema_sha256(connection)
+            != prior_spec.expected_schema_sha256
+        ):
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        for statement in _OPERATIONAL_SCHEMA_V3[migration_offset:]:
+            connection.execute(statement)
+        connection.execute(
+            "UPDATE operational_meta SET value = ? WHERE key = 'schema_version'",
+            (str(_OPERATIONAL_SCHEMA_VERSION_V3),),
+        )
+        connection.execute(
+            f"PRAGMA user_version = {_OPERATIONAL_SCHEMA_VERSION_V3}"
+        )
+        if (
+            _schema_sha256(connection)
+            != _operational_v3_spec().expected_schema_sha256
+        ):
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        connection.commit()
+        transaction_started = False
+        return True
+    except sqlite3.DatabaseError as error:
+        if transaction_started:
+            connection.rollback()
+        raise _translate_sqlite_error(error, read_only=False) from error
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def _switch_operational_wal(connection: sqlite3.Connection) -> str:
+    """Switch one Operational journal connection to WAL and drain it."""
+
+    mode = str(connection.execute("PRAGMA journal_mode = WAL").fetchone()[0])
+    if mode != "wal":
+        raise OperationalWalError("operational journal refused WAL mode")
+    connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    return mode
+
+
+def _migrate_operational_journal_v4(
+    *,
+    root_secret: str,
+    path: Path | None = None,
+) -> bool:
+    """Atomically migrate a fixed OperationalJournal v1/v2/v3 to v4.
+
+    WAL mode is switched outside the migration transaction and verified
+    before any schema change; the access integrity prefix chain is built for
+    all historical access rows inside the same atomic schema transaction.
+    """
+
+    supplied_sha256 = _root_secret_sha256(root_secret)
+    resolved = Path(path or _OPERATIONAL_STORE_PATH).resolve(strict=False)
+    if _path_identity(resolved) == _path_identity(_AUTHORITY_STORE_PATH):
+        raise StoreConfigurationError(
+            "authority and operational stores must use different SQLite files"
+        )
+    try:
+        if os.path.samefile(resolved, Path(_AUTHORITY_STORE_PATH)):
+            raise StoreConfigurationError(
+                "authority and operational stores must use different SQLite files"
+            )
+    except FileNotFoundError:
+        pass
+    if not os.path.lexists(resolved):
+        raise StoreBootstrapIncompleteError("operational journal is missing")
+    authority_installation_id = _read_installation_id(_authority_spec())
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=rw",
+        uri=True,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.set_authorizer(_sqlite_authorizer)
+    transaction_started = False
+    try:
+        if _switch_operational_wal(connection) != "wal":
+            raise OperationalWalError("operational journal refused WAL mode")
+        connection.execute("BEGIN IMMEDIATE")
+        transaction_started = True
+        try:
+            if os.path.samefile(resolved, Path(_AUTHORITY_STORE_PATH)):
                 raise StoreConfigurationError(
                     "authority and operational stores must use different SQLite files"
                 )
@@ -1668,6 +2167,7 @@ def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
         prior_specs = {
             1: (_operational_v1_spec(), len(_OPERATIONAL_SCHEMA_V1)),
             2: (_operational_v2_spec(), len(_OPERATIONAL_SCHEMA_V2)),
+            3: (_operational_v3_spec(), len(_OPERATIONAL_SCHEMA_V3)),
         }
         prior = prior_specs.get(user_version)
         if prior is None:
@@ -1685,6 +2185,31 @@ def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
             )
         for statement in _OPERATIONAL_SCHEMA[migration_offset:]:
             connection.execute(statement)
+        previous_prefix = _ACCESS_EMPTY_CHAIN_ROOT
+        access_rows = connection.execute(
+            "SELECT * FROM access_events ORDER BY sequence"
+        ).fetchall()
+        for row in access_rows:
+            row_sha256 = _access_row_sha256(
+                {field: row[field] for field in _ACCESS_ROW_FIELDS}
+            )
+            previous_prefix = _access_prefix_sha256(previous_prefix, row_sha256)
+            connection.execute(
+                """INSERT INTO ops_access_event_integrity
+                (sequence, event_id, row_sha256, prefix_sha256, occurred_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (
+                    int(row["sequence"]),
+                    str(row["event_id"]),
+                    row_sha256,
+                    previous_prefix,
+                    str(row["occurred_at"]),
+                ),
+            )
+        connection.execute(
+            "INSERT OR REPLACE INTO operational_meta(key, value) VALUES (?, ?)",
+            ("access_integrity_root", previous_prefix),
+        )
         connection.execute(
             "UPDATE operational_meta SET value = ? WHERE key = 'schema_version'",
             (str(_OPERATIONAL_SCHEMA_VERSION),),
@@ -1709,8 +2234,129 @@ def _migrate_operational_journal_v3(*, root_secret: str) -> bool:
         connection.close()
 
 
+def _migrate_authority_v2(
+    *,
+    root_secret: str,
+    path: Path | None = None,
+) -> bool:
+    """Atomically migrate the fixed Authority store from v1 to v2."""
+
+    supplied_sha256 = _root_secret_sha256(root_secret)
+    resolved = Path(path or _AUTHORITY_STORE_PATH).resolve(strict=False)
+    if _path_identity(resolved) == _path_identity(_OPERATIONAL_STORE_PATH):
+        raise StoreConfigurationError(
+            "authority and operational stores must use different SQLite files"
+        )
+    try:
+        if os.path.samefile(resolved, Path(_OPERATIONAL_STORE_PATH)):
+            raise StoreConfigurationError(
+                "authority and operational stores must use different SQLite files"
+            )
+    except FileNotFoundError:
+        pass
+    if not os.path.lexists(resolved):
+        raise StoreBootstrapIncompleteError("authority store is missing")
+    operational_installation_id = _read_installation_id(_operational_spec())
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=rw",
+        uri=True,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.set_authorizer(_sqlite_authorizer)
+    transaction_started = False
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        transaction_started = True
+        try:
+            if os.path.samefile(resolved, Path(_OPERATIONAL_STORE_PATH)):
+                raise StoreConfigurationError(
+                    "authority and operational stores must use different SQLite files"
+                )
+        except FileNotFoundError as error:
+            raise StoreBootstrapIncompleteError("authority store disappeared") from error
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if user_version > _AUTHORITY_SCHEMA_VERSION:
+            raise SqliteFutureSchemaError("future store schema is not supported")
+        metadata = {
+            str(row["key"]): str(row["value"])
+            for row in connection.execute(
+                "SELECT key, value FROM authority_meta"
+            )
+        }
+        if metadata.get("store_kind") != "AUTHORITY_STORE":
+            raise SqliteSchemaError(
+                "control-plane store schema identity mismatch"
+            )
+        if metadata.get("installation_id") != operational_installation_id:
+            raise StoreConfigurationError("authority and operational installation identities differ")
+        stored_root = metadata.get("root_capability_sha256")
+        if stored_root is None or not hmac.compare_digest(
+            stored_root,
+            supplied_sha256,
+        ):
+            raise AuthorityRootError("authority root capability is invalid")
+        if user_version == _AUTHORITY_SCHEMA_VERSION:
+            if (
+                metadata.get("schema_version")
+                != str(_AUTHORITY_SCHEMA_VERSION)
+                or _schema_sha256(connection)
+                != _authority_spec().expected_schema_sha256
+            ):
+                raise SqliteSchemaError(
+                    "control-plane store schema structure mismatch"
+                )
+            connection.rollback()
+            transaction_started = False
+            return False
+        prior_specs = {
+            1: (_authority_v1_spec(), len(_AUTHORITY_SCHEMA_V1)),
+        }
+        prior = prior_specs.get(user_version)
+        if prior is None:
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        prior_spec, migration_offset = prior
+        if (
+            metadata.get("schema_version") != str(user_version)
+            or _schema_sha256(connection)
+            != prior_spec.expected_schema_sha256
+        ):
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        for statement in _AUTHORITY_SCHEMA[migration_offset:]:
+            connection.execute(statement)
+        connection.execute(
+            "UPDATE authority_meta SET value = ? WHERE key = 'schema_version'",
+            (str(_AUTHORITY_SCHEMA_VERSION),),
+        )
+        connection.execute(f"PRAGMA user_version = {_AUTHORITY_SCHEMA_VERSION}")
+        if (
+            _schema_sha256(connection)
+            != _authority_spec().expected_schema_sha256
+        ):
+            raise SqliteSchemaError(
+                "control-plane store schema structure mismatch"
+            )
+        connection.commit()
+        transaction_started = False
+        return True
+    except sqlite3.DatabaseError as error:
+        if transaction_started:
+            connection.rollback()
+        raise _translate_sqlite_error(error, read_only=False) from error
+    except Exception:
+        if transaction_started:
+            connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
 def _migrate_operational_journal_v2(*, root_secret: str) -> bool:
-    """Compatibility name that migrates the journal to the current schema."""
+    """Compatibility name that migrates the journal to v3."""
 
     return _migrate_operational_journal_v3(root_secret=root_secret)
 
@@ -4108,6 +4754,739 @@ class _AuthorityStore:
             _bearer_secret=_BearerSecret(grant_secret),
         )
 
+    @staticmethod
+    def _require_final_eval_binding(
+        connection: sqlite3.Connection,
+        binding_id: str,
+    ) -> sqlite3.Row:
+        row = connection.execute(
+            "SELECT * FROM final_eval_authorizations_v1 "
+            "WHERE ticket_id = ?",
+            (binding_id,),
+        ).fetchone()
+        if row is None:
+            raise FinalEvalBindingError("final-eval binding is missing")
+        return row
+
+    def _begin_final_eval_binding(
+        self,
+        grant: AuthorityGrant,
+        *,
+        research_plan_sha256: str,
+        campaign_id: str,
+        campaign_sha256: str,
+        holdout_id: str,
+        holdout_sha256: str,
+        nonce: str,
+        idempotency_key: str,
+        task_spec_ref: str,
+        task_spec_sha256: str,
+    ) -> FinalEvalBindingReceipt:
+        research_plan = _require_sha256(
+            research_plan_sha256, "research_plan_sha256"
+        )
+        campaign = _require_nonempty(campaign_id, "campaign_id")
+        campaign_sha = _require_sha256(campaign_sha256, "campaign_sha256")
+        holdout = _require_nonempty(holdout_id, "holdout_id")
+        holdout_sha = _require_sha256(holdout_sha256, "holdout_sha256")
+        nonce_value = _require_nonempty(nonce, "nonce")
+        idempotency = _require_nonempty(idempotency_key, "idempotency_key")
+        spec_ref = _require_canonical_evidence_ref(
+            task_spec_ref, "task_spec_ref"
+        )
+        spec_sha = _require_sha256(task_spec_sha256, "task_spec_sha256")
+        fingerprint = _final_eval_nonce_fingerprint(
+            self._root_secret._reveal_for_authority_check(), nonce_value
+        )
+        request_sha256 = _final_eval_request_sha256(
+            authority_plan_hash=grant.identity.plan_hash,
+            research_plan_sha256=research_plan,
+            campaign_id=campaign,
+            campaign_sha256=campaign_sha,
+            holdout_id=holdout,
+            holdout_sha256=holdout_sha,
+            nonce_fingerprint=fingerprint,
+            task_spec_ref=spec_ref,
+            task_spec_sha256=spec_sha,
+        )
+        ticket_id = hashlib.sha256(
+            b"control_plane.final_eval_ticket.v1\0"
+            + grant.grant_id.encode("utf-8")
+            + b"\0"
+            + idempotency.encode("utf-8")
+        ).hexdigest()
+        task_id = f"FINAL_EVAL_{holdout}"
+        now = self._now()
+        lease_id = f"lease_{secrets.token_hex(16)}"
+        lease_secret_value = secrets.token_urlsafe(32)
+        lease_secret_sha256 = hashlib.sha256(
+            lease_secret_value.encode("utf-8")
+        ).hexdigest()
+
+        def bind(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalBindingSnapshot:
+            self._require_active_grant(connection, grant)
+            try:
+                connection.execute(
+                    """INSERT INTO task_tickets_v2
+                    (ticket_id, grant_id, phase, attempt_id, task_id,
+                     idempotency_key, task_spec_ref, task_spec_sha256,
+                     task_spec_payload_json, request_sha256,
+                     entry_policy_sha256, allowed_effects_json, secret_sha256,
+                     state, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?,
+                            'ISSUED', ?)""",
+                    (
+                        ticket_id,
+                        grant.grant_id,
+                        grant.phase.value,
+                        grant.attempt_id,
+                        task_id,
+                        idempotency,
+                        spec_ref,
+                        spec_sha,
+                        _canonical_payload(
+                            {
+                                "task_id": task_id,
+                                "idempotency_key": idempotency,
+                                "task_spec_ref": spec_ref,
+                                "task_spec_sha256": spec_sha,
+                                "final_eval_request_sha256": request_sha256,
+                            }
+                        )[0],
+                        request_sha256,
+                        _effects_json(()),
+                        lease_secret_sha256,
+                        _utc_text(now),
+                    ),
+                )
+                connection.execute(
+                    """INSERT INTO final_eval_authorizations_v1
+                    (ticket_id, request_sha256, authority_plan_hash,
+                     research_plan_sha256, campaign_id, campaign_sha256,
+                     holdout_id, holdout_sha256, nonce_fingerprint,
+                     saga_state, saga_version, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'AUTHORIZED', 1, ?, ?)""",
+                    (
+                        ticket_id,
+                        request_sha256,
+                        grant.identity.plan_hash,
+                        research_plan,
+                        campaign,
+                        campaign_sha,
+                        holdout,
+                        holdout_sha,
+                        fingerprint,
+                        _utc_text(now),
+                        _utc_text(now),
+                    ),
+                )
+                ticket_update = connection.execute(
+                    """UPDATE task_tickets_v2
+                    SET state = 'IN_PROGRESS', started_at = ?, lease_id = ?,
+                        lease_secret_sha256 = ?
+                    WHERE ticket_id = ? AND state = 'ISSUED'""",
+                    (_utc_text(now), lease_id, lease_secret_sha256, ticket_id),
+                )
+                if ticket_update.rowcount != 1:
+                    raise FinalEvalBindingStateError(
+                        "final-eval ticket begin lost a concurrent race"
+                    )
+                binding_update = connection.execute(
+                    """UPDATE final_eval_authorizations_v1
+                    SET saga_state = 'CONSUMED', saga_version = 2,
+                        updated_at = ?
+                    WHERE ticket_id = ? AND saga_state = 'AUTHORIZED'
+                          AND saga_version = 1""",
+                    (_utc_text(now), ticket_id),
+                )
+                if binding_update.rowcount != 1:
+                    raise FinalEvalBindingStateError(
+                        "final-eval binding consume lost a concurrent race"
+                    )
+            except sqlite3.IntegrityError as error:
+                raise FinalEvalBindingConflictError(str(error)) from error
+            _insert_authority_outbox(
+                connection,
+                event_type="TASK_TICKET_ISSUED",
+                aggregate_id=ticket_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "grant_id": grant.grant_id,
+                    "request_sha256": request_sha256,
+                    "research_plan_sha256": research_plan,
+                    "holdout_id": holdout,
+                    "task_spec_ref": spec_ref,
+                },
+                created_at=now,
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="TASK_STARTED",
+                aggregate_id=ticket_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "lease_id": lease_id,
+                    "task_id": task_id,
+                    "started_at": _utc_text(now),
+                },
+                created_at=now,
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="FINAL_EVAL_BOUND",
+                aggregate_id=ticket_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "request_sha256": request_sha256,
+                    "authority_plan_hash": grant.identity.plan_hash,
+                    "research_plan_sha256": research_plan,
+                    "campaign_id": campaign,
+                    "campaign_sha256": campaign_sha,
+                    "holdout_id": holdout,
+                    "holdout_sha256": holdout_sha,
+                    "saga_state": "CONSUMED",
+                    "saga_version": 2,
+                },
+                created_at=now,
+            )
+            return _final_eval_snapshot_from_row(connection, ticket_id)
+
+        snapshot = _SqliteUnitOfWork(_authority_spec())._write(bind)
+        ticket = TaskAuthorityTicket(
+            ticket_id=ticket_id,
+            grant_id=grant.grant_id,
+            authorization_ref=grant.authorization_ref,
+            phase=grant.phase,
+            attempt_id=grant.attempt_id,
+            task_id=task_id,
+            idempotency_key=idempotency,
+            task_spec_ref=spec_ref,
+            task_spec_sha256=spec_sha,
+            entry_policy_sha256=None,
+            allowed_side_effects=(),
+            actor=grant.actor,
+            identity=grant.identity,
+            _bearer_secret=_BearerSecret(
+                hmac.new(
+                    grant._bearer_secret._reveal_for_authority_check().encode(
+                        "utf-8"
+                    ),
+                    request_sha256.encode("ascii"),
+                    hashlib.sha256,
+                ).hexdigest()
+            ),
+        )
+        lease = TaskExecutionLease(
+            lease_id=lease_id,
+            ticket_id=ticket_id,
+            grant_id=grant.grant_id,
+            authorization_ref=grant.authorization_ref,
+            phase=grant.phase,
+            attempt_id=grant.attempt_id,
+            task_id=task_id,
+            entry_policy_sha256=None,
+            allowed_side_effects=(),
+            actor=grant.actor,
+            identity=grant.identity,
+            _bearer_secret=_BearerSecret(lease_secret_value),
+        )
+        return FinalEvalBindingReceipt(
+            binding=snapshot,
+            ticket=ticket,
+            lease=lease,
+        )
+
+    def _advance_final_eval_binding(
+        self,
+        binding_id: str,
+        *,
+        expected_state: str,
+        next_state: str,
+        expected_version: int,
+    ) -> FinalEvalBindingSnapshot:
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        if (
+            expected_state not in _FINAL_EVAL_TRANSITIONS
+            or _FINAL_EVAL_TRANSITIONS[expected_state] != next_state
+        ):
+            raise FinalEvalBindingStateError(
+                "final-eval binding transition is not legal"
+            )
+        if type(expected_version) is not int or expected_version < 1:
+            raise ValueError("expected_version must be a positive integer")
+        now = self._now()
+
+        def advance(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalBindingSnapshot:
+            self._require_final_eval_binding(connection, trusted_binding)
+            update = connection.execute(
+                """UPDATE final_eval_authorizations_v1
+                SET saga_state = ?, saga_version = ?, updated_at = ?
+                WHERE ticket_id = ? AND saga_state = ?
+                      AND saga_version = ?""",
+                (
+                    next_state,
+                    expected_version + 1,
+                    _utc_text(now),
+                    trusted_binding,
+                    expected_state,
+                    expected_version,
+                ),
+            )
+            if update.rowcount != 1:
+                raise FinalEvalBindingStateError(
+                    "final-eval binding CAS mismatch"
+                )
+            return _final_eval_snapshot_from_row(connection, trusted_binding)
+
+        return _SqliteUnitOfWork(_authority_spec())._write(advance)
+
+    def _stage_final_eval_result(
+        self,
+        binding_id: str,
+        *,
+        expected_version: int,
+        result_object_ref: str,
+        result_object_sha256: str,
+        result_claim_ref: str,
+        result_claim_sha256: str,
+    ) -> FinalEvalBindingSnapshot:
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        object_ref = _require_canonical_evidence_ref(
+            result_object_ref, "result_object_ref"
+        )
+        object_sha = _require_sha256(
+            result_object_sha256, "result_object_sha256"
+        )
+        claim_ref = _require_canonical_evidence_ref(
+            result_claim_ref, "result_claim_ref"
+        )
+        claim_sha = _require_sha256(result_claim_sha256, "result_claim_sha256")
+        if type(expected_version) is not int or expected_version < 1:
+            raise ValueError("expected_version must be a positive integer")
+        now = self._now()
+
+        def stage(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalBindingSnapshot:
+            row = self._require_final_eval_binding(
+                connection, trusted_binding
+            )
+            if (
+                row["saga_state"] != "EVALUATING"
+                or int(row["saga_version"]) != expected_version
+            ):
+                raise FinalEvalBindingStateError(
+                    "final-eval binding is not EVALUATING at the expected version"
+                )
+            try:
+                update = connection.execute(
+                    """UPDATE final_eval_authorizations_v1
+                    SET saga_state = 'RESULT_STAGED', saga_version = ?,
+                        result_object_ref = ?, result_object_sha256 = ?,
+                        result_claim_ref = ?, result_claim_sha256 = ?,
+                        updated_at = ?
+                    WHERE ticket_id = ? AND saga_state = 'EVALUATING'
+                          AND saga_version = ?""",
+                    (
+                        expected_version + 1,
+                        object_ref,
+                        object_sha,
+                        claim_ref,
+                        claim_sha,
+                        _utc_text(now),
+                        trusted_binding,
+                        expected_version,
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise FinalEvalBindingConflictError(str(error)) from error
+            if update.rowcount != 1:
+                raise FinalEvalBindingStateError(
+                    "final-eval result staging lost a concurrent race"
+                )
+            return _final_eval_snapshot_from_row(connection, trusted_binding)
+
+        return _SqliteUnitOfWork(_authority_spec())._write(stage)
+
+    def _scan_final_eval_bindings(
+        self,
+        *,
+        states: tuple[str, ...] | None = None,
+    ) -> tuple[FinalEvalBindingSnapshot, ...]:
+        if states is None:
+            allowed: tuple[str, ...] | None = None
+        else:
+            allowed = tuple(states)
+            if any(state not in _FINAL_EVAL_STATE_ORDER for state in allowed):
+                raise ValueError("unknown final-eval binding state")
+
+        def scan(
+            connection: sqlite3.Connection,
+        ) -> tuple[FinalEvalBindingSnapshot, ...]:
+            if allowed is None:
+                rows = connection.execute(
+                    "SELECT ticket_id FROM final_eval_authorizations_v1 "
+                    "ORDER BY created_at, ticket_id"
+                ).fetchall()
+            else:
+                placeholders = ", ".join("?" for _ in allowed)
+                rows = connection.execute(
+                    "SELECT ticket_id FROM final_eval_authorizations_v1 "
+                    f"WHERE saga_state IN ({placeholders}) "
+                    "ORDER BY created_at, ticket_id",
+                    allowed,
+                ).fetchall()
+            return tuple(
+                _final_eval_snapshot_from_row(connection, str(row["ticket_id"]))
+                for row in rows
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._read(scan)
+
+    def _issue_final_eval_recovery_lease(
+        self,
+        maintenance_lease: TaskExecutionLease,
+        *,
+        binding_id: str,
+        evidence_ref: str,
+    ) -> FinalEvalRecoveryLease:
+        if not isinstance(maintenance_lease, TaskExecutionLease):
+            raise TaskTicketError("a maintenance TaskExecutionLease is required")
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        evidence = _require_canonical_evidence_ref(
+            evidence_ref, "evidence_ref"
+        )
+
+        def verify(connection: sqlite3.Connection) -> str:
+            row = self._require_final_eval_binding(
+                connection, trusted_binding
+            )
+            lease_row = connection.execute(
+                "SELECT state, lease_secret_sha256 FROM task_tickets_v2 "
+                "WHERE ticket_id = ?",
+                (maintenance_lease.ticket_id,),
+            ).fetchone()
+            supplied_secret_sha256 = hashlib.sha256(
+                maintenance_lease._bearer_secret._reveal_for_authority_check().encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if (
+                lease_row is None
+                or lease_row["state"] != "IN_PROGRESS"
+                or not hmac.compare_digest(
+                    str(lease_row["lease_secret_sha256"]),
+                    supplied_secret_sha256,
+                )
+            ):
+                raise TaskTicketError("maintenance task lease is invalid")
+            return str(row["saga_state"])
+
+        state = _SqliteUnitOfWork(_authority_spec())._read(verify)
+        if state not in ("RESULT_STAGED", "CLOSED"):
+            raise FinalEvalRecoveryError(
+                "binding is not recoverable in its current state"
+            )
+        return FinalEvalRecoveryLease(
+            _authority=self,
+            binding_id=trusted_binding,
+            evidence_ref=evidence,
+        )
+
+    def _recover_final_eval_binding(
+        self,
+        recovery_lease: FinalEvalRecoveryLease,
+        *,
+        terminal_state: str,
+        evidence_ref: str,
+    ) -> FinalEvalBindingSnapshot:
+        if not isinstance(recovery_lease, FinalEvalRecoveryLease):
+            raise FinalEvalRecoveryError(
+                "a FinalEvalRecoveryLease is required"
+            )
+        terminal = _require_nonempty(
+            terminal_state, "terminal_state"
+        ).upper()
+        if terminal not in {"SUCCEEDED", "FAILED", "IN_DOUBT"}:
+            raise TaskTicketError("task outcome is invalid")
+        evidence = _require_canonical_evidence_ref(
+            evidence_ref, "evidence_ref"
+        )
+        trusted_binding = recovery_lease.binding_id
+        now = self._now()
+
+        def recover(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalBindingSnapshot:
+            row = self._require_final_eval_binding(
+                connection, trusted_binding
+            )
+            if row["saga_state"] not in ("RESULT_STAGED", "CLOSED"):
+                raise FinalEvalRecoveryError(
+                    "binding is not recoverable in its current state"
+                )
+            if row["result_claim_ref"] is None:
+                raise FinalEvalRecoveryError(
+                    "binding has no fixed result claim"
+                )
+            staged_update = connection.execute(
+                """UPDATE final_eval_authorizations_v1
+                SET saga_state = 'CLOSED', saga_version = ?, updated_at = ?
+                WHERE ticket_id = ? AND saga_state = 'RESULT_STAGED'""",
+                (
+                    int(row["saga_version"]) + 1,
+                    _utc_text(now),
+                    trusted_binding,
+                ),
+            )
+            if staged_update.rowcount not in (0, 1):
+                raise FinalEvalRecoveryError(
+                    "recovery closure lost a concurrent race"
+                )
+            if staged_update.rowcount == 0:
+                row = self._require_final_eval_binding(
+                    connection, trusted_binding
+                )
+                if row["saga_state"] != "CLOSED":
+                    raise FinalEvalRecoveryError(
+                        "recovery closure lost a concurrent race"
+                    )
+            terminal_update = connection.execute(
+                """UPDATE final_eval_authorizations_v1
+                SET saga_state = 'AUTHORITY_TERMINAL', saga_version = ?,
+                    terminal_binding = ?, updated_at = ?
+                WHERE ticket_id = ? AND saga_state = 'CLOSED'""",
+                (
+                    int(row["saga_version"]) + 2,
+                    terminal,
+                    _utc_text(now),
+                    trusted_binding,
+                ),
+            )
+            if terminal_update.rowcount != 1:
+                raise FinalEvalRecoveryError(
+                    "recovery terminal transition lost a race"
+                )
+            ticket_update = connection.execute(
+                """UPDATE task_tickets_v2
+                SET state = ?, completed_at = ?, evidence_ref = ?
+                WHERE ticket_id = ? AND state = 'IN_PROGRESS'""",
+                (terminal, _utc_text(now), evidence, trusted_binding),
+            )
+            if ticket_update.rowcount != 1:
+                raise FinalEvalRecoveryError(
+                    "final-eval ticket is not IN_PROGRESS"
+                )
+            _insert_authority_outbox(
+                connection,
+                event_type="FINAL_EVAL_RECOVERED",
+                aggregate_id=trusted_binding,
+                payload={
+                    "ticket_id": trusted_binding,
+                    "terminal_binding": terminal,
+                    "evidence_ref": evidence,
+                    "recovery_evidence_ref": recovery_lease.evidence_ref,
+                    "completed_at": _utc_text(now),
+                },
+                created_at=now,
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type=f"TASK_{terminal}",
+                aggregate_id=trusted_binding,
+                payload={
+                    "ticket_id": trusted_binding,
+                    "state": terminal,
+                    "evidence_ref": evidence,
+                    "completed_at": _utc_text(now),
+                },
+                created_at=now,
+            )
+            return _final_eval_snapshot_from_row(connection, trusted_binding)
+
+        return _SqliteUnitOfWork(_authority_spec())._write(recover)
+
+
+@dataclass(frozen=True)
+class FinalEvalBindingSnapshot:
+    ticket_id: str
+    request_sha256: str
+    authority_plan_hash: str
+    research_plan_sha256: str
+    campaign_id: str
+    campaign_sha256: str
+    holdout_id: str
+    holdout_sha256: str
+    nonce_fingerprint: str
+    saga_state: str
+    saga_version: int
+    result_object_ref: str | None
+    result_object_sha256: str | None
+    result_claim_ref: str | None
+    result_claim_sha256: str | None
+    terminal_binding: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class FinalEvalBindingReceipt:
+    binding: FinalEvalBindingSnapshot
+    ticket: TaskAuthorityTicket
+    lease: TaskExecutionLease
+
+
+class FinalEvalRecoveryLease:
+    """Bounded in-memory recovery capability with no OPEN_HOLDOUT effect."""
+
+    __slots__ = ("_authority", "_binding_id", "_evidence_ref")
+
+    def __init__(
+        self,
+        *,
+        _authority: _AuthorityStore,
+        binding_id: str,
+        evidence_ref: str,
+    ) -> None:
+        self._authority = _authority
+        self._binding_id = binding_id
+        self._evidence_ref = evidence_ref
+
+    @property
+    def binding_id(self) -> str:
+        return self._binding_id
+
+    @property
+    def evidence_ref(self) -> str:
+        return self._evidence_ref
+
+
+_FINAL_EVAL_STATE_ORDER = (
+    "AUTHORIZED",
+    "CONSUMED",
+    "EVALUATING",
+    "RESULT_STAGED",
+    "CLOSED",
+    "AUTHORITY_TERMINAL",
+)
+_FINAL_EVAL_TRANSITIONS = {
+    "AUTHORIZED": "CONSUMED",
+    "CONSUMED": "EVALUATING",
+    "EVALUATING": "RESULT_STAGED",
+    "RESULT_STAGED": "CLOSED",
+    "CLOSED": "AUTHORITY_TERMINAL",
+}
+_FINAL_EVAL_NONCE_DOMAIN = b"control_plane.final_eval_nonce.v1\0"
+_FINAL_EVAL_REQUEST_DOMAIN = b"control_plane.final_eval_request.v1\0"
+
+
+def _require_canonical_evidence_ref(value: object, field_name: str) -> str:
+    text = _require_nonempty(value, field_name)
+    if (
+        text.startswith("/")
+        or "\\" in text
+        or ".." in text
+        or bool(re.match(r"^[A-Za-z]:", text))
+    ):
+        raise ValueError(f"{field_name} must be a canonical relative ref")
+    return text
+
+
+def _final_eval_nonce_fingerprint(root_secret: str, nonce: str) -> str:
+    if len(nonce) > 256:
+        raise ValueError("nonce is unbounded")
+    return hmac.new(
+        root_secret.encode("utf-8"),
+        _FINAL_EVAL_NONCE_DOMAIN + nonce.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _final_eval_request_sha256(
+    *,
+    authority_plan_hash: str,
+    research_plan_sha256: str,
+    campaign_id: str,
+    campaign_sha256: str,
+    holdout_id: str,
+    holdout_sha256: str,
+    nonce_fingerprint: str,
+    task_spec_ref: str,
+    task_spec_sha256: str,
+) -> str:
+    payload_json, _ = _canonical_payload(
+        {
+            "authority_plan_hash": authority_plan_hash,
+            "research_plan_sha256": research_plan_sha256,
+            "campaign_id": campaign_id,
+            "campaign_sha256": campaign_sha256,
+            "holdout_id": holdout_id,
+            "holdout_sha256": holdout_sha256,
+            "nonce_fingerprint": nonce_fingerprint,
+            "task_spec_ref": task_spec_ref,
+            "task_spec_sha256": task_spec_sha256,
+        }
+    )
+    return hashlib.sha256(
+        _FINAL_EVAL_REQUEST_DOMAIN + payload_json.encode("utf-8")
+    ).hexdigest()
+
+
+def _final_eval_snapshot_from_row(
+    connection: sqlite3.Connection,
+    binding_id: str,
+) -> FinalEvalBindingSnapshot:
+    row = connection.execute(
+        "SELECT * FROM final_eval_authorizations_v1 WHERE ticket_id = ?",
+        (binding_id,),
+    ).fetchone()
+    if row is None:
+        raise FinalEvalBindingError("final-eval binding is missing")
+    return FinalEvalBindingSnapshot(
+        ticket_id=str(row["ticket_id"]),
+        request_sha256=str(row["request_sha256"]),
+        authority_plan_hash=str(row["authority_plan_hash"]),
+        research_plan_sha256=str(row["research_plan_sha256"]),
+        campaign_id=str(row["campaign_id"]),
+        campaign_sha256=str(row["campaign_sha256"]),
+        holdout_id=str(row["holdout_id"]),
+        holdout_sha256=str(row["holdout_sha256"]),
+        nonce_fingerprint=str(row["nonce_fingerprint"]),
+        saga_state=str(row["saga_state"]),
+        saga_version=int(row["saga_version"]),
+        result_object_ref=(
+            None
+            if row["result_object_ref"] is None
+            else str(row["result_object_ref"])
+        ),
+        result_object_sha256=(
+            None
+            if row["result_object_sha256"] is None
+            else str(row["result_object_sha256"])
+        ),
+        result_claim_ref=(
+            None
+            if row["result_claim_ref"] is None
+            else str(row["result_claim_ref"])
+        ),
+        result_claim_sha256=(
+            None
+            if row["result_claim_sha256"] is None
+            else str(row["result_claim_sha256"])
+        ),
+        terminal_binding=(
+            None
+            if row["terminal_binding"] is None
+            else str(row["terminal_binding"])
+        ),
+        created_at=_parse_utc_text(str(row["created_at"])),
+        updated_at=_parse_utc_text(str(row["updated_at"])),
+    )
+
 
 class _OperationalJournal:
     """Typed OperationalJournal writer with event_id idempotency."""
@@ -4121,7 +5500,7 @@ class _OperationalJournal:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         try:
-            _migrate_operational_journal_v2(root_secret=root_secret)
+            _migrate_operational_journal_v4(root_secret=root_secret)
         except StoreConfigurationError as error:
             if "installation identities differ" not in str(error):
                 raise

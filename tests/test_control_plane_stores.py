@@ -1827,5 +1827,774 @@ class TrustedBootstrapTests(unittest.TestCase):
                     )
 
 
+class OperationalProvisioningTests(unittest.TestCase):
+    """P0-CR-008 slice B/C: Operational journal is provisioned in WAL mode."""
+
+    def test_operational_store_is_provisioned_in_wal_mode(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                operational_connection = sqlite3.connect(operational_path)
+                authority_connection = sqlite3.connect(authority_path)
+                try:
+                    operational_mode = operational_connection.execute(
+                        "PRAGMA journal_mode"
+                    ).fetchone()[0]
+                    authority_mode = authority_connection.execute(
+                        "PRAGMA journal_mode"
+                    ).fetchone()[0]
+                finally:
+                    operational_connection.close()
+                    authority_connection.close()
+            self.assertEqual(operational_mode, "wal")
+            self.assertEqual(authority_mode, "delete")
+
+
+class FinalEvalAuthorityMigrationTests(unittest.TestCase):
+    """P0-CR-008 slice B: Authority v1 -> v2 migration contracts."""
+
+    def _provision_v1_authority_pair(
+        self,
+        authority_path: Path,
+        operational_path: Path,
+        *,
+        installation_id: str = "a" * 64,
+    ) -> None:
+        original_schema = stores_module._AUTHORITY_SCHEMA
+        original_version = stores_module._AUTHORITY_SCHEMA_VERSION
+        try:
+            stores_module._AUTHORITY_SCHEMA = stores_module._AUTHORITY_SCHEMA_V1
+            stores_module._AUTHORITY_SCHEMA_VERSION = 1
+            stores_module._expected_schema_sha256.cache_clear()
+            stores_module._provision_store(
+                authority_path,
+                store_kind="AUTHORITY_STORE",
+                metadata_table="authority_meta",
+                installation_id=installation_id,
+                root_capability_sha256=stores_module._root_secret_sha256(
+                    ROOT_SECRET
+                ),
+            )
+        finally:
+            stores_module._AUTHORITY_SCHEMA = original_schema
+            stores_module._AUTHORITY_SCHEMA_VERSION = original_version
+            stores_module._expected_schema_sha256.cache_clear()
+        stores_module._provision_store(
+            operational_path,
+            store_kind="OPERATIONAL_JOURNAL",
+            metadata_table="operational_meta",
+            installation_id=installation_id,
+            root_capability_sha256=stores_module._root_secret_sha256(ROOT_SECRET),
+        )
+
+    def test_authority_v1_to_v2_preserves_all_rows_and_hashes(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v1_authority_pair(
+                    authority_path, operational_path
+                )
+                created_at = datetime(
+                    2026, 8, 11, 1, 0, tzinfo=timezone.utc
+                ).isoformat()
+                connection = sqlite3.connect(authority_path)
+                try:
+                    connection.execute(
+                        """INSERT INTO authority_outbox
+                        (event_id, event_type, aggregate_id, payload_json,
+                         payload_sha256, event_sha256, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            "legacy-outbox-event",
+                            "LEGACY",
+                            "legacy",
+                            "{}",
+                            "b" * 64,
+                            "c" * 64,
+                            created_at,
+                        ),
+                    )
+                    connection.commit()
+                    before = connection.execute(
+                        "SELECT * FROM authority_outbox WHERE event_id = ?",
+                        ("legacy-outbox-event",),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertTrue(
+                    stores_module._migrate_authority_v2(
+                        root_secret=ROOT_SECRET
+                    )
+                )
+                self.assertFalse(
+                    stores_module._migrate_authority_v2(
+                        root_secret=ROOT_SECRET
+                    )
+                )
+                connection = sqlite3.connect(authority_path)
+                try:
+                    version = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    metadata_version = connection.execute(
+                        "SELECT value FROM authority_meta WHERE key = 'schema_version'"
+                    ).fetchone()[0]
+                    table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'final_eval_authorizations_v1'"
+                    ).fetchone()
+                    after = connection.execute(
+                        "SELECT * FROM authority_outbox WHERE event_id = ?",
+                        ("legacy-outbox-event",),
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(version, 2)
+                self.assertEqual(metadata_version, "2")
+                self.assertIsNotNone(table)
+                self.assertEqual(tuple(after), tuple(before))
+
+    def test_authority_migration_is_atomic_on_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v1_authority_pair(
+                    authority_path, operational_path
+                )
+                original_schema = stores_module._AUTHORITY_SCHEMA
+                try:
+                    stores_module._AUTHORITY_SCHEMA = (
+                        stores_module._AUTHORITY_SCHEMA_V1
+                        + ("CREATE TABL invalid_final_eval(value TEXT)",)
+                    )
+                    with self.assertRaises(SqliteUnitOfWorkError):
+                        stores_module._migrate_authority_v2(
+                            root_secret=ROOT_SECRET
+                        )
+                finally:
+                    stores_module._AUTHORITY_SCHEMA = original_schema
+                    stores_module._expected_schema_sha256.cache_clear()
+                connection = sqlite3.connect(authority_path)
+                try:
+                    version = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    metadata_version = connection.execute(
+                        "SELECT value FROM authority_meta WHERE key = 'schema_version'"
+                    ).fetchone()[0]
+                    table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'final_eval_authorizations_v1'"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(version, 1)
+                self.assertEqual(metadata_version, "1")
+                self.assertIsNone(table)
+
+    def test_future_or_drifted_authority_schema_fails_closed(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v1_authority_pair(
+                    authority_path, operational_path
+                )
+                connection = sqlite3.connect(authority_path)
+                try:
+                    connection.execute("PRAGMA user_version = 99")
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaises(stores_module.SqliteFutureSchemaError):
+                    stores_module._migrate_authority_v2(
+                        root_secret=ROOT_SECRET
+                    )
+                connection = sqlite3.connect(authority_path)
+                try:
+                    connection.execute("PRAGMA user_version = 1")
+                    connection.execute(
+                        "CREATE TABLE drift(value TEXT)"
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaises(SqliteSchemaError):
+                    stores_module._migrate_authority_v2(
+                        root_secret=ROOT_SECRET
+                    )
+
+    def test_wrong_root_or_installation_identity_rejects_migration(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v1_authority_pair(
+                    authority_path, operational_path
+                )
+                with self.assertRaises(stores_module.AuthorityRootError):
+                    stores_module._migrate_authority_v2(
+                        root_secret="wrong-test-root-capability-0123456789abcdef"
+                    )
+                connection = sqlite3.connect(authority_path)
+                try:
+                    connection.execute(
+                        "UPDATE authority_meta SET value = ? WHERE key = 'installation_id'",
+                        ("f" * 64,),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaisesRegex(
+                    StoreConfigurationError,
+                    "installation identities differ",
+                ):
+                    stores_module._migrate_authority_v2(
+                        root_secret=ROOT_SECRET
+                    )
+
+
+class FinalEvalBindingContractTests(unittest.TestCase):
+    """P0-CR-008 slice B: FinalEval Authority v2 binding uniqueness and CAS."""
+
+    _SAFE_SNAPSHOT_FIELDS = frozenset(
+        {
+            "ticket_id",
+            "request_sha256",
+            "authority_plan_hash",
+            "research_plan_sha256",
+            "campaign_id",
+            "campaign_sha256",
+            "holdout_id",
+            "holdout_sha256",
+            "nonce_fingerprint",
+            "saga_state",
+            "saga_version",
+            "result_object_ref",
+            "result_object_sha256",
+            "result_claim_ref",
+            "result_claim_sha256",
+            "terminal_binding",
+            "created_at",
+            "updated_at",
+        }
+    )
+
+    def setUp(self) -> None:
+        self.temporary = TemporaryDirectory()
+        root = Path(self.temporary.name)
+        self.authority_path = root / "authority.sqlite3"
+        self.operational_path = root / "operational.sqlite3"
+        self.paths = patch.multiple(
+            stores_module,
+            _AUTHORITY_STORE_PATH=self.authority_path,
+            _OPERATIONAL_STORE_PATH=self.operational_path,
+        )
+        self.paths.start()
+        stores_module._expected_schema_sha256.cache_clear()
+        stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+        self.now = datetime(2026, 8, 11, 1, 0, tzinfo=timezone.utc)
+        self.authority = stores_module._AuthorityStore(
+            root_secret=ROOT_SECRET, clock=lambda: self.now
+        )
+        self.actor = Actor(
+            "final-eval-runner", "automation", "invocation-fe-tests"
+        )
+        self.identity = stores_module.AuthorityIdentity(
+            "a" * 64, "b" * 64, "c" * 64
+        )
+        self.grant = self._grant("fe-attempt-001")
+
+    def _grant(self, attempt_id: str) -> stores_module.AuthorityGrant:
+        envelope = self.authority._provision_authorization(
+            phase=Phase.P0,
+            attempt_id=attempt_id,
+            actor=self.actor,
+            identity=self.identity,
+            expires_at=self.now.replace(year=2027),
+            allowed_side_effects=(
+                SideEffect.READ,
+                SideEffect.WRITE_CONTROL_PLANE,
+            ),
+        )
+        return self.authority.claim_authorization(
+            envelope,
+            expected_phase=Phase.P0,
+            expected_attempt_id=attempt_id,
+            actor=self.actor,
+            identity=self.identity,
+        )
+
+    def _begin(
+        self,
+        grant: stores_module.AuthorityGrant,
+        *,
+        nonce: str = "nonce-001",
+        plan: str = "1" * 64,
+        holdout_id: str = "holdout-a",
+        holdout_sha: str = "2" * 64,
+        campaign_id: str = "campaign-a",
+        campaign_sha: str = "3" * 64,
+        idempotency_key: str = "fe-bind-001",
+        task_spec_ref: str = (
+            "research_state/control_plane/p8/task_specs/final-eval.json"
+        ),
+        task_spec_sha: str = "4" * 64,
+    ):
+        return self.authority._begin_final_eval_binding(
+            grant,
+            research_plan_sha256=plan,
+            campaign_id=campaign_id,
+            campaign_sha256=campaign_sha,
+            holdout_id=holdout_id,
+            holdout_sha256=holdout_sha,
+            nonce=nonce,
+            idempotency_key=idempotency_key,
+            task_spec_ref=task_spec_ref,
+            task_spec_sha256=task_spec_sha,
+        )
+
+    def tearDown(self) -> None:
+        self.paths.stop()
+        stores_module._expected_schema_sha256.cache_clear()
+        self.temporary.cleanup()
+
+    def test_final_eval_nonce_fingerprint_is_globally_unique(self) -> None:
+        self._begin(self.grant, nonce="nonce-x", plan="1" * 64)
+        with self.assertRaisesRegex(
+            stores_module.FinalEvalBindingConflictError,
+            "nonce",
+        ):
+            self._begin(
+                self.grant,
+                nonce="nonce-x",
+                plan="9" * 64,
+                holdout_id="holdout-other",
+                holdout_sha="8" * 64,
+                idempotency_key="fe-bind-002",
+            )
+        self._begin(
+            self.grant,
+            nonce="nonce-y",
+            plan="9" * 64,
+            holdout_id="holdout-other",
+            holdout_sha="8" * 64,
+            idempotency_key="fe-bind-003",
+        )
+
+    def test_same_plan_holdout_id_is_rejected_across_grants(self) -> None:
+        self._begin(self.grant, plan="1" * 64, holdout_id="holdout-a")
+        other_grant = self._grant("fe-attempt-002")
+        with self.assertRaisesRegex(
+            stores_module.FinalEvalBindingConflictError,
+            "holdout",
+        ):
+            self._begin(
+                other_grant,
+                nonce="nonce-other",
+                plan="1" * 64,
+                holdout_id="holdout-a",
+                idempotency_key="fe-bind-004",
+            )
+        self._begin(
+            other_grant,
+            nonce="nonce-other",
+            plan="1" * 64,
+            holdout_id="holdout-b",
+            holdout_sha="5" * 64,
+            idempotency_key="fe-bind-005",
+        )
+
+    def test_same_plan_holdout_hash_is_rejected_with_new_nonce_actor_or_invocation(
+        self,
+    ) -> None:
+        self._begin(
+            self.grant,
+            plan="1" * 64,
+            holdout_id="holdout-a",
+            holdout_sha="2" * 64,
+        )
+        other_grant = self._grant("fe-attempt-003")
+        with self.assertRaisesRegex(
+            stores_module.FinalEvalBindingConflictError,
+            "holdout",
+        ):
+            self._begin(
+                other_grant,
+                nonce="nonce-new-invocation",
+                plan="1" * 64,
+                holdout_id="holdout-renamed",
+                holdout_sha="2" * 64,
+                idempotency_key="fe-bind-006",
+            )
+
+    def test_plaintext_nonce_never_appears_in_db_outbox_log_or_evidence(
+        self,
+    ) -> None:
+        self._begin(self.grant, nonce="secret-nonce-7f3a")
+        connection = sqlite3.connect(self.authority_path)
+        try:
+            outbox_payloads = "\n".join(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT payload_json FROM authority_outbox"
+                ).fetchall()
+            )
+        finally:
+            connection.close()
+        self.assertNotIn("secret-nonce-7f3a", outbox_payloads)
+        self.assertNotIn(b"secret-nonce-7f3a", self.authority_path.read_bytes())
+        self.assertNotIn(
+            b"secret-nonce-7f3a", self.operational_path.read_bytes()
+        )
+
+    def test_final_eval_binding_state_machine_rejects_skip_and_backward_cas(
+        self,
+    ) -> None:
+        receipt = self._begin(self.grant)
+        binding = receipt.binding
+        self.assertEqual(binding.saga_state, "CONSUMED")
+        self.assertEqual(binding.saga_version, 2)
+        with self.assertRaises(stores_module.FinalEvalBindingStateError):
+            self.authority._advance_final_eval_binding(
+                binding.ticket_id,
+                expected_state="AUTHORIZED",
+                next_state="EVALUATING",
+                expected_version=1,
+            )
+        with self.assertRaises(stores_module.FinalEvalBindingStateError):
+            self.authority._advance_final_eval_binding(
+                binding.ticket_id,
+                expected_state="CONSUMED",
+                next_state="AUTHORIZED",
+                expected_version=2,
+            )
+        with self.assertRaises(stores_module.FinalEvalBindingStateError):
+            self.authority._advance_final_eval_binding(
+                binding.ticket_id,
+                expected_state="CONSUMED",
+                next_state="RESULT_STAGED",
+                expected_version=2,
+            )
+        with self.assertRaises(stores_module.FinalEvalBindingStateError):
+            self.authority._advance_final_eval_binding(
+                binding.ticket_id,
+                expected_state="CONSUMED",
+                next_state="EVALUATING",
+                expected_version=999,
+            )
+        advanced = self.authority._advance_final_eval_binding(
+            binding.ticket_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self.assertEqual(advanced.saga_state, "EVALUATING")
+        self.assertEqual(advanced.saga_version, 3)
+
+    def test_result_claim_is_create_once_and_bound_to_one_ticket(self) -> None:
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        staged = self.authority._stage_final_eval_result(
+            binding_id,
+            expected_version=3,
+            result_object_ref=(
+                "research_state/control_plane/p8/evidence/result-object.json"
+            ),
+            result_object_sha256="a" * 64,
+            result_claim_ref=(
+                "research_state/control_plane/p8/evidence/result-claim.json"
+            ),
+            result_claim_sha256="b" * 64,
+        )
+        self.assertEqual(staged.saga_state, "RESULT_STAGED")
+        self.assertEqual(staged.saga_version, 4)
+        with self.assertRaises(stores_module.FinalEvalBindingStateError):
+            self.authority._stage_final_eval_result(
+                binding_id,
+                expected_version=4,
+                result_object_ref=(
+                    "research_state/control_plane/p8/evidence/other-object.json"
+                ),
+                result_object_sha256="c" * 64,
+                result_claim_ref=(
+                    "research_state/control_plane/p8/evidence/result-claim.json"
+                ),
+                result_claim_sha256="b" * 64,
+            )
+        second = self._begin(
+            self.grant,
+            nonce="nonce-second",
+            plan="7" * 64,
+            holdout_id="holdout-c",
+            holdout_sha="6" * 64,
+            idempotency_key="fe-bind-007",
+        )
+        second_id = second.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            second_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        with self.assertRaises(stores_module.FinalEvalBindingConflictError):
+            self.authority._stage_final_eval_result(
+                second_id,
+                expected_version=3,
+                result_object_ref=(
+                    "research_state/control_plane/p8/evidence/second-object.json"
+                ),
+                result_object_sha256="d" * 64,
+                result_claim_ref=(
+                    "research_state/control_plane/p8/evidence/result-claim.json"
+                ),
+                result_claim_sha256="b" * 64,
+            )
+
+    def test_recovery_scan_returns_safe_bindings_without_secret_or_holdout_path(
+        self,
+    ) -> None:
+        self._begin(self.grant, nonce="nonce-scan-1")
+        self._begin(
+            self.grant,
+            nonce="nonce-scan-2",
+            plan="5" * 64,
+            holdout_id="holdout-d",
+            holdout_sha="4" * 64,
+            idempotency_key="fe-bind-008",
+        )
+        snapshots = self.authority._scan_final_eval_bindings(
+            states=("CONSUMED",)
+        )
+        self.assertEqual(len(snapshots), 2)
+        for snapshot in snapshots:
+            fields = asdict(snapshot)
+            self.assertEqual(
+                set(fields), FinalEvalBindingContractTests._SAFE_SNAPSHOT_FIELDS
+            )
+            for value in fields.values():
+                if isinstance(value, str):
+                    self.assertNotIn("nonce-scan", value)
+                    self.assertNotIn("\\", value)
+                    self.assertNotIn(":", value)
+            self.assertNotIn("nonce", fields)
+            self.assertNotIn("secret", fields)
+        unrestricted = self.authority._scan_final_eval_bindings()
+        self.assertEqual(len(unrestricted), 2)
+
+    def test_recovery_lease_can_close_but_cannot_open_or_reissue_holdout(
+        self,
+    ) -> None:
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self.authority._stage_final_eval_result(
+            binding_id,
+            expected_version=3,
+            result_object_ref=(
+                "research_state/control_plane/p8/evidence/result-object.json"
+            ),
+            result_object_sha256="a" * 64,
+            result_claim_ref=(
+                "research_state/control_plane/p8/evidence/result-claim.json"
+            ),
+            result_claim_sha256="b" * 64,
+        )
+        maintenance_grant = self._grant("fe-maintenance-attempt")
+        task_spec = {
+            "task_id": "P8-MAINTENANCE-RECOVERY",
+            "objective": "recover a staged final-eval binding",
+            "dependencies": [],
+            "idempotency_key": "fe-recovery-ticket-001",
+            "task_spec_ref": (
+                "research_state/control_plane/p8/task_specs/recovery.json"
+            ),
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_state/control_plane/p8/"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": (
+                "research_state/control_plane/p8/baselines/recovery.json"
+            ),
+            "baseline_sha256": "c" * 64,
+            "input_evidence_refs": [],
+        }
+        maintenance_ticket = self.authority._issue_task_ticket(
+            maintenance_grant,
+            task_spec,
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        maintenance_lease = self.authority._begin_task(maintenance_ticket)
+        recovery = self.authority._issue_final_eval_recovery_lease(
+            maintenance_lease,
+            binding_id=binding_id,
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/recovery.json"
+            ),
+        )
+        terminal = self.authority._recover_final_eval_binding(
+            recovery,
+            terminal_state="SUCCEEDED",
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/closure.json"
+            ),
+        )
+        self.assertEqual(terminal.saga_state, "AUTHORITY_TERMINAL")
+        self.assertEqual(terminal.terminal_binding, "SUCCEEDED")
+        self.assertEqual(
+            AuthorityReader()
+            .execution_lease_binding(maintenance_lease)
+            .lease_id,
+            maintenance_lease.lease_id,
+        )
+        connection = sqlite3.connect(self.authority_path)
+        try:
+            maintenance_state = connection.execute(
+                "SELECT state FROM task_tickets_v2 WHERE ticket_id = ?",
+                (maintenance_lease.ticket_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(maintenance_state, "IN_PROGRESS")
+        with self.assertRaises(stores_module.FinalEvalRecoveryError):
+            self.authority._recover_final_eval_binding(
+                recovery,
+                terminal_state="SUCCEEDED",
+                evidence_ref=(
+                    "research_state/control_plane/p8/evidence/closure.json"
+                ),
+            )
+        with self.assertRaisesRegex(
+            stores_module.FinalEvalBindingConflictError,
+            "holdout",
+        ):
+            self._begin(
+                self.grant,
+                nonce="nonce-reissue-attempt",
+                plan="1" * 64,
+                holdout_id="holdout-a",
+                idempotency_key="fe-bind-009",
+            )
+
+    def test_original_task_lease_secret_is_not_required_after_crash(self) -> None:
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self.authority._stage_final_eval_result(
+            binding_id,
+            expected_version=3,
+            result_object_ref=(
+                "research_state/control_plane/p8/evidence/result-object.json"
+            ),
+            result_object_sha256="a" * 64,
+            result_claim_ref=(
+                "research_state/control_plane/p8/evidence/result-claim.json"
+            ),
+            result_claim_sha256="b" * 64,
+        )
+        fresh_authority = stores_module._AuthorityStore(
+            root_secret=ROOT_SECRET, clock=lambda: self.now
+        )
+        maintenance_grant = self._grant("fe-maintenance-attempt-2")
+        task_spec = {
+            "task_id": "P8-MAINTENANCE-RECOVERY-2",
+            "objective": "recover without the original lease secret",
+            "dependencies": [],
+            "idempotency_key": "fe-recovery-ticket-002",
+            "task_spec_ref": (
+                "research_state/control_plane/p8/task_specs/recovery.json"
+            ),
+            "task_spec_sha256": "e" * 64,
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_state/control_plane/p8/"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": (
+                "research_state/control_plane/p8/baselines/recovery.json"
+            ),
+            "baseline_sha256": "b" * 64,
+            "input_evidence_refs": [],
+        }
+        maintenance_ticket = fresh_authority._issue_task_ticket(
+            maintenance_grant,
+            task_spec,
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        maintenance_lease = fresh_authority._begin_task(maintenance_ticket)
+        recovery = fresh_authority._issue_final_eval_recovery_lease(
+            maintenance_lease,
+            binding_id=binding_id,
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/recovery.json"
+            ),
+        )
+        terminal = fresh_authority._recover_final_eval_binding(
+            recovery,
+            terminal_state="IN_DOUBT",
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/closure.json"
+            ),
+        )
+        self.assertEqual(terminal.saga_state, "AUTHORITY_TERMINAL")
+        self.assertEqual(terminal.terminal_binding, "IN_DOUBT")
+
+
 if __name__ == "__main__":
     unittest.main()
