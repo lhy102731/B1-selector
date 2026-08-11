@@ -46,7 +46,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -78,7 +78,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -118,7 +118,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -141,7 +141,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=missing_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -160,7 +160,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=corrupt_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -186,7 +186,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
             connection = sqlite3.connect(authority_path)
             try:
-                connection.execute("PRAGMA user_version = 2")
+                connection.execute("PRAGMA user_version = 3")
                 connection.commit()
             finally:
                 connection.close()
@@ -196,7 +196,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -227,7 +227,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                         path=authority_path,
                         store_kind="AUTHORITY_STORE",
                         metadata_table="authority_meta",
-                        schema_version=1,
+                        schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                     ),
                     busy_timeout_ms=25,
                 )
@@ -259,7 +259,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -335,7 +335,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=500,
             )
@@ -394,7 +394,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     path=authority_path,
                     store_kind="AUTHORITY_STORE",
                     metadata_table="authority_meta",
-                    schema_version=1,
+                    schema_version=stores_module._AUTHORITY_SCHEMA_VERSION,
                 ),
                 busy_timeout_ms=50,
             )
@@ -408,6 +408,92 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                     unit_of_work._read(lambda _connection: None)
 
             self.assertTrue(failing_connection.closed)
+
+
+class OperationalDurabilityTests(unittest.TestCase):
+    """P0-CR-008 slice B/C: per-connection Operational durability policy."""
+
+    def test_every_new_operational_connection_sets_busy_timeout_and_normal_sync(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                unit_of_work = _SqliteUnitOfWork(
+                    stores_module._operational_spec(),
+                    busy_timeout_ms=1234,
+                )
+
+                def observe(connection):
+                    return (
+                        str(
+                            connection.execute(
+                                "PRAGMA synchronous"
+                            ).fetchone()[0]
+                        ),
+                        int(
+                            connection.execute(
+                                "PRAGMA busy_timeout"
+                            ).fetchone()[0]
+                        ),
+                        str(
+                            connection.execute(
+                                "PRAGMA journal_mode"
+                            ).fetchone()[0]
+                        ),
+                    )
+
+                write_observed = unit_of_work._write(observe)
+                read_observed = unit_of_work._read(observe)
+
+            self.assertEqual(write_observed, ("1", 1234, "wal"))
+            self.assertEqual(read_observed, ("1", 1234, "wal"))
+
+    def test_authority_durability_policy_is_unchanged(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                unit_of_work = _SqliteUnitOfWork(
+                    _StoreSpec(
+                        path=authority_path,
+                        store_kind="AUTHORITY_STORE",
+                        metadata_table="authority_meta",
+                        schema_version=2,
+                    ),
+                    busy_timeout_ms=50,
+                )
+
+                def observe(connection):
+                    return (
+                        str(
+                            connection.execute(
+                                "PRAGMA synchronous"
+                            ).fetchone()[0]
+                        ),
+                        str(
+                            connection.execute(
+                                "PRAGMA journal_mode"
+                            ).fetchone()[0]
+                        ),
+                    )
+
+                observed = unit_of_work._read(observe)
+
+            self.assertEqual(observed, ("2", "delete"))
 
 
 if __name__ == "__main__":

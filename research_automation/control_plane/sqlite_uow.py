@@ -56,6 +56,7 @@ class _StoreSpec:
     metadata_table: str
     schema_version: int
     expected_schema_sha256: str | None = None
+    require_wal: bool = False
 
     def __post_init__(self) -> None:
         resolved = Path(self.path).resolve(strict=False)
@@ -179,6 +180,15 @@ class _SqliteUnitOfWork:
             connection.set_authorizer(_sqlite_authorizer)
             connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
+            if self._spec.require_wal:
+                connection.execute("PRAGMA synchronous = NORMAL")
+                journal_mode = str(
+                    connection.execute("PRAGMA journal_mode").fetchone()[0]
+                )
+                if journal_mode != "wal":
+                    raise SqliteSchemaError(
+                        "operational journal is not in WAL mode"
+                    )
             if read_only:
                 connection.execute("PRAGMA query_only = ON")
             return connection
@@ -189,6 +199,13 @@ class _SqliteUnitOfWork:
                 except sqlite3.DatabaseError:
                     pass
             raise _translate_sqlite_error(error, read_only=read_only) from error
+        except Exception:
+            if connection is not None:
+                try:
+                    connection.close()
+                except sqlite3.DatabaseError:
+                    pass
+            raise
 
     def _validate_schema(
         self,
