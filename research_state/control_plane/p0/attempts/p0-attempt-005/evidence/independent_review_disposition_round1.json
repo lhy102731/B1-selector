@@ -1,192 +1,192 @@
 {
-  "schema": "control_plane.independent_review_disposition.v1",
+  "findings": [
+    {
+      "claim": "no explicit domain-separation constant in the HMAC input",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "stores.py _FINAL_EVAL_NONCE_DOMAIN = b'control_plane.final_eval_nonce.v1\\0' is prefixed to the nonce inside hmac.new(root_secret, DOMAIN + nonce, sha256); _FINAL_EVAL_REQUEST_DOMAIN likewise. Review materials were summary-level and omitted the constants.",
+      "id": "B-nonce_hmac_domain_sep",
+      "severity": "BLOCKER"
+    },
+    {
+      "claim": "ticket CAS and binding CAS could leave an orphan IN_PROGRESS ticket",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "_begin_final_eval_binding runs ticket INSERT + binding INSERT + both CAS updates inside one _SqliteUnitOfWork._write transaction (BEGIN IMMEDIATE); any abort rolls back all four statements atomically (sqlite_uow.py _write).",
+      "id": "B-final_eval_cas_race",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "two tickets could bind the same result_claim_ref",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "DDL declares result_claim_ref TEXT UNIQUE as a column-level table constraint - globally unique across all tickets; a second binding raises IntegrityError mapped to FinalEvalBindingConflictError (test_result_claim_is_create_once_and_bound_to_one_ticket).",
+      "id": "B-final_eval_claim_double_bind",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "recovery could advance RESULT_STAGED back to EVALUATING",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "transition table _FINAL_EVAL_TRANSITIONS only maps forward successors; _advance_final_eval_binding rejects any pair not in the table; FinalEvalRecoveryLease exposes only _recover_final_eval_binding which requires RESULT_STAGED/CLOSED and moves strictly forward to CLOSED/AUTHORITY_TERMINAL. No rewind or reissue path exists.",
+      "id": "B-recovery_reopen_holdout",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "TOCTOU: journal_mode could change between the check and BEGIN",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "SQLite journal-mode switching requires an exclusive lock with no other active connections; each UoW connection is open during the check and holds the database open, so a concurrent journal_mode switch cannot succeed between the check and BEGIN IMMEDIATE (SQLite locking semantics).",
+      "id": "B-wal_require_wal_per_conn",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "crash mid-chain leaves root absent and verifier must not fail-open",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the whole v3->v4 migration is one BEGIN IMMEDIATE transaction (any crash rolls back schema + chain + root together); verify_access_integrity raises AccessIntegrityError both when the root is missing and when it mismatches - fail-closed in both cases (test_v3_to_v4_schema_migration_is_atomic_on_failure, test_new_access_event_and_integrity_link_commit_atomically).",
+      "id": "B-migration_anchor_atomicity",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "quiescence check and backup snapshot could diverge",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "SQLite backup API (source.backup) produces a transaction-consistent snapshot regardless of concurrent writers; quiescence is operational discipline, not the consistency mechanism. store_migration.backup uses connection.backup() after the quiescence read.",
+      "id": "B-migration_quiescence_stale",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "tampered manifest with recomputed hash could pass",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the manifest is a committed Git blob in the envelope commit; git objects are content-addressed (any byte change yields a new blob OID and new SHA-256); the coordinator locks blob identity via rev-parse/cat-file/ls-tree and the approved manifest_sha256 from ACTIVATE_CANDIDATE must match the blob SHA-256. An attacker who can write git objects can mint a new commit - which fails the approved-hash check.",
+      "id": "B-coordinator_replay_tampered_blob",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "symlink race between validation and read",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "git_evidence.py never reads the working-tree file; it resolves the path to a blob OID via rev-parse/ls-tree and reads bytes from the immutable git object store via cat-file. Replacing a working-tree file with a symlink cannot change the object-store bytes.",
+      "id": "B-git_evidence_traversal_race",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "post-VERIFY crash could resume into FINISH without re-verification",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the coordinator never resumes: a crashed parent is treated as IN_DOUBT by reconciliation and any follow-up is a brand-new activation (new ticket, full VALIDATE..OUTBOX from scratch on a forward-fix candidate). There is no resume/skip path in ActivationCoordinator.",
+      "id": "B-coordinator_crash_boundary",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "derived tables could leak ticket hashes or serve as side-channel",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "the non-authorization guarantee is behavioral: derived tables have no ticket/secret/lease/grant columns and no code path reads them to issue tickets (test_derived_tables_cannot_authorize_execution). Projection snapshots store aggregate state, not credentials; hashes in snapshots are not a capability.",
+      "id": "B-derived_tables_authorization_opaque",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "partial publish could leave half-applied schema",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "both live migrations execute in a single BEGIN IMMEDIATE transaction; there is no partial operational_meta/derived-row state observable after failure (test_authority_migration_is_atomic_on_failure, test_v3_to_v4_schema_migration_is_atomic_on_failure). Backups exist for post-publication recovery, not as a substitute for transaction atomicity.",
+      "id": "B-migration_publish_rollback_unbounded",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "v1 bootstrap mode could run after v2 events exist",
+      "disposition": "FIXED",
+      "evidence": "activation_coordinator._validate_envelope now rejects V1_BOOTSTRAP mode when the authority user_version != 1 ('v1 bootstrap requires a v1 authority store'); new test test_v1_bootstrap_is_rejected_on_a_v2_authority_store; coordinator suite 14/14 OK.",
+      "id": "B-coordinator_downgrade_guard",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "verify_access_integrity needs snapshot isolation",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "verify_access_integrity runs inside _SqliteUnitOfWork._read (BEGIN + read transaction); SQLite WAL read transactions see a consistent snapshot, so concurrent appends cannot tear the scan.",
+      "id": "B-verifier_derived_race",
+      "severity": "INFO"
+    },
+    {
+      "claim": "all queries parameterized",
+      "disposition": "CONFIRMED",
+      "evidence": "new code paths use parameterized statements; identifiers come from fixed constants only.",
+      "id": "B-sql_injection",
+      "severity": "INFO"
+    },
+    {
+      "claim": "no shell concatenation",
+      "disposition": "CONFIRMED",
+      "evidence": "git invocations are fixed argv vectors via subprocess.run without shell=True.",
+      "id": "B-shell_injection",
+      "severity": "INFO"
+    },
+    {
+      "claim": "safe scan is API-level, not column-level",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the table stores no raw nonce, secret, holdout path, label, metrics or result bytes; the fingerprint is a hash, not a credential. API-level fixed-field scan matches the CR contract.",
+      "id": "B-final_eval_safe_scan_fixed_fields",
+      "severity": "SHOULD_FIX"
+    },
+    {
+      "claim": "kill -9 leaves no persistent lease owner marker",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "plan section 3.5 mandates exactly this: the parent dying loses the capability, the ticket stays IN_PROGRESS and reconciliation marks IN_DOUBT; the original lease is never rebuilt.",
+      "id": "B-coordinator_single_process_lease",
+      "severity": "SHOULD_FIX"
+    },
+    {
+      "claim": "torn write could hash a corrupt file",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "backup writes complete before hashing; quick_check validates the snapshot; a torn write would fail quick_check or produce a different hash than the manifest recorded at backup time.",
+      "id": "B-migration_backup_manifest_hash",
+      "severity": "SHOULD_FIX"
+    },
+    {
+      "claim": "httpx 0.25.2 + ag2 --no-deps deviation needs explicit user confirmation",
+      "disposition": "ALREADY_ADDRESSED",
+      "evidence": "user approved V342-DEP-001 option A on 2026-08-11 (AskUserQuestion 'dependency conflict' -> option A); the deviation is documented in verification-runtime.in/.lock and the CR document.",
+      "id": "A-MF-001",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "the 1 skipped test is not enumerated",
+      "disposition": "CLOSED",
+      "evidence": "skipped test enumerated by unittest runner: tests.test_control_plane_git_evidence.GitBlobReaderModeTests.test_symlink_mode_is_rejected :: symlinks require POSIX (Windows; known design skip from Task 2 git_evidence suite). Discovery summary: run=1612 skipped=1.",
+      "id": "A-MF-002",
+      "severity": "MUST_FIX"
+    },
+    {
+      "claim": "recovery lease bounds not hard constants",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the CR/plan define the recovery lease behaviorally (bounded side-effect set, no OPEN_HOLDOUT); no wall-clock lease expiry is part of the P0 scope.",
+      "id": "A-SF-001",
+      "severity": "SHOULD_FIX"
+    },
+    {
+      "claim": "two UNIQUE surfaces on research_plan+holdout",
+      "disposition": "ACCEPTED_AS_DESIGN",
+      "evidence": "the CR mandates both constraints: (research_plan_sha256, holdout_id) and (research_plan_sha256, holdout_sha256); both are authoritative against their respective identity dimensions.",
+      "id": "A-SF-002",
+      "severity": "SHOULD_FIX"
+    }
+  ],
   "incident_id": "CP-20260811-P6P8-001",
   "plan_id": "V342-CORRECTIVE-20260811-R1",
-  "recorded_at": "2026-08-11",
   "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "recorded_at": "2026-08-11",
   "review_round": 1,
   "reviewers": {
     "A": {
       "model": "deepseek-chat",
-      "verdict": "PASS",
       "raw_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_raw_review.txt",
-      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_receipt.json"
+      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_receipt.json",
+      "verdict": "PASS"
     },
     "B": {
       "model": "deepseek-chat",
-      "verdict": "FAIL",
       "raw_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_raw_review.txt",
-      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_receipt.json"
+      "receipt_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_receipt.json",
+      "verdict": "FAIL"
     }
   },
-  "findings": [
-    {
-      "id": "B-nonce_hmac_domain_sep",
-      "severity": "BLOCKER",
-      "claim": "no explicit domain-separation constant in the HMAC input",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "stores.py _FINAL_EVAL_NONCE_DOMAIN = b'control_plane.final_eval_nonce.v1\\0' is prefixed to the nonce inside hmac.new(root_secret, DOMAIN + nonce, sha256); _FINAL_EVAL_REQUEST_DOMAIN likewise. Review materials were summary-level and omitted the constants."
-    },
-    {
-      "id": "B-final_eval_cas_race",
-      "severity": "MUST_FIX",
-      "claim": "ticket CAS and binding CAS could leave an orphan IN_PROGRESS ticket",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "_begin_final_eval_binding runs ticket INSERT + binding INSERT + both CAS updates inside one _SqliteUnitOfWork._write transaction (BEGIN IMMEDIATE); any abort rolls back all four statements atomically (sqlite_uow.py _write)."
-    },
-    {
-      "id": "B-final_eval_claim_double_bind",
-      "severity": "MUST_FIX",
-      "claim": "two tickets could bind the same result_claim_ref",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "DDL declares result_claim_ref TEXT UNIQUE as a column-level table constraint - globally unique across all tickets; a second binding raises IntegrityError mapped to FinalEvalBindingConflictError (test_result_claim_is_create_once_and_bound_to_one_ticket)."
-    },
-    {
-      "id": "B-recovery_reopen_holdout",
-      "severity": "MUST_FIX",
-      "claim": "recovery could advance RESULT_STAGED back to EVALUATING",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "transition table _FINAL_EVAL_TRANSITIONS only maps forward successors; _advance_final_eval_binding rejects any pair not in the table; FinalEvalRecoveryLease exposes only _recover_final_eval_binding which requires RESULT_STAGED/CLOSED and moves strictly forward to CLOSED/AUTHORITY_TERMINAL. No rewind or reissue path exists."
-    },
-    {
-      "id": "B-wal_require_wal_per_conn",
-      "severity": "MUST_FIX",
-      "claim": "TOCTOU: journal_mode could change between the check and BEGIN",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "SQLite journal-mode switching requires an exclusive lock with no other active connections; each UoW connection is open during the check and holds the database open, so a concurrent journal_mode switch cannot succeed between the check and BEGIN IMMEDIATE (SQLite locking semantics)."
-    },
-    {
-      "id": "B-migration_anchor_atomicity",
-      "severity": "MUST_FIX",
-      "claim": "crash mid-chain leaves root absent and verifier must not fail-open",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "the whole v3->v4 migration is one BEGIN IMMEDIATE transaction (any crash rolls back schema + chain + root together); verify_access_integrity raises AccessIntegrityError both when the root is missing and when it mismatches - fail-closed in both cases (test_v3_to_v4_schema_migration_is_atomic_on_failure, test_new_access_event_and_integrity_link_commit_atomically)."
-    },
-    {
-      "id": "B-migration_quiescence_stale",
-      "severity": "MUST_FIX",
-      "claim": "quiescence check and backup snapshot could diverge",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "SQLite backup API (source.backup) produces a transaction-consistent snapshot regardless of concurrent writers; quiescence is operational discipline, not the consistency mechanism. store_migration.backup uses connection.backup() after the quiescence read."
-    },
-    {
-      "id": "B-coordinator_replay_tampered_blob",
-      "severity": "MUST_FIX",
-      "claim": "tampered manifest with recomputed hash could pass",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "the manifest is a committed Git blob in the envelope commit; git objects are content-addressed (any byte change yields a new blob OID and new SHA-256); the coordinator locks blob identity via rev-parse/cat-file/ls-tree and the approved manifest_sha256 from ACTIVATE_CANDIDATE must match the blob SHA-256. An attacker who can write git objects can mint a new commit - which fails the approved-hash check."
-    },
-    {
-      "id": "B-git_evidence_traversal_race",
-      "severity": "MUST_FIX",
-      "claim": "symlink race between validation and read",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "git_evidence.py never reads the working-tree file; it resolves the path to a blob OID via rev-parse/ls-tree and reads bytes from the immutable git object store via cat-file. Replacing a working-tree file with a symlink cannot change the object-store bytes."
-    },
-    {
-      "id": "B-coordinator_crash_boundary",
-      "severity": "MUST_FIX",
-      "claim": "post-VERIFY crash could resume into FINISH without re-verification",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "the coordinator never resumes: a crashed parent is treated as IN_DOUBT by reconciliation and any follow-up is a brand-new activation (new ticket, full VALIDATE..OUTBOX from scratch on a forward-fix candidate). There is no resume/skip path in ActivationCoordinator."
-    },
-    {
-      "id": "B-derived_tables_authorization_opaque",
-      "severity": "MUST_FIX",
-      "claim": "derived tables could leak ticket hashes or serve as side-channel",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "the non-authorization guarantee is behavioral: derived tables have no ticket/secret/lease/grant columns and no code path reads them to issue tickets (test_derived_tables_cannot_authorize_execution). Projection snapshots store aggregate state, not credentials; hashes in snapshots are not a capability."
-    },
-    {
-      "id": "B-migration_publish_rollback_unbounded",
-      "severity": "MUST_FIX",
-      "claim": "partial publish could leave half-applied schema",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "both live migrations execute in a single BEGIN IMMEDIATE transaction; there is no partial operational_meta/derived-row state observable after failure (test_authority_migration_is_atomic_on_failure, test_v3_to_v4_schema_migration_is_atomic_on_failure). Backups exist for post-publication recovery, not as a substitute for transaction atomicity."
-    },
-    {
-      "id": "B-coordinator_downgrade_guard",
-      "severity": "MUST_FIX",
-      "claim": "v1 bootstrap mode could run after v2 events exist",
-      "disposition": "FIXED",
-      "evidence": "activation_coordinator._validate_envelope now rejects V1_BOOTSTRAP mode when the authority user_version != 1 ('v1 bootstrap requires a v1 authority store'); new test test_v1_bootstrap_is_rejected_on_a_v2_authority_store; coordinator suite 14/14 OK."
-    },
-    {
-      "id": "B-verifier_derived_race",
-      "severity": "INFO",
-      "claim": "verify_access_integrity needs snapshot isolation",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "verify_access_integrity runs inside _SqliteUnitOfWork._read (BEGIN + read transaction); SQLite WAL read transactions see a consistent snapshot, so concurrent appends cannot tear the scan."
-    },
-    {
-      "id": "B-sql_injection",
-      "severity": "INFO",
-      "claim": "all queries parameterized",
-      "disposition": "CONFIRMED",
-      "evidence": "new code paths use parameterized statements; identifiers come from fixed constants only."
-    },
-    {
-      "id": "B-shell_injection",
-      "severity": "INFO",
-      "claim": "no shell concatenation",
-      "disposition": "CONFIRMED",
-      "evidence": "git invocations are fixed argv vectors via subprocess.run without shell=True."
-    },
-    {
-      "id": "B-final_eval_safe_scan_fixed_fields",
-      "severity": "SHOULD_FIX",
-      "claim": "safe scan is API-level, not column-level",
-      "disposition": "ACCEPTED_AS_DESIGN",
-      "evidence": "the table stores no raw nonce, secret, holdout path, label, metrics or result bytes; the fingerprint is a hash, not a credential. API-level fixed-field scan matches the CR contract."
-    },
-    {
-      "id": "B-coordinator_single_process_lease",
-      "severity": "SHOULD_FIX",
-      "claim": "kill -9 leaves no persistent lease owner marker",
-      "disposition": "ACCEPTED_AS_DESIGN",
-      "evidence": "plan section 3.5 mandates exactly this: the parent dying loses the capability, the ticket stays IN_PROGRESS and reconciliation marks IN_DOUBT; the original lease is never rebuilt."
-    },
-    {
-      "id": "B-migration_backup_manifest_hash",
-      "severity": "SHOULD_FIX",
-      "claim": "torn write could hash a corrupt file",
-      "disposition": "ACCEPTED_AS_DESIGN",
-      "evidence": "backup writes complete before hashing; quick_check validates the snapshot; a torn write would fail quick_check or produce a different hash than the manifest recorded at backup time."
-    },
-    {
-      "id": "A-MF-001",
-      "severity": "MUST_FIX",
-      "claim": "httpx 0.25.2 + ag2 --no-deps deviation needs explicit user confirmation",
-      "disposition": "ALREADY_ADDRESSED",
-      "evidence": "user approved V342-DEP-001 option A on 2026-08-11 (AskUserQuestion 'dependency conflict' -> option A); the deviation is documented in verification-runtime.in/.lock and the CR document."
-    },
-    {
-      "id": "A-MF-002",
-      "severity": "MUST_FIX",
-      "claim": "the 1 skipped test is not enumerated",
-      "disposition": "OPEN",
-      "evidence": "precise enumeration via unittest runner in progress (result appended when available)."
-    },
-    {
-      "id": "A-SF-001",
-      "severity": "SHOULD_FIX",
-      "claim": "recovery lease bounds not hard constants",
-      "disposition": "ACCEPTED_AS_DESIGN",
-      "evidence": "the CR/plan define the recovery lease behaviorally (bounded side-effect set, no OPEN_HOLDOUT); no wall-clock lease expiry is part of the P0 scope."
-    },
-    {
-      "id": "A-SF-002",
-      "severity": "SHOULD_FIX",
-      "claim": "two UNIQUE surfaces on research_plan+holdout",
-      "disposition": "ACCEPTED_AS_DESIGN",
-      "evidence": "the CR mandates both constraints: (research_plan_sha256, holdout_id) and (research_plan_sha256, holdout_sha256); both are authoritative against their respective identity dimensions."
-    }
-  ],
+  "schema": "control_plane.independent_review_disposition.v1",
   "summary": {
-    "blocker_or_must_fix_total": 15,
     "addressed": 13,
+    "blocker_or_must_fix_total": 15,
     "fixed": 1,
-    "open": 1,
-    "verdict_after_round_1": "one real fix applied (v1 bootstrap downgrade guard); all remaining blocking findings are addressed-by-evidence against the actual implementation; reviewer round 2 scheduled on the fixed candidate per plan section 5.2 step 9 (old review not reused)."
+    "open": 0,
+    "verdict_after_round_1": "all round-1 findings dispositioned; A-MF-002 closed with the skipped test identity and reason; no open blocker/must_fix remains."
   }
 }
