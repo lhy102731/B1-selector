@@ -141,3 +141,39 @@ worktree：clean
 - Task 4 非迁移部分（Step 4.1–4.3d：verification runtime + activation coordinator RED/GREEN）可继续准备；
 - 到达 Step 4.5 前必须等待 `AUTHORIZE_STORE_MIGRATION id=P0-CR-008 targets=authority,operational`
   （硬门槛，不改动 live SQLite bytes）。
+
+---
+
+## 8. Task 4 进度：verification runtime（2026-08-11 追加）
+
+### V342-DEP-001（依赖冲突，用户已批准 Option A）
+
+- 冲突事实：ag2 0.13.3 元数据声明 `httpx>=0.28.1`，mootdx 0.11.7（PyPI 最新）声明 `httpx<0.26`；
+  合并两套 direct inputs 后 `pip-compile` 解析失败（`ResolutionImpossible`），exact failure 全文存证
+  `p0-attempt-005/evidence/verification_runtime_resolve_failure.txt`。
+- 用户于 2026-08-11 接受推荐 Option A：verification runtime 固定 `httpx==0.25.2`，ag2 偏离声明仅限测试环境。
+- 实施：
+  - `requirements/verification-runtime.in`：两套 direct inputs 全量合并 + `httpx==0.25.2` + `ag2[openai]==0.13.3`。
+  - `requirements/verification-runtime.lock`：`pip-compile --generate-hashes` 解析除 ag2 外全部输入
+    （1719 个 sha256 hash，1980 行；httpx 0.25.2 / mootdx 0.11.7 / openai 2.53.0 / pandas 2.3.3）；
+    ag2==0.13.3 因元数据冲突**不在 lock 内**，验证环境以 `pip install --no-deps ag2==0.13.3`
+    （wheel SHA-256 `125138be...`）单独安装——偏离在 lock 注释与 CR 中完整文档化。
+  - 生产 `control-plane.lock`（httpx 0.28.1）与 `quant-runtime.lock`（httpx 0.25.2）**未改动**。
+- 计划 Step 4.3 验收命令 `import ag2` 为计划事实性笔误：ag2 0.13.3 的 wheel 导入名是 `autogen`
+  （仓库代码实际 `import autogen`，5 处）；执行以实际包结构为准并记录本偏差。
+
+### Step 4.3 验收（verification venv：`C:\Users\Administrator\AppData\Local\Temp\v342-verification-runtime`）
+
+- venv 由 `python -m venv` 创建，安装 `-r verification-runtime.lock`（hash 校验）成功（全部 wheel 可用，
+  含 py-mini-racer 0.6.0 / PyQt5 5.15.11 / tdxpy 0.2.7），再 `--no-deps` 装 ag2 0.13.3 + 补装
+  fast-depends/termcolor/tiktoken。
+- `pip check`：唯一失败项 = ag2 的 httpx 声明偏离（V342-DEP-001 已批准、文档化）；其余全部一致。
+- import 验收：`autogen 0.13.3 / openai / httpx 0.25.2 / pandas 2.3.3 / flask / yaml / psutil / numpy / pyarrow` 全成功。
+- **完整 control-plane discovery（venv 内）：1593 tests OK (skipped=1)，EXIT=0（924s）**——
+  单一验证环境真实可复现，满足计划 F4 的 verification runtime 前提。
+- 提交：`7af3dfb`（CR + resolve failure evidence）、`a8cbb20`（verification-runtime.in/.lock + CR 状态更新）。
+
+### 下一步
+
+- Task 4 Step 4.3a–4.3d：activation coordinator（RED 测试矩阵 → 实现 → GREEN + secret scan）。
+- 之后两个硬门槛：Step 4.4 真实独立模型审阅授权；Step 4.5 `AUTHORIZE_STORE_MIGRATION`。
