@@ -1,0 +1,33 @@
+{
+  "schema": "control_plane.activation_envelope.v1",
+  "phase": "P0",
+  "task_id": "P0-SOURCE-BOOTSTRAP",
+  "mode": "v1_bootstrap",
+  "base_commit": "76384a3a5891c11c6a7057a5640281c776da3f8e",
+  "base_tree": "88568350ba15ede1e28b71c6b19e991daa538988",
+  "source_commit": "03b5dc760c700790d7cd2a09c7d64b1321e1f70d",
+  "source_tree": "9981bd83ab611640ccedf17ee71dd8a4fa7ee7ea",
+  "candidate_diff_sha256": "cd531ae6076cd0079b3742433a94cafd7bc8d595ae16c9405542274aef002875",
+  "allowed_files": [
+    "research_automation/control_plane/",
+    "tests/",
+    "requirements/",
+    "docs/superpowers/",
+    "research_state/control_plane/p0/attempts/p0-attempt-005/"
+  ],
+  "forbidden_files": [
+    "data/",
+    "knowledge/",
+    "strategy/",
+    "research_state/control_plane/authority/",
+    "research_state/control_plane/operational/"
+  ],
+  "quarantine_manifest_path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/preexisting_user_delta_quarantine.json",
+  "quarantine_manifest_sha256": "caba63e5b93c2cb851397344baf6495b699b2b1970c0260bc990f49a2efdaacf",
+  "required_official_tests": [
+    "tests.test_control_plane_activation_coordinator",
+    "tests.test_control_plane_git_evidence",
+    "tests.test_control_plane_gates"
+  ],
+  "expected_side_effects": ["WRITE_CONTROL_PLANE"]
+}
