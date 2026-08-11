@@ -1,0 +1,106 @@
+{
+  "schema": "control_plane.gate_integrity_incident.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "recorded_by": "v342-corrective-recovery-executor",
+  "recorded_in_worktree": "D:\\workspace\\a-share-quant-selector-main\\.claude\\worktrees\\v342-corrective-recovery",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "fixed_declarations": {
+    "historical_bytes_immutable": true,
+    "authority_row_rewrite_forbidden": true,
+    "eligible_as_predecessor": false,
+    "auto_advance": false,
+    "real_campaign_authorized": false,
+    "real_llm_campaign_authorized": false,
+    "final_holdout_authorized": false,
+    "real_data_or_kbase_mutation_authorized": false,
+    "scheduler_or_acl_mutation_authorized": false,
+    "production_promotion_authorized": false,
+    "c1_c2_c3_authorized": false
+  },
+  "basis": "2026-08-10 DeepSeek 接手内容审查报告 (review baseline of V342-CORRECTIVE-20260811-R1)",
+  "review_baseline_commit_range": "122d30378bcdb64e8145eb608306ad128945cdf8..11a3e4a9f92dd76d8f564aae7b8d06e6645b66f5",
+  "old_phase_attempt_refs": {
+    "P6": [
+      "p6-attempt-001",
+      "p6-attempt-002"
+    ],
+    "P7": [
+      "p7-attempt-001"
+    ],
+    "P8": [
+      "p8-attempt-001"
+    ],
+    "C0": [
+      "c0-attempt-001"
+    ],
+    "C1": [
+      "c1-attempt-001"
+    ]
+  },
+  "old_gate_closure_committed_identities": {
+    "P6": {
+      "gate": {
+        "path": "research_state/control_plane/p6/attempts/p6-attempt-002/gates/official_p6_gate_v342_p6r2.json",
+        "commit": "cb8beb038f8443c7fdc8e8799cd2cbe6cb4495c6",
+        "blob_sha256": "c5c0bac78055f0d84fd3254ffa4995f486fcf006c8daa02eb6f703d2a55c1dcc"
+      },
+      "closures": [
+        {
+          "path": "research_state/control_plane/p6/attempts/p6-attempt-002/evidence/official_p6_closure_receipt_v342_p6r2.json",
+          "commit": "0ca73e335295dcea8043d0b88c0f2292c07afb08",
+          "blob_sha256": "037bd28fcd32726ce664172572849996bad558d6b38126d30062d7c9faf28027"
+        }
+      ]
+    },
+    "P7": {
+      "gate": {
+        "path": "research_state/control_plane/p7/attempts/p7-attempt-001/gates/official_p7_gate_v342_p7r2.json",
+        "commit": "9549f5e13e4f54f3abeb26a8c6b240859a7770f7",
+        "blob_sha256": "e57790504186f2ba8ebbc76b949a4c5a30202eb44939353fa3e6dea5fe94e27e"
+      },
+      "closures": [
+        {
+          "path": "research_state/control_plane/p7/attempts/p7-attempt-001/evidence/official_p7_closure_receipt_v342_p7r2.json",
+          "commit": "8a6091cbacecd760f8a0d0f70b982562e1648afe",
+          "blob_sha256": "6f5af44dfaddcc489e7dd9de9d6239e9518a9d44b6400051fd79bf64f446edc9"
+        }
+      ]
+    },
+    "P8": {
+      "gate": {
+        "path": "research_state/control_plane/p8/attempts/p8-attempt-001/gates/official_p8_gate_v342_p8r2.json",
+        "commit": "11a3e4a9f92dd76d8f564aae7b8d06e6645b66f5",
+        "blob_sha256": "9b541f944e591dd4a43c0ae67d3e96111d68ead845a2f72da8658697f1a843ee"
+      },
+      "closures": [
+        {
+          "path": "research_state/control_plane/p8/attempts/p8-attempt-001/evidence/official_p8_closure_receipt_v342_p8r2.json",
+          "commit": "ebbd9fea74eb0c2cdba1f4ca5944ede6eff18ce7",
+          "blob_sha256": "4644213e79e89dfc2fd5b035747a8f9a9e66c28d18036d992657dec7008d159a"
+        }
+      ]
+    },
+    "C0": {
+      "gate": {
+        "path": "research_state/control_plane/rollout/c0/attempts/c0-attempt-001/gates/official_c0_gate_v342.json",
+        "commit": "43ebb4811a940274de8fed3f4dbac72e7cca12b7",
+        "blob_sha256": "1dc352059a40428548481890ccba8105636d32530b4783a6df0c15de2b5053f5"
+      },
+      "closures": [
+        {
+          "path": "research_state/control_plane/rollout/c0/attempts/c0-attempt-001/evidence/official_c0_closure_receipt_v342.json",
+          "commit": "43ebb4811a940274de8fed3f4dbac72e7cca12b7",
+          "blob_sha256": "1195dd63a54778406632f78867d1444037d861eff6ff4a13c6f93ec4ef40668b"
+        }
+      ]
+    }
+  },
+  "scope_note": "Old bytes and Authority rows preserved unchanged; this incident records disputed status forward. It is NOT a revocation or DB update.",
+  "untracked_old_artifacts": [
+    "research_state/control_plane/p6/attempts/p6-attempt-001/implementation_baseline.json",
+    "research_state/control_plane/p6/attempts/p6-attempt-001/scope_manifest.json",
+    "research_state/control_plane/p6/attempts/p6-attempt-001/evidence/code_freeze_manifest_v2.json",
+    "research_state/control_plane/p6/attempts/p6-attempt-001/evidence/entry_policy_review_candidate.json",
+    "research_state/control_plane/p6/attempts/p6-attempt-001/evidence/external_scheduler_inventory.json"
+  ]
+}

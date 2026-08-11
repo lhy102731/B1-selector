@@ -1,0 +1,32 @@
+{
+  "schema": "control_plane.corrective_scope_ratification_receipt.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "plan_id": "V342-CORRECTIVE-20260811-R1",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "user_approval": {
+    "approve_plan_string_bytes_sha256": "11cd1a78b1e2c7baf26a9b3c33b87017a1edb6f8bd5eac564ecb5ca7ac5dc043",
+    "approved_at": "2026-08-11 14:14 +0800",
+    "approval_command": "APPROVE_PLAN id=V342-CORRECTIVE-20260811-R1"
+  },
+  "plan_blob_identity": {
+    "commit": "76384a3a5891c11c6a7057a5640281c776da3f8e",
+    "blob_oid": "f762e20a763289de18282d4c10d7397230d6022d",
+    "blob_sha256": "3de85da75dbe9de99def7b0c1fcd1925cd64205303a99007d2eedcc6619710bb"
+  },
+  "standing_directive": {
+    "text_bytes_sha256": "7746b4f0dcd1e04c1a72dc86ebe395bd2210397d14e59b6a2ab57476fb2ca494",
+    "text": "一直工作下去直到结束吧",
+    "interpretation": "User directed continuous execution through the plan; per plan auto_advance=false, phase/activation authorizations still require per-gate user strings. This receipt records the APPROVE_PLAN only."
+  },
+  "explicit_exclusions": [
+    "real_campaign_authorized=false",
+    "real_llm_campaign_authorized=false",
+    "final_holdout_authorized=false",
+    "real_data_or_kbase_mutation_authorized=false",
+    "scheduler_or_acl_mutation_authorized=false",
+    "production_promotion_authorized=false",
+    "c1_c2_c3_authorized=false"
+  ],
+  "implementation_authorized": false,
+  "note": "Plan approval is NOT a phase activation. APPROVE_CHANGE_REQUEST id=P0-CR-008 and AUTHORIZE_STORE_MIGRATION remain separate required gates."
+}
