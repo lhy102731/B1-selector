@@ -947,6 +947,42 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     mode=ac.ActivationMode.V2_NORMAL,
                 )
 
+    def test_staged_first_line_status_is_not_truncated(self) -> None:
+        """Regression: _git strip() used to eat the leading X=' ' of the
+        first porcelain entry, shifting line[3:] and reporting truncated
+        paths like 'HANGELOG.md' instead of 'CHANGELOG.md'."""
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            base, source, envelope = _build_envelope(root)
+            # stage an out-of-scope file so porcelain's first entry is
+            # 'M  out_of_scope.txt' (X='M') and the strip bug would
+            # truncate the path
+            (root / "repo" / "out_of_scope.txt").write_text("x\n")
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "add", "--", "out_of_scope.txt"],
+                check=True,
+            )
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            # staged entry survives checkout as 'M  out_of_scope.txt'
+            coordinator = self._coordinator(root)
+            with self.assertRaisesRegex(
+                ac.ActivationEnvelopeError,
+                r"out_of_scope\.txt",
+            ):
+                coordinator.run(
+                    envelope_commit=envelope,
+                    manifest_ref="manifest.json",
+                    mode=ac.ActivationMode.V2_NORMAL,
+                )
+
     def test_v2_normal_task_activation_succeeds(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,

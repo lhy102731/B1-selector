@@ -138,7 +138,7 @@ class ActivationCoordinator:
 
     # ------------------------------------------------------------------
     # Git helpers (fixed argv vectors, never shell strings)
-    def _git(self, *args: str) -> str:
+    def _git(self, *args: str, strip: bool = True) -> str:
         result = subprocess.run(
             [self._git_executable, "-C", str(self._repository_root), *args],
             capture_output=True,
@@ -149,7 +149,8 @@ class ActivationCoordinator:
             raise ActivationEnvelopeError(
                 "git command failed: " + " ".join(args[:4])
             )
-        return result.stdout.strip()
+        output = result.stdout
+        return output.strip() if strip else output
 
     def _git_ok(self, *args: str) -> bool:
         result = subprocess.run(
@@ -568,7 +569,8 @@ class ActivationCoordinator:
         ]
         quarantine = self._quarantine_paths(manifest)
         status = self._git(
-            "status", "--porcelain", "-z", "--untracked-files=all"
+            "status", "--porcelain", "-z", "--untracked-files=all",
+            strip=False,
         )
         out_of_scope = self._out_of_scope_delta(
             status,
@@ -798,7 +800,8 @@ class ActivationCoordinator:
         ):
             raise ActivationEnvelopeError("HEAD tree drifted after activation")
         status = self._git(
-            "status", "--porcelain", "-z", "--untracked-files=all"
+            "status", "--porcelain", "-z", "--untracked-files=all",
+            strip=False,
         )
         allowed = [str(path) for path in manifest.get("allowed_files", [])]
         quarantine = self._quarantine_paths(manifest)
