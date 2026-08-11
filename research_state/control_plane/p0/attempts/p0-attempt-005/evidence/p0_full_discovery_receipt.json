@@ -1,0 +1,28 @@
+{
+  "command": "python -m unittest discover -s tests -p \"test_*.py\"",
+  "cwd": "clean isolated worktree at official HEAD",
+  "disposition": "preexisting, out of P0 scope; test_ag2_cli_routing adaptation is already listed in the plan P6 file table; shadow-suite and legacy-validator drift recorded as preexisting backlog",
+  "errors": 8,
+  "failure_identities": [
+    "ERROR: test_brainstorm_uses_configured_workflow_dispatch (test_ag2_cli_routing.AG2CliRoutingTests.test_brainstorm_uses_configured_workflow_dispatch)",
+    "ERROR: test_catalog_adapter_does_not_load_the_legacy_ag2_runtime (test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_catalog_adapter_does_not_load_the_legacy_ag2_runtime)",
+    "ERROR: test_discover_roundtable_first_flag_keeps_legacy_route (test_ag2_cli_routing.AG2CliRoutingTests.test_discover_roundtable_first_flag_keeps_legacy_route)",
+    "ERROR: test_discover_routes_to_source_first_kbase_workflow (test_ag2_cli_routing.AG2CliRoutingTests.test_discover_routes_to_source_first_kbase_workflow)",
+    "ERROR: test_full_cycle_defaults_to_roundtable_discovery (test_ag2_cli_routing.AG2CliRoutingTests.test_full_cycle_defaults_to_roundtable_discovery)",
+    "ERROR: test_full_cycle_sequential_override_uses_legacy_discovery (test_ag2_cli_routing.AG2CliRoutingTests.test_full_cycle_sequential_override_uses_legacy_discovery)",
+    "ERROR: test_kbase_catalog_v1_is_validated_then_exposed_as_a_typed_view (test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_kbase_catalog_v1_is_validated_then_exposed_as_a_typed_view)",
+    "ERROR: test_resume_discover_routes_to_checkpoint_resume (test_ag2_cli_routing.AG2CliRoutingTests.test_resume_discover_routes_to_checkpoint_resume)",
+    "FAIL: test_catalog_schema_bytes_are_bound_before_legacy_validation (test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_catalog_schema_bytes_are_bound_before_legacy_validation)",
+    "FAIL: test_kbase_source_contract_keeps_the_legacy_inference_boundary (test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_kbase_source_contract_keeps_the_legacy_inference_boundary)",
+    "FAIL: test_post_release_shadow_suite_is_frozen_and_disjoint (test_kbase_query_regression_safety.KBaseQueryRegressionSafetyTests.test_post_release_shadow_suite_is_frozen_and_disjoint)",
+    "FAIL: test_unknown_legacy_kbase_catalog_version_fails_closed (test_foundations_legacy_contract_adapters.LegacyContractAdapterTests.test_unknown_legacy_kbase_catalog_version_fails_closed)"
+  ],
+  "failures": 4,
+  "log_sha256": "3c2bbddfa06e2dd018f7e4734946a53ce0274c3aee64d058ceba093c39e98fb2",
+  "preexisting_proof": "identical 4 failures + 8 errors reproduced at base commit 76384a3 in a throwaway worktree (tests.test_ag2_cli_routing / test_foundations_legacy_contract_adapters / test_kbase_query_regression_safety); P0 diff (76384a3..HEAD) touches none of the failing files: run_research.py, campaign_preflight.py, test_ag2_cli_routing.py, test_foundations_legacy_contract_adapters.py, test_kbase_query_regression_safety.py, query_shadow_20260723.yaml",
+  "python": "verification venv (httpx 0.25.2, ag2 0.13.3 --no-deps, pandas 2.3.3)",
+  "schema": "control_plane.p0_full_discovery_receipt.v1",
+  "skipped": 1,
+  "skipped_identity": "test_control_plane_git_evidence.GitBlobReaderModeTests.test_symlink_mode_is_rejected :: symlinks require POSIX",
+  "tests_run": 2418
+}
