@@ -91,3 +91,45 @@ worktree：clean
 ## 6. 附录：本报告自身状态
 
 - 本报告为执行进度记录，位于 recovery worktree docs 目录，属 `NON_AUTHORITATIVE_PREPARATION`，不构成官方 evidence / Gate / closure。
+
+---
+
+## 7. Task 3 完成情况（2026-08-11 追加）
+
+### 交付（recovery 分支 4 笔非权威 commits）
+
+| Commit | 内容 |
+|---|---|
+| `34769de` | `P0CR: define Authority v2 final-eval uniqueness and recovery contract`（stores.py + test_control_plane_stores.py；含 v2 DDL/迁移/FinalEval binding 全套窄 API） |
+| `3977322` | `P0CR: define OperationalJournal v4 WAL durability policy`（sqlite_uow.py + 测试；require_wal/连接级 NORMAL/连接泄漏修复） |
+| `ca17dc7` | `P0CR: define Operational v4 access-integrity chain and runtime entry`（access.py + campaign_store.py + 测试；同事务 integrity anchor + verify_access_integrity） |
+| `ec69301` | `P0CR: coordinate backed-up quiescent store activation`（store_migration.py + 测试；窄迁移协调器） |
+
+### 测试结果
+
+- RED：22 errors + 1 failure（全部为缺失符号/预期断言，符合计划 Step 3.5 预期）。
+- GREEN 1：stores + sqlite_uow + access + store_migration = **97/97 OK**。
+- GREEN 2：campaign_store + campaign_two_cycle = **90/90 OK**；campaign_controller = **279/279 OK**。
+- 完整 control-plane discovery：**1593 tests，3 errors + 1 skip**。
+
+### 环境性发现（非 Task 3 回归，已证预存）
+
+- 3 个 error 均在 `test_control_plane_entry_guard.EntryInventoryTests`：`EntryInventory.scan` 要求
+  `tools/ths_yuanhang_bridge/YuanhangBridge.dll`，该文件是主工作树 **untracked 用户构建产物**
+  （由 tracked 的 `YuanhangBridge.cs` + `build.ps1` 生成），clean worktree 不含 untracked 文件。
+- 已在 base commit `76384a3` 的临时 worktree 复现同样 3 errors（证明预存，非 Task 3 引入）。
+- **Task 4 前置**：Step 4.12/4.13 的 cumulative/full discovery 需 exit 0，届时须在 clean worktree
+  以可复现方式提供该 DLL（如执行 tracked `build.ps1`）并把产物纳入验证记录；这属于 Task 4 范围，
+  不与用户 quarantine 内容冲突（build.ps1 与 .cs 均为 tracked）。
+
+### 适配说明
+
+- 现有迁移测试按实现变更做最小适配且语义不变：mid-DDL patch 目标改 `_OPERATIONAL_SCHEMA_V3`；
+  drift/future/root 测试改用 v3 fixture 保留原意图；v1 迁移 identity 读取改用 `_operational_v3_spec()`；
+  非 P0 ticket fixture 补全 `_TASK_SPEC_FIELDS` 契约字段；`PRAGMA synchronous` 断言用 SQLite 数值形式。
+
+### 下一步
+
+- Task 4 非迁移部分（Step 4.1–4.3d：verification runtime + activation coordinator RED/GREEN）可继续准备；
+- 到达 Step 4.5 前必须等待 `AUTHORIZE_STORE_MIGRATION id=P0-CR-008 targets=authority,operational`
+  （硬门槛，不改动 live SQLite bytes）。
