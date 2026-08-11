@@ -8,7 +8,7 @@
   ],
   "base_commit": "76384a3a5891c11c6a7057a5640281c776da3f8e",
   "base_tree": "88568350ba15ede1e28b71c6b19e991daa538988",
-  "candidate_diff_sha256": "5067b685b061fb63eca662dc21dd2ea1b6fa39ba3ea050e71c559878ccb2076d",
+  "candidate_diff_sha256": "d1b766769d2784f1fd194d1eebc5b26efb531a6944f1923d75f157d0459a2888",
   "expected_side_effects": [
     "WRITE_CONTROL_PLANE"
   ],
@@ -29,7 +29,7 @@
     "tests.test_control_plane_gates"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "20a9a121c91bf484beb19a88fd9ade01392d3762",
-  "source_tree": "4d2537dcc2ebeaac978926becf36a61d14898cd4",
+  "source_commit": "921fd8f63ca47410b806aae831554b9908ac0f4a",
+  "source_tree": "0badbc726def53f6505165907f47fe192470bfdf",
   "task_id": "P0-SOURCE-BOOTSTRAP"
 }
