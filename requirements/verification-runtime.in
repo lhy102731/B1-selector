@@ -52,5 +52,11 @@ matplotlib>=3.9,<4
 mootdx>=0.11.7,<0.12
 tdxpy==0.2.7
 
-# httpx conflict: control-plane requires httpx>=0.28.1 while mootdx 0.11.7
-# requires httpx<0.26. Resolution is pending the dependency change request.
+# httpx conflict resolution (V342-DEP-001 option A, user approved 2026-08-11):
+# control-plane requires httpx>=0.28.1 while mootdx 0.11.7 requires httpx<0.26.
+# The verification runtime pins httpx==0.25.2 (the quant-runtime.lock version);
+# ag2 0.13.3 declares httpx>=0.28.1 but is empirically compatible with httpx
+# 0.25.x (current environment: 1593 control-plane tests OK). This deviation is
+# test-environment-only; production control-plane.lock stays at httpx 0.28.1.
+httpx==0.25.2
+ag2[openai]==0.13.3

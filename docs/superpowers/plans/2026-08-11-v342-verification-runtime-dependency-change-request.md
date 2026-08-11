@@ -3,7 +3,7 @@
 > ID：`V342-DEP-001`
 > 提出日期：2026-08-11
 > 提出者：corrective-recovery executor（隔离 worktree，NON_AUTHORITATIVE_PREPARATION）
-> 状态：`DRAFT / FOR USER DECISION / GATE HELD`
+> 状态：`APPROVED option=A (2026-08-11, user accepted recommended option)` → 实施完成
 > 关联计划：[2026-08-11-v342-corrective-recovery-plan.md](2026-08-11-v342-corrective-recovery-plan.md) §6 Task 4 Step 4.1/4.2 与 §8 全局停止条件
 
 ## 1. 事实
@@ -26,12 +26,19 @@ ResolutionImpossible:
 
 ## 2. 提议选项（需用户三选一）
 
-### Option A（推荐）：verification runtime 固定 `httpx==0.25.2`，接受声明元数据偏离
+### Option A（已批准，已实施）：verification runtime 固定 `httpx==0.25.2`，接受声明元数据偏离
 
 - 仅修改 `requirements/verification-runtime.in`（新增 `httpx==0.25.2` 行）；**两个生产 .in 与两个生产 lock（control-plane.lock / quant-runtime.lock）一律不改**。
 - verification-runtime.lock 生成方式：先安装 httpx==0.25.2 后以 `pip-compile` 解析**除 ag2 外的全部 direct inputs**，再对 ag2==0.13.3 与其 openai extra 依赖做显式条目 + 文档化偏离声明（偏离仅限 verification/test 环境，不进生产）。
 - 风险：若 ag2 未来在 httpx 0.25 下暴露不兼容，影响范围仅测试验证环境；生产 control-plane 环境仍为 httpx 0.28.1。
 - 依据：当前环境 1593 tests 实证。
+
+**实施记录（2026-08-11）**：
+- `requirements/verification-runtime.in`：全量合并两套 direct inputs + `httpx==0.25.2` + `ag2[openai]==0.13.3`。
+- `requirements/verification-runtime.lock`：`pip-compile`（pip-tools 7.6.0）解析除 ag2 外全部输入
+  （httpx==0.25.2 / mootdx==0.11.7 / openai==2.53.0 / pandas==2.3.3 等 262 行），
+  追加 ag2==0.13.3 显式条目（wheel SHA-256 `125138be...`，PyPI 下载验证）与偏离注释；共 266 行。
+- exact resolver failure 全文存证：`research_state/control_plane/p0/attempts/p0-attempt-005/evidence/verification_runtime_resolve_failure.txt`。
 
 ### Option B：修改 control-plane.in 的 httpx 约束为 `<0.26`
 
