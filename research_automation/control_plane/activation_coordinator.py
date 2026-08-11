@@ -328,6 +328,88 @@ class ActivationCoordinator:
             outbox_drained=drained > 0,
         )
 
+    def _quarantine_paths(
+        self,
+        manifest: Mapping[str, object],
+    ) -> frozenset[str]:
+        """Read the pre-existing user delta quarantine and return its paths.
+
+        The quarantine manifest is a repo-relative working file (never
+        committed per the plan); its SHA-256 is pinned in the envelope
+        manifest, so any drift fails closed.
+        """
+
+        q_path = manifest.get("quarantine_manifest_path")
+        if q_path is None:
+            return frozenset()
+        q_path = str(q_path)
+        if (
+            q_path.startswith("/")
+            or "\\" in q_path
+            or ".." in q_path
+            or "\x00" in q_path
+        ):
+            raise ActivationEnvelopeError(
+                "quarantine manifest path is invalid"
+            )
+        q_file = (self._repository_root / q_path).resolve(strict=False)
+        if (
+            not q_file.is_file()
+            or not str(q_file).startswith(str(self._repository_root))
+        ):
+            raise ActivationEnvelopeError(
+                "quarantine manifest is unavailable"
+            )
+        q_raw = q_file.read_bytes()
+        if (
+            hashlib.sha256(q_raw).hexdigest()
+            != manifest.get("quarantine_manifest_sha256")
+        ):
+            raise ActivationEnvelopeError(
+                "quarantine manifest hash mismatch"
+            )
+        try:
+            q_data = json.loads(q_raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ActivationEnvelopeError(
+                "quarantine manifest is not valid JSON"
+            ) from error
+        paths: set[str] = {q_path}
+        entries = q_data.get("entries")
+        if isinstance(entries, list):
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("path"):
+                    paths.add(str(entry["path"]))
+                elif isinstance(entry, str):
+                    paths.add(entry)
+        return frozenset(paths)
+
+    def _out_of_scope_delta(
+        self,
+        status: str,
+        *,
+        allowed: list[str],
+        quarantine: frozenset[str],
+    ) -> str | None:
+        for line in status.splitlines():
+            if len(line) < 4:
+                continue
+            path = line[3:].strip()
+            if path in allowed or path in quarantine:
+                continue
+            if any(
+                allow.endswith("/") and path.startswith(allow)
+                for allow in allowed
+            ):
+                continue
+            if any(
+                q.endswith("/") and path.startswith(q)
+                for q in quarantine
+            ):
+                continue
+            return path
+        return None
+
     # ------------------------------------------------------------------
     def _validate_envelope(
         self,
@@ -458,20 +540,16 @@ class ActivationCoordinator:
         allowed = [
             str(path) for path in manifest.get("allowed_files", [])
         ]
+        quarantine = self._quarantine_paths(manifest)
         status = self._git("status", "--porcelain", "--untracked-files=all")
-        for line in status.splitlines():
-            if len(line) < 4:
-                continue
-            path = line[3:].strip()
-            if path in allowed:
-                continue
-            if any(
-                allow.endswith("/") and path.startswith(allow)
-                for allow in allowed
-            ):
-                continue
+        out_of_scope = self._out_of_scope_delta(
+            status,
+            allowed=allowed,
+            quarantine=quarantine,
+        )
+        if out_of_scope is not None:
             raise ActivationEnvelopeError(
-                "working tree has out-of-scope delta: " + path
+                "working tree has out-of-scope delta: " + out_of_scope
             )
         return manifest, manifest_sha256
 
@@ -693,18 +771,16 @@ class ActivationCoordinator:
             raise ActivationEnvelopeError("HEAD tree drifted after activation")
         status = self._git("status", "--porcelain", "--untracked-files=all")
         allowed = [str(path) for path in manifest.get("allowed_files", [])]
-        for line in status.splitlines():
-            if len(line) < 4:
-                continue
-            path = line[3:].strip()
-            if path in allowed or any(
-                allow.endswith("/") and path.startswith(allow)
-                for allow in allowed
-            ):
-                continue
+        quarantine = self._quarantine_paths(manifest)
+        out_of_scope = self._out_of_scope_delta(
+            status,
+            allowed=allowed,
+            quarantine=quarantine,
+        )
+        if out_of_scope is not None:
             raise ActivationEnvelopeError(
                 "post-activation working tree has out-of-scope delta: "
-                + path
+                + out_of_scope
             )
 
     def _run_tests(self) -> None:

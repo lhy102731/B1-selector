@@ -805,6 +805,93 @@ class ActivationCoordinatorTests(unittest.TestCase):
             self.assertEqual(states, ["SUCCEEDED", "SUCCEEDED"])
             self.assertEqual(_pending_outbox(root / "authority.sqlite3"), 0)
 
+    def test_quarantine_manifest_exempts_preexisting_delta(self) -> None:
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            # a pre-existing untracked user file outside the task scope
+            (root / "repo" / "user_notes").mkdir(parents=True, exist_ok=True)
+            (root / "repo" / "user_notes" / "scratch.txt").write_text(
+                "user content\n"
+            )
+            quarantine = {
+                "schema": "control_plane.preexisting_user_delta_quarantine.v1",
+                "entry_count": 1,
+                "entries": [{"path": "user_notes/scratch.txt"}],
+            }
+            q_raw = json.dumps(
+                quarantine, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            (root / "repo" / "quarantine.json").write_bytes(q_raw)
+            base, source, envelope = _build_envelope(
+                root,
+                extra_manifest={
+                    "quarantine_manifest_path": "quarantine.json",
+                    "quarantine_manifest_sha256": hashlib.sha256(
+                        q_raw
+                    ).hexdigest(),
+                },
+            )
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            coordinator = self._coordinator(root)
+            report = coordinator.run(
+                envelope_commit=envelope,
+                manifest_ref="manifest.json",
+                mode=ac.ActivationMode.V2_NORMAL,
+            )
+            self.assertTrue(report.succeeded)
+
+    def test_quarantine_manifest_hash_mismatch_is_rejected(self) -> None:
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            (root / "repo" / "user_notes").mkdir(parents=True, exist_ok=True)
+            (root / "repo" / "user_notes" / "scratch.txt").write_text(
+                "user content\n"
+            )
+            q_raw = json.dumps(
+                {
+                    "schema": "control_plane.preexisting_user_delta_quarantine.v1",
+                    "entry_count": 1,
+                    "entries": [{"path": "user_notes/scratch.txt"}],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            (root / "repo" / "quarantine.json").write_bytes(q_raw)
+            base, source, envelope = _build_envelope(
+                root,
+                extra_manifest={
+                    "quarantine_manifest_path": "quarantine.json",
+                    "quarantine_manifest_sha256": "0" * 64,
+                },
+            )
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            coordinator = self._coordinator(root)
+            with self.assertRaisesRegex(
+                ac.ActivationEnvelopeError,
+                "quarantine manifest hash mismatch",
+            ):
+                coordinator.run(
+                    envelope_commit=envelope,
+                    manifest_ref="manifest.json",
+                    mode=ac.ActivationMode.V2_NORMAL,
+                )
+
     def test_v2_normal_task_activation_succeeds(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,
