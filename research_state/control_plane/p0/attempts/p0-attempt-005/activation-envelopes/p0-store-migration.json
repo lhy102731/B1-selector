@@ -1,5 +1,7 @@
 {
-  "allowed_files": [],
+  "allowed_files": [
+    "research_state/control_plane/p0/attempts/p0-attempt-005/"
+  ],
   "base_commit": "c0387537892b5d5b690e3b835aa7d6a62503a74f",
   "base_tree": "dffb6d7ba654cf179d70c026d7914ff25c16e72a",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
