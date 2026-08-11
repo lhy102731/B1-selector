@@ -502,7 +502,7 @@ class AccessJournal:
 
     def __init__(self, *, root_secret: str, grant: object,
                  clock: Callable[[], datetime] | None = None) -> None:
-        stores._migrate_operational_journal_v2(root_secret=root_secret)
+        stores._migrate_operational_journal_v4(root_secret=root_secret)
         stores._require_store_root(stores._operational_spec(), root_secret)
         _grant_snapshot_is_active(grant)
         self._grant = grant
@@ -630,6 +630,39 @@ class AccessJournal:
         )
         sequence = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
         stored = replace(event, sequence=sequence, occurred_at=occurred)
+        integrity_row = connection.execute(
+            "SELECT * FROM access_events WHERE sequence = ?", (sequence,)
+        ).fetchone()
+        row_sha256 = stores._access_row_sha256(
+            {field: integrity_row[field] for field in stores._ACCESS_ROW_FIELDS}
+        )
+        previous = connection.execute(
+            "SELECT prefix_sha256 FROM ops_access_event_integrity "
+            "ORDER BY sequence DESC LIMIT 1"
+        ).fetchone()
+        previous_prefix = (
+            stores._ACCESS_EMPTY_CHAIN_ROOT
+            if previous is None
+            else str(previous["prefix_sha256"])
+        )
+        prefix = stores._access_prefix_sha256(previous_prefix, row_sha256)
+        connection.execute(
+            """INSERT INTO ops_access_event_integrity
+            (sequence, event_id, row_sha256, prefix_sha256, occurred_at)
+            VALUES (?, ?, ?, ?, ?)""",
+            (
+                sequence,
+                str(integrity_row["event_id"]),
+                row_sha256,
+                prefix,
+                _utc(occurred),
+            ),
+        )
+        connection.execute(
+            "UPDATE operational_meta SET value = ? "
+            "WHERE key = 'access_integrity_root'",
+            (prefix,),
+        )
         for output in event.output_artifact_refs:
             for taint in event.taint_out:
                 try:

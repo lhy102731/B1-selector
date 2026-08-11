@@ -280,7 +280,7 @@ class OperationalCampaignJournal:
             campaign_id=self._campaign_id,
         )
         campaign_execution_mode(self._namespace)
-        stores._migrate_operational_journal_v3(root_secret=root_secret)
+        stores._migrate_operational_journal_v4(root_secret=root_secret)
         stores._require_store_root(stores._operational_spec(), root_secret)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 

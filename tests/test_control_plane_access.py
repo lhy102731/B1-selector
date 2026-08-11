@@ -732,10 +732,21 @@ class OperationalMigrationTests(unittest.TestCase):
                     before, hashlib.sha256(authority_path.read_bytes()).hexdigest()
                 )
                 self.assertEqual(
-                    stores_module.OperationalReader().read_identity().schema_version,
+                    stores_module._read_store_identity(
+                        stores_module._operational_v3_spec()
+                    ).schema_version,
                     3,
                 )
-                self.assertEqual(stores_module.OperationalReader().event_count(), 1)
+                self.assertEqual(
+                    stores_module._SqliteUnitOfWork(
+                        stores_module._operational_v3_spec()
+                    )._read(
+                        lambda connection: connection.execute(
+                            "SELECT COUNT(*) FROM journal_events"
+                        ).fetchone()[0]
+                    ),
+                    1,
+                )
 
     def test_migration_rejects_schema_drift(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -748,7 +759,12 @@ class OperationalMigrationTests(unittest.TestCase):
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
                 stores_module._expected_schema_sha256.cache_clear()
-                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                self._provision_v1_pair(authority_path, operational_path)
+                self.assertTrue(
+                    stores_module._migrate_operational_journal_v2(
+                        root_secret=ROOT_SECRET
+                    )
+                )
                 connection = sqlite3.connect(operational_path)
                 try:
                     connection.execute("CREATE TABLE drift(value TEXT)")
@@ -791,9 +807,9 @@ class OperationalMigrationTests(unittest.TestCase):
             ):
                 stores_module._expected_schema_sha256.cache_clear()
                 self._provision_v1_pair(authority_path, operational_path)
-                original_schema = stores_module._OPERATIONAL_SCHEMA
+                original_schema = stores_module._OPERATIONAL_SCHEMA_V3
                 try:
-                    stores_module._OPERATIONAL_SCHEMA = (
+                    stores_module._OPERATIONAL_SCHEMA_V3 = (
                         stores_module._OPERATIONAL_SCHEMA_V1
                         + (original_schema[len(stores_module._OPERATIONAL_SCHEMA_V1)],)
                         + ("CREATE TABL invalid_migration(value TEXT)",)
@@ -803,7 +819,7 @@ class OperationalMigrationTests(unittest.TestCase):
                             root_secret=ROOT_SECRET
                         )
                 finally:
-                    stores_module._OPERATIONAL_SCHEMA = original_schema
+                    stores_module._OPERATIONAL_SCHEMA_V3 = original_schema
                     stores_module._expected_schema_sha256.cache_clear()
                 connection = sqlite3.connect(operational_path)
                 try:
@@ -831,7 +847,7 @@ class OperationalMigrationTests(unittest.TestCase):
                 _OPERATIONAL_STORE_PATH=operational_path,
             ):
                 stores_module._expected_schema_sha256.cache_clear()
-                stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+                self._provision_v1_pair(authority_path, operational_path)
                 with self.assertRaises(stores_module.AuthorityRootError):
                     stores_module._migrate_operational_journal_v2(
                         root_secret="wrong-test-root-capability-0123456789abcdef"
@@ -851,6 +867,556 @@ class OperationalMigrationTests(unittest.TestCase):
                     stores_module._migrate_operational_journal_v2(
                         root_secret=ROOT_SECRET
                     )
+
+
+class OperationalV4MigrationTests(unittest.TestCase):
+    """P0-CR-008 slice B/C: OperationalJournal v3 -> v4 and access integrity."""
+
+    def _provision_v3_pair(
+        self,
+        authority_path: Path,
+        operational_path: Path,
+        *,
+        installation_id: str = "a" * 64,
+    ) -> None:
+        stores_module._provision_store(
+            authority_path,
+            store_kind="AUTHORITY_STORE",
+            metadata_table="authority_meta",
+            installation_id=installation_id,
+            root_capability_sha256=stores_module._root_secret_sha256(
+                ROOT_SECRET
+            ),
+        )
+        original_schema = stores_module._OPERATIONAL_SCHEMA
+        original_version = stores_module._OPERATIONAL_SCHEMA_VERSION
+        try:
+            stores_module._OPERATIONAL_SCHEMA = (
+                stores_module._OPERATIONAL_SCHEMA_V3
+            )
+            stores_module._OPERATIONAL_SCHEMA_VERSION = 3
+            stores_module._expected_schema_sha256.cache_clear()
+            stores_module._provision_store(
+                operational_path,
+                store_kind="OPERATIONAL_JOURNAL",
+                metadata_table="operational_meta",
+                installation_id=installation_id,
+                root_capability_sha256=stores_module._root_secret_sha256(
+                    ROOT_SECRET
+                ),
+            )
+        finally:
+            stores_module._OPERATIONAL_SCHEMA = original_schema
+            stores_module._OPERATIONAL_SCHEMA_VERSION = original_version
+            stores_module._expected_schema_sha256.cache_clear()
+
+    def _bootstrap_pair(self, authority_path: Path, operational_path: Path) -> None:
+        stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+
+    def _grant(
+        self,
+        authority: stores_module._AuthorityStore,
+        *,
+        attempt_id: str,
+        actor: Actor,
+        phase: Phase = Phase.P3,
+    ) -> stores_module.AuthorityGrant:
+        identity = stores_module.AuthorityIdentity("a" * 64, "b" * 64, "c" * 64)
+        envelope = authority._provision_authorization(
+            phase=phase,
+            attempt_id=attempt_id,
+            actor=actor,
+            identity=identity,
+            expires_at=NOW.replace(year=2027),
+            allowed_side_effects=(
+                SideEffect.READ,
+                SideEffect.WRITE_CONTROL_PLANE,
+            ),
+        )
+        return authority.claim_authorization(
+            envelope,
+            expected_phase=phase,
+            expected_attempt_id=attempt_id,
+            actor=actor,
+            identity=identity,
+        )
+
+    def _append_root_event(
+        self,
+        journal: AccessJournal,
+        grant: stores_module.AuthorityGrant,
+        actor: Actor,
+        *,
+        event_id: str,
+    ) -> AccessEvent:
+        event = AccessEvent(
+            event_id=event_id,
+            operation=AccessOperation.READ,
+            actor_id=actor.actor_id,
+            actor_type=actor.actor_type,
+            invocation_id=actor.invocation_id,
+            run_id="run-v4",
+            dataset_role=DatasetRole.TRAIN,
+            output_artifact_refs=(f"artifact:{event_id}",),
+            taint_out=(Taint.CLEAN,),
+        )
+        capability = issue_root_capability(
+            grant=grant,
+            registration=access_module.FrozenAccessRegistration(
+                "research_state/control_plane/p3/access-registry.json",
+                "d" * 64,
+                f"artifact:{event_id}",
+                DatasetRole.TRAIN,
+                Taint.CLEAN,
+                (),
+                grant.grant_id,
+                actor,
+                access_module._REGISTRY_SEAL,
+            ),
+            actor=actor,
+        )
+        return journal.append_root(event, capability)
+
+    def test_v3_to_v4_migration_preserves_event_rows_and_builds_access_integrity_anchor(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v3_pair(authority_path, operational_path)
+                connection = sqlite3.connect(operational_path)
+                try:
+                    for index in (1, 2):
+                        connection.execute(
+                            """INSERT INTO access_events
+                            (event_id, operation, actor_id, actor_type,
+                             invocation_id, run_id, dataset_role, fields_json,
+                             input_refs_json, output_refs_json, taint_in_json,
+                             taint_out_json, metadata_json, payload_sha256,
+                             occurred_at)
+                            VALUES (?, 'READ', 'actor', 'human', 'inv', 'run',
+                                    'TRAIN', '[]', '[]', ?, '["CLEAN"]',
+                                    '["CLEAN"]', '[]', ?, ?)""",
+                            (
+                                f"legacy-access-{index}",
+                                f'["artifact:legacy-access-{index}"]',
+                                "b" * 64,
+                                NOW.isoformat(),
+                            ),
+                        )
+                    connection.execute(
+                        """INSERT INTO journal_events
+                        (authority_sequence, event_id, event_type, aggregate_id,
+                         payload_json, payload_sha256, event_sha256, created_at,
+                         mirrored_at)
+                        VALUES (1, 'legacy-journal-1', 'LEGACY', 'legacy',
+                                '{}', ?, ?, ?, ?)""",
+                        ("b" * 64, "c" * 64, NOW.isoformat(), NOW.isoformat()),
+                    )
+                    connection.execute(
+                        """INSERT INTO campaign_events
+                        (event_id, namespace, campaign_id, aggregate_type,
+                         aggregate_id, event_type, payload_json, payload_sha256,
+                         occurred_at)
+                        VALUES ('legacy-campaign-1', 'formal', 'campaign-a',
+                                'CAMPAIGN_STATE', 'campaign-a',
+                                'CAMPAIGN_CREATED', '{}', ?, ?)""",
+                        ("d" * 64, NOW.isoformat()),
+                    )
+                    connection.commit()
+                    before = connection.execute(
+                        "SELECT * FROM access_events ORDER BY sequence"
+                    ).fetchall()
+                finally:
+                    connection.close()
+                self.assertTrue(
+                    stores_module._migrate_operational_journal_v4(
+                        root_secret=ROOT_SECRET
+                    )
+                )
+                self.assertFalse(
+                    stores_module._migrate_operational_journal_v4(
+                        root_secret=ROOT_SECRET
+                    )
+                )
+                connection = sqlite3.connect(operational_path)
+                try:
+                    version = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    access_count = connection.execute(
+                        "SELECT COUNT(*) FROM access_events"
+                    ).fetchone()[0]
+                    journal_count = connection.execute(
+                        "SELECT COUNT(*) FROM journal_events"
+                    ).fetchone()[0]
+                    campaign_count = connection.execute(
+                        "SELECT COUNT(*) FROM campaign_events"
+                    ).fetchone()[0]
+                    anchor_count = connection.execute(
+                        "SELECT COUNT(*) FROM ops_access_event_integrity"
+                    ).fetchone()[0]
+                    root_value = connection.execute(
+                        "SELECT value FROM operational_meta "
+                        "WHERE key = 'access_integrity_root'"
+                    ).fetchone()
+                    after = connection.execute(
+                        "SELECT * FROM access_events ORDER BY sequence"
+                    ).fetchall()
+                finally:
+                    connection.close()
+                self.assertEqual(version, 4)
+                self.assertEqual(access_count, 2)
+                self.assertEqual(journal_count, 1)
+                self.assertEqual(campaign_count, 1)
+                self.assertEqual(anchor_count, 2)
+                self.assertIsNotNone(root_value)
+                self.assertEqual(
+                    [tuple(row) for row in after],
+                    [tuple(row) for row in before],
+                )
+                verification = (
+                    stores_module.OperationalReader()
+                    .verify_access_integrity()
+                )
+                self.assertTrue(verification.root_matches)
+                self.assertEqual(verification.anchored_rows, 2)
+                self.assertEqual(
+                    stores_module.OperationalReader()
+                    .read_identity()
+                    .schema_version,
+                    4,
+                )
+
+    def test_new_access_event_and_integrity_link_commit_atomically(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._bootstrap_pair(authority_path, operational_path)
+                actor = Actor("reviewer", "human", "invocation-v4-tests")
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET, clock=lambda: NOW
+                )
+                grant = self._grant(
+                    authority, attempt_id="p3-v4-attempt", actor=actor
+                )
+                journal = AccessJournal(
+                    root_secret=ROOT_SECRET, grant=grant, clock=lambda: NOW
+                )
+                self._append_root_event(
+                    journal, grant, actor, event_id="evt-v4-001"
+                )
+                connection = sqlite3.connect(operational_path)
+                try:
+                    anchor_count = connection.execute(
+                        "SELECT COUNT(*) FROM ops_access_event_integrity"
+                    ).fetchone()[0]
+                    root_value = connection.execute(
+                        "SELECT value FROM operational_meta "
+                        "WHERE key = 'access_integrity_root'"
+                    ).fetchone()[0]
+                finally:
+                    connection.close()
+                self.assertEqual(anchor_count, 1)
+                self.assertTrue(
+                    stores_module.OperationalReader()
+                    .verify_access_integrity()
+                    .root_matches
+                )
+                connection = sqlite3.connect(operational_path)
+                try:
+                    connection.execute(
+                        "DELETE FROM ops_access_event_integrity"
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaises(stores_module.AccessIntegrityError):
+                    stores_module.OperationalReader().verify_access_integrity()
+                self.assertNotEqual(
+                    root_value,
+                    stores_module._ACCESS_EMPTY_CHAIN_ROOT,
+                )
+
+    def test_access_row_sequence_or_timestamp_tamper_breaks_chain(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._bootstrap_pair(authority_path, operational_path)
+                actor = Actor("reviewer", "human", "invocation-v4-tests")
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET, clock=lambda: NOW
+                )
+                grant = self._grant(
+                    authority, attempt_id="p3-v4-attempt", actor=actor
+                )
+                journal = AccessJournal(
+                    root_secret=ROOT_SECRET, grant=grant, clock=lambda: NOW
+                )
+                self._append_root_event(
+                    journal, grant, actor, event_id="evt-v4-001"
+                )
+                self._append_root_event(
+                    journal, grant, actor, event_id="evt-v4-002"
+                )
+                connection = sqlite3.connect(operational_path)
+                try:
+                    connection.execute(
+                        "UPDATE access_events SET occurred_at = ? "
+                        "WHERE sequence = 1",
+                        ("2099-01-01T00:00:00+00:00",),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaises(stores_module.AccessIntegrityError):
+                    stores_module.OperationalReader().verify_access_integrity()
+                connection = sqlite3.connect(operational_path)
+                try:
+                    connection.execute(
+                        "UPDATE access_events SET occurred_at = ? "
+                        "WHERE sequence = 1",
+                        (NOW.isoformat(),),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                self.assertTrue(
+                    stores_module.OperationalReader()
+                    .verify_access_integrity()
+                    .root_matches
+                )
+                connection = sqlite3.connect(operational_path)
+                try:
+                    connection.execute(
+                        "UPDATE access_events SET sequence = 99 "
+                        "WHERE sequence = 2"
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                with self.assertRaises(stores_module.AccessIntegrityError):
+                    stores_module.OperationalReader().verify_access_integrity()
+
+    def test_v3_to_v4_schema_migration_is_atomic_on_failure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v3_pair(authority_path, operational_path)
+                connection = sqlite3.connect(operational_path)
+                try:
+                    connection.execute(
+                        """INSERT INTO access_events
+                        (event_id, operation, actor_id, actor_type,
+                         invocation_id, run_id, dataset_role, fields_json,
+                         input_refs_json, output_refs_json, taint_in_json,
+                         taint_out_json, metadata_json, payload_sha256,
+                         occurred_at)
+                        VALUES ('legacy-access-1', 'READ', 'actor', 'human',
+                                'inv', 'run', 'TRAIN', '[]', '[]',
+                                '["artifact:legacy-access-1"]', '["CLEAN"]',
+                                '["CLEAN"]', '[]', ?, ?)""",
+                        ("b" * 64, NOW.isoformat()),
+                    )
+                    connection.commit()
+                finally:
+                    connection.close()
+                original_schema = stores_module._OPERATIONAL_SCHEMA
+                try:
+                    stores_module._OPERATIONAL_SCHEMA = (
+                        stores_module._OPERATIONAL_SCHEMA_V3
+                        + ("CREATE TABL invalid_v4_derived(value TEXT)",)
+                    )
+                    with self.assertRaises(SqliteUnitOfWorkError):
+                        stores_module._migrate_operational_journal_v4(
+                            root_secret=ROOT_SECRET
+                        )
+                finally:
+                    stores_module._OPERATIONAL_SCHEMA = original_schema
+                    stores_module._expected_schema_sha256.cache_clear()
+                connection = sqlite3.connect(operational_path)
+                try:
+                    version = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    derived = connection.execute(
+                        "SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE type = 'table' AND name LIKE 'ops_%'"
+                    ).fetchone()[0]
+                    access_count = connection.execute(
+                        "SELECT COUNT(*) FROM access_events"
+                    ).fetchone()[0]
+                    root_value = connection.execute(
+                        "SELECT value FROM operational_meta "
+                        "WHERE key = 'access_integrity_root'"
+                    ).fetchone()
+                finally:
+                    connection.close()
+                self.assertEqual(version, 3)
+                self.assertEqual(derived, 0)
+                self.assertEqual(access_count, 1)
+                self.assertIsNone(root_value)
+
+    def test_wal_transition_failure_prevents_schema_migration(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._provision_v3_pair(authority_path, operational_path)
+                with patch.object(
+                    stores_module,
+                    "_switch_operational_wal",
+                    return_value="delete",
+                ) as switched:
+                    with self.assertRaises(
+                        stores_module.OperationalWalError
+                    ):
+                        stores_module._migrate_operational_journal_v4(
+                            root_secret=ROOT_SECRET
+                        )
+                switched.assert_called_once()
+                connection = sqlite3.connect(operational_path)
+                try:
+                    version = connection.execute(
+                        "PRAGMA user_version"
+                    ).fetchone()[0]
+                    derived = connection.execute(
+                        "SELECT COUNT(*) FROM sqlite_master "
+                        "WHERE type = 'table' AND name LIKE 'ops_%'"
+                    ).fetchone()[0]
+                finally:
+                    connection.close()
+                self.assertEqual(version, 3)
+                self.assertEqual(derived, 0)
+
+    def test_derived_tables_cannot_authorize_execution(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            authority_path = root / "authority.sqlite3"
+            operational_path = root / "operational.sqlite3"
+            with patch.multiple(
+                stores_module,
+                _AUTHORITY_STORE_PATH=authority_path,
+                _OPERATIONAL_STORE_PATH=operational_path,
+            ):
+                stores_module._expected_schema_sha256.cache_clear()
+                self._bootstrap_pair(authority_path, operational_path)
+                connection = sqlite3.connect(operational_path)
+                try:
+                    projection_columns = {
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(ops_campaign_projection)"
+                        ).fetchall()
+                    }
+                    for forbidden in (
+                        "state",
+                        "secret",
+                        "lease",
+                        "ticket",
+                        "grant",
+                        "actor",
+                        "authorization",
+                    ):
+                        self.assertNotIn(forbidden, projection_columns)
+                    connection.execute(
+                        """INSERT INTO ops_campaign_projection
+                        (namespace, campaign_id, aggregate_type, aggregate_id,
+                         last_sequence, snapshot_json, snapshot_sha256,
+                         updated_at)
+                        VALUES ('formal', 'campaign-x', 'CAMPAIGN_STATE',
+                                'campaign-x', 1, '{}', ?, ?)""",
+                        ("e" * 64, NOW.isoformat()),
+                    )
+                    with self.assertRaises(sqlite3.OperationalError):
+                        connection.execute(
+                            """INSERT INTO ops_campaign_projection
+                            (namespace, campaign_id, aggregate_type,
+                             aggregate_id, last_sequence, snapshot_json,
+                             snapshot_sha256, updated_at, state)
+                            VALUES ('formal', 'campaign-y', 'CAMPAIGN_STATE',
+                                    'campaign-y', 1, '{}', ?, ?, 'ACTIVE')""",
+                            ("f" * 64, NOW.isoformat()),
+                        )
+                    connection.commit()
+                finally:
+                    connection.close()
+                actor = Actor("p0-runner", "automation", "invocation-v4-tests")
+                authority = stores_module._AuthorityStore(
+                    root_secret=ROOT_SECRET, clock=lambda: NOW
+                )
+                grant = self._grant(
+                    authority,
+                    attempt_id="p0-v4-attempt",
+                    actor=actor,
+                    phase=Phase.P0,
+                )
+                task_spec = {
+                    "task_id": "P0-V4-DERIVED-GUARD",
+                    "objective": "prove derived tables cannot authorize",
+                    "dependencies": [],
+                    "idempotency_key": "p0-v4-derived-guard-001",
+                    "task_spec_ref": (
+                        "research_state/control_plane/p0/task_specs/guard.json"
+                    ),
+                    "task_spec_sha256": "f" * 64,
+                    "requirements": {
+                        "required_test_receipt_ids": [],
+                        "required_review_receipt_ids": [],
+                        "required_evidence_ids": [],
+                    },
+                    "allowed_files": [
+                        "research_state/control_plane/p0/task_specs/"
+                    ],
+                    "forbidden_files": ["data/"],
+                    "baseline_ref": (
+                        "research_state/control_plane/p0/baselines/guard.json"
+                    ),
+                    "baseline_sha256": "b" * 64,
+                    "input_evidence_refs": [],
+                }
+                ticket = authority._issue_task_ticket(
+                    grant,
+                    task_spec,
+                    allowed_side_effects=(
+                        SideEffect.WRITE_CONTROL_PLANE,
+                    ),
+                )
+                self.assertIsNotNone(ticket.ticket_id)
 
 
 if __name__ == "__main__":
