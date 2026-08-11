@@ -805,6 +805,26 @@ class ActivationCoordinatorTests(unittest.TestCase):
             self.assertEqual(states, ["SUCCEEDED", "SUCCEEDED"])
             self.assertEqual(_pending_outbox(root / "authority.sqlite3"), 0)
 
+    def test_wrong_root_capability_is_rejected_at_construction(self) -> None:
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            (root / "repo").mkdir(parents=True, exist_ok=True)
+            with self.assertRaisesRegex(
+                ac.ActivationEnvelopeError,
+                "authority root capability is invalid",
+            ):
+                ac.ActivationCoordinator(
+                    root_secret=(
+                        "wrong-test-root-capability-0123456789abcdef"
+                    ),
+                    repository_root=root / "repo",
+                )
+
     def test_quarantine_manifest_exempts_preexisting_delta(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,

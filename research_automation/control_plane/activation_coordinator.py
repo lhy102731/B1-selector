@@ -20,6 +20,7 @@ outbox mirror/ack. The lease never crosses a process or a schema boundary.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import secrets
 import sqlite3
@@ -109,6 +110,25 @@ class ActivationCoordinator:
         self._crash_hook = crash_hook
         self._lease_secret_value: str | None = None
         self._ticket_id: str | None = None
+        # The coordinator is the root Authority holder: verify the supplied
+        # root capability against the live store before any activation.
+        self._verify_root()
+
+    def _verify_root(self) -> None:
+        supplied = _stores._root_secret_sha256(self._root_secret)
+        stored = _SqliteUnitOfWork(self._current_authority_spec())._read(
+            lambda connection: connection.execute(
+                "SELECT value FROM authority_meta "
+                "WHERE key = 'root_capability_sha256'"
+            ).fetchone()
+        )
+        if stored is None or not hmac.compare_digest(
+            str(stored[0]),
+            supplied,
+        ):
+            raise ActivationEnvelopeError(
+                "authority root capability is invalid"
+            )
 
     # ------------------------------------------------------------------
     # Git helpers (fixed argv vectors, never shell strings)
