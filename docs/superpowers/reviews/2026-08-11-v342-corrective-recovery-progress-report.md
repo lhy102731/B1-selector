@@ -112,15 +112,23 @@ worktree：clean
 - GREEN 2：campaign_store + campaign_two_cycle = **90/90 OK**；campaign_controller = **279/279 OK**。
 - 完整 control-plane discovery：**1593 tests，3 errors + 1 skip**。
 
-### 环境性发现（非 Task 3 回归，已证预存）
+### 环境性发现（非 Task 3 回归，已证预存）→ 已修复
 
 - 3 个 error 均在 `test_control_plane_entry_guard.EntryInventoryTests`：`EntryInventory.scan` 要求
   `tools/ths_yuanhang_bridge/YuanhangBridge.dll`，该文件是主工作树 **untracked 用户构建产物**
   （由 tracked 的 `YuanhangBridge.cs` + `build.ps1` 生成），clean worktree 不含 untracked 文件。
 - 已在 base commit `76384a3` 的临时 worktree 复现同样 3 errors（证明预存，非 Task 3 引入）。
-- **Task 4 前置**：Step 4.12/4.13 的 cumulative/full discovery 需 exit 0，届时须在 clean worktree
-  以可复现方式提供该 DLL（如执行 tracked `build.ps1`）并把产物纳入验证记录；这属于 Task 4 范围，
-  不与用户 quarantine 内容冲突（build.ps1 与 .cs 均为 tracked）。
+- **修复（2026-08-11）**：在 clean worktree 用 tracked `build.ps1` 可复现构建该 DLL——
+  命令：`powershell -NoProfile -ExecutionPolicy Bypass -File tools/ths_yuanhang_bridge/build.ps1`（exit 0）；
+  依赖 csc.exe（`C:\Windows\Microsoft.NET\Framework64\v4.0.30319`）+ Microsoft.NETCore.App 6.x（6.0.36）。
+  产物：`tools/ths_yuanhang_bridge/YuanhangBridge.dll`（14336 bytes，
+  SHA-256 `3a5440ba5cdfabbda0e76788b25e7c9dafc58ca9c8a32a846daa1abbe15acec6`），
+  与主工作树用户构建的 DLL（SHA-256 `f2378ea0...`）为同源不同次编译（csc 产物含时间戳差异），
+  互不覆盖；主工作树未动。
+- 该产物是 worktree 中的 untracked 验证环境文件（由 tracked 源可复现、hash 恒定、不进入任何
+  source/evidence 提交），后续 test receipt 的 clean-status proof 需把该路径与 hash 一并记录；
+  它不属于 Task 0 quarantine 中的用户预存内容。
+- 修复后验证：`tests.test_control_plane_entry_guard.EntryInventoryTests` = **34/34 OK**。
 
 ### 适配说明
 
