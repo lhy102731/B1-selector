@@ -608,6 +608,32 @@ class ActivationCoordinatorTests(unittest.TestCase):
                 _authority_user_version(root / "authority.sqlite3"), 1
             )
 
+    def test_v1_bootstrap_is_rejected_on_a_v2_authority_store(self) -> None:
+        """Reviewer B downgrade-guard: v1 bootstrap must not run post-migration."""
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)  # v2 authority store
+            base, source, envelope = _build_envelope(root, mode="v1_bootstrap")
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            coordinator = self._coordinator(root)
+            with self.assertRaisesRegex(
+                ac.ActivationEnvelopeError,
+                "v1 bootstrap requires a v1 authority store",
+            ):
+                coordinator.run(
+                    envelope_commit=envelope,
+                    manifest_ref="manifest.json",
+                    mode=ac.ActivationMode.V1_BOOTSTRAP,
+                )
+            self.assertEqual(_pending_outbox(root / "authority.sqlite3"), 0)
+
     def test_migration_before_source_ticket_terminal_is_rejected(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,

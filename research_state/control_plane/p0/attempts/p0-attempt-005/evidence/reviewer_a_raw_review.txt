@@ -1,0 +1,23 @@
+BLOCKER: CR-001: Delta 1 git_evidence.py reads only committed regular blobs (100644/100755) with fixed argv vectors — meets CR contract.
+BLOCKER: CR-002: Delta 1 activation_coordinator enforces strict forward phase machine VALIDATE→OUTBOX with no rollback/reset paths — meets CR contract.
+BLOCKER: CR-003: Delta 1 crash matrix covers pre-BEGIN/post-BEGIN/post-fast-forward/post-FINISH with real subprocess kills preserving invariants — meets CR contract.
+BLOCKER: CR-004: Delta 1 v1 bootstrap vs migration separation is enforced by phase-specific rejection logic — meets CR contract.
+BLOCKER: CR-005: Delta 1 bearer secret zero occurrence verified in fixtures, DB bytes, child argv/env/logs — meets CR contract.
+BLOCKER: CR-006: Delta 2 final_eval_authorizations_v1 implements global UNIQUE across request_sha256, nonce_fingerprint, result_claim_ref, plan/holdout pairs — meets CR contract.
+BLOCKER: CR-007: Delta 2 nonce stored only as HMAC-SHA256 fingerprint with domain separation, plaintext never persisted — meets CR contract.
+BLOCKER: CR-008: Delta 2 versioned CAS transitions enforce strict saga_state machine with saga_version guarding against skip/backward — meets CR contract.
+BLOCKER: CR-009: Delta 2 FinalEvalRecoveryLease is independent, cannot reopen/reissue, bounded to close/terminal/outbox — meets CR contract.
+BLOCKER: CR-010: Delta 3 v4 connections enforce WAL mode verified before BEGIN with connection-local synchronous=NORMAL — meets CR contract.
+BLOCKER: CR-011: Delta 3 derived tables lack any ticket/secret/lease/grant columns, cannot authorize execution — meets CR contract.
+BLOCKER: CR-012: Delta 3 sealed ops_access_event_integrity chain hashes all historical rows in sequence order with atomic fail-closed verification — meets CR contract.
+BLOCKER: CR-013: Delta 3 v3→v4 migration is single BEGIN IMMEDIATE transaction with WAL switch verified outside first, rollback on anchor failure — meets CR contract.
+BLOCKER: CR-014: Delta 3 store_migration.py is narrow to two fixed targets, create-only backups, staged rehearsals, validated publish, no arbitrary SQL — meets CR contract.
+BLOCKER: CR-015: Test suites cover 317 focused OK, 1593 discovery OK, 13/13 coordinator crash matrix, secret scan zero hits — meets acceptance criteria.
+BLOCKER: CR-016: No scope violations; files restricted to CR exact set, no set_param/reset/rollback, no production locks, no user-file access — meets scope.
+MUST_FIX: MF-001: htbody — httpx==0.25.2 pinned with ag2 --no-deps is a documented dependency deviation requiring explicit user re-confirmation in final acceptance sign-off.
+MUST_FIX: MF-002: htbody — the 1 skipped test in the 1593 discovery suite is not enumerated; skipped test identity and skip reason must be provided for full acceptance evidence.
+SHOULD_FIX: SF-001: htbody — recovery lease bounds (max duration/refresh cadence) are stated behaviorally but not enforced as hard constants in code; consider explicit lease-expiry check.
+SHOULD_FIX: SF-002: htbody — final_eval_authorizations UNIQUE constraint on (research_plan_sha256, holdout_id) plus (research_plan_sha256, holdout_sha256) creates potential redundant uniqueness surfaces; clarify which is authoritative.
+INFO: I-001: htbody — Delta 3 derived tables rebuilt fresh in v4 with no historical backfill needed, consistent with non-authorizing design.
+INFO: I-002: htbody — activation coordinator envelope manifest read as committed blob from envelope commit ensures fully reproducible activation.
+VERDICT: PASS

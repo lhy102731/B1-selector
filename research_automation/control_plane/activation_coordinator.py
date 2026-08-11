@@ -379,10 +379,16 @@ class ActivationCoordinator:
                 "activation manifest mode does not match the request"
             )
         effects = set(manifest.get("expected_side_effects", []))
-        if mode is ActivationMode.V1_BOOTSTRAP and "MIGRATE_STORES" in effects:
-            raise ActivationEnvelopeError(
-                "v1 bootstrap ticket cannot carry migration effects"
-            )
+        if mode is ActivationMode.V1_BOOTSTRAP:
+            if "MIGRATE_STORES" in effects:
+                raise ActivationEnvelopeError(
+                    "v1 bootstrap ticket cannot carry migration effects"
+                )
+            current = self._current_authority_spec()
+            if current.schema_version != 1:
+                raise ActivationEnvelopeError(
+                    "v1 bootstrap requires a v1 authority store"
+                )
         if mode is ActivationMode.MIGRATION:
             if "MIGRATE_STORES" not in effects:
                 raise ActivationEnvelopeError(
