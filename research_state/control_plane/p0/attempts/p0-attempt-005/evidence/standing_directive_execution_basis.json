@@ -1,0 +1,23 @@
+{
+  "schema": "control_plane.standing_directive_execution_basis.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "plan_id": "V342-CORRECTIVE-20260811-R1",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "executor_decision": {
+    "basis": "Handoff §1 conflict priority (user explicit current instruction > approved Master Plan) + user standing directives + repo P0-CR-005 precedent",
+    "user_directives": [
+      {"text": "改为自动批准进行下一步", "bytes_sha256": null},
+      {"text": "一直工作下去直到结束吧", "bytes_sha256": "7746b4f0dcd1e04c1a72dc86ebe395bd2210397d14e59b6a2ab57476fb2ca494"}
+    ],
+    "interpretation": "Standing directives authorize continuous execution through implementation, including treating APPROVE_CHANGE_REQUEST id=P0-CR-008 and per-task ACTIVATE_CANDIDATE / phase authorizations as granted, unless the user objects at a presented gate.",
+    "hard_stops_remaining": [
+      "AUTHORIZE_STORE_MIGRATION id=P0-CR-008 targets=authority,operational (live SQLite bytes change)",
+      "real independent model review (user must choose reviewer provider/model and disclosure scope)"
+    ],
+    "never_authorized": [
+      "real_campaign", "real_llm_campaign", "final_holdout_open_or_eval",
+      "real_data_or_kbase_mutation", "scheduler_or_acl_mutation", "production_promotion",
+      "c1_c2_c3_rollout", "set_param_reset_rollback_change", "stopping_user_long_running_tasks"
+    ]
+  }
+}
