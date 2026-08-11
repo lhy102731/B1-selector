@@ -1,0 +1,56 @@
+  ERROR: Cannot install -r requirements/verification-runtime.in (line 52), ag2 and ag2[openai]==0.13.3 because these package versions have conflicting dependencies.
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pip\_internal\resolution\resolvelib\resolver.py", line 99, in resolve
+    result = self._result = resolver.resolve(
+                            ~~~~~~~~~~~~~~~~^
+        collected.requirements, max_rounds=limit_how_complex_resolution_can_be
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pip\_vendor\resolvelib\resolvers\resolution.py", line 601, in resolve
+    state = resolution.resolve(requirements, max_rounds=max_rounds)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pip\_vendor\resolvelib\resolvers\resolution.py", line 542, in resolve
+    raise ResolutionImpossible(self.state.backtrack_causes)
+pip._vendor.resolvelib.resolvers.exceptions.ResolutionImpossible: [RequirementInformation(requirement=SpecifierRequirement('httpx<1,>=0.28.1'), parent=LinkCandidate('https://files.pythonhosted.org/packages/76/25/2bfff6e3da821cf246f1dc2167b57d65da7002c803f088f0ed110c66c646/ag2-0.13.3-py3-none-any.whl (from https://pypi.org/simple/ag2/) (requires-python:>=3.10)')), RequirementInformation(requirement=SpecifierRequirement('httpx<1,>=0.28.1'), parent=ExtrasCandidate(base=LinkCandidate('https://files.pythonhosted.org/packages/76/25/2bfff6e3da821cf246f1dc2167b57d65da7002c803f088f0ed110c66c646/ag2-0.13.3-py3-none-any.whl (from https://pypi.org/simple/ag2/) (requires-python:>=3.10)'), extras=frozenset({'openai'}))), RequirementInformation(requirement=SpecifierRequirement('httpx<0.26.0,>=0.25.0'), parent=LinkCandidate('https://files.pythonhosted.org/packages/bd/7c/dff7de8e9d29d49a22ffcb03f765cf829be5097019a760319d908009da54/mootdx-0.11.7-py3-none-any.whl (from https://pypi.org/simple/mootdx/) (requires-python:<4.0,>=3.8)'))]
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Scripts\pip-compile.exe\__main__.py", line 5, in <module>
+    sys.exit(cli())
+             ~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\click\core.py", line 1569, in __call__
+    return self.main(*args, **kwargs)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\click\core.py", line 1490, in main
+    rv = self.invoke(ctx)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\click\core.py", line 1353, in invoke
+    return ctx.invoke(self.callback, **ctx.params)
+           ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\click\core.py", line 907, in invoke
+    return callback(*args, **kwargs)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\click\decorators.py", line 34, in new_func
+    return f(get_current_context(), *args, **kwargs)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\piptools\scripts\compile.py", line 509, in cli
+    results = resolver.resolve(max_rounds=max_rounds)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\piptools\resolver.py", line 642, in resolve
+    is_resolved = self._do_resolve(
+        resolver=resolver,
+        compatible_existing_constraints=compatible_existing_constraints,
+    )
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\piptools\resolver.py", line 677, in _do_resolve
+    resolver.resolve(
+    ~~~~~~~~~~~~~~~~^
+        root_reqs=self.constraints
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        + list(compatible_existing_constraints.values()),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        check_supported_wheels=not self.options.target_dir,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pip\_internal\resolution\resolvelib\resolver.py", line 108, in resolve
+    raise error from e
+pip._internal.exceptions.DistributionNotFound: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts
