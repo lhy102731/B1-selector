@@ -1,0 +1,29 @@
+{
+  "access_integrity_verification": {
+    "anchored_rows": 0,
+    "chain_root": "e4dd6696a30489d17e30cb4d4cbbe678cdb441990e8dfa1d1f68c180ead0318a",
+    "root_matches": true,
+    "stored_root": "e4dd6696a30489d17e30cb4d4cbbe678cdb441990e8dfa1d1f68c180ead0318a"
+  },
+  "authority": {
+    "outbox": 1312,
+    "pending_outbox": 0,
+    "tickets": 90,
+    "user_version": 2
+  },
+  "authority_file_sha256": "1000e66e410214902399d195acb5ed2a8d4fe4239c952cdb4fbf7dda4ded83e0",
+  "operational": {
+    "access_events": 0,
+    "integrity_anchors": 0,
+    "integrity_root": "e4dd6696a30489d17e30cb4d4cbbe678cdb441990e8dfa1d1f68c180ead0318a",
+    "journal_events": 1312,
+    "journal_mode": "wal",
+    "user_version": 4
+  },
+  "operational_file_sha256": "67f9625ac5a8b81398b772ea5aba7723826194d2fa981ff66b169be7c28e7dca",
+  "schema": "control_plane.p0_store_migration_verification_receipt.v1",
+  "tickets_terminal": {
+    "P0-SOURCE-BOOTSTRAP": "SUCCEEDED",
+    "P0-STORE-MIGRATION": "SUCCEEDED"
+  }
+}

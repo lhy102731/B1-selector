@@ -1,0 +1,37 @@
+{
+  "authority": {
+    "file_sha256": "3f88d9963d6d696002ac4fd034e68fd1ef693bc185a53a1da02c3759a2f7272e",
+    "journal_mode": "delete",
+    "manifest_sha256": "7062b182c0ffc792200e324e70c61a49311cc7160e3fb068a7f1432191e18dcc",
+    "path": "research_state\\control_plane\\authority\\authority.sqlite3.p0-cr-008.pre-v2.backup",
+    "row_counts": {
+      "active_entry_policy_v1": 1,
+      "authority_meta": 4,
+      "authority_outbox": 1309,
+      "authorizations_v2": 23,
+      "phase_gate_closures_v1": 17,
+      "phase_grants_v2": 23,
+      "reviewed_entry_policies_v1": 22,
+      "task_tickets_v2": 89,
+      "trusted_task_receipts_v2": 960
+    },
+    "user_version": 1
+  },
+  "operational": {
+    "file_sha256": "dd3357fe9ee5bc02ec508d896ebf820a8e70e49093cad76d9ac568c0e213a60c",
+    "journal_mode": "delete",
+    "manifest_sha256": "099ea8e96bbd41162bc909f85d4b88b082024a381daa2ffd1384e41afdf6ce57",
+    "path": "research_state\\control_plane\\operational\\operational.sqlite3.p0-cr-008.pre-v4.backup",
+    "row_counts": {
+      "access_events": 0,
+      "campaign_events": 0,
+      "derivation_edges": 0,
+      "fold_test_attempts": 0,
+      "journal_events": 1309,
+      "operational_meta": 4,
+      "taint_projection": 0
+    },
+    "user_version": 3
+  },
+  "schema": "control_plane.p0_store_migration_backup_receipt.v1"
+}
