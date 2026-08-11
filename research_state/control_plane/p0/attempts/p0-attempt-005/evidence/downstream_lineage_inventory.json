@@ -1,0 +1,66 @@
+{
+  "schema": "control_plane.downstream_lineage_inventory.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "scan_command": "git grep -n -e p8-attempt-001 -e c0-attempt-001 -- research_state/control_plane docs/superpowers research_automation tests",
+  "p8_c0_reference_count": 197,
+  "references": [
+    {
+      "path": "docs/superpowers/plans/2026-07-26-v342-09-rollout-c0.md",
+      "ref": "c0-attempt-001",
+      "type": "HISTORICAL_CITATION"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-26-v342-10-rollout-c1.md",
+      "ref": "c0-attempt-001,c1-attempt-001",
+      "type": "INVALID_PREDECESSOR_BINDING"
+    },
+    {
+      "path": "research_automation/control_plane/rollout_chaos.py",
+      "ref": "c0-attempt-001",
+      "type": "REUSABLE_CODE_OR_TEST",
+      "note": "_ATTEMPT_ID hardcoded"
+    },
+    {
+      "path": "research_automation/control_plane/rollout_c1.py",
+      "ref": "c1-attempt-001",
+      "type": "REUSABLE_CODE_OR_TEST"
+    },
+    {
+      "path": "research_state/control_plane/inventories/final_inventory_v342_p8r2_p8-attempt-001_git_v3.json",
+      "ref": "p8-attempt-001",
+      "type": "HISTORICAL_CITATION"
+    },
+    {
+      "path": "research_state/control_plane/inventories/final_inventory_v342_c0_c0-attempt-001_git_v3.json",
+      "ref": "c0-attempt-001",
+      "type": "HISTORICAL_CITATION"
+    },
+    {
+      "path": "research_state/control_plane/p8/attempts/p8-attempt-001/**",
+      "ref": "p8-attempt-001",
+      "type": "HISTORICAL_CITATION",
+      "note": "self-references"
+    },
+    {
+      "path": "research_state/control_plane/rollout/c1/attempts/c1-attempt-001/**",
+      "ref": "c1-attempt-001",
+      "type": "REAL_INVOCATION_REQUIRES_RERUN"
+    },
+    {
+      "path": "tests/test_control_plane_rollout_c1_driver.py",
+      "ref": "c1-attempt-001",
+      "type": "REUSABLE_CODE_OR_TEST"
+    },
+    {
+      "path": "tests/test_control_plane_rollout_c1_manifest.py",
+      "ref": "c1-attempt-001",
+      "type": "REUSABLE_CODE_OR_TEST"
+    },
+    {
+      "path": "tests/test_control_plane_rollout_c1_report.py",
+      "ref": "c1-attempt-001",
+      "type": "REUSABLE_CODE_OR_TEST"
+    }
+  ],
+  "note": "New Gates must NOT accept any old P6/P7/P8/C0 artifact as valid predecessor."
+}

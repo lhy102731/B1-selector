@@ -1,0 +1,81 @@
+{
+  "schema": "control_plane.lineage_quarantine_manifest.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "classification_enum": [
+    "HISTORICAL_CITATION",
+    "REUSABLE_CODE_OR_TEST",
+    "INVALID_PREDECESSOR_BINDING",
+    "INVALID_GATE_EVIDENCE",
+    "REAL_INVOCATION_REQUIRES_RERUN",
+    "NO_RERUN_NEEDED"
+  ],
+  "entries": [
+    {
+      "path": "docs/superpowers/plans/2026-07-26-v342-09-rollout-c0.md",
+      "class": "HISTORICAL_CITATION",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "docs/superpowers/plans/2026-07-26-v342-10-rollout-c1.md",
+      "class": "INVALID_PREDECESSOR_BINDING",
+      "gate_input_eligible": false,
+      "note": "cites C0 closure as predecessor"
+    },
+    {
+      "path": "research_automation/control_plane/rollout_chaos.py",
+      "class": "REUSABLE_CODE_OR_TEST",
+      "gate_input_eligible": false,
+      "note": "_ATTEMPT_ID=c0-attempt-001 hardcoded; must be updated by corrective work"
+    },
+    {
+      "path": "research_automation/control_plane/rollout_c1.py",
+      "class": "REUSABLE_CODE_OR_TEST",
+      "gate_input_eligible": false,
+      "note": "c1-attempt-001 references; blocked until new lineage"
+    },
+    {
+      "path": "research_state/control_plane/inventories/final_inventory_v342_p8r2_p8-attempt-001_git_v3.json",
+      "class": "HISTORICAL_CITATION",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "research_state/control_plane/inventories/final_inventory_v342_c0_c0-attempt-001_git_v3.json",
+      "class": "HISTORICAL_CITATION",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "research_state/control_plane/p6/attempts/**",
+      "class": "INVALID_GATE_EVIDENCE",
+      "gate_input_eligible": false,
+      "note": "old P6 gates/closures ineligible as predecessor"
+    },
+    {
+      "path": "research_state/control_plane/p7/attempts/**",
+      "class": "INVALID_GATE_EVIDENCE",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "research_state/control_plane/p8/attempts/**",
+      "class": "INVALID_GATE_EVIDENCE",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "research_state/control_plane/rollout/c0/attempts/**",
+      "class": "INVALID_GATE_EVIDENCE",
+      "gate_input_eligible": false
+    },
+    {
+      "path": "research_state/control_plane/rollout/c1/attempts/c1-attempt-001/**",
+      "class": "REAL_INVOCATION_REQUIRES_RERUN",
+      "gate_input_eligible": false,
+      "note": "c1 downstream results must be re-evaluated by lineage audit"
+    },
+    {
+      "path": "tests/test_control_plane_rollout_c1_*.py",
+      "class": "REUSABLE_CODE_OR_TEST",
+      "gate_input_eligible": false
+    }
+  ],
+  "invariant": "Old references need not be zero, but no NEW Gate may accept them as valid predecessor."
+}
