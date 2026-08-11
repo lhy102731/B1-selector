@@ -1,0 +1,28 @@
+{
+  "schema": "control_plane.corrective_authorization_receipt.v1",
+  "incident_id": "CP-20260811-P6P8-001",
+  "plan_id": "V342-CORRECTIVE-20260811-R1",
+  "recorded_at": "2026-08-11",
+  "prepared_status": "NON_AUTHORITATIVE_PREPARATION",
+  "authorizations": [
+    {
+      "kind": "independent_model_review",
+      "granted": true,
+      "basis": "user selected '授权外部模型审阅（指定模型）' at the Step 4.4 hard gate",
+      "scope": "Reviewer A (spec/plan compliance) and Reviewer B (quality/security/red-team) on P0-CR-008, Tasks 1-4 committed candidates, fixture migrations, activation coordinator and full test receipts; no live store bytes, no secrets, no user quarantine content, no real Campaign/Holdout material",
+      "provider_model": "TBD - must be a real independent model distinct from the implementer invocation"
+    },
+    {
+      "kind": "store_migration",
+      "granted": true,
+      "basis": "user sent AUTHORIZE_STORE_MIGRATION (selected recommended option) at the Step 4.5 hard gate",
+      "targets": ["authority", "operational"],
+      "procedure": "Step 4.5-4.10: quiescence check, SQLite backup API create-only backups, staging rehearsal with rollback injection, atomic migration (authority v1->v2, operational v3->v4 with WAL-first), per-step schema/row/outbox verification; on failure keep the original store and backups, no automatic downgrade; once v2/v4 events exist, forward-fix only unless the user accepts event-window loss"
+    }
+  ],
+  "still_not_authorized": [
+    "real_campaign", "real_llm_campaign", "final_holdout_open_or_eval",
+    "real_data_or_kbase_mutation", "scheduler_or_acl_mutation", "production_promotion",
+    "c1_c2_c3_rollout", "set_param_reset_rollback_change", "stopping_user_long_running_tasks"
+  ]
+}
