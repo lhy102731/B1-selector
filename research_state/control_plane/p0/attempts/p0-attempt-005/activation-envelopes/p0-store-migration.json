@@ -1,0 +1,27 @@
+{
+  "allowed_files": [],
+  "base_commit": "c0387537892b5d5b690e3b835aa7d6a62503a74f",
+  "base_tree": "dffb6d7ba654cf179d70c026d7914ff25c16e72a",
+  "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "expected_side_effects": [
+    "MIGRATE_STORES"
+  ],
+  "forbidden_files": [
+    "data/",
+    "knowledge/",
+    "strategy/"
+  ],
+  "mode": "migration",
+  "phase": "P0",
+  "quarantine_manifest_path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/preexisting_user_delta_quarantine.json",
+  "quarantine_manifest_sha256": "caba63e5b93c2cb851397344baf6495b699b2b1970c0260bc990f49a2efdaacf",
+  "required_official_tests": [
+    "tests.test_control_plane_stores",
+    "tests.test_control_plane_access",
+    "tests.test_control_plane_store_migration"
+  ],
+  "schema": "control_plane.activation_envelope.v1",
+  "source_commit": "c0387537892b5d5b690e3b835aa7d6a62503a74f",
+  "source_tree": "dffb6d7ba654cf179d70c026d7914ff25c16e72a",
+  "task_id": "P0-STORE-MIGRATION"
+}
