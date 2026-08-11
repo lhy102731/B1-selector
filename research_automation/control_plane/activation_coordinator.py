@@ -93,6 +93,7 @@ class ActivationCoordinator:
         repository_root: str | Path,
         git_executable: str = "git",
         test_runner_factory: Callable[[], list[str]] | None = None,
+        test_cwd: str | Path | None = None,
         crash_hook: Callable[[ActivationPhase], None] | None = None,
     ) -> None:
         # No serialized lease / shell string / arbitrary command accepted.
@@ -106,6 +107,11 @@ class ActivationCoordinator:
         self._git_executable = git_executable
         self._test_runner_factory = test_runner_factory or (
             lambda: [sys.executable, "-m", "unittest", "-v"]
+        )
+        self._test_cwd = (
+            resolved
+            if test_cwd is None
+            else Path(test_cwd).resolve(strict=True)
         )
         self._crash_hook = crash_hook
         self._lease_secret_value: str | None = None
@@ -811,7 +817,7 @@ class ActivationCoordinator:
             )
         result = subprocess.run(
             argv,
-            cwd=self._repository_root,
+            cwd=self._test_cwd,
             capture_output=True,
             text=True,
             encoding="utf-8",

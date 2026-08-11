@@ -825,6 +825,41 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     repository_root=root / "repo",
                 )
 
+    def test_test_children_run_in_the_configured_worktree(self) -> None:
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            base, source, envelope = _build_envelope(root)
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            worktree = root / "test-worktree"
+            worktree.mkdir(parents=True, exist_ok=True)
+            coordinator = ac.ActivationCoordinator(
+                root_secret=ROOT_SECRET,
+                repository_root=root / "repo",
+                test_cwd=worktree,
+                test_runner_factory=lambda: [
+                    sys.executable,
+                    "-c",
+                    "import pathlib; "
+                    "pathlib.Path('ran_in_cwd').write_text('yes')",
+                ],
+            )
+            report = coordinator.run(
+                envelope_commit=envelope,
+                manifest_ref="manifest.json",
+                mode=ac.ActivationMode.V2_NORMAL,
+            )
+            self.assertTrue(report.succeeded)
+            self.assertTrue((worktree / "ran_in_cwd").exists())
+            self.assertFalse((root / "repo" / "ran_in_cwd").exists())
+
     def test_quarantine_manifest_exempts_preexisting_delta(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,
