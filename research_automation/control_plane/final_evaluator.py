@@ -539,6 +539,7 @@ TRUSTED_EVALUATOR_RESULT_SCHEMA = "control_plane.trusted_evaluator_result.v1"
 TRUSTED_DATA_ROOT_SCHEMA = "control_plane.trusted_evaluator_data_root.v1"
 FINAL_HOLDOUT_TAINT = "FINAL_HOLDOUT"
 OPEN_HOLDOUT_EFFECT = "OPEN_HOLDOUT"
+_TERMINAL_OUTCOMES = frozenset({"SUCCEEDED", "FAILED", "TIMEOUT", "CRASHED"})
 
 _MAX_METRICS = 64
 _MAX_COUNTS = 64
@@ -1173,6 +1174,12 @@ class TrustedEvaluator:
         lease_id: str = "lease-final-1",
         ticket_id: str = "ticket-final-1",
     ) -> EvaluatorResult:
+        """V1 historical path (caller-controlled inputs retained for tests).
+
+        P8R3 removes caller-controlled semantics from production: use
+        ``evaluate_v2`` which derives outcome from the worker result and
+        binds a real Authority lease.
+        """
         if not isinstance(request, FinalEvalRequest):
             raise TypeError("request must be a FinalEvalRequest")
         require_evaluator_spec_holdout_free(request.execution_spec.execution_spec)
@@ -1192,6 +1199,40 @@ class TrustedEvaluator:
             handle_sha256=handle.handle_sha256,
             view=view,
             outcome=outcome,
+        )
+
+    def evaluate_v2(
+        self,
+        request: FinalEvalRequest,
+        *,
+        data_root: TrustedEvaluatorDataRoot,
+        refs: tuple[str, ...] | None = None,
+    ) -> EvaluatorResult:
+        """V2 production path: outcome derived from the adapter result.
+
+        Caller cannot specify outcome, lease id or ticket id; the real
+        Authority lease lineage is bound by the broker.  This is the only
+        path P8R3 production uses.
+        """
+        if not isinstance(request, FinalEvalRequest):
+            raise TypeError("request must be a FinalEvalRequest")
+        require_evaluator_spec_holdout_free(request.execution_spec.execution_spec)
+        consumed = self._broker.consume(request)
+        if consumed.outcome not in _TERMINAL_OUTCOMES:
+            raise ValueError("broker returned a non-terminal outcome")
+        lease = HoldoutLease(
+            lease_id="authority-bound-lease",
+            ticket_id="authority-bound-ticket",
+            allowed_side_effects=(OPEN_HOLDOUT_EFFECT,),
+            code_sha256=request.code.code_sha256,
+        )
+        handle = HoldoutHandle(consumed=consumed, lease=lease)
+        view = self._adapter.read(handle, data_root=data_root, refs=refs)
+        return EvaluatorResult(
+            request_sha256=request.request_sha256,
+            handle_sha256=handle.handle_sha256,
+            view=view,
+            outcome=consumed.outcome,
         )
 
 

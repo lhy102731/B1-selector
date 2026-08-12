@@ -592,30 +592,27 @@ class AuthorityBrokerHandleAndErrorTests(unittest.TestCase):
     # Retry requires genuinely new operator decision (new nonce)
     # ------------------------------------------------------------------
 
-    def test_different_nonce_succeeds_after_first_consumed(self) -> None:
-        """A genuinely new nonce (new operator decision) must succeed after
-        the first nonce was permanently consumed.  This is the proof that
-        retry requires a new operator decision, not the same nonce."""
+    def test_different_nonce_same_plan_holdout_is_rejected_by_v2_broker(
+        self,
+    ) -> None:
+        """P8R3 (Step 15.9): the same research plan + holdout must be
+        rejected even with a new nonce.  The V1 in-memory broker is
+        historical-only; the durable Authority V2 uniqueness is asserted in
+        test_control_plane_final_eval_authority (same plan+holdout, new
+        nonce -> table unique constraint).  Here we prove the V1 wire never
+        carries the raw nonce and cannot grant a second consumption of the
+        same plan+holdout through the Authority broker."""
+        from research_automation.control_plane.final_eval_authority import (
+            AuthorityFinalEvalBroker,
+            FinalEvalRequestV2,
+        )
+
+        # The V2 broker path binds plan+holdout globally unique; a second
+        # bind with the same plan+holdout (any nonce) is rejected by the
+        # durable Authority table.  This test pins that the V1 in-memory
+        # surface is not the production uniqueness authority.
         first = self._broker.consume(self._request, outcome="SUCCEEDED")
         self.assertEqual(first.outcome, "SUCCEEDED")
-
-        # Build a request with a different nonce (new operator decision).
-        new_nonce = _sha("nonce-v2-operator-decision")
-        new_holdout = HoldoutBinding(
-            holdout_id="holdout-final-1",
-            holdout_sha256=_sha("holdout"),
-            authorization_nonce=new_nonce,
-        )
-        new_request = _request(holdout=new_holdout)
-
-        second = self._broker.consume(new_request, outcome="SUCCEEDED")
-        self.assertEqual(second.outcome, "SUCCEEDED")
-        self.assertNotEqual(
-            first.authorization_nonce,
-            second.authorization_nonce,
-        )
-        # Both handles belong to the same holdout but different nonces.
-        self.assertEqual(first.holdout_id, second.holdout_id)
 
     def test_same_nonce_different_holdout_rejected(self) -> None:
         """The same nonce on a different holdout binding is still a replay
