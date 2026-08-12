@@ -12,6 +12,10 @@ from research_automation.control_plane.campaign import (
     UsageStatus,
 )
 from research_automation.control_plane.campaign_adapters import (
+    AG2InjectedSeamAdapter,
+    CliInjectedSeamAdapter,
+    OpenAICompatibleInjectedSeamAdapter,
+
     CallableProviderAdapter,
     NormalizedUsage,
     ProviderAdapterError,
@@ -420,6 +424,179 @@ class RetryOwnershipIntegrationTests(unittest.TestCase):
             invocation.invoke_json({"prompt": "x"}, call_id="call-002")
         self.assertEqual(adapter.calls, 2)
         self.assertEqual(len(journal.envelopes), 2)
+
+
+class AG2InjectedSeamTests(unittest.TestCase):
+    def test_ag2_seam_normalizes_injected_response(self) -> None:
+        adapter = AG2InjectedSeamAdapter(
+            lambda request: {
+                "output_text": "deterministic",
+                "raw_usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 2,
+                    "total_tokens": 7,
+                    "reported_cost": "0.01",
+                    "currency": "USD",
+                },
+            },
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+        )
+        response = adapter.invoke({"prompt": "x"})
+        self.assertEqual(response.output_text, "deterministic")
+        self.assertEqual(response.usage_status, UsageStatus.REPORTED)
+        self.assertEqual(adapter.calls, 1)
+        self.assertEqual(adapter.last_request, {"prompt": "x"})
+
+    def test_ag2_seam_rejects_non_mapping_response(self) -> None:
+        adapter = AG2InjectedSeamAdapter(
+            lambda request: "not-a-mapping",
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke("x")
+
+    def test_ag2_seam_rejects_non_callable_handler(self) -> None:
+        with self.assertRaises(TypeError):
+            AG2InjectedSeamAdapter(None, request_model="m", response_model="m")  # type: ignore[arg-type]
+
+    def test_ag2_seam_model_drift_fails_closed(self) -> None:
+        adapter = AG2InjectedSeamAdapter(
+            lambda request: {"output_text": "x", "response_model": "other-model"},
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke("x")
+
+
+class OpenAICompatibleSeamTests(unittest.TestCase):
+    def test_openai_seam_accepts_disabled_retry_callable(self) -> None:
+        adapter = OpenAICompatibleInjectedSeamAdapter(
+            lambda request: {
+                "output": "choices[0].message.content",
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 1,
+                    "total_tokens": 4,
+                },
+            },
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+            max_retries=0,
+        )
+        response = adapter.invoke({"prompt": "x"})
+        self.assertEqual(response.output_text, "choices[0].message.content")
+        self.assertEqual(response.usage_status, UsageStatus.REPORTED)
+        self.assertEqual(adapter.calls, 1)
+
+    def test_openai_seam_rejects_sdk_retries(self) -> None:
+        with self.assertRaises(RetryOwnershipError):
+            OpenAICompatibleInjectedSeamAdapter(
+                lambda request: {"output": "x"},
+                request_model="m",
+                response_model="m",
+                max_retries=3,
+            )
+
+    def test_openai_seam_missing_usage_is_unknown_not_zero(self) -> None:
+        adapter = OpenAICompatibleInjectedSeamAdapter(
+            lambda request: {"output": "x"},
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+            max_retries=0,
+        )
+        response = adapter.invoke("x")
+        self.assertEqual(response.output_text, "x")
+        self.assertEqual(response.usage_status, UsageStatus.UNKNOWN)
+
+    def test_openai_seam_rejects_non_mapping_response(self) -> None:
+        adapter = OpenAICompatibleInjectedSeamAdapter(
+            lambda request: "nope",
+            request_model="m",
+            response_model="m",
+            max_retries=0,
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke("x")
+
+
+class CliInjectedSeamTests(unittest.TestCase):
+    def test_cli_seam_accepts_argv_vector_and_parses_json(self) -> None:
+        def runner(argv):
+            self.assertEqual(argv, ["provider-cli", "--prompt", "x"])
+            return 0, '{"output_text": "cli result", "raw_usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2, "reported_cost": "0.01", "currency": "USD"}}'
+
+        adapter = CliInjectedSeamAdapter(
+            runner,
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+        )
+        response = adapter.invoke(["provider-cli", "--prompt", "x"])
+        self.assertEqual(response.output_text, "cli result")
+        self.assertEqual(response.usage_status, UsageStatus.REPORTED)
+        self.assertEqual(adapter.calls, 1)
+
+    def test_cli_seam_rejects_shell_string_request(self) -> None:
+        adapter = CliInjectedSeamAdapter(
+            lambda argv: (0, "{}"),
+            request_model="m",
+            response_model="m",
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke("provider-cli --prompt x")
+
+    def test_cli_seam_rejects_nonzero_exit(self) -> None:
+        adapter = CliInjectedSeamAdapter(
+            lambda argv: (1, "boom"),
+            request_model="m",
+            response_model="m",
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke(["provider-cli"])
+
+    def test_cli_seam_rejects_malformed_json(self) -> None:
+        adapter = CliInjectedSeamAdapter(
+            lambda argv: (0, "{invalid-json"),
+            request_model="m",
+            response_model="m",
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke(["provider-cli"])
+
+    def test_cli_seam_rejects_oversized_argv(self) -> None:
+        adapter = CliInjectedSeamAdapter(
+            lambda argv: (0, "{}"),
+            request_model="m",
+            response_model="m",
+            max_argv_chars=8,
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke(["provider-cli", "--long-argument"])
+
+    def test_cli_seam_rejects_oversized_stdout(self) -> None:
+        adapter = CliInjectedSeamAdapter(
+            lambda argv: (0, '{"output_text": "' + "x" * 200 + '"}'),
+            request_model="m",
+            response_model="m",
+            max_stdout_chars=64,
+        )
+        with self.assertRaises(ProviderAdapterError):
+            adapter.invoke(["provider-cli"])
+
+    def test_cli_seam_stderr_never_leaks_into_safe_result(self) -> None:
+        def runner(argv):
+            return 0, '{"output_text": "safe"}'
+
+        adapter = CliInjectedSeamAdapter(
+            runner,
+            request_model="deterministic-reviewer",
+            response_model="deterministic-reviewer",
+        )
+        response = adapter.invoke(["provider-cli"])
+        self.assertEqual(response.output_text, "safe")
+        self.assertNotIn("stderr", response.raw_usage)
 
 
 if __name__ == "__main__":

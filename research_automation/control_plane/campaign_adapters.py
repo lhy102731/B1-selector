@@ -425,9 +425,184 @@ def build_retrying_invocation(
     )
 
 
+class AG2InjectedSeamAdapter:
+    """Adapt an injected AG2-style single-call callable (no AG2 import).
+
+    The handler must return an AG2-style mapping with ``output_text``/``output``
+    and optional ``usage``/``raw_usage``.  This seam never imports or starts
+    real AG2, never reads profile secrets, and owns no retry logic.
+    """
+
+    def __init__(
+        self,
+        handler: Callable[[object], object],
+        *,
+        request_model: str,
+        response_model: str,
+        normalizer: ProviderResponseNormalizer | None = None,
+    ) -> None:
+        if not callable(handler):
+            raise TypeError("AG2 handler must be callable")
+        self._handler = handler
+        self._request_model = request_model
+        self._response_model = response_model
+        self._normalizer = normalizer or ProviderResponseNormalizer()
+        self._calls = 0
+        self._last_request: object = None
+
+    @property
+    def calls(self) -> int:
+        return self._calls
+
+    @property
+    def last_request(self) -> object:
+        return self._last_request
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self._calls += 1
+        self._last_request = request
+        raw = self._handler(request)
+        if not isinstance(raw, Mapping):
+            raise ProviderAdapterError("AG2 response must be a mapping")
+        return self._normalizer.normalize(
+            raw,
+            request_model=self._request_model,
+            response_model=self._response_model,
+        )
+
+
+class OpenAICompatibleInjectedSeamAdapter:
+    """Adapt an injected OpenAI-compatible callable with SDK retries disabled.
+
+    The injected callable must already have SDK-level retries disabled
+    (``max_retries == 0`` or absent for fakes).  Response/usage are
+    standardized through the normalizer; missing values become ``None`` +
+    ``UsageStatus.UNKNOWN``, never fabricated zeros.
+    """
+
+    def __init__(
+        self,
+        handler: Callable[[object], object],
+        *,
+        request_model: str,
+        response_model: str,
+        max_retries: int | None = 0,
+        normalizer: ProviderResponseNormalizer | None = None,
+    ) -> None:
+        if not callable(handler):
+            raise TypeError("OpenAI-compatible handler must be callable")
+        if max_retries is not None and max_retries != 0:
+            raise RetryOwnershipError(
+                "injected OpenAI-compatible client must have SDK retries disabled"
+            )
+        self._handler = handler
+        self._request_model = request_model
+        self._response_model = response_model
+        self._normalizer = normalizer or ProviderResponseNormalizer()
+        self._calls = 0
+        self._last_request: object = None
+
+    @property
+    def calls(self) -> int:
+        return self._calls
+
+    @property
+    def last_request(self) -> object:
+        return self._last_request
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self._calls += 1
+        self._last_request = request
+        raw = self._handler(request)
+        if not isinstance(raw, Mapping):
+            raise ProviderAdapterError("OpenAI-compatible response must be a mapping")
+        return self._normalizer.normalize(
+            raw,
+            request_model=self._request_model,
+            response_model=self._response_model,
+        )
+
+
+class CliInjectedSeamAdapter:
+    """Adapt an injected subprocess runner into the provider contract.
+
+    Only accepts an argv vector and an injected runner callable; shell strings,
+    out-of-bounds stdin/stdout, non-zero exits, timeouts and malformed JSON are
+    rejected or surfaced as explicit outcomes.  stderr/raw output never leaks
+    into the safe result.
+    """
+
+    def __init__(
+        self,
+        runner: Callable[[list[str]], tuple[int, str]],
+        *,
+        request_model: str,
+        response_model: str,
+        normalizer: ProviderResponseNormalizer | None = None,
+        max_argv_chars: int = 4096,
+        max_stdout_chars: int = 1 << 20,
+    ) -> None:
+        if not callable(runner):
+            raise TypeError("CLI runner must be callable")
+        if type(max_argv_chars) is not int or max_argv_chars <= 0:
+            raise ProviderAdapterError("max_argv_chars must be a positive integer")
+        if type(max_stdout_chars) is not int or max_stdout_chars <= 0:
+            raise ProviderAdapterError("max_stdout_chars must be a positive integer")
+        self._runner = runner
+        self._request_model = request_model
+        self._response_model = response_model
+        self._normalizer = normalizer or ProviderResponseNormalizer()
+        self._max_argv_chars = max_argv_chars
+        self._max_stdout_chars = max_stdout_chars
+        self._calls = 0
+        self._last_request: object = None
+
+    @property
+    def calls(self) -> int:
+        return self._calls
+
+    @property
+    def last_request(self) -> object:
+        return self._last_request
+
+    def invoke(self, request: object) -> ProviderResponse:
+        self._calls += 1
+        self._last_request = request
+        if not isinstance(request, list) or not all(
+            isinstance(part, str) for part in request
+        ):
+            raise ProviderAdapterError("CLI seam request must be an argv vector")
+        argv = list(request)
+        if sum(len(part) for part in argv) > self._max_argv_chars:
+            raise ProviderAdapterError("CLI argv exceeds the bounded size")
+        exit_code, stdout = self._runner(argv)
+        if exit_code != 0:
+            raise ProviderAdapterError(
+                f"CLI provider exited with code {exit_code}"
+            )
+        if len(stdout) > self._max_stdout_chars:
+            raise ProviderAdapterError("CLI stdout exceeds the bounded size")
+        try:
+            import json as _json
+
+            raw = _json.loads(stdout)
+        except ValueError as error:
+            raise ProviderAdapterError("CLI stdout is not valid JSON") from error
+        if not isinstance(raw, Mapping):
+            raise ProviderAdapterError("CLI stdout must be a JSON object")
+        return self._normalizer.normalize(
+            raw,
+            request_model=self._request_model,
+            response_model=self._response_model,
+        )
+
+
 __all__ = [
+    "AG2InjectedSeamAdapter",
     "CallableProviderAdapter",
+    "CliInjectedSeamAdapter",
     "NormalizedUsage",
+    "OpenAICompatibleInjectedSeamAdapter",
     "ProviderAdapterError",
     "ProviderResponseNormalizer",
     "RetryDisabledClientAdapter",
