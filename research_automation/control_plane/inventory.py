@@ -35,7 +35,12 @@ _QUARANTINE_ELIGIBLE_CLASSIFICATIONS = frozenset(
     }
 )
 _NONBLOCKING_TRACKED_DOCUMENT_PATHS = frozenset(
-    {"CHANGELOG.md", "docs/b1_v3_results.md"}
+    {
+        "CHANGELOG.md",
+        "docs/b1_v3_results.md",
+        "daily_run.py",
+        "daily_select.py",
+    }
 )
 _IMMUTABLE_GATE_EVIDENCE_PREFIX = "research_state/control_plane/"
 _MAX_IMMUTABLE_GATE_EVIDENCE_BYTES = 4 * 1024 * 1024
