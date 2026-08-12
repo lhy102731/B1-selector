@@ -376,6 +376,45 @@ def cmd_review(args: argparse.Namespace) -> None:
     orch.run_review(strategy_description=strategy_desc, research_context=ctx)
 
 
+def cmd_campaign(args: argparse.Namespace) -> int:
+    """Run the authorized fake-only Campaign via the P6R3 runtime.
+
+    Requires a programmatic ``CliAuthorizationContext`` carrying the campaign
+    context; an ordinary shell without one exits 3 before any provider or
+    store is constructed.  Only ``--campaign-id``, ``--max-cycles`` and
+    ``--mode`` are accepted and they may only shrink the injected frozen
+    bounds.  This command never opens real providers, never writes to the
+    Authority/Operational stores directly and never touches Final Holdout.
+    """
+    _cli_preflight(args, "campaign")
+    context = getattr(args, "_control_plane_authorization", None)
+    campaign_context = getattr(args, "_control_plane_campaign_context", None)
+    if campaign_context is None:
+        print(
+            "[run_research] campaign requires a programmatic campaign context",
+            file=sys.stderr,
+        )
+        return 3
+    campaign_id = getattr(args, "campaign_id", None)
+    if campaign_id and campaign_id != campaign_context.campaign_id:
+        print(
+            "[run_research] campaign-id exceeds the injected frozen bounds",
+            file=sys.stderr,
+        )
+        return 3
+    requested_mode = getattr(args, "mode", None)
+    if requested_mode and requested_mode != campaign_context.mode:
+        print(
+            "[run_research] campaign mode exceeds the injected frozen bounds",
+            file=sys.stderr,
+        )
+        return 3
+    max_cycles = getattr(args, "max_cycles", None)
+    result = campaign_context.run(max_cycles=max_cycles)
+    print(json.dumps(result.to_payload(), ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if result.status == "COMPLETED" else 2
+
+
 def cmd_rollout(args: argparse.Namespace) -> int:
     """Run the offline C0 rollout chaos simulation and publish its canonical report."""
     _cli_preflight(args, "rollout")
@@ -549,6 +588,7 @@ def main(
     argv: list[str] | None = None,
     *,
     authorization: CliAuthorizationContext | None = None,
+    campaign_context: object | None = None,
 ) -> int:
     parser = argparse.ArgumentParser(description="AG2 Multi-Agent Strategy Research")
     sub = parser.add_subparsers(dest="command")
@@ -687,10 +727,24 @@ def main(
     p_rollout.add_argument("--seed", type=int, default=20260811)
     p_rollout.add_argument("--cycles", type=int, default=24)
 
+    # authorized fake-only campaign (programmatic context required)
+    p_campaign = sub.add_parser(
+        "campaign",
+        help="Run the authorized fake-only Campaign via the P6R3 runtime",
+    )
+    p_campaign.add_argument("--campaign-id", help="Frozen campaign id (may only shrink the injected context)")
+    p_campaign.add_argument("--max-cycles", type=int, help="Maximum cycles (may only shrink the injected context)")
+    p_campaign.add_argument(
+        "--mode",
+        choices=["formal", "dry-run"],
+        help="Execution mode (may only shrink the injected context)",
+    )
+
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(raw_argv)
     args._control_plane_authorization = authorization
     args._control_plane_argv = tuple(["run_research.py", *raw_argv])
+    args._control_plane_campaign_context = campaign_context
 
     if not args.command:
         parser.print_help()
@@ -712,6 +766,7 @@ def main(
         "review": cmd_review,
         "chat": cmd_chat,
         "interactive": cmd_interactive,
+        "campaign": cmd_campaign,
         "rollout": cmd_rollout,
     }
     try:
@@ -724,6 +779,8 @@ def main(
 
         return cycle_exit_code(result)
     if args.command == "rollout":
+        return int(result)
+    if args.command == "campaign":
         return int(result)
     return 0
 

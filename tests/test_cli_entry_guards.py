@@ -162,5 +162,116 @@ class CampaignBoundaryCliTests(unittest.TestCase):
         boundary.assert_called_once_with(surface="run_research.py:full-cycle")
 
 
+class CampaignCliTests(unittest.TestCase):
+    def test_campaign_without_programmatic_context_exits_3(self) -> None:
+        with patch.object(
+            run_research,
+            "_orchestrator_class",
+            side_effect=AssertionError("provider constructed"),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "c1", "--mode", "formal"]
+            )
+        self.assertEqual(3, status)
+
+    def test_campaign_with_context_but_no_authorization_exits_3(self) -> None:
+        fake_context = MagicMock(campaign_id="c1", mode="formal")
+        fake_context.run.return_value = MagicMock(
+            status="COMPLETED",
+            to_payload=lambda: {"schema_version": "x", "status": "COMPLETED"},
+        )
+        with patch.object(
+            run_research,
+            "_orchestrator_class",
+            side_effect=AssertionError("provider constructed"),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "c1", "--mode", "formal"],
+                campaign_context=fake_context,
+            )
+        self.assertEqual(3, status)
+
+    def test_campaign_context_requires_cli_preflight_authorization(self) -> None:
+        # _cli_preflight raises ExecutionAuthorizationError without a
+        # programmatic CliAuthorizationContext, so the command is blocked
+        # (main maps it to exit 3) before the runtime is touched even when a
+        # campaign context exists.
+        fake_context = MagicMock(campaign_id="c1", mode="formal")
+        with patch.object(
+            run_research,
+            "_orchestrator_class",
+            side_effect=AssertionError("provider constructed"),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "c1", "--mode", "formal"],
+                campaign_context=fake_context,
+            )
+        self.assertEqual(3, status)
+        fake_context.run.assert_not_called()
+
+    def test_campaign_bounds_cannot_expand_injected_context(self) -> None:
+        fake_context = MagicMock(campaign_id="c1", mode="formal")
+        fake_context.run.return_value = MagicMock(
+            status="COMPLETED",
+            to_payload=lambda: {"schema_version": "x", "status": "COMPLETED"},
+        )
+        with patch.object(
+            run_research,
+            "_cli_preflight",
+            return_value=object(),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "other-id", "--mode", "formal"],
+                campaign_context=fake_context,
+            )
+        self.assertEqual(3, status)
+        fake_context.run.assert_not_called()
+
+    def test_campaign_mode_cannot_expand_injected_context(self) -> None:
+        fake_context = MagicMock(campaign_id="c1", mode="formal")
+        with patch.object(
+            run_research,
+            "_cli_preflight",
+            return_value=object(),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "c1", "--mode", "dry-run"],
+                campaign_context=fake_context,
+            )
+        self.assertEqual(3, status)
+        fake_context.run.assert_not_called()
+
+    def test_campaign_with_authorized_context_runs_and_prints_safe_json(self) -> None:
+        fake_context = MagicMock(campaign_id="c1", mode="formal")
+        fake_context.run.return_value = MagicMock(
+            status="COMPLETED",
+            to_payload=lambda: {
+                "schema_version": "control_plane.campaign_runtime_result.v1",
+                "campaign_id": "c1",
+                "namespace": "formal",
+                "mode": "FORMAL",
+                "status": "COMPLETED",
+                "cycles_completed": 1,
+                "decision": "STOP",
+                "reason_code": "CYCLE_BUDGET_EXHAUSTED",
+                "campaign_snapshot": {},
+                "budget_summary": {},
+                "cycle_summaries": [],
+                "diagnostics": [],
+            },
+        )
+        with patch.object(
+            run_research,
+            "_cli_preflight",
+            return_value=object(),
+        ):
+            status = run_research.main(
+                ["campaign", "--campaign-id", "c1", "--mode", "formal"],
+                campaign_context=fake_context,
+            )
+        self.assertEqual(0, status)
+        fake_context.run.assert_called_once_with(max_cycles=None)
+
+
 if __name__ == "__main__":
     unittest.main()
