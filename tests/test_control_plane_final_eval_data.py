@@ -1,0 +1,104 @@
+"""Tests for the handle-first final evaluation data boundary (P8R3 T3)."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from research_automation.control_plane.final_eval_data import (
+    FinalEvalHandleRejected,
+    HandleFirstOpener,
+    OpenedHoldoutArtifact,
+    VerifiedRootHandle,
+    verify_backend_rejects_raw_paths,
+)
+
+
+class VerifiedRootHandleTests(unittest.TestCase):
+    def test_root_handle_seals_directory_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            handle = VerifiedRootHandle(root)
+            self.assertEqual(handle.root, root.resolve())
+            self.assertGreater(handle.volume_serial, 0)
+            self.assertGreater(handle.file_id, 0)
+            self.assertNotIn(str(root), repr(handle))
+
+    def test_root_handle_rejects_missing_root(self) -> None:
+        with self.assertRaises(FinalEvalHandleRejected):
+            VerifiedRootHandle(Path("/definitely/not/exists"))
+
+
+class HandleFirstOpenerTests(unittest.TestCase):
+    def _fixture(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        holdout = root / "holdout.parquet"
+        content = b"CANARY_7f3a9c2b|" + b"x" * 128
+        holdout.write_bytes(content)
+        return temporary, root, holdout, content
+
+    def test_open_artifact_verifies_identity_and_content_from_same_handle(
+        self,
+    ) -> None:
+        import hashlib
+
+        temporary, root, holdout, content = self._fixture()
+        self.addCleanup(temporary.cleanup)
+        opener = HandleFirstOpener(VerifiedRootHandle(root))
+        artifact = opener.open_artifact(
+            ref="holdout.parquet",
+            holdout_id="holdout-final-1",
+            holdout_sha256=hashlib.sha256(content).hexdigest(),
+        )
+        self.assertIsInstance(artifact, OpenedHoldoutArtifact)
+        self.assertEqual(artifact.read_bytes(), content)
+        self.assertEqual(artifact.size, len(content))
+        self.assertNotIn("holdout.parquet", repr(artifact))
+
+    def test_open_artifact_rejects_traversal(self) -> None:
+        temporary, root, holdout, content = self._fixture()
+        self.addCleanup(temporary.cleanup)
+        opener = HandleFirstOpener(VerifiedRootHandle(root))
+        with self.assertRaises(FinalEvalHandleRejected):
+            opener.open_artifact(
+                ref="../escape.parquet",
+                holdout_id="x",
+                holdout_sha256="0" * 64,
+            )
+
+    def test_open_artifact_rejects_content_hash_mismatch(self) -> None:
+        import hashlib
+
+        temporary, root, holdout, content = self._fixture()
+        self.addCleanup(temporary.cleanup)
+        opener = HandleFirstOpener(VerifiedRootHandle(root))
+        with self.assertRaises(FinalEvalHandleRejected):
+            opener.open_artifact(
+                ref="holdout.parquet",
+                holdout_id="x",
+                holdout_sha256=hashlib.sha256(b"different").hexdigest(),
+            )
+
+    def test_open_artifact_rejects_missing_child(self) -> None:
+        temporary, root, holdout, content = self._fixture()
+        self.addCleanup(temporary.cleanup)
+        opener = HandleFirstOpener(VerifiedRootHandle(root))
+        with self.assertRaises(FinalEvalHandleRejected):
+            opener.open_artifact(
+                ref="missing.parquet",
+                holdout_id="x",
+                holdout_sha256="0" * 64,
+            )
+
+
+class BackendProtocolTests(unittest.TestCase):
+    def test_backend_rejects_raw_path(self) -> None:
+        # verify_backend_rejects_raw_paths must not raise for a compliant
+        # backend (i.e. the protocol rejects Path inputs fail-closed).
+        verify_backend_rejects_raw_paths(object())  # type: ignore[arg-type]
+
+
+if __name__ == "__main__":
+    unittest.main()
