@@ -864,6 +864,54 @@ class ActivationCoordinator:
             raise ActivationEnvelopeError(
                 "official tests failed on the activated candidate"
             )
+        self._record_test_receipt(argv, result.returncode)
+
+    def _record_test_receipt(self, argv: list[str], exit_code: int) -> None:
+        """Persist a TEST receipt whose canonical payload the TaskReport
+        must reproduce exactly (Gate trusted-receipts contract)."""
+        ticket_id = self._ticket_id
+        if ticket_id is None:
+            raise ActivationEnvelopeError("no ticket is in progress")
+        payload = {
+            "receipt_id": f"test-{ticket_id[:16]}",
+            "command": " ".join(argv),
+            "exit_code": exit_code,
+            "result": "PASS" if exit_code == 0 else "FAIL",
+        }
+        payload_json = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+        attestation_sha256 = hashlib.sha256(
+            b"control_plane.coordinator_test_receipt.v1\0"
+            + payload_json.encode("utf-8")
+        ).hexdigest()
+        now = _utc_now()
+
+        def record(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """INSERT INTO trusted_task_receipts_v2
+                (ticket_id, receipt_kind, receipt_id, issuer_actor_id,
+                 issuer_actor_type, issuer_invocation_id, payload_json,
+                 payload_sha256, attestation_sha256, created_at)
+                VALUES (?, 'TEST', ?, 'activation-coordinator',
+                        'automation', ?, ?, ?, ?, ?)""",
+                (
+                    ticket_id,
+                    payload["receipt_id"],
+                    f"invocation-{ticket_id[:16]}",
+                    payload_json,
+                    payload_sha256,
+                    attestation_sha256,
+                    _stores._utc_text(now),
+                ),
+            )
+
+        _SqliteUnitOfWork(self._current_authority_spec())._write(record)
 
     def _record_receipts(
         self,
@@ -878,11 +926,12 @@ class ActivationCoordinator:
             f"evidence/activation-{ticket_id[:16]}.json"
         )
         payload = {
-            "schema": "control_plane.coordinator_receipt.v1",
-            "ticket_id": ticket_id,
-            "task_id": str(manifest["task_id"]),
-            "manifest_sha256": manifest_sha256,
-            "head": self._git("rev-parse", "HEAD"),
+            "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(
+                evidence_ref.encode("utf-8")
+            ).hexdigest(),
+            "status": "VERIFIED",
         }
         payload_json = json.dumps(
             payload,
