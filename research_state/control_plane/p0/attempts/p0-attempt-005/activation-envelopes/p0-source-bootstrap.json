@@ -8,10 +8,10 @@
     "research_state/control_plane/policies/"
   ],
   "attempt_id": "p0-attempt-005",
-  "base_commit": "c33d3e2b64a84f338ce48996528c8d148374b200",
-  "base_tree": "aace64922ac17e5b65dce6f0afb6540bf3be0352",
+  "base_commit": "93c7ad6e503a55442e73dc897db02c0f7be263ec",
+  "base_tree": "22fe7b7028697a96bf3e9ca4e117674f5fa7efce",
   "baseline_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
-  "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
+  "baseline_sha256": "b812d4c7afed889ec9777745742d12a796cbf11eaeb86ad4680fdf9d45b40c88",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "dependencies": [],
   "expected_side_effects": [
@@ -24,7 +24,7 @@
     "research_state/control_plane/authority/",
     "research_state/control_plane/operational/"
   ],
-  "idempotency_key": "p0-p0-source-bootstrap-rerecord-007",
+  "idempotency_key": "p0-p0-source-bootstrap-rerecord-008",
   "mode": "v2_normal",
   "objective": "P0-CR-008 corrective activation and live store migration",
   "phase": "P0",
@@ -41,8 +41,8 @@
     "required_test_receipt_ids": []
   },
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "c33d3e2b64a84f338ce48996528c8d148374b200",
-  "source_tree": "aace64922ac17e5b65dce6f0afb6540bf3be0352",
+  "source_commit": "93c7ad6e503a55442e73dc897db02c0f7be263ec",
+  "source_tree": "22fe7b7028697a96bf3e9ca4e117674f5fa7efce",
   "task_id": "P0-SOURCE-BOOTSTRAP",
   "task_spec_ref": "manifest.json"
 }
