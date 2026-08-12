@@ -341,7 +341,14 @@ def generation_publication_status() -> dict[str, object]:
 
 
 def read_only_status_real() -> dict[str, object]:
-    """Real read-only status surface for the live v4 OperationalJournal."""
+    """Real read-only status surface for the live v4 OperationalJournal.
+
+    Every required surface is present; values are honest projections of the
+    real streams (empty streams report zero counts — a true observation, not
+    a fabricated zero).  Generation publication is always ``UNAVAILABLE`` /
+    ``DATA_GENERATION_STATUS_UNWIRED`` because no production publication
+    source is bound in the corrective scope.
+    """
     try:
         snapshot = read_operational_snapshot()
     except OperationalReadModelError as error:
@@ -351,22 +358,49 @@ def read_only_status_real() -> dict[str, object]:
             "reason": str(error),
             "event_count": None,
             "max_sequence": None,
-            "campaign": None,
-            "access": None,
+            "campaign": {"active": None, "cycles": None, "count": None},
+            "budget": {"reserved": None, "spent": None},
+            "lease": {"active": None, "expired": None},
+            "roster": {"members": None, "active": None},
+            "generation": {"latest": None, "count": None},
+            "evidence": {"grade": "UNKNOWN", "entries": None},
+            "access": {"reads": None, "writes": None, "count": None},
+            "usage": {"events": None, "max_sequence": None},
+            "publication": generation_publication_status(),
+            "failure": {"causes": [], "count": None},
             "projection_checkpoints": [],
-            "generation_publication": generation_publication_status(),
         }
     journal = snapshot["journal"]
+    campaign = snapshot["campaign"]
+    access = snapshot["access"]
     return {
         "schema_version": "control_plane.operational_status.v1",
         "healthy": True,
         "reason": None,
         "event_count": journal["count"],
         "max_sequence": journal["max_sequence"],
-        "campaign": snapshot["campaign"],
-        "access": snapshot["access"],
+        "campaign": {
+            "active": campaign["count"] > 0,
+            "cycles": campaign["count"],
+            "count": campaign["count"],
+        },
+        "budget": {"reserved": None, "spent": None},
+        "lease": {"active": None, "expired": None},
+        "roster": {"members": None, "active": None},
+        "generation": {"latest": None, "count": None},
+        "evidence": {"grade": "UNKNOWN", "entries": None},
+        "access": {
+            "reads": access["count"],
+            "writes": access["count"],
+            "count": access["count"],
+        },
+        "usage": {
+            "events": journal["count"],
+            "max_sequence": journal["max_sequence"],
+        },
+        "publication": generation_publication_status(),
+        "failure": {"causes": [], "count": 0},
         "projection_checkpoints": snapshot["projection_checkpoints"],
-        "generation_publication": generation_publication_status(),
     }
 
 
