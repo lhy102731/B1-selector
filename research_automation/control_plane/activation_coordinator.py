@@ -600,7 +600,7 @@ class ActivationCoordinator:
         invocation_id = f"invocation-{ticket_id[:16]}"
         attempt_id = str(manifest.get("attempt_id") or f"coordinator-{task_id[:24]}")
         plan_hash = hashlib.sha256(
-            b"control_plane.coordinator_plan.v1\0" + manifest_sha256.encode("ascii")
+            b"control_plane.coordinator_plan.v1\0" + attempt_id.encode("ascii")
         ).hexdigest()
         now = _utc_now()
         canonical_manifest = json.dumps(
