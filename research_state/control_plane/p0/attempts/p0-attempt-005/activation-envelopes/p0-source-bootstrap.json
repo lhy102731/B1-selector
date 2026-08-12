@@ -4,11 +4,13 @@
     "tests/",
     "requirements/",
     "docs/superpowers/",
-    "research_state/control_plane/p0/attempts/p0-attempt-005/"
+    "research_state/control_plane/p0/attempts/p0-attempt-005/",
+    "research_state/control_plane/policies/"
   ],
-  "base_commit": "76384a3a5891c11c6a7057a5640281c776da3f8e",
-  "base_tree": "88568350ba15ede1e28b71c6b19e991daa538988",
-  "candidate_diff_sha256": "7921b083944e0be37ca30c72eedf3f100b68bba4cedb9a17d621826440b1a675",
+  "attempt_id": "p0-attempt-005",
+  "base_commit": "8d4e60b566af83335c09524ea20c108c9c2fe353",
+  "base_tree": "ace005d4aa39c2dcb6c11b1d0653fb6ec23398aa",
+  "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expected_side_effects": [
     "WRITE_CONTROL_PLANE"
   ],
@@ -29,7 +31,7 @@
     "tests.test_control_plane_gates"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "c67ede986311854997db9d139c7f0ab068942c9a",
-  "source_tree": "3c76645f6636c5ccab7678d92164774ebf3a3057",
+  "source_commit": "8d4e60b566af83335c09524ea20c108c9c2fe353",
+  "source_tree": "ace005d4aa39c2dcb6c11b1d0653fb6ec23398aa",
   "task_id": "P0-SOURCE-BOOTSTRAP"
 }
