@@ -335,13 +335,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "f9dc7ec4d873763dd5d4b4a4612c3864ff10c3d428e0ad54dbae0b4a7096d064"
+   "current_sha256": "a7ecf73d0b62aa389002c2c2dd594e2afdd3ba56338aab9022854d790419e2b4"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "924d87b7f6cea46d40427e53af6bad10d25fc9667d92c04afd769625ca57cabe"
+   "current_sha256": "1ee277ba91e786363c3a22bd2ee380e58e71c69f8328f18dbdd1d47bc2ec4807"
   },
   {
    "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
@@ -417,11 +417,6 @@
   "unauthorized": []
  },
  "external_invocations": [],
- "identity_binding": {
-  "plan_hash": "a09cde1ef0d06f116bbaa3fb78212419c09b50388e90aa51e93611f6e7363fa5",
-  "scope_hash": "acacf7bdc397b4ae91e392a3572185f8c1f53da222ba2f48a193aa95860a5854",
-  "instruction_policy_hash": "830ca73d8c1edff8e21d8150231ae4ecf3d0635512b1b651d8a43cd63575e45a"
- },
  "phase": "P0",
  "plan_version": "V3.4.2-CORRECTIVE",
  "task_id": "P0-STORE-MIGRATION",
@@ -432,11 +427,16 @@
  "ticket_id": "9a5f693bc0a437120c0bf8b8dd2cf373bc39c4ff5fd8692ccfd6d83380dc6b89",
  "ticket_state": "SUCCEEDED",
  "authorization_ref": "coordinator-auth-9a5f693bc0a437120c0bf8b8",
+ "identity_binding": {
+  "plan_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539",
+  "scope_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539",
+  "instruction_policy_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539"
+ },
  "started_at": "2026-08-12T01:56:13.029021Z",
  "completed_at": "2026-08-12T01:56:17.364585Z",
  "schema_version": "control_plane.task_report.v2",
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "8b43be19b6e3dcbc964910a8b4c5db9e4f3ab0f45424f7cef027b325654a836c"
+ "report_payload_sha256": "7e39e111f9f7f25db3b56779628a1472cab8a59a17afc8b054cad1c63fb19d6d"
 }
