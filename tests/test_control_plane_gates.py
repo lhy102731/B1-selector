@@ -316,6 +316,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
         activate_policy: bool = True,
         active_policy_payload_sha256: str | None = None,
         git_source_identity: bool = True,
+        evidence_refs: tuple[dict[str, object], ...] = (),
+        evidence_files: tuple[tuple[str, bytes], ...] = (),
+        omit_evidence_commit: bool = False,
+        task_requirements: dict[str, object] | None = None,
     ) -> Iterator[_TrustedGateFixture]:
         now = datetime(2026, 7, 26, 8, 15, tzinfo=timezone.utc)
         actor = Actor("operator", "human", "invocation-gate-verify")
@@ -393,6 +397,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
             task_spec = dict(task_spec)
             task_spec["baseline_ref"] = baseline_ref
             task_spec["baseline_sha256"] = baseline_sha256
+            if task_requirements is not None:
+                task_spec["requirements"] = task_requirements
+            if evidence_refs:
+                task_spec["input_evidence_refs"] = list(evidence_refs)
 
             seam_specs = (
                 (
@@ -851,6 +859,21 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     lease,
                     attestation=gate_test_attestation,
                 )
+                for evidence in evidence_refs:
+                    evidence_attestation = authority._attest_task_receipt(
+                        lease,
+                        receipt_kind="EVIDENCE",
+                        issuer=Actor(
+                            "activation-coordinator",
+                            "automation",
+                            "coordinator-evidence-001",
+                        ),
+                        payload=evidence,
+                    )
+                    authority._record_task_receipt(
+                        lease,
+                        attestation=evidence_attestation,
+                    )
                 if activate_policy:
                     authority._activate_reviewed_entry_policy(
                         lease,
@@ -986,6 +1009,11 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     check=True,
                     capture_output=True,
                 )
+                if not omit_evidence_commit:
+                    for evidence_ref, evidence_bytes in evidence_files:
+                        evidence_path = root / evidence_ref
+                        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                        evidence_path.write_bytes(evidence_bytes)
                 subprocess.run(
                     ["git", "add", "research_state"],
                     cwd=root,
@@ -1008,6 +1036,14 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     check=True,
                     capture_output=True,
                 )
+                if omit_evidence_commit:
+                    # CR-009 negative case: evidence exists in the working
+                    # tree but is NOT committed, so the verifier must fail
+                    # closed instead of resolving it.
+                    for evidence_ref, evidence_bytes in evidence_files:
+                        evidence_path = root / evidence_ref
+                        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                        evidence_path.write_bytes(evidence_bytes)
                 verifier = PhaseGateVerifier(
                     authority_reader=reader,
                     repository_root=root,
@@ -1365,6 +1401,182 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 fixture.task_report_bytes + b"\n"
             )
 
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_dereferences_committed_evidence_blobs(self) -> None:
+        """CR-009 positive: a VERIFIED evidence ref resolves to a committed
+        blob whose bytes hash to evidence_sha256, inside the gate's own
+        phase/attempt evidence namespace."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-001.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-001",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+                "manifest_sha256": "d" * 64,
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-001",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_evidence_ref_outside_the_evidence_namespace(
+        self,
+    ) -> None:
+        """CR-009 negative: evidence refs must live under
+        research_state/control_plane/."""
+        evidence_ref = "artifacts/evidence/activation-001.json"
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-002",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-002",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_evidence_ref_binding_to_another_phase(self) -> None:
+        """CR-009 negative: P7/P8/C0 refs that point into the p6 attempt
+        directory must fail the phase/attempt binding."""
+        evidence_ref = (
+            "research_state/control_plane/p6/attempts/p6-attempt-003/"
+            "evidence/activation-evidence-003.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-003",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-003",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            with self.assertRaises(GateAuthorityMismatchError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_path_string_evidence_hash(self) -> None:
+        """CR-009 negative: a path-string SHA-256 (hash of the ref text
+        instead of the committed blob bytes) must fail closed."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-004.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-004",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-004",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(
+                evidence_ref.encode("utf-8")
+            ).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_dangling_evidence_ref(self) -> None:
+        """CR-009 negative: an evidence ref with no committed blob fails."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-005.json"
+        )
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-005",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": "0" * 64,
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+        ) as fixture:
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_uncommitted_evidence(self) -> None:
+        """CR-009 negative: evidence present only in the working tree (not
+        committed) must fail the committed-blob reader."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-006.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-006",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-006",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+            omit_evidence_commit=True,
+        ) as fixture:
+            with self.assertRaises(GateEvidenceError):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_empty_mandatory_requirements(self) -> None:
+        """CR-009 negative: a TaskReport with no required test receipts, no
+        required review receipts and no required evidence ids binds nothing
+        and must fail the gate."""
+        empty_requirements = {
+            "required_test_receipt_ids": [],
+            "required_review_receipt_ids": [],
+            "required_evidence_ids": [],
+        }
+        with self._trusted_gate_fixture(
+            task_requirements=empty_requirements,
+        ) as fixture:
             with self.assertRaises(GateEvidenceError):
                 fixture.verifier.verify(fixture.report)
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import sqlite3
 import subprocess
@@ -33,7 +34,10 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from research_automation.control_plane import stores as _stores
-from research_automation.control_plane.contracts import SideEffect
+from research_automation.control_plane.contracts import (
+    SideEffect,
+    canonical_json,
+)
 from research_automation.control_plane.sqlite_uow import (
     _SqliteUnitOfWork,
     _StoreSpec,
@@ -46,6 +50,7 @@ _REGULAR_FILE_MODES = frozenset({"100644", "100755"})
 _MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 _MANIFEST_SCHEMA = "control_plane.activation_envelope.v1"
 _TICKET_DOMAIN = b"control_plane.coordinator_ticket.v1\0"
+_SAFE_PATH_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class ActivationPhase(str, Enum):
@@ -356,6 +361,57 @@ class ActivationCoordinator:
             outbox_drained=drained > 0,
         )
 
+    def _evidence_ref_for_ticket(
+        self,
+        manifest: Mapping[str, object],
+        task_id: str,
+        ticket_id: str,
+    ) -> str:
+        """Derive the activation evidence path from the envelope manifest.
+
+        CR-009: the path is derived from the manifest phase/attempt identity
+        instead of a hard-coded p0 directory, so every phase writes evidence
+        under its own attempt path.  Phase and attempt components are
+        restricted to a safe alphabet to prevent path traversal.
+        """
+
+        phase = str(manifest.get("phase") or "UNKNOWN")
+        attempt_id = str(
+            manifest.get("attempt_id") or f"coordinator-{task_id[:24]}"
+        )
+        if not _SAFE_PATH_COMPONENT_RE.fullmatch(phase) or not _SAFE_PATH_COMPONENT_RE.fullmatch(attempt_id):
+            raise ActivationEnvelopeError(
+                "manifest phase/attempt_id contain unsafe path components"
+            )
+        return (
+            f"research_state/control_plane/{phase.lower()}/attempts/{attempt_id}/"
+            f"evidence/activation-{ticket_id[:16]}.json"
+        )
+
+    def _evidence_prefixes(
+        self,
+        manifest: Mapping[str, object],
+        task_id: str,
+    ) -> frozenset[str]:
+        """Repo-relative directory prefixes the coordinator itself writes.
+
+        The activation evidence directory is coordinator-owned output (it is
+        committed by the caller after activation), so working-tree delta
+        checks must treat it like the pre-existing user quarantine: present
+        but out of scope for the activation delta.  Only the current phase's
+        attempts subtree is exempt; evidence left by an earlier phase remains
+        in scope so a wrong-phase or stale delta still fails closed.
+        """
+
+        phase = str(manifest.get("phase") or "UNKNOWN")
+        if not _SAFE_PATH_COMPONENT_RE.fullmatch(phase):
+            return frozenset()
+        return frozenset(
+            {
+                f"research_state/control_plane/{phase.lower()}/attempts/",
+            }
+        )
+
     def _quarantine_paths(
         self,
         manifest: Mapping[str, object],
@@ -561,6 +617,10 @@ class ActivationCoordinator:
             str(path) for path in manifest.get("allowed_files", [])
         ]
         quarantine = self._quarantine_paths(manifest)
+        quarantine |= self._evidence_prefixes(
+            manifest,
+            str(manifest.get("task_id") or ""),
+        )
         status = self._git(
             "status", "--porcelain", "-z", "--untracked-files=all",
             strip=False,
@@ -629,19 +689,60 @@ class ActivationCoordinator:
         # The EVIDENCE receipt payload must appear identically in the task
         # spec input_evidence_refs, the trusted receipt row and the task
         # report, so it is derived once here and reused everywhere.
-        evidence_ref = (
-            "research_state/control_plane/p0/attempts/p0-attempt-005/"
-            f"evidence/activation-{ticket_id[:16]}.json"
-        )
+        #
+        # CR-009 (committed-blob evidence trust root): the evidence file is
+        # created with deterministic canonical content before the ticket is
+        # issued, and evidence_sha256 is the SHA-256 of those file bytes --
+        # which equals the committed blob SHA-256 once the activation script
+        # commits the file.  The path-string hash is never used.
+        evidence_ref = self._evidence_ref_for_ticket(manifest, task_id, ticket_id)
+        evidence_document = {
+            "schema_version": "control_plane.activation_evidence.v1",
+            "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
+            "evidence_ref": evidence_ref,
+            "status": "VERIFIED",
+            "manifest_sha256": manifest_sha256,
+            "task_id": task_id,
+            "ticket_id": ticket_id,
+        }
+        evidence_bytes = canonical_json(evidence_document).encode("utf-8")
+        evidence_path = (self._repository_root / evidence_ref).resolve()
+        if evidence_path.exists():
+            existing = evidence_path.read_bytes()
+            if existing != evidence_bytes:
+                raise ActivationEnvelopeError(
+                    "activation evidence file exists with different content"
+                )
+        else:
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            evidence_path.write_bytes(evidence_bytes)
         evidence_payload = {
             "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
             "evidence_ref": evidence_ref,
-            "evidence_sha256": hashlib.sha256(
-                evidence_ref.encode("utf-8")
-            ).hexdigest(),
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
             "status": "VERIFIED",
         }
         self._evidence_payload = evidence_payload
+        required_tests = list(manifest.get("required_official_tests") or [])
+        task_requirements = dict(
+            manifest.get("requirements")
+            or {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            }
+        )
+        if required_tests and not task_requirements.get(
+            "required_test_receipt_ids"
+        ):
+            # CR-009: mandatory task-level test receipts are derived from the
+            # envelope's required_official_tests so missing receipts FAIL.
+            # The required ids must match the TEST receipt id the coordinator
+            # records for the same activation run.
+            task_requirements = dict(task_requirements)
+            task_requirements["required_test_receipt_ids"] = [
+                f"test-{ticket_id[:16]}"
+            ]
         task_spec = {
             "task_id": task_id,
             "objective": str(manifest.get("objective") or "activation"),
@@ -649,14 +750,7 @@ class ActivationCoordinator:
             "idempotency_key": idempotency,
             "task_spec_ref": str(manifest.get("task_spec_ref") or "manifest.json"),
             "task_spec_sha256": manifest_sha256,
-            "requirements": dict(
-                manifest.get("requirements")
-                or {
-                    "required_test_receipt_ids": [],
-                    "required_review_receipt_ids": [],
-                    "required_evidence_ids": [],
-                }
-            ),
+            "requirements": task_requirements,
             "allowed_files": list(manifest.get("allowed_files") or []),
             "forbidden_files": list(manifest.get("forbidden_files") or []),
             "baseline_ref": str(manifest.get("baseline_ref") or "manifest.json"),
@@ -845,6 +939,10 @@ class ActivationCoordinator:
         )
         allowed = [str(path) for path in manifest.get("allowed_files", [])]
         quarantine = self._quarantine_paths(manifest)
+        quarantine |= self._evidence_prefixes(
+            manifest,
+            str(manifest.get("task_id") or ""),
+        )
         out_of_scope = self._out_of_scope_delta(
             status,
             allowed=allowed,

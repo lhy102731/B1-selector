@@ -912,6 +912,80 @@ class ActivationCoordinatorTests(unittest.TestCase):
             )
             self.assertTrue(report.succeeded)
 
+    def test_requirements_derived_from_official_tests_match_test_receipt(
+        self,
+    ) -> None:
+        """CR-009: the coordinator derives non-empty required test receipts
+        from the envelope's required_official_tests, and the derived id must
+        match the TEST receipt recorded for the same activation so a rebuilt
+        TaskReport derives PASS instead of BLOCKED."""
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._bootstrap(root)
+            base, source, envelope = _build_envelope(root)
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                check=True,
+            )
+            coordinator = self._coordinator(root)
+            report = coordinator.run(
+                envelope_commit=envelope,
+                manifest_ref="manifest.json",
+                mode=ac.ActivationMode.V2_NORMAL,
+            )
+            self.assertTrue(report.succeeded)
+            connection = sqlite3.connect(root / "authority.sqlite3")
+            try:
+                ticket = connection.execute(
+                    "SELECT ticket_id, task_spec_payload_json "
+                    "FROM task_tickets_v2"
+                ).fetchone()
+                receipt = connection.execute(
+                    "SELECT receipt_id, payload_json FROM trusted_task_receipts_v2 "
+                    "WHERE receipt_kind = 'TEST'"
+                ).fetchone()
+                evidence = connection.execute(
+                    "SELECT payload_json FROM trusted_task_receipts_v2 "
+                    "WHERE receipt_kind = 'EVIDENCE'"
+                ).fetchone()
+            finally:
+                connection.close()
+            self.assertIsNotNone(ticket)
+            self.assertIsNotNone(receipt)
+            self.assertIsNotNone(evidence)
+            task_spec = json.loads(ticket[1])
+            requirements = task_spec["requirements"]
+            self.assertEqual(
+                requirements["required_test_receipt_ids"],
+                [receipt[0]],
+            )
+            self.assertEqual(
+                requirements["required_test_receipt_ids"],
+                ["test-" + ticket[0][:16]],
+            )
+            evidence_payload = json.loads(evidence[0])
+            self.assertEqual(
+                evidence_payload["evidence_sha256"],
+                hashlib.sha256(
+                    (
+                        root
+                        / "repo"
+                        / evidence_payload["evidence_ref"]
+                    ).read_bytes()
+                ).hexdigest(),
+            )
+            evidence_path = root / "repo" / evidence_payload["evidence_ref"]
+            self.assertTrue(evidence_path.is_file())
+            self.assertTrue(
+                evidence_payload["evidence_ref"].startswith(
+                    "research_state/control_plane/p0/attempts/"
+                )
+            )
+
     def test_quarantine_manifest_hash_mismatch_is_rejected(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,

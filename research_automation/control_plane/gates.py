@@ -48,6 +48,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_GATE_REPORT_BYTES = 256 * 1024
 _MAX_GATE_REPORT_DEPTH = 32
 _MAX_GATE_ARTIFACT_BYTES = 4 * 1024 * 1024
+_MAX_EVIDENCE_BLOB_BYTES = 4 * 1024 * 1024
 _DRAFT_FIELDS = frozenset(
     {
         "plan_version",
@@ -775,8 +776,132 @@ class PhaseGateVerifier:
                 raise GateAuthorityMismatchError(
                     "TaskReport does not match trusted authority"
                 ) from error
+            self._verify_task_report_evidence_refs(
+                parsed,
+                phase=str(report["phase"]),
+                attempt_id=str(report["attempt_id"]),
+            )
+            self._verify_task_report_requirements(parsed)
             parsed_reports.append(parsed)
         return parsed_reports
+
+    def _verify_task_report_evidence_refs(
+        self,
+        task_report: Mapping[str, object],
+        *,
+        phase: str,
+        attempt_id: str,
+    ) -> None:
+        """Dereference every VERIFIED input evidence ref to its committed blob.
+
+        CR-009 (committed-blob evidence trust root): each evidence ref must
+        resolve to a regular committed blob whose bytes hash to the declared
+        evidence_sha256, live inside the control-plane evidence namespace, and
+        bind to the gate's phase/attempt identity.  A path-string hash, a
+        dangling ref, an uncommitted file, or a wrong-phase ref fails closed.
+        """
+
+        evidence_refs = task_report.get("input_evidence_refs")
+        if not isinstance(evidence_refs, list):
+            raise GateEvidenceError(
+                "TaskReport input_evidence_refs are invalid"
+            )
+        evidence_ids: set[str] = set()
+        for evidence in evidence_refs:
+            if not isinstance(evidence, Mapping):
+                raise GateEvidenceError(
+                    "TaskReport evidence reference is invalid"
+                )
+            evidence_id = str(evidence["evidence_id"])
+            if evidence_id in evidence_ids:
+                raise GateEvidenceError(
+                    "TaskReport evidence references must be distinct"
+                )
+            evidence_ids.add(evidence_id)
+            status = str(evidence["status"])
+            evidence_ref = str(evidence["evidence_ref"])
+            expected_sha256 = str(evidence["evidence_sha256"])
+            namespace = "research_state/control_plane/"
+            if not evidence_ref.startswith(namespace):
+                raise GateEvidenceError(
+                    "TaskReport evidence ref is outside the control-plane "
+                    "evidence namespace: " + evidence_ref
+                )
+            expected_prefix = (
+                f"{namespace}{phase.lower()}/attempts/{attempt_id}/"
+            )
+            if not evidence_ref.startswith(expected_prefix):
+                raise GateAuthorityMismatchError(
+                    "TaskReport evidence ref does not bind to the gate "
+                    f"phase/attempt: {evidence_ref}"
+                )
+            if status != "VERIFIED":
+                # INVALID / IN_DOUBT evidence is self-declared as not
+                # trustworthy; the TaskReport outcome derivation already
+                # treats it as a failed requirement, so it must not be
+                # dereferenced as proof.
+                continue
+            raw = self._read_repository_bytes(
+                evidence_ref,
+                max_bytes=_MAX_EVIDENCE_BLOB_BYTES,
+                evidence_name="TaskReport evidence",
+            )
+            actual_sha256 = hashlib.sha256(raw).hexdigest()
+            if not hmac.compare_digest(expected_sha256, actual_sha256):
+                raise GateEvidenceError(
+                    "TaskReport evidence SHA-256 does not match the "
+                    "committed blob: " + evidence_ref
+                )
+
+    def _verify_task_report_requirements(
+        self,
+        task_report: Mapping[str, object],
+    ) -> None:
+        """Reject task reports with empty mandatory requirements.
+
+        CR-009 (F-04): a TaskReport with no required test receipts, no
+        required review receipts and no required evidence ids derives PASS
+        with nothing actually mandated, so the gate binds nothing.  The
+        coordinator derives requirements from the envelope's
+        required_official_tests; a report that still reaches the gate with
+        empty requirements fails closed.
+        """
+
+        requirements = task_report.get("requirements")
+        if not isinstance(requirements, Mapping):
+            raise GateEvidenceError(
+                "TaskReport requirements are invalid"
+            )
+        for field_name in (
+            "required_test_receipt_ids",
+            "required_review_receipt_ids",
+            "required_evidence_ids",
+        ):
+            values = requirements.get(field_name)
+            if not isinstance(values, list):
+                raise GateEvidenceError(
+                    f"TaskReport requirements.{field_name} is invalid"
+                )
+        # The coordinator always derives required_test_receipt_ids from the
+        # envelope's required_official_tests, and the gate must bind at
+        # least one mandatory obligation; review receipts may be legitimately
+        # empty when no reviewer was commissioned.
+        if not requirements["required_test_receipt_ids"]:
+            raise GateEvidenceError(
+                "TaskReport requirements.required_test_receipt_ids is "
+                "empty; the gate binds no official tests"
+            )
+        if not any(
+            requirements[field_name]
+            for field_name in (
+                "required_test_receipt_ids",
+                "required_review_receipt_ids",
+                "required_evidence_ids",
+            )
+        ):
+            raise GateEvidenceError(
+                "TaskReport requirements are empty; the gate binds nothing"
+            )
 
     def _verify_gate_artifact_files(
         self,
