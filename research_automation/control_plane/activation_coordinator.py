@@ -519,9 +519,9 @@ class ActivationCoordinator:
                 "normal activation cannot carry migration effects"
             )
         head = self._git("rev-parse", "HEAD")
-        if head != manifest["base_commit"]:
+        if head != manifest["base_commit"] and head != envelope_commit:
             raise ActivationEnvelopeError(
-                "repository HEAD is not the manifest base commit"
+                "repository HEAD is not the manifest base or envelope commit"
             )
         if (
             self._git("rev-parse", f"{manifest['base_commit']}^{{tree}}")

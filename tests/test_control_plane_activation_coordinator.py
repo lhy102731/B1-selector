@@ -312,7 +312,16 @@ class ActivationCoordinatorTests(unittest.TestCase):
             self._bootstrap(root)
             base, source, envelope = _build_envelope(root)
             coordinator = self._coordinator(root)
-            # HEAD is not on base -> reject
+            # HEAD on an unrelated commit (neither base nor envelope) -> reject
+            (root / "repo" / "drift.txt").write_text("drift\n")
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "add", "--", "drift.txt"],
+                check=True,
+            )
+            subprocess.run(
+                [GIT, "-C", str(root / "repo"), "commit", "-q", "-m", "drift"],
+                check=True,
+            )
             with self.assertRaises(ac.ActivationEnvelopeError):
                 coordinator.run(
                     envelope_commit=envelope,
