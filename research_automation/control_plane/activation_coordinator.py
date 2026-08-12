@@ -591,9 +591,14 @@ class ActivationCoordinator:
         mode: ActivationMode,
     ) -> str:
         task_id = str(manifest["task_id"])
-        idempotency = hashlib.sha256(
-            task_id.encode("utf-8") + b"\0" + mode.value.encode("utf-8")
-        ).hexdigest()
+        manifest_idempotency = manifest.get("idempotency_key")
+        idempotency = (
+            str(manifest_idempotency)
+            if manifest_idempotency
+            else hashlib.sha256(
+                task_id.encode("utf-8") + b"\0" + mode.value.encode("utf-8")
+            ).hexdigest()
+        )
         ticket_id = hashlib.sha256(
             _TICKET_DOMAIN + idempotency.encode("utf-8")
         ).hexdigest()
