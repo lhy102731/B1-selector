@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import json as _json
+import subprocess
+import sys
 import json
 from pathlib import Path
 import unittest
@@ -39,7 +42,10 @@ from research_automation.control_plane.memory import (
     CommittedLearningLedgerReader,
     ContextProjection,
 )
-from research_automation.control_plane.campaign_lease import ProcessIdentity
+from research_automation.control_plane.campaign_lease import (
+    LocalProcessIdentityProvider,
+    ProcessIdentity,
+)
 from research_automation.foundations.protocols import compile_execution_spec
 from research_automation.task_queue import ExperimentTask
 from tests.test_control_plane_campaign_controller import (
@@ -1145,6 +1151,143 @@ class OfflineTwoCycleProofTests(unittest.TestCase):
                 formal_controller.budget_snapshot().reserved_input_tokens,
                 0,
             )
+
+
+class FreshProcessTwoCycleProofTests(unittest.TestCase):
+    """Step 8.7: cycle 1 commits eligible learning, then a brand-new child
+    process with a new process identity continues from the durable journal."""
+
+    def test_fresh_child_process_continues_cycle_two(self) -> None:
+        campaign_id = "campaign-fresh-process-two-cycle"
+        claim_scope = _scope(generation="generation-1")
+        claim = {
+            "kind": "NEGATIVE",
+            "summary": "Synthetic scoped finding from cycle one",
+            "scope": _json.dumps(
+                claim_scope,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "parent_lineage": [],
+            "reopen_predicate": "[]",
+            "future_usage_guidance": (
+                '{"conclusion":"AVOID","directional_status":"avoid"}'
+            ),
+        }
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            # --- cycle 1 in this process (commits eligible learning) ---
+            from tests import test_control_plane_evidence_learning as evidence_fixtures
+
+            report, binding, artifact, _, _ = (
+                evidence_fixtures.EvidenceLearningVerticalSliceTests()
+                ._authority_fixture(
+                    root,
+                    claim=claim,
+                    protocol=_protocol().model_dump(mode="json"),
+                )
+            )
+            authority_reader = patch(
+                "research_automation.control_plane.evidence_learning."
+                "AuthorityReader.verify_task_report_binding",
+                return_value=binding,
+            )
+            authority_reader.start()
+            self.addCleanup(authority_reader.stop)
+            first_prompt = {
+                "instruction": "Return the authority-bound synthetic artifact"
+            }
+            first_spec, first_member = _execution_spec_and_member(first_prompt)
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=_BUDGET_LIMITS,
+                identity_provider=LocalProcessIdentityProvider(),
+                monotonic_ns=_FakeMonotonicClock(100, 1_000_000, 2_000_000),
+            )
+            prepared = controller.prepare_cycle(
+                task=ExperimentTask(
+                    task_id="cycle-001",
+                    strategy="b1",
+                    proposal={
+                        "hypothesis": claim["summary"],
+                        "scope": claim_scope,
+                    },
+                    source="synthetic-test",
+                ),
+                cycle_number=1,
+                execution_spec=first_spec,
+                roster_members=(first_member,),
+                reservation_limits=_RESERVATION_LIMITS,
+            )
+            execution = controller.start_execution(
+                cycle_id=prepared.cycle_id,
+                acquisition_id=f"execute-{prepared.cycle_id}",
+            )
+            controller.invoke_member_json(
+                execution=execution,
+                member_id=first_member.member_id,
+                provider=_AuthorityEvidenceArtifactBoundFakeProvider(artifact),
+                prompt=first_prompt,
+                limits=_FAKE_CALL_LIMITS,
+            )
+            usage = controller.complete_model_execution(execution=execution)
+            evidence = controller.record_model_evidence(
+                execution=execution,
+                member_id=first_member.member_id,
+                evidence_adapter=EvidenceAdapter(
+                    known_runners={"fixture-runner": "1.0.0"},
+                    approved_protocol=artifact["executed_protocol"],
+                    approved_claim=artifact["claim"],
+                ),
+            )
+            learning = controller.commit_learning(
+                execution=execution,
+                evidence_receipt=evidence,
+                authority_task_report=report,
+                learning_commit_sink=CampaignLearningCommitSink(
+                    journal=journal,
+                    service=LearningCommitService(repository_root=root),
+                ),
+            )
+            settlement = controller.settle_cycle(
+                execution=execution,
+                execution_usage=usage,
+                learning_commit_receipt=learning,
+            )
+            information_gain = controller.record_information_gain(
+                execution=execution,
+                settlement_receipt=settlement,
+            )
+            decision = controller.decide_next_cycle(
+                execution=execution,
+                information_gain_receipt=information_gain,
+            )
+            self.assertEqual(decision.decision, "CONTINUE")
+            self.assertEqual(decision.next_cycle_number, 2)
+
+            # --- destroy in-memory objects; run cycle 2 in a fresh child ---
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "tests.helpers.control_plane_campaign_runtime_child",
+                    campaign_id,
+                    str(root),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            self.assertEqual(
+                child.returncode,
+                0,
+                msg=f"child failed: {child.stdout} {child.stderr}",
+            )
+            payload = _json.loads(child.stdout.strip().splitlines()[-1])
+            self.assertEqual(payload["cycle_id"], "cycle-002")
+            self.assertEqual(payload["status"], "COMPLETED")
 
 
 if __name__ == "__main__":
