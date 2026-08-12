@@ -345,7 +345,7 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "1da9713b28f6ce8c23e4152056ff06cc9757fe3346ac050adf49478cf660c3d9"
+   "current_sha256": "b14c365c153b79b2599cddf22bd800674cea0663792c733ab1c40c20d1027734"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/scope_manifest.json",
@@ -357,19 +357,55 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "ffa993f4fc99036fe97e1ae634a5dead2d2771f267d2b0a25d695f3852475bc1"
+   "current_sha256": "9733850ab60a962e07d1ac1310c7a66d570218f419ce9646ff9f298f15e63846"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "2a355972a0875cedafed45aea9558a2cf90d88c994a2f33c09eab3baad0a725d"
+   "current_sha256": "c71ec8cd0fad680503dab3f1a43105c1b690718ecc43b2580d9b97ff9e6a07af"
+  },
+  {
+   "path": "research_state/control_plane/policies/34da4651f614778e03c892e0a14e085caebfd90e4b602816b56c722e27459c68.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "34da4651f614778e03c892e0a14e085caebfd90e4b602816b56c722e27459c68"
+  },
+  {
+   "path": "research_state/control_plane/policies/65a4ff9534dd9c075c879f01f0c0b5c12f1f5b127901ee5ee396d56be21dcbfa.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "65a4ff9534dd9c075c879f01f0c0b5c12f1f5b127901ee5ee396d56be21dcbfa"
+  },
+  {
+   "path": "research_state/control_plane/policies/a18c1b9345c1de41fab7b1cfbade7cef4dd51fbbedd40cb816fee7d3832b8d4b.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "a18c1b9345c1de41fab7b1cfbade7cef4dd51fbbedd40cb816fee7d3832b8d4b"
+  },
+  {
+   "path": "research_state/control_plane/policies/a763bb385b21f15d11324adc20b18d4242abc4c6d0db51a39465aee9a2e3d92f.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5"
   },
   {
    "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
    "change_type": "ADD",
    "baseline_sha256": null,
    "current_sha256": "dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5"
+  },
+  {
+   "path": "research_state/control_plane/policies/dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5"
+  },
+  {
+   "path": "research_state/control_plane/policies/e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e09577931f78ed22ca89a6a9d04226de4f45047d21c60d7e1b37382bfb2c0849"
   },
   {
    "path": "tests/test_control_plane_access.py",
@@ -445,5 +481,5 @@
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "d677cd23fd7200ac358669bf1375860313b68e4038d7249fbebe68727f716163"
+ "report_payload_sha256": "2fc9b634c9b07b81fc9013fa00f859cdd45b4cacc0ce5f48eb5245356eba1634"
 }
