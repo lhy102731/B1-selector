@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import MagicMock, patch
 
 from research_automation.control_plane.final_eval_closure import (
     FinalEvalClosureConflict,
@@ -159,6 +160,55 @@ class FinalEvalClosureTests(unittest.TestCase):
             **{name: values[name] for name in fields}
         )
         return lease
+
+
+class CampaignClosedGuardTests(unittest.TestCase):
+    def test_closed_campaign_guards_controller_entries(self) -> None:
+        from research_automation.control_plane.campaign_lifecycle import (
+            CampaignSnapshot,
+            CampaignStateConflictError,
+            CampaignStatus,
+        )
+        from research_automation.control_plane.campaign_controller import (
+            CampaignBudgetLimits,
+            OperationalCampaignController,
+        )
+        from research_automation.control_plane.campaign_lease import (
+            LocalProcessIdentityProvider,
+        )
+
+        campaign_id = "campaign-closed-guard"
+        with _authorized_campaign(campaign_id) as (root, _, journal):
+            controller = OperationalCampaignController(
+                journal=journal,
+                repository_root=root,
+                budget_limits=CampaignBudgetLimits(
+                    currency="USD",
+                    max_cycles=1,
+                    max_input_tokens=200,
+                    max_output_tokens=100,
+                    max_cost="2",
+                ),
+                identity_provider=LocalProcessIdentityProvider(),
+                monotonic_ns=lambda: 1_000_000,
+            )
+            # Simulate a durably closed campaign by replacing the lifecycle
+            # snapshot with a CLOSED CampaignSnapshot.
+            fake_lifecycle = MagicMock()
+            fake_lifecycle.snapshot.return_value = CampaignSnapshot(
+                campaign_id=campaign_id,
+                status=CampaignStatus.CLOSED,
+                sequence=1,
+                block_reason_code=None,
+                block_source_ref=None,
+            )
+            with patch.object(
+                controller,
+                "_lifecycle",
+                fake_lifecycle,
+            ):
+                with self.assertRaises(CampaignStateConflictError):
+                    controller._require_campaign_not_closed()
 
 
 if __name__ == "__main__":

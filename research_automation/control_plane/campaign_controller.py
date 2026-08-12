@@ -800,6 +800,7 @@ class OperationalCampaignController:
         reservation_limits: CycleReservationLimits,
     ) -> PreparedOperationalCycle:
         self._journal._authorize()
+        self._require_campaign_not_closed()
         if not isinstance(reservation_limits, CycleReservationLimits):
             raise TypeError("reservation_limits must be CycleReservationLimits")
         if reservation_limits.currency != self._budget._currency:
@@ -1318,10 +1319,25 @@ class OperationalCampaignController:
     def campaign_snapshot(self) -> CampaignSnapshot:
         return self._lifecycle.snapshot()
 
+    def _require_campaign_not_closed(self) -> None:
+        """Fail closed if the campaign has durably closed (Step 17.6).
+
+        Runs before any cycle/event/provider write so CLOSED campaigns
+        cannot prepare, start, pause, resume, complete or open a new cycle.
+        """
+        from .campaign_lifecycle import CampaignStateConflictError
+
+        snapshot = self._lifecycle.snapshot()
+        if snapshot.status == CampaignStatus.CLOSED:
+            raise CampaignStateConflictError(
+                "Campaign is CLOSED; no further work is permitted"
+            )
+
     def complete_campaign(self) -> CampaignSnapshot:
         """Complete a controller-managed Campaign after a durable STOP."""
 
         self._journal._authorize()
+        self._require_campaign_not_closed()
 
         def complete(connection) -> CampaignSnapshot:
             opened = self._lifecycle._opened_cycles(connection)
@@ -1404,6 +1420,7 @@ class OperationalCampaignController:
         acquisition_id: str,
     ) -> ExecutingOperationalCycle:
         self._journal._authorize()
+        self._require_campaign_not_closed()
         cycle_id = _identifier(cycle_id, "cycle_id")
         acquisition_id = _identifier(acquisition_id, "acquisition_id")
 
