@@ -2,9 +2,9 @@
  "task_id": "P0-SOURCE-BOOTSTRAP",
  "objective": "P0-CR-008 corrective activation and live store migration",
  "dependencies": [],
- "idempotency_key": "p0-p0-source-bootstrap-rerecord-003",
+ "idempotency_key": "p0-p0-source-bootstrap-rerecord-004",
  "task_spec_ref": "manifest.json",
- "task_spec_sha256": "ec30777a5c4686ebf00d41f9d5c2d655b18c561c9fe96e5c0fbfc1eb6207def3",
+ "task_spec_sha256": "72f9e45cd54a1f69067d870314c34166e60d33c032696b28b4ed3043b5c572e5",
  "requirements": {
   "required_test_receipt_ids": [],
   "required_review_receipt_ids": [],
@@ -29,23 +29,23 @@
  "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
  "input_evidence_refs": [
   {
-   "evidence_id": "coordinator-evidence-985f96e1dd721661",
-   "evidence_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/activation-985f96e1dd721661.json",
-   "evidence_sha256": "aead0a3838252bfbc4d6536dffe999636c47dd0b9e0effa95b8196db48821118",
+   "evidence_id": "coordinator-evidence-47b25437b7b23e6f",
+   "evidence_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/activation-47b25437b7b23e6f.json",
+   "evidence_sha256": "a2ed2630c4359fd6709fd3168891b4ec8343065c15fa19d8802d1c386d6cde22",
    "status": "VERIFIED"
   }
  ],
  "attempt_id": "p0-attempt-005",
- "ticket_id": "985f96e1dd721661c4f2e0e092d838c879f814d604e157f8ac95735b499184a7",
+ "ticket_id": "47b25437b7b23e6fc724a989f4921f052539a81d915a90275d6e7cf439890cd7",
  "ticket_state": "SUCCEEDED",
- "authorization_ref": "coordinator-auth-985f96e1dd721661c4f2e0e0",
+ "authorization_ref": "coordinator-auth-47b25437b7b23e6fc724a989",
  "identity_binding": {
-  "plan_hash": "0d21ff2c93f7e74cc10fe0a0582f703778be64eb71e437d217595b1772042bde",
-  "scope_hash": "0d21ff2c93f7e74cc10fe0a0582f703778be64eb71e437d217595b1772042bde",
-  "instruction_policy_hash": "0d21ff2c93f7e74cc10fe0a0582f703778be64eb71e437d217595b1772042bde"
+  "plan_hash": "f19c71c7f3d4dc601de787599e4a72a7e77a9b76e2e70aff5e24304c32ede639",
+  "scope_hash": "f19c71c7f3d4dc601de787599e4a72a7e77a9b76e2e70aff5e24304c32ede639",
+  "instruction_policy_hash": "f19c71c7f3d4dc601de787599e4a72a7e77a9b76e2e70aff5e24304c32ede639"
  },
- "started_at": "2026-08-12T02:07:35.136217Z",
- "completed_at": "2026-08-12T02:11:47.647446Z",
+ "started_at": "2026-08-12T02:15:01.273769Z",
+ "completed_at": "2026-08-12T02:19:23.927872Z",
  "changed_files": [
   {
    "path": "docs/superpowers/plans/2026-08-11-v342-p0-change-request-008.md",
@@ -87,7 +87,7 @@
    "path": "research_automation/control_plane/activation_coordinator.py",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "ddd052aae19c8fb98b2f43e214cf070d7580feacf12bab8e4a2452f592790777"
+   "current_sha256": "c5e0f59adeb2bb8dd8cfeeb614c58c8019a40d0cf7b64e28f77a94db70133400"
   },
   {
    "path": "research_automation/control_plane/campaign_store.py",
@@ -135,13 +135,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "ec30777a5c4686ebf00d41f9d5c2d655b18c561c9fe96e5c0fbfc1eb6207def3"
+   "current_sha256": "72f9e45cd54a1f69067d870314c34166e60d33c032696b28b4ed3043b5c572e5"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-store-migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "336ddc85dd55abf562787f201db13c723586ec639157ede2d8e87196a1bb384e"
+   "current_sha256": "aff260297ef1feeb57373077a1777ea5ca18df6dcdb543987c0d735da1312c3a"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/code_freeze_manifest.json",
@@ -357,13 +357,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "268a9f7abdc721797bf2da2a2eeced5e6b9d5dad03adcc9f8f77d3d360f6b97e"
+   "current_sha256": "020bc17d57db3003d125f7cd68f09a2f20c47c8724399c6b90fb6662784909d1"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "d15c24a5f0f80a4f4adc738c0b36517892cf38f7a457d3cb941601446124b0a0"
+   "current_sha256": "28715b8651b279c1d3d507fc49764599e78240545e388a2493cb1dcfd5dc1caf"
   },
   {
    "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
@@ -418,7 +418,7 @@
   {
    "command": "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\python.exe -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_git_evidence tests.test_control_plane_gates -v",
    "exit_code": 0,
-   "receipt_id": "test-985f96e1dd721661",
+   "receipt_id": "test-47b25437b7b23e6f",
    "result": "PASS"
   }
  ],
@@ -445,5 +445,5 @@
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "105f31452a380149ae064cb1e7cf0ddf22ae9149ac3466db9c26236c52cd7d98"
+ "report_payload_sha256": "7ae442d9dfedcfff252e85bcd51c0637af998c292debd7ab66a0d3fcddcf002e"
 }
