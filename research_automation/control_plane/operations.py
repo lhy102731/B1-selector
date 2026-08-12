@@ -418,11 +418,18 @@ def read_only_status(
     """Build the read-only status surfaces for a journal path.
 
     The synthetic surface rejects protected authority/operational paths unless
-    the caller explicitly opts into the real-store CLI reader.
+    the caller explicitly opts into the real-store CLI reader.  With
+    ``allow_real=True`` the live v4 OperationalJournal is read through the
+    same transaction-validated read model as the stores (identity + schema v4
+    + WAL + stream hash checks); missing/corrupt stores fail closed with a
+    stable reason and never fabricate zero values.
     """
 
-    if not allow_real:
-        _require_synthetic_path(source)
+    if allow_real:
+        from .operations_projection import read_only_status_real
+
+        return read_only_status_real()
+    _require_synthetic_path(source)
     snapshot = _read_journal_snapshot(source)
     event_count = int(snapshot["event_count"])
     return {
