@@ -1,0 +1,30 @@
+  File "D:\workspace\a-share-quant-selector-main\research_automation\control_plane\campaign_preflight.py", line 133, in require_campaign_boundary
+    raise CampaignBoundaryError(
+    ...<2 lines>...
+    )
+research_automation.control_plane.campaign_preflight.CampaignBoundaryError: campaign boundary rejected for run_research.py:full-cycle: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT
+
+======================================================================
+ERROR: test_resume_discover_routes_to_checkpoint_resume (tests.test_ag2_cli_routing.AG2CliRoutingTests.test_resume_discover_routes_to_checkpoint_resume)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 1426, in patched
+    return func(*newargs, **newkeywargs)
+  File "D:\workspace\a-share-quant-selector-main\tests\test_ag2_cli_routing.py", line 181, in test_resume_discover_routes_to_checkpoint_resume
+    saved = run_research.cmd_resume_discover(args)
+  File "D:\workspace\a-share-quant-selector-main\run_research.py", line 223, in cmd_resume_discover
+    _campaign_boundary(args, "resume-discover")
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\a-share-quant-selector-main\run_research.py", line 96, in _campaign_boundary
+    require_campaign_boundary(surface=f"run_research.py:{command}")
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\workspace\a-share-quant-selector-main\research_automation\control_plane\campaign_preflight.py", line 133, in require_campaign_boundary
+    raise CampaignBoundaryError(
+    ...<2 lines>...
+    )
+research_automation.control_plane.campaign_preflight.CampaignBoundaryError: campaign boundary rejected for run_research.py:resume-discover: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT
+
+----------------------------------------------------------------------
+Ran 7 tests in 3.879s
+
+FAILED (errors=6)
