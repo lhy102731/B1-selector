@@ -1,9 +1,15 @@
 {
   "allowed_files": [
-    "research_state/control_plane/p0/attempts/p0-attempt-005/"
+    "research_automation/control_plane/",
+    "tests/",
+    "requirements/",
+    "docs/superpowers/",
+    "research_state/control_plane/p0/attempts/p0-attempt-005/",
+    "research_state/control_plane/policies/"
   ],
-  "base_commit": "c0387537892b5d5b690e3b835aa7d6a62503a74f",
-  "base_tree": "dffb6d7ba654cf179d70c026d7914ff25c16e72a",
+  "attempt_id": "p0-attempt-005",
+  "base_commit": "79eaf91e5b6acffaef68b883d812fd6978647e06",
+  "base_tree": "29b2f23dacf0a5b295f96d6675e3aab4b391e871",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expected_side_effects": [
     "MIGRATE_STORES"
@@ -11,7 +17,9 @@
   "forbidden_files": [
     "data/",
     "knowledge/",
-    "strategy/"
+    "strategy/",
+    "research_state/control_plane/authority/",
+    "research_state/control_plane/operational/"
   ],
   "mode": "migration",
   "phase": "P0",
@@ -23,7 +31,7 @@
     "tests.test_control_plane_store_migration"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "c0387537892b5d5b690e3b835aa7d6a62503a74f",
-  "source_tree": "dffb6d7ba654cf179d70c026d7914ff25c16e72a",
+  "source_commit": "79eaf91e5b6acffaef68b883d812fd6978647e06",
+  "source_tree": "29b2f23dacf0a5b295f96d6675e3aab4b391e871",
   "task_id": "P0-STORE-MIGRATION"
 }
