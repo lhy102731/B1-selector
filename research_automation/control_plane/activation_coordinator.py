@@ -600,6 +600,7 @@ class ActivationCoordinator:
         grant_id = f"coordinator-grant-{ticket_id[:24]}"
         authorization_ref = f"coordinator-auth-{ticket_id[:24]}"
         invocation_id = f"invocation-{ticket_id[:16]}"
+        attempt_id = str(manifest.get("attempt_id") or f"coordinator-{task_id[:24]}")
         plan_hash = hashlib.sha256(
             b"control_plane.coordinator_plan.v1\0" + manifest_sha256.encode("ascii")
         ).hexdigest()
@@ -647,7 +648,7 @@ class ActivationCoordinator:
                         ?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?)""",
                 (
                     authorization_ref,
-                    f"coordinator-{task_id[:24]}",
+                    attempt_id,
                     invocation_id,
                     plan_hash,
                     plan_hash,
@@ -669,7 +670,7 @@ class ActivationCoordinator:
                 (
                     grant_id,
                     authorization_ref,
-                    f"coordinator-{task_id[:24]}",
+                    attempt_id,
                     invocation_id,
                     plan_hash,
                     plan_hash,
@@ -690,7 +691,7 @@ class ActivationCoordinator:
                 (
                     ticket_id,
                     grant_id,
-                    f"coordinator-{task_id[:24]}",
+                    attempt_id,
                     task_id,
                     idempotency,
                     str(manifest.get("task_spec_ref", "manifest.json")),
