@@ -650,8 +650,8 @@ class ActivationCoordinator:
             ),
             "allowed_files": list(manifest.get("allowed_files") or []),
             "forbidden_files": list(manifest.get("forbidden_files") or []),
-            "baseline_ref": str(manifest.get("baseline_ref") or ""),
-            "baseline_sha256": str(manifest.get("baseline_sha256") or ""),
+            "baseline_ref": str(manifest.get("baseline_ref") or "manifest.json"),
+            "baseline_sha256": str(manifest.get("baseline_sha256") or manifest_sha256),
             "input_evidence_refs": list(manifest.get("input_evidence_refs") or []),
         }
         task_spec_payload_json = _stores._canonical_task_spec(task_spec)
