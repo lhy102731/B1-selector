@@ -67,28 +67,7 @@
   {
    "actor_type": "scheduler",
    "callable_name": "<unknown>",
-   "content_sha256": null,
-   "declared_phase": null,
-   "declared_side_effects": [],
-   "disposition": "PRODUCTION_DAILY",
-   "entry_id": "external:scheduler:/A股行情更新",
-   "external_metadata": {
-    "acl_summary": "<unknown>",
-    "action": "<unknown>",
-    "principal": "<unknown>",
-    "state": "UNKNOWN",
-    "trigger": "<unknown>"
-   },
-   "kind": "external_scheduler",
-   "path": "/A股行情更新",
-   "resource_roots": [],
-   "source": "external_scheduler_inventory",
-   "trust_state": "production_daily"
-  },
-  {
-   "actor_type": "scheduler",
-   "callable_name": "<unknown>",
-   "content_sha256": null,
+   "content_sha256": "63eb291aedd4122b06a773678f98684d7ad31646b27ed33632976376bce1ec97",
    "declared_phase": null,
    "declared_side_effects": [],
    "disposition": "PRODUCTION_DAILY",
@@ -127,11 +106,11 @@
    "content_sha256": "7cd774dc5271bc4393152628e21b8e09bab03b417f01f013750a2d4a1fff9388",
    "declared_phase": null,
    "declared_side_effects": [
-    "GIT_MUTATION",
     "READ",
+    "WRITE_STAGING",
     "RUN_RESEARCH",
     "WRITE_KBASE",
-    "WRITE_STAGING"
+    "GIT_MUTATION"
    ],
    "disposition": "LEGACY_UNAUDITED",
    "entry_id": "callable:research_automation.autonomous_runner:AutonomousRunnerV1.run",
@@ -148,8 +127,8 @@
    "content_sha256": "19ff73fea5d763dc29bab7254070c678a01c2dbc94f4c56bff0c6f028d6a01a8",
    "declared_phase": null,
    "declared_side_effects": [
-    "RUN_RESEARCH",
-    "WRITE_STAGING"
+    "WRITE_STAGING",
+    "RUN_RESEARCH"
    ],
    "disposition": "LEGACY_UNAUDITED",
    "entry_id": "callable:research_automation.discovery_execution_bridge:execute_plan",
@@ -166,10 +145,10 @@
    "content_sha256": "4b4f994997b5529e97ca03f09aa5a9793c146c60b66da3dc7f4926d2de41c56c",
    "declared_phase": null,
    "declared_side_effects": [
-    "GIT_MUTATION",
     "READ",
+    "WRITE_STAGING",
     "RUN_RESEARCH",
-    "WRITE_STAGING"
+    "GIT_MUTATION"
    ],
    "disposition": "LEGACY_UNAUDITED",
    "entry_id": "callable:research_automation.kbase_ag2_full_cycle:run_kbase_ag2_full_cycle",
@@ -3423,7 +3402,7 @@
   {
    "actor_type": "legacy_runner",
    "callable_name": "<module-import>",
-   "content_sha256": "7a8b9ea1d8671bd0e8860412a6669210a4215de2d8d108a8c33373288194907c",
+   "content_sha256": "c800eab0927353c221d140ff463a1bcd0737cfb3917f4796c2a5c3f0db43e923",
    "declared_phase": null,
    "declared_side_effects": [],
    "disposition": "LEGACY_UNAUDITED",
@@ -3783,7 +3762,7 @@
   {
    "actor_type": "legacy_runner",
    "callable_name": "<module-import>",
-   "content_sha256": "35c8131b9fb61f2c6b32df37d6474e334c411a0899fe42bd7b2b21e5a5bfe795",
+   "content_sha256": "8efb7c0d4b72226cc257377f3600db68f629e4d85518ac0c1963d6baf28e7700",
    "declared_phase": null,
    "declared_side_effects": [],
    "disposition": "LEGACY_UNAUDITED",
@@ -5628,7 +5607,7 @@
   {
    "actor_type": "automation",
    "callable_name": "main",
-   "content_sha256": "3f9690d972aee0e977c1268a2562fbbd903cf7f3386bed683e879d7895e6f752",
+   "content_sha256": "de8cf7cdbe0b119e99da7040a03a3b764537378d6bf34b064ac333908854fed4",
    "declared_phase": null,
    "declared_side_effects": [],
    "disposition": "TEST_ONLY",
@@ -8311,6 +8290,21 @@
    "trust_state": "legacy_unaudited"
   },
   {
+   "actor_type": "human",
+   "callable_name": "<byte-identity-policy>",
+   "content_sha256": "17f53f08b7ae4f02d167bf07772feef04c79bb28708169bb879c6e157ce5600d",
+   "declared_phase": null,
+   "declared_side_effects": [],
+   "disposition": "ADMIN_ONLY",
+   "entry_id": "file:.gitattributes",
+   "external_metadata": {},
+   "kind": "repository_policy",
+   "path": ".gitattributes",
+   "resource_roots": [],
+   "source": "filesystem_inventory",
+   "trust_state": "control_plane_policy"
+  },
+  {
    "actor_type": "scheduler",
    "callable_name": "<runtime-dependency>",
    "content_sha256": "3402ff984cd20cef820a2322b01210c8c3d9dcc9a2b1ced412c4899fdfaf1fec",
@@ -8392,9 +8386,9 @@
   "scope_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e",
   "instruction_policy_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e"
  },
- "inventory_payload_sha256": "c1de44ce7e61a1525fafce176e5532942c53d2b90220ba5228d5dcfc34d0d933",
- "policy_payload_sha256": "62f603f592aedcb69e31de7eac11b62c0d0553ed46c3eddbe8e233f977e9db31",
- "review_receipt_sha256": "5c8db6abf605e7503b5a127000066ca9ce9f38af8b3552c50f030c0712234ca4",
+ "inventory_payload_sha256": "03f4534593ab79fac67b3e318c5aec175433ff3bd5d9914874e4232ca11a0af6",
  "review_state": "APPROVED",
- "reviewer_id": "independent-v342-cr008-p0-policy-reviewer"
+ "reviewer_id": "independent-v342-cr008-p0-policy-reviewer",
+ "policy_payload_sha256": "cf046522814a4fd16343bd7bf28735afbeedaa55c3580eb5b080b4449d6fa196",
+ "review_receipt_sha256": "e54da410e4200528aa0caf5a2ac5350d0c1f1911b7a5b08b05d502393f1fe62a"
 }
