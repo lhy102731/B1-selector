@@ -26,7 +26,7 @@
   "research_state/control_plane/operational/"
  ],
  "baseline_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
- "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
+ "baseline_sha256": "b812d4c7afed889ec9777745742d12a796cbf11eaeb86ad4680fdf9d45b40c88",
  "input_evidence_refs": [
   {
    "evidence_id": "coordinator-evidence-f19d5d2d82807e8d",
