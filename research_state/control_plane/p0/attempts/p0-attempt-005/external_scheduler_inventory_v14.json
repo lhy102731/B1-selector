@@ -1,0 +1,36 @@
+{
+ "schema_version": "control_plane.external_scheduler_inventory.v1",
+ "phase": "P0",
+ "observed_at": "2026-08-12T00:00:00+08:00",
+ "collection_mode": "READ_ONLY",
+ "task_path": "/A股选股",
+ "task_state": "enabled",
+ "operational_classification": "PRODUCTION_DAILY",
+ "task_xml": {
+  "path": "tasks/stock_selection.xml",
+  "sha256": "dc5ea67b792cb619a45c08bb0459a6e69f735b4c5e4ad138e8bb6425c8252a7e"
+ },
+ "action": {
+  "execute": "D:\\workspace\\a-share-quant-selector-main\\run_select.bat",
+  "arguments": null,
+  "content_sha256": "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
+  "working_directory": null
+ },
+ "principal": {
+  "logon_type": "Interactive",
+  "run_level": "Limited",
+  "user_id": "Administrator"
+ },
+ "acl": {
+  "owner": "BUILTIN\\Administrators",
+  "sddl": "O:BAG:S-1-5-21-0-0-0-513D:AI(A;;FR;;;LA)(A;ID;0x1f019f;;;BA)"
+ },
+ "trigger": {
+  "type": "daily",
+  "start_boundary": "2026-08-12T00:00:00",
+  "enabled": true,
+  "days_interval": 1
+ },
+ "altered_by_p0": false,
+ "unresolved_risk": "none"
+}
