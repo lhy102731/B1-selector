@@ -72,19 +72,46 @@ from types import SimpleNamespace
 from research_automation.control_plane.contracts import SideEffect
 from research_automation.control_plane.task_reports import build_task_report_v2
 
-from tests.test_control_plane_campaign_freeze import _protocol_member
-from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
-from tests.test_control_plane_campaign_preflight import _scope
-from tests.test_control_plane_campaign_store import (
-    NOW,
-    ROOT_SECRET,
-    _authorized_campaign,
-    _claim_campaign_grant,
-)
 from research_automation.control_plane import stores as stores_module
-from tests.test_control_plane_campaign_two_cycle import _execution_spec_and_member
-from tests.test_control_plane_evidence_learning import EvidenceLearningVerticalSliceTests
-from tests.test_foundations_protocols import _protocol
+
+
+def _test_fixtures():
+    """Lazy test-fixture imports (C0 chaos driver reuses fixture builders).
+
+    Kept inside a function so the production import graph never contains
+    ``tests.*`` (corrective plan Step 9.4 production-import scan).  This
+    module is the C0 rollout driver only; P6/P7/P8 production modules must
+    not import these fixtures.
+    """
+    from tests.test_control_plane_campaign_freeze import _protocol_member
+    from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
+    from tests.test_control_plane_campaign_preflight import _scope
+    from tests.test_control_plane_campaign_store import (
+        NOW,
+        ROOT_SECRET,
+        _authorized_campaign,
+        _claim_campaign_grant,
+    )
+    from tests.test_control_plane_campaign_two_cycle import (
+        _execution_spec_and_member,
+    )
+    from tests.test_control_plane_evidence_learning import (
+        EvidenceLearningVerticalSliceTests,
+    )
+    from tests.test_foundations_protocols import _protocol
+
+    return {
+        "protocol_member": _protocol_member,
+        "fake_process_identity_provider": _FakeProcessIdentityProvider,
+        "scope": _scope,
+        "now": NOW,
+        "root_secret": ROOT_SECRET,
+        "authorized_campaign": _authorized_campaign,
+        "claim_campaign_grant": _claim_campaign_grant,
+        "execution_spec_and_member": _execution_spec_and_member,
+        "evidence_vertical_slice": EvidenceLearningVerticalSliceTests,
+        "protocol": _protocol,
+    }
 
 
 _MIN_CYCLES = 20
@@ -270,7 +297,7 @@ def _claim_for_cycle(cycle_number: int) -> dict[str, object]:
         "kind": "NEGATIVE",
         "summary": f"Synthetic scoped finding from C0 cycle {cycle_number}",
         "scope": json.dumps(
-            _scope(generation="generation-1"),
+            _test_fixtures()["scope"](generation="generation-1"),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -317,7 +344,7 @@ def _authority_fixture_cycle(
     Authority anchors.
     """
     claim = _claim_for_cycle(cycle_number)
-    protocol = _protocol().model_dump(mode="json")
+    protocol = _test_fixtures()["protocol"]().model_dump(mode="json")
     artifact = {
         "schema_version": "runner.artifact.v1",
         "runner": "fixture-runner",
@@ -458,8 +485,8 @@ def _authorized_campaign_deterministic_root(
         _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
     ):
         stores_module._expected_schema_sha256.cache_clear()
-        stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
-        grant = _claim_campaign_grant(
+        stores_module._trusted_bootstrap(root_secret=_test_fixtures()["root_secret"])
+        grant = _test_fixtures()["claim_campaign_grant"](
             campaign_id=campaign_id,
             namespace=namespace,
             actor_id="p6-runner",
@@ -470,11 +497,11 @@ def _authorized_campaign_deterministic_root(
         )
         try:
             yield root, grant, OperationalCampaignJournal(
-                root_secret=ROOT_SECRET,
+                root_secret=_test_fixtures()["root_secret"],
                 grant=grant,
                 namespace=namespace,
                 campaign_id=campaign_id,
-                clock=lambda: NOW,
+                clock=lambda: _test_fixtures()["now"],
             )
         finally:
             stores_module._expected_schema_sha256.cache_clear()
@@ -550,7 +577,7 @@ def _new_controller(
         journal=journal,
         repository_root=root,
         budget_limits=campaign_limits(cycles),
-        identity_provider=_FakeProcessIdentityProvider(
+        identity_provider=_test_fixtures()["fake_process_identity_provider"](
             ProcessIdentity("host-c0", owner_pid, start_ns)
         ),
         monotonic_ns=_SequentialMonotonicClock(start_ns=start_ns, step_ns=1_000_000),
@@ -667,13 +694,13 @@ def _run_main_campaign_locked(
             prompt = {
                 "instruction": f"Return the authority-bound synthetic artifact for C0 cycle {n}"
             }
-            execution_spec, member = _execution_spec_and_member(prompt)
+            execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
             task = ExperimentTask(
                 task_id=cycle_id,
                 strategy="b1",
                 proposal={
                     "hypothesis": f"Synthetic finding for C0 cycle {n}",
-                    "scope": _scope(generation="generation-1"),
+                    "scope": _test_fixtures()["scope"](generation="generation-1"),
                 },
                 source="c0-chaos-synthetic",
             )
@@ -874,7 +901,7 @@ def _run_main_campaign_locked(
                             start_ns=recovery_start_ns,
                         )
                         provider = None
-                        recovery_identity = _FakeProcessIdentityProvider(
+                        recovery_identity = _test_fixtures()["fake_process_identity_provider"](
                             ProcessIdentity("host-c0", 2000 + n, recovery_start_ns)
                         )
                         lease_journal = OperationalCycleLeaseJournal(
@@ -1092,24 +1119,24 @@ def _run_main_campaign_locked(
 
 
 def _negative_pid_reuse() -> dict[str, object]:
-    with _authorized_campaign("c0-neg-pid-reuse") as (root, _, journal):
+    with _test_fixtures()["authorized_campaign"]("c0-neg-pid-reuse") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = EvidenceLearningVerticalSliceTests()._authority_fixture(
-            root, claim=claim, protocol=_protocol().model_dump(mode="json")
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+            root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
-        execution_spec, member = _execution_spec_and_member(prompt)
+        execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
         task = ExperimentTask(
             task_id="c0-neg-pid-reuse-cycle",
             strategy="b1",
-            proposal={"hypothesis": "pid reuse fencing", "scope": _scope(generation="generation-1")},
+            proposal={"hypothesis": "pid reuse fencing", "scope": _test_fixtures()["scope"](generation="generation-1")},
             source="c0-chaos-synthetic",
         )
         controller = OperationalCampaignController(
             journal=journal,
             repository_root=root,
             budget_limits=campaign_limits(1),
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 500, 500_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=100),
@@ -1125,7 +1152,7 @@ def _negative_pid_reuse() -> dict[str, object]:
             cycle_id=task.task_id,
             acquisition_id="execute-pid-reuse",
         )
-        attacker = _FakeProcessIdentityProvider(
+        attacker = _test_fixtures()["fake_process_identity_provider"](
             ProcessIdentity("host-c0", 500, 600_000),
             process_starts={("host-c0", 500): 500_000},
         )
@@ -1157,20 +1184,20 @@ def _negative_pid_reuse() -> dict[str, object]:
 
 
 def _negative_lease_fencing() -> dict[str, object]:
-    with _authorized_campaign("c0-neg-lease-fencing") as (root, _, journal):
+    with _test_fixtures()["authorized_campaign"]("c0-neg-lease-fencing") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = EvidenceLearningVerticalSliceTests()._authority_fixture(
-            root, claim=claim, protocol=_protocol().model_dump(mode="json")
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+            root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
-        execution_spec, member = _execution_spec_and_member(prompt)
+        execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
         task = ExperimentTask(
             task_id="c0-neg-lease-fencing-cycle",
             strategy="b1",
-            proposal={"hypothesis": "lease fencing", "scope": _scope(generation="generation-1")},
+            proposal={"hypothesis": "lease fencing", "scope": _test_fixtures()["scope"](generation="generation-1")},
             source="c0-chaos-synthetic",
         )
-        identity_provider = _FakeProcessIdentityProvider(
+        identity_provider = _test_fixtures()["fake_process_identity_provider"](
             ProcessIdentity("host-c0", 510, 510_000)
         )
         controller = OperationalCampaignController(
@@ -1215,17 +1242,17 @@ def _negative_lease_fencing() -> dict[str, object]:
 
 
 def _negative_budget_exhaustion() -> dict[str, object]:
-    with _authorized_campaign("c0-neg-budget") as (root, _, journal):
+    with _test_fixtures()["authorized_campaign"]("c0-neg-budget") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = EvidenceLearningVerticalSliceTests()._authority_fixture(
-            root, claim=claim, protocol=_protocol().model_dump(mode="json")
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+            root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
-        execution_spec, member = _execution_spec_and_member(prompt)
+        execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
         task = ExperimentTask(
             task_id="c0-neg-budget-cycle",
             strategy="b1",
-            proposal={"hypothesis": "budget exhaustion", "scope": _scope(generation="generation-1")},
+            proposal={"hypothesis": "budget exhaustion", "scope": _test_fixtures()["scope"](generation="generation-1")},
             source="c0-chaos-synthetic",
         )
         tight = CampaignBudgetLimits(
@@ -1239,7 +1266,7 @@ def _negative_budget_exhaustion() -> dict[str, object]:
             journal=journal,
             repository_root=root,
             budget_limits=tight,
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 520, 520_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=100),
@@ -1274,24 +1301,24 @@ def _negative_budget_exhaustion() -> dict[str, object]:
 
 
 def _negative_mid_call_doubt() -> dict[str, object]:
-    with _authorized_campaign("c0-neg-mid-call") as (root, _, journal):
+    with _test_fixtures()["authorized_campaign"]("c0-neg-mid-call") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = EvidenceLearningVerticalSliceTests()._authority_fixture(
-            root, claim=claim, protocol=_protocol().model_dump(mode="json")
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+            root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
-        execution_spec, member = _execution_spec_and_member(prompt)
+        execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
         task = ExperimentTask(
             task_id="c0-neg-mid-call-cycle",
             strategy="b1",
-            proposal={"hypothesis": "mid-call doubt", "scope": _scope(generation="generation-1")},
+            proposal={"hypothesis": "mid-call doubt", "scope": _test_fixtures()["scope"](generation="generation-1")},
             source="c0-chaos-synthetic",
         )
         controller = OperationalCampaignController(
             journal=journal,
             repository_root=root,
             budget_limits=campaign_limits(1),
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 530, 530_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=100),
@@ -1337,7 +1364,7 @@ def _negative_mid_call_doubt() -> dict[str, object]:
             journal=journal,
             repository_root=root,
             budget_limits=campaign_limits(1),
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 531, 531_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=2_000_000),
@@ -1379,24 +1406,24 @@ def _negative_mid_call_doubt() -> dict[str, object]:
 
 
 def _negative_invalid_json() -> dict[str, object]:
-    with _authorized_campaign("c0-neg-invalid-json") as (root, _, journal):
+    with _test_fixtures()["authorized_campaign"]("c0-neg-invalid-json") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = EvidenceLearningVerticalSliceTests()._authority_fixture(
-            root, claim=claim, protocol=_protocol().model_dump(mode="json")
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+            root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
-        execution_spec, member = _execution_spec_and_member(prompt)
+        execution_spec, member = _test_fixtures()["execution_spec_and_member"](prompt)
         task = ExperimentTask(
             task_id="c0-neg-invalid-json-cycle",
             strategy="b1",
-            proposal={"hypothesis": "invalid json", "scope": _scope(generation="generation-1")},
+            proposal={"hypothesis": "invalid json", "scope": _test_fixtures()["scope"](generation="generation-1")},
             source="c0-chaos-synthetic",
         )
         controller = OperationalCampaignController(
             journal=journal,
             repository_root=root,
             budget_limits=campaign_limits(1),
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 540, 540_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=100),
@@ -1444,7 +1471,7 @@ def _negative_invalid_json() -> dict[str, object]:
             journal=journal,
             repository_root=root,
             budget_limits=campaign_limits(1),
-            identity_provider=_FakeProcessIdentityProvider(
+            identity_provider=_test_fixtures()["fake_process_identity_provider"](
                 ProcessIdentity("host-c0", 541, 541_000)
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=2_000_000),
