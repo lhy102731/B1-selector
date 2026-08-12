@@ -1,6 +1,10 @@
 {
+ "task_id": "P0-STORE-MIGRATION",
  "objective": "P0-CR-008 corrective activation and live store migration",
  "dependencies": [],
+ "idempotency_key": "p0-p0-store-migration-rerecord-002",
+ "task_spec_ref": "manifest.json",
+ "task_spec_sha256": "d56bd46b650a9a79f0229573a8208822e6f47903dea971506e3a2ce0bbcdf093",
  "requirements": {
   "required_test_receipt_ids": [],
   "required_review_receipt_ids": [],
@@ -24,6 +28,17 @@
  "baseline_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
  "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
  "input_evidence_refs": [],
+ "attempt_id": "p0-attempt-005",
+ "ticket_id": "edd27b5dd0eab15c97f1dabfe78b16005702a15234fbfb568efddcaeed910d35",
+ "ticket_state": "SUCCEEDED",
+ "authorization_ref": "coordinator-auth-edd27b5dd0eab15c97f1dabf",
+ "identity_binding": {
+  "plan_hash": "893c0f1777af278420fd34bea09d2a49e5dfc69a883e8a5105925f4de47a4179",
+  "scope_hash": "893c0f1777af278420fd34bea09d2a49e5dfc69a883e8a5105925f4de47a4179",
+  "instruction_policy_hash": "893c0f1777af278420fd34bea09d2a49e5dfc69a883e8a5105925f4de47a4179"
+ },
+ "started_at": "2026-08-12T02:05:34.023822Z",
+ "completed_at": "2026-08-12T02:05:38.469057Z",
  "changed_files": [
   {
    "path": "docs/superpowers/plans/2026-08-11-v342-p0-change-request-008.md",
@@ -65,7 +80,7 @@
    "path": "research_automation/control_plane/activation_coordinator.py",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "b018c98d4c456ac91766c4696e4cb6f1ae1676414e8d555cb4df91dd74ab164f"
+   "current_sha256": "5d39a40a78cd7506d7f108f7797e7f97e8409b45da4ee054807786698c5ea4ed"
   },
   {
    "path": "research_automation/control_plane/campaign_store.py",
@@ -113,13 +128,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "bcc5edf77d98e74d24368c125f0e24abf9fd19fef6bd01f9ad77c44e0d3778a6"
+   "current_sha256": "09c5140ec2dd8a45c31eb8be10f0d9dbcf5c788ae58d11cd93b208fd1b29dfd6"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-store-migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "d20adfff7c037e9b80c4819622d9eb9f95b846cbcab17077aa5832ef9d34b73e"
+   "current_sha256": "d56bd46b650a9a79f0229573a8208822e6f47903dea971506e3a2ce0bbcdf093"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/code_freeze_manifest.json",
@@ -335,13 +350,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "a7ecf73d0b62aa389002c2c2dd594e2afdd3ba56338aab9022854d790419e2b4"
+   "current_sha256": "e12c4339ad6b487d701ad38f1315af57eaa9a23faae8a4228ac2fe56becb108e"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "1ee277ba91e786363c3a22bd2ee380e58e71c69f8328f18dbdd1d47bc2ec4807"
+   "current_sha256": "a701090184b46df3c927d32fcbb2d8c317491b1cc8d459f2f2e5e763c3b63332"
   },
   {
    "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
@@ -419,24 +434,9 @@
  "external_invocations": [],
  "phase": "P0",
  "plan_version": "V3.4.2-CORRECTIVE",
- "task_id": "P0-STORE-MIGRATION",
- "idempotency_key": "p0-store-migration-rerecord-001",
- "task_spec_ref": "manifest.json",
- "task_spec_sha256": "d20adfff7c037e9b80c4819622d9eb9f95b846cbcab17077aa5832ef9d34b73e",
- "attempt_id": "p0-attempt-005",
- "ticket_id": "9a5f693bc0a437120c0bf8b8dd2cf373bc39c4ff5fd8692ccfd6d83380dc6b89",
- "ticket_state": "SUCCEEDED",
- "authorization_ref": "coordinator-auth-9a5f693bc0a437120c0bf8b8",
- "identity_binding": {
-  "plan_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539",
-  "scope_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539",
-  "instruction_policy_hash": "af603749173022d4bb8df1f6ef637c73a814ec2358a0a217ce148b0e8f448539"
- },
- "started_at": "2026-08-12T01:56:13.029021Z",
- "completed_at": "2026-08-12T01:56:17.364585Z",
  "schema_version": "control_plane.task_report.v2",
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "7e39e111f9f7f25db3b56779628a1472cab8a59a17afc8b054cad1c63fb19d6d"
+ "report_payload_sha256": "f60cb44811f9f830d1a6b2914c74c89910bee464db385cb4e10ba0eb0e4fb876"
 }
