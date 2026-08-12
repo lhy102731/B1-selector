@@ -8,8 +8,8 @@
     "research_state/control_plane/policies/"
   ],
   "attempt_id": "p0-attempt-005",
-  "base_commit": "8d4e60b566af83335c09524ea20c108c9c2fe353",
-  "base_tree": "ace005d4aa39c2dcb6c11b1d0653fb6ec23398aa",
+  "base_commit": "f1e913e97e44b931feaf2b62b3a44897574f33ea",
+  "base_tree": "e0315a62e6cbe2aade56e5c6e43566cd5d68d93c",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expected_side_effects": [
     "WRITE_CONTROL_PLANE"
@@ -21,7 +21,7 @@
     "research_state/control_plane/authority/",
     "research_state/control_plane/operational/"
   ],
-  "mode": "v1_bootstrap",
+  "mode": "v2_normal",
   "phase": "P0",
   "quarantine_manifest_path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/preexisting_user_delta_quarantine.json",
   "quarantine_manifest_sha256": "caba63e5b93c2cb851397344baf6495b699b2b1970c0260bc990f49a2efdaacf",
@@ -31,7 +31,7 @@
     "tests.test_control_plane_gates"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "8d4e60b566af83335c09524ea20c108c9c2fe353",
-  "source_tree": "ace005d4aa39c2dcb6c11b1d0653fb6ec23398aa",
+  "source_commit": "f1e913e97e44b931feaf2b62b3a44897574f33ea",
+  "source_tree": "e0315a62e6cbe2aade56e5c6e43566cd5d68d93c",
   "task_id": "P0-SOURCE-BOOTSTRAP"
 }
