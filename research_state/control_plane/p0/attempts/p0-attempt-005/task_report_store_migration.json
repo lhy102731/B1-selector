@@ -2,9 +2,9 @@
  "task_id": "P0-STORE-MIGRATION",
  "objective": "P0-CR-008 corrective activation and live store migration",
  "dependencies": [],
- "idempotency_key": "p0-p0-store-migration-rerecord-007",
+ "idempotency_key": "p0-p0-store-migration-rerecord-008",
  "task_spec_ref": "manifest.json",
- "task_spec_sha256": "e6a960e26df7031d8667c29091871530c05b11a4184b320cfe6a04ac1dfb6083",
+ "task_spec_sha256": "111c886d39f0a292c7a40f766d79364f544095cdd41bd9d0005a21f949ff6353",
  "requirements": {
   "required_test_receipt_ids": [],
   "required_review_receipt_ids": [],
@@ -29,23 +29,23 @@
  "baseline_sha256": "b812d4c7afed889ec9777745742d12a796cbf11eaeb86ad4680fdf9d45b40c88",
  "input_evidence_refs": [
   {
-   "evidence_id": "coordinator-evidence-f19d5d2d82807e8d",
-   "evidence_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/activation-f19d5d2d82807e8d.json",
-   "evidence_sha256": "d1d18c29e7de7fcec6880de84e7c0f036f6ea19582fc06ee771d9b83ee3909f4",
+   "evidence_id": "coordinator-evidence-21036ee75a3a4a83",
+   "evidence_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/activation-21036ee75a3a4a83.json",
+   "evidence_sha256": "c399530bf7f67bd798fbfe1567b5e9744b281cb48553d06d57fdbd0ccc4dc1d1",
    "status": "VERIFIED"
   }
  ],
  "attempt_id": "p0-attempt-005",
- "ticket_id": "f19d5d2d82807e8d1afbe68e1d8528cdab1967dcf333f56a7d34e8ad0b5a750d",
+ "ticket_id": "21036ee75a3a4a83a41914015c5ecf6e9def4300ca8062666e7b3bcab266f38e",
  "ticket_state": "SUCCEEDED",
- "authorization_ref": "coordinator-auth-f19d5d2d82807e8d1afbe68e",
+ "authorization_ref": "coordinator-auth-21036ee75a3a4a83a4191401",
  "identity_binding": {
   "plan_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e",
   "scope_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e",
   "instruction_policy_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e"
  },
- "started_at": "2026-08-12T02:40:33.347322Z",
- "completed_at": "2026-08-12T02:40:37.543980Z",
+ "started_at": "2026-08-12T02:47:54.136834Z",
+ "completed_at": "2026-08-12T02:47:58.398143Z",
  "changed_files": [
   {
    "path": "docs/superpowers/plans/2026-08-11-v342-p0-change-request-008.md",
@@ -135,13 +135,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "268ffb64e701c923d6e0d73c8a64ccfc3056b69e6d895fcebfb29a57560ef077"
+   "current_sha256": "b2889033e6166675125d11c4d371a6a620ef8e45f5d8b079d1bdf6d6d61f886b"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-store-migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "e6a960e26df7031d8667c29091871530c05b11a4184b320cfe6a04ac1dfb6083"
+   "current_sha256": "111c886d39f0a292c7a40f766d79364f544095cdd41bd9d0005a21f949ff6353"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/code_freeze_manifest.json",
@@ -357,13 +357,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "9733850ab60a962e07d1ac1310c7a66d570218f419ce9646ff9f298f15e63846"
+   "current_sha256": "f7fd1e60775e54dd947d5dcf09e725fd011b9d0f05d66753d594841c405441c0"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "c71ec8cd0fad680503dab3f1a43105c1b690718ecc43b2580d9b97ff9e6a07af"
+   "current_sha256": "a5c10c9e9300b5e3de069f857e6c42714cf9ab1ef45f636dcb44f2d4548d1ddd"
   },
   {
    "path": "research_state/control_plane/policies/34da4651f614778e03c892e0a14e085caebfd90e4b602816b56c722e27459c68.json",
@@ -454,7 +454,7 @@
   {
    "command": "C:\\Users\\Administrator\\AppData\\Local\\Programs\\Python\\Python313\\python.exe -m unittest tests.test_control_plane_stores tests.test_control_plane_access tests.test_control_plane_store_migration -v",
    "exit_code": 0,
-   "receipt_id": "test-f19d5d2d82807e8d",
+   "receipt_id": "test-21036ee75a3a4a83",
    "result": "PASS"
   }
  ],
@@ -481,5 +481,5 @@
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "8afec135e2a68bfe051c4a887aa29e72433a2e367887d9304642e3b6e5bd2561"
+ "report_payload_sha256": "1ac2484474a0b05dfbbe28afb5c4ba8446ae4561af89865c2f365b9e2ccb6f11"
 }
