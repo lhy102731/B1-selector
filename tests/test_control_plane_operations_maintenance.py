@@ -155,5 +155,33 @@ class ExplicitCleanupTests(unittest.TestCase):
             )
 
 
+class P7ObserverTests(unittest.TestCase):
+    def test_observer_blocks_unsafe_next_cycle(self) -> None:
+        from research_automation.control_plane.operations_maintenance import (
+            OperationsMaintenanceError,
+            P7CampaignRuntimeObserver,
+        )
+        with _authorized_campaign("campaign-observer-1") as (root, _, journal):
+            observer = P7CampaignRuntimeObserver(
+                min_free_bytes=10**30,  # impossible headroom -> always blocked
+            )
+            observer.after_cycle_settled(object())
+            with self.assertRaises(OperationsMaintenanceError):
+                observer.before_next_cycle({"decision": "CONTINUE"})
+
+    def test_observer_passes_when_conditions_healthy(self) -> None:
+        from research_automation.control_plane.operations_maintenance import (
+            P7CampaignRuntimeObserver,
+        )
+        with _authorized_campaign("campaign-observer-2") as (root, _, journal):
+            observer = P7CampaignRuntimeObserver(min_free_bytes=0)
+            observer.after_cycle_settled(object())
+            # healthy path: no raise (doctor OK on bootstrapped store,
+            # publication UNAVAILABLE as expected)
+            observer.before_next_cycle({"decision": "CONTINUE"})
+            self.assertEqual(observer.after_cycle_calls, 1)
+            self.assertEqual(observer.before_next_cycle_calls, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -252,3 +252,73 @@ __all__ = [
     "resume_backfill_state",
     "retention_cleanup_candidates",
 ]
+
+
+class P7CampaignRuntimeObserver:
+    """P7 durable-boundary observer (Task 13.7).
+
+    ``after_cycle_settled`` performs a bounded projection refresh;
+    ``before_next_cycle`` checks the real doctor report, free disk headroom
+    and generation publication status; any failure raises, which the runtime
+    converts into a durable ``PAUSED_BY_OBSERVER`` state that preserves the
+    current cycle and blocks the next prepare/provider.
+    """
+
+    def __init__(
+        self,
+        *,
+        min_free_bytes: int = 0,
+        projection_check: bool = True,
+    ) -> None:
+        if type(min_free_bytes) is not int or min_free_bytes < 0:
+            raise OperationsMaintenanceError(
+                "min_free_bytes must be a non-negative integer"
+            )
+        self._min_free_bytes = min_free_bytes
+        self._projection_check = projection_check
+        self._after_cycle_calls = 0
+        self._before_next_cycle_calls = 0
+
+    def after_cycle_settled(self, summary: object) -> None:
+        self._after_cycle_calls += 1
+        if self._projection_check:
+            from .operations_projection import read_operational_snapshot
+
+            read_operational_snapshot()
+
+    def before_next_cycle(self, decision: object) -> None:
+        self._before_next_cycle_calls += 1
+        from .operations import read_only_doctor_report
+        from .operations_projection import generation_publication_status
+
+        doctor = read_only_doctor_report(Path("."), allow_real=True)
+        if doctor.get("verdict") == "FAIL":
+            raise OperationsMaintenanceError(
+                "unsafe next cycle blocked: doctor reports failure"
+            )
+        publication = generation_publication_status()
+        if publication.get("status") != "UNAVAILABLE":
+            raise OperationsMaintenanceError(
+                "unsafe next cycle blocked: unexpected publication status"
+            )
+        if self._min_free_bytes > 0:
+            try:
+                import shutil
+
+                free = shutil.disk_usage(".").free
+            except OSError as error:
+                raise OperationsMaintenanceError(
+                    f"unsafe next cycle blocked: disk check failed: {error}"
+                ) from error
+            if free < self._min_free_bytes:
+                raise OperationsMaintenanceError(
+                    "unsafe next cycle blocked: low disk headroom"
+                )
+
+    @property
+    def after_cycle_calls(self) -> int:
+        return self._after_cycle_calls
+
+    @property
+    def before_next_cycle_calls(self) -> int:
+        return self._before_next_cycle_calls
