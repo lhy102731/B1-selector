@@ -1,0 +1,336 @@
+{
+ "objective": "P0-CR-008 corrective activation and live store migration",
+ "dependencies": [],
+ "requirements": {
+  "required_test_receipt_ids": [],
+  "required_review_receipt_ids": [],
+  "required_evidence_ids": []
+ },
+ "allowed_files": [
+  "research_automation/control_plane/",
+  "tests/",
+  "requirements/",
+  "docs/superpowers/",
+  "research_state/control_plane/p0/attempts/p0-attempt-005/"
+ ],
+ "forbidden_files": [
+  "data/",
+  "knowledge/",
+  "strategy/",
+  "research_state/control_plane/authority/",
+  "research_state/control_plane/operational/"
+ ],
+ "baseline_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
+ "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
+ "input_evidence_refs": [],
+ "changed_files": [
+  {
+   "path": "docs/superpowers/plans/2026-08-11-v342-p0-change-request-008.md",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "3ccc66a3631602d7f0d54981585a959e2423519057d2e411d0fb6c1f54d3b672"
+  },
+  {
+   "path": "docs/superpowers/plans/2026-08-11-v342-verification-runtime-dependency-change-request.md",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "feb68edc5a728138bf79d71d4a35a535022b07e6557822da70f1bce6a51b4d0d"
+  },
+  {
+   "path": "docs/superpowers/reviews/2026-08-11-v342-corrective-recovery-progress-report.md",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "c8586fd0ed045cc5adb87784da63c0e961c5d7e90552bb56bba2d5f4f6d6c9df"
+  },
+  {
+   "path": "requirements/verification-runtime.in",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "0fa4ebb3880eadb45a5abb8caae0ad3b3134f8e94cebef3cf32b1844ab3beb9f"
+  },
+  {
+   "path": "requirements/verification-runtime.lock",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "f28e6e1bf9ffa5bac8d316c97a14bcdffddaea5ffdb909bd45f16b387e8ca7b3"
+  },
+  {
+   "path": "research_automation/control_plane/access.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "fb4bc94e40ba2fc352d40be3bb90d6f54943ca40e0e3201c52bef1f2bf0bc83e"
+  },
+  {
+   "path": "research_automation/control_plane/activation_coordinator.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "7a8b9ea1d8671bd0e8860412a6669210a4215de2d8d108a8c33373288194907c"
+  },
+  {
+   "path": "research_automation/control_plane/campaign_store.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "2a5eafcdd4a0db8b796eb1ceb20cabac4fae14b938d3e2f8d4d69eaffb68c1be"
+  },
+  {
+   "path": "research_automation/control_plane/cli.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "2fd3fd720929f87ebe3b11e03330beb6a748138ca878e02f465573cbb26fbf48"
+  },
+  {
+   "path": "research_automation/control_plane/gates.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "37331830593496ecc6d14144e96c5bc86a11f3ff98569f453dee8e696be34a45"
+  },
+  {
+   "path": "research_automation/control_plane/git_evidence.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "3e91cb4c3eae4b6118f4500fbb1769de51e5ba80bc6c39014377a9b64e2e327c"
+  },
+  {
+   "path": "research_automation/control_plane/sqlite_uow.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "cc64231618b2df34a4047a90dcb48112333b028066e88b325f60df4cca55274f"
+  },
+  {
+   "path": "research_automation/control_plane/store_migration.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "3806ed46659b3939805397d35a064591669aa52c8376d3d2515c04d4a1fe9419"
+  },
+  {
+   "path": "research_automation/control_plane/stores.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "390bdadac54ee9b65aa43194dc6ae73a6ad645754e3c2be1f817e1b615c36ea3"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "ac960bf320a1400250a5602253f2eca8578e62ea23c409e9fc22a62300ca8763"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-store-migration.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "63d6b787f61b64dd9d5db9613d12d17ac6d2e07207542a814b34838ccd88375a"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/affected_artifact_index.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "d69cbaa53e0d727eba69ca80ba9cdb909c399f7ab0c366707b2a8af7dccaf72f"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/corrective_scope_ratification_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "8b449a776563104fe6db7523e703aa78e0c3baf3661b099defd36acbbd6cada9"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/deepseek_gate_integrity_incident.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "bb0ba2b36c1c8f7c496a3612bcd15eb100ec4658f15ee06f567215729662c51c"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/downstream_lineage_inventory.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "7574b4cd2adc934930d723163fda846acecb9f12c6d2b18676d1c34977170493"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/hard_gate_authorization_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "18aa18f25e16292f3a01fa54ee797b84f5cac1125256ce284baaced2f6e25114"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/hash_domain_manifest.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "6b9e41f375f6f4f6c7b3a616b8b4b79ba7732c65158c5478ec930561305494f4"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/independent_review_disposition_round1.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "ea7307ebe9a10b1ecfe915b069092ddf7c87136b4bbb0e00c1ed1aa5f7c1158b"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/independent_review_disposition_round2.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "066326ea6cd52096ff0c37b59733ca7a0c1bf9d2a63581c9a68e687607846fdd"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/lineage_quarantine_manifest.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "a889ef19010ccd5a40e30ca0b21308ef7ad5577d4068a0bd98f0556f1742785b"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/p0_full_discovery_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "821959b590410998cdce0811fcbdb25a3f13589cdb0d1e111b0fefa9bcadf56f"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/p0_store_migration_backup_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dc09413f45c7d2ba723097ad026375b990671af388a3a1818fba941f4a1af5b5"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/p0_store_migration_verification_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "18ed653f59275c23147fbd4987050ca82edf32cd449e895039e2c3f0118364ed"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_raw_review.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e54016d8da905947915d68c2b8e4ce04d30ef623cc18f692675d9acaa23f3138"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_raw_review_round2.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "acf035aa3f3cbe39becd5ab26c3851fb9615892b99716974d74d572dc2808a0d"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e097da81e8c536076a87c205583c278992a6492efca523d6a5e6e4c742a2a0f4"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_a_receipt_round2.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "70b633ce10a0a900188c97637b8aa2de295fe6eef1b812b7a3250e9b3aa6006f"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_raw_review.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "433e4a0ea06414d86fc107f74f507755f960c70d3881864cc30eb6f8a824fc74"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_raw_review_round2.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "9823a913a7e2552fca78cd62b967ec0ac809aa2931e8a300d777f328825b6df4"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "8a014a73561bb42faf5b878f6bcaf717737f026318ad2ff3a555403b66181d42"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/reviewer_b_receipt_round2.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "8ef51939991fe5b87c453553059ee7a0193469756e1c4fa83f54c4c9a046befb"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/standing_directive_execution_basis.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "972692d43c0872e26691f0bad565e65313bc5e86cce82db6a8c40ad9fb27e103"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/standing_directive_execution_basis_v2.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e43f2f1990e31eb9e8fa656bab6fe03f21375524dd05ba0302645bd2061b1994"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/verification_runtime_resolve_failure.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "102f6473646dd823e1ba31f3c507c334545ff53febf71a43f56a139210590d35"
+  },
+  {
+   "path": "tests/test_control_plane_access.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "c0ec6d3c81768edc05a9f252b38116e70ac0d0f4c788c40e8248b05e7dc02860"
+  },
+  {
+   "path": "tests/test_control_plane_activation_coordinator.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "3f9690d972aee0e977c1268a2562fbbd903cf7f3386bed683e879d7895e6f752"
+  },
+  {
+   "path": "tests/test_control_plane_gates.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "a9cddcf9eeb1927fd16afa2b5fc69a1a5912ef00910a2c4b7ff7069e8328f3c3"
+  },
+  {
+   "path": "tests/test_control_plane_git_evidence.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "62ea2a7299190363e973c714a8397f66b666d08e2f2841808779fee5b6ca770c"
+  },
+  {
+   "path": "tests/test_control_plane_sqlite_uow.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "675bcec226cd2a8516a294824ae1cfd6739d3fe9394dfb25a4f7161ad68eb0a5"
+  },
+  {
+   "path": "tests/test_control_plane_store_migration.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e92468f11752346807a7ebfcdc3ad47b78857e382db7341373dffca7d8471f5e"
+  },
+  {
+   "path": "tests/test_control_plane_stores.py",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dd954883bafed80eaab36d3b31667cec0c52fe6fb18c468b8d79b9c10b2357fc"
+  }
+ ],
+ "test_receipts": [],
+ "review_receipts": [],
+ "review_findings": [],
+ "side_effect_summary": {
+  "observed": [
+   "WRITE_CONTROL_PLANE"
+  ],
+  "unauthorized": []
+ },
+ "external_invocations": [],
+ "identity_binding": {
+  "plan_hash": "a09cde1ef0d06f116bbaa3fb78212419c09b50388e90aa51e93611f6e7363fa5",
+  "scope_hash": "acacf7bdc397b4ae91e392a3572185f8c1f53da222ba2f48a193aa95860a5854",
+  "instruction_policy_hash": "830ca73d8c1edff8e21d8150231ae4ecf3d0635512b1b651d8a43cd63575e45a"
+ },
+ "phase": "P0",
+ "plan_version": "V3.4.2-CORRECTIVE",
+ "task_id": "P0-SOURCE-BOOTSTRAP",
+ "idempotency_key": "p0-source-bootstrap",
+ "task_spec_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
+ "task_spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+ "attempt_id": "p0-attempt-005",
+ "ticket_id": "d9d68fed6be1b25ae1b9cbbf07a6a868254e77858e033ccc9a7686a9c13d9024",
+ "ticket_state": "SUCCEEDED",
+ "authorization_ref": "coordinator-auth-d9d68fed6be1b25ae1b9cbbf",
+ "started_at": "2026-08-11T18:25:57.101688Z",
+ "completed_at": "2026-08-11T18:29:49.995292Z",
+ "schema_version": "control_plane.task_report.v2",
+ "unexpected_changes": [],
+ "outcome": "PASS",
+ "reason_codes": [],
+ "report_payload_sha256": "c4ae002f6a2ae851a0dc0b3c00cd80fd26d6d0cc7eff5f5511f4440ca2d6bd5c"
+}

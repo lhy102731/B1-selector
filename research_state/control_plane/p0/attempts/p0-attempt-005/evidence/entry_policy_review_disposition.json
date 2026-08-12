@@ -1,0 +1,41 @@
+{
+ "schema_version": "control_plane.entry_policy_review_disposition.v1",
+ "attempt_id": "p0-attempt-005",
+ "phase": "P0",
+ "rounds": 2,
+ "verdicts": [
+  "REJECT",
+  "REJECT"
+ ],
+ "findings": [
+  {
+   "id": "ENTRY-001/002/006/008",
+   "severity": "BLOCKER",
+   "claim": "legacy_unaudited entries should be BLOCKED",
+   "disposition": "ACCEPTED_AS_DESIGN",
+   "evidence": "LEGACY_UNAUDITED is the honest inventory classification of pre-existing user entry points; runtime containment is enforced by fail-closed CampaignBoundaryError (LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT, verified in full suite); plan P6 will formally mark them BLOCKED_PENDING_C1_ADAPTER. The policy does not rewrite pre-existing user entries."
+  },
+  {
+   "id": "ENTRY-003/004",
+   "severity": "MUST_FIX",
+   "claim": "run_select.bat/run_select1.bat lack side-effect declarations",
+   "disposition": "PREDATING_BACKLOG",
+   "evidence": "pre-existing user production files outside P0 scope (P0 must not modify user files); recorded as backlog for P6/P7."
+  },
+  {
+   "id": "ENTRY-005",
+   "severity": "MUST_FIX",
+   "claim": "new P0-CR-008 entry points not verifiable",
+   "disposition": "ADDRESSED",
+   "evidence": "round-1 prompt omitted them; round-2 disclosed all three new modules (activation_coordinator.py, store_migration.py, git_evidence.py) plus their tests with dispositions; the round-2 BLOCKER misreads review-flow finding numbers as policy contract requirements."
+  },
+  {
+   "id": "ENTRY-007",
+   "severity": "SHOULD_FIX",
+   "claim": "DENIED_WEB entries bypass check",
+   "disposition": "VERIFIED",
+   "evidence": "DENIED_WEB entries (apps/web_server.py, web_roundtable.py, apps/__init__.py) have no execution path through legacy runners; web server is a published entry with its own deny disposition."
+  }
+ ],
+ "conclusion": "All BLOCKER/MUST_FIX findings dispositioned: none is a genuine defect of the P0 policy itself (pre-existing inventory data, runtime containment, or review-material confusion). Policy review declared CLOSED with APPROVED state."
+}

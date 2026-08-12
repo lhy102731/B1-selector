@@ -1,0 +1,10 @@
+{
+ "schema_version": "control_plane.identity_bundle.v1",
+ "attempt_id": "p0-attempt-005",
+ "phase": "P0",
+ "plan_version": "V3.4.2-CORRECTIVE",
+ "incident_id": "CP-20260811-P6P8-001",
+ "change_request": "P0-CR-008",
+ "git_head": "c37bc6a06a3aefd0c978fa57fd30b4c2b7707f9f",
+ "branch": "codex/v342-control-plane"
+}

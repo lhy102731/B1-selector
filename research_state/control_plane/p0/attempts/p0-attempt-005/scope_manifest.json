@@ -1,0 +1,31 @@
+{
+ "schema_version": "control_plane.scope_manifest.v1",
+ "plan_version": "V3.4.2-CORRECTIVE",
+ "phase": "P0",
+ "attempt_id": "p0-attempt-005",
+ "allowed_paths": [
+  "research_automation/control_plane/",
+  "tests/",
+  "requirements/",
+  "docs/superpowers/",
+  "research_state/control_plane/p0/attempts/p0-attempt-005/"
+ ],
+ "forbidden_paths": [
+  "data/",
+  "knowledge/",
+  "strategy/",
+  "research_state/control_plane/authority/",
+  "research_state/control_plane/operational/"
+ ],
+ "excluded_work": [
+  "real_campaign",
+  "real_llm_campaign",
+  "final_holdout_open_or_eval",
+  "real_data_or_kbase_mutation",
+  "scheduler_or_acl_mutation",
+  "production_promotion",
+  "c1_c2_c3_rollout",
+  "set_param_reset_rollback_change",
+  "stopping_user_long_running_tasks"
+ ]
+}

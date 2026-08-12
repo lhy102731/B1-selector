@@ -1,0 +1,12 @@
+BLOCKER|ENTRY-005: The round-1 disposition claimed ENTRY-005 was omitted, but the provided new P0-CR-008 entry points include only 3 control_plane modules (activation_coordinator, git_evidence, store_migration) and 3 test files. The DENIED_WEB entries (apps/__init__.py, web_roundtable.py, web_server.py) are not part of P0-CR-008 new entry points — they appear to be pre-existing inventory. The policy must clearly identify which entry is ENTRY-005 and ensure all newly added P0-CR-008 entry points are disclosed. The prompt says "they are listed below now" but does not map which specific entry resolves ENTRY-005.
+
+MUST_FIX|LEGACY_UNAUDITED-for-new-modules: The three new control_plane modules are marked LEGACY_UNAUDITED, but they are newly introduced by this CR (P0-CR-008). They are not "pre-existing user entry points" — they are code added/changed by this change request. Classifying new code as LEGACY_UNAUDITED without review violates the policy’s purpose. These must be reviewed and classified (e.g., BLOCKED_PENDING_C1_ADAPTER or AUDITED) as they are part of the CR, not legacy inventory.
+
+OK|ENTRY-001/002/006/008: The disposition to classify legacy_unaudited entries as LEGACY_UNAUDITED is honest, and runtime fail-closed containment (CampaignBoundaryError LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT) is a reasonable compensating control. The corrective plan P6 appropriately marks them BLOCKED_PENDING_C1_ADAPTER later. This does not block approval for the policy.
+
+OK|ENTRY-003/004: run_select.bat/run_select1.bat are pre-existing production files outside P0 scope; recording as backlog is appropriate.
+
+OK|DENIED_WEB entries: They are clearly marked DENIED_WEB and are pre-existing inventory; no new defect.
+
+VERDICT: REJECT
+Rationale: The policy fails to distinguish newly-added P0-CR-008 modules (which must be reviewed) from legacy pre-existing entries, and the ENTRY-005 resolution is ambiguous without explicit mapping.

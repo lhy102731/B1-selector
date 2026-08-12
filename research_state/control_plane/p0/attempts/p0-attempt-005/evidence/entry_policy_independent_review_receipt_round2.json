@@ -1,0 +1,14 @@
+{
+ "schema": "control_plane.entry_policy_independent_review.v1",
+ "attempt_id": "p0-attempt-005",
+ "phase": "P0",
+ "reviewer_id": "independent-v342-cr008-p0-policy-reviewer",
+ "provider": "deepseek_direct",
+ "model": "deepseek-chat",
+ "round": 2,
+ "prompt_sha256": "89136dba259c6881193285bfdc4c19514ed5ee2f8e5ce00527d6373982add474",
+ "raw_output_sha256": "660fdd5b7a5a826c61cf9becd46cb7c91cd6aa9ed7721f8347ef86dece79237b",
+ "status": "ok",
+ "policy_payload_sha256": "c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61",
+ "raw_output_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_review_raw_round2.txt"
+}

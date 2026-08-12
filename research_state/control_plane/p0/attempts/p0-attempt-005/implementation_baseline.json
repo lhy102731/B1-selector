@@ -1,0 +1,22 @@
+{
+ "schema_version": "control_plane.implementation_baseline.v2",
+ "plan_version": "V3.4.2-CORRECTIVE",
+ "phase": "P0",
+ "baseline": {
+  "attempt_id": "p0-attempt-005",
+  "git_head": "c37bc6a06a3aefd0c978fa57fd30b4c2b7707f9f",
+  "branch": "codex/v342-control-plane",
+  "tracked_user_status_sha256": "17304caeeb69a1e37249ba295b5b8b4f9f973a80abc6de7fd8bb4f2a60517502",
+  "tracked_user_status_line_count": 4161,
+  "protected_tracked_changes": [
+   " M CHANGELOG.md",
+   " M daily_run.py",
+   " M daily_select.py",
+   " M docs/b1_v3_results.md"
+  ],
+  "quarantine_manifest_sha256": "caba63e5b93c2cb851397344baf6495b699b2b1970c0260bc990f49a2efdaacf",
+  "quarantine_entry_count": 4163
+ },
+ "baseline_payload_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
+ "baseline_payload_hash_algorithm": "sha256(canonical UTF-8 JSON of the baseline member; sorted object keys; semantic array order preserved; compact separators)"
+}
