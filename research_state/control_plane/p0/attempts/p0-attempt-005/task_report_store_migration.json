@@ -65,7 +65,7 @@
    "path": "research_automation/control_plane/activation_coordinator.py",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "7a8b9ea1d8671bd0e8860412a6669210a4215de2d8d108a8c33373288194907c"
+   "current_sha256": "b018c98d4c456ac91766c4696e4cb6f1ae1676414e8d555cb4df91dd74ab164f"
   },
   {
    "path": "research_automation/control_plane/campaign_store.py",
@@ -113,13 +113,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "ac960bf320a1400250a5602253f2eca8578e62ea23c409e9fc22a62300ca8763"
+   "current_sha256": "bcc5edf77d98e74d24368c125f0e24abf9fd19fef6bd01f9ad77c44e0d3778a6"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-store-migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "63d6b787f61b64dd9d5db9613d12d17ac6d2e07207542a814b34838ccd88375a"
+   "current_sha256": "d20adfff7c037e9b80c4819622d9eb9f95b846cbcab17077aa5832ef9d34b73e"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/code_freeze_manifest.json",
@@ -305,7 +305,7 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/external_scheduler_inventory.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "25d99a32df4d7b454bc41cb12b841717745fa4da849061837c74d3a6dc47b7a3"
+   "current_sha256": "10cc7779bc6234852f0bceba3d38f90ead9297ad148ea83c7e363624543f2706"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/final_inventory.json",
@@ -335,13 +335,13 @@
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "f582be2c8188a21c9dc35fb4c79d0110ecb1189d1b9f3d438a464dd7f45e6c61"
+   "current_sha256": "f9dc7ec4d873763dd5d4b4a4612c3864ff10c3d428e0ad54dbae0b4a7096d064"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "fea3b7d5819d8b18c14b3deecbd6ee5d63681ec8fb8b78c795e930edc40a595a"
+   "current_sha256": "924d87b7f6cea46d40427e53af6bad10d25fc9667d92c04afd769625ca57cabe"
   },
   {
    "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
@@ -359,7 +359,7 @@
    "path": "tests/test_control_plane_activation_coordinator.py",
    "change_type": "ADD",
    "baseline_sha256": null,
-   "current_sha256": "3f9690d972aee0e977c1268a2562fbbd903cf7f3386bed683e879d7895e6f752"
+   "current_sha256": "1ed864490d4e32c67b66b521831129bd95e0e380e1c85e47a98bb55bc62dee43"
   },
   {
    "path": "tests/test_control_plane_gates.py",
@@ -425,18 +425,18 @@
  "phase": "P0",
  "plan_version": "V3.4.2-CORRECTIVE",
  "task_id": "P0-STORE-MIGRATION",
- "idempotency_key": "23d6e63840532d4dc4f81522a49f62737dc8cebb834e0cb70fc874f36671ec86",
+ "idempotency_key": "p0-store-migration-rerecord-001",
  "task_spec_ref": "manifest.json",
- "task_spec_sha256": "63d6b787f61b64dd9d5db9613d12d17ac6d2e07207542a814b34838ccd88375a",
+ "task_spec_sha256": "d20adfff7c037e9b80c4819622d9eb9f95b846cbcab17077aa5832ef9d34b73e",
  "attempt_id": "p0-attempt-005",
- "ticket_id": "315cce96d11841ad5a327fb55d166b64994ed740bb7c1cf9498ddd5d5207601e",
+ "ticket_id": "9a5f693bc0a437120c0bf8b8dd2cf373bc39c4ff5fd8692ccfd6d83380dc6b89",
  "ticket_state": "SUCCEEDED",
- "authorization_ref": "coordinator-auth-315cce96d11841ad5a327fb5",
- "started_at": "2026-08-11T18:31:56.369739Z",
- "completed_at": "2026-08-11T18:32:00.483969Z",
+ "authorization_ref": "coordinator-auth-9a5f693bc0a437120c0bf8b8",
+ "started_at": "2026-08-12T01:56:13.029021Z",
+ "completed_at": "2026-08-12T01:56:17.364585Z",
  "schema_version": "control_plane.task_report.v2",
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "c7d559ad398bd2a2d9c96ba3bc0dc263e6fb716f6afd52cee7e30226b3447d75"
+ "report_payload_sha256": "8b43be19b6e3dcbc964910a8b4c5db9e4f3ab0f45424f7cef027b325654a836c"
 }
