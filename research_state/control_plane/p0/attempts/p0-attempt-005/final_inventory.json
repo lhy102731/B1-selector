@@ -8,7 +8,7 @@
   "scope_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e",
   "instruction_policy_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e"
  },
- "source_identity_sha256": "0d45e802c5a5b6a2184367b839fbeae2a19c85ffef11ba60e5c39744b55687ab",
+ "source_identity_sha256": "6aaa36caf817e909dbe779291fff11053cc27dd22cc00c090b40c9147557ed57",
  "entries": [
   {
    "actor_type": "automation",
@@ -8372,5 +8372,5 @@
   }
  ],
  "entry_count": 556,
- "inventory_payload_sha256": "3be1207548c8b731f9490f494b2d6bf3bacd89b0063a461276058522ee20da11"
+ "inventory_payload_sha256": "528c8408a814d66afef4afd5aec8c90fdd2f19775302e1972f47a8481237d22a"
 }
