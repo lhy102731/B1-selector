@@ -999,10 +999,16 @@ class PhaseGateVerifier:
         baseline_ref = report["implementation_baseline"]
         if not isinstance(baseline_ref, Mapping):
             raise GateEvidenceError("implementation baseline reference is invalid")
+        baseline_artifact = artifacts["implementation_baseline"]
+        if not isinstance(baseline_artifact, Mapping):
+            raise GateEvidenceError("implementation baseline artifact is invalid")
+        expected_baseline_sha256 = str(
+            baseline_artifact["baseline_payload_sha256"]
+        )
         for task_report in parsed_task_reports:
             if (
                 task_report["baseline_ref"] != baseline_ref["ref"]
-                or task_report["baseline_sha256"] != baseline_ref["sha256"]
+                or task_report["baseline_sha256"] != expected_baseline_sha256
             ):
                 raise GateAuthorityMismatchError(
                     "TaskReport baseline does not match the gate baseline"

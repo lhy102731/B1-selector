@@ -376,7 +376,7 @@ def _build_gate_candidate(
         ),
     }
     try:
-        validate_implementation_baseline(
+        baseline_payload = validate_implementation_baseline(
             artifact_payloads["implementation_baseline"],
             expected_plan_version=str(primary_task_report["plan_version"]),
             expected_phase=str(args.phase),
@@ -437,7 +437,7 @@ def _build_gate_candidate(
         task_report["baseline_ref"]
         != artifacts["implementation_baseline"]["ref"]
         or task_report["baseline_sha256"]
-        != artifacts["implementation_baseline"]["sha256"]
+        != baseline_payload["baseline_payload_sha256"]
         for task_report in parsed_task_reports
     ):
         raise GateAuthorityMismatchError(

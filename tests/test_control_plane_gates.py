@@ -386,7 +386,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
             baseline_path.parent.mkdir(parents=True, exist_ok=True)
             baseline_bytes = canonical_json(baseline_payload).encode("utf-8")
             baseline_path.write_bytes(baseline_bytes)
-            baseline_sha256 = hashlib.sha256(baseline_bytes).hexdigest()
+            baseline_sha256 = str(
+                baseline_payload["baseline_payload_sha256"]
+            )
             artifact_paths["implementation_baseline"] = baseline_path
             task_spec = dict(task_spec)
             task_spec["baseline_ref"] = baseline_ref
