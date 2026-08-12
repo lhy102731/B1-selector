@@ -100,5 +100,144 @@ class BackendProtocolTests(unittest.TestCase):
         verify_backend_rejects_raw_paths(object())  # type: ignore[arg-type]
 
 
+class WorkerProtocolTests(unittest.TestCase):
+    def test_worker_output_validates_bounded_contract(self) -> None:
+        from research_automation.final_eval_worker import (
+            FinalEvalWorkerOutputRejected,
+            validate_worker_output,
+        )
+
+        payload = {
+            "schema_version": "control_plane.final_eval_worker_result.v1",
+            "metrics": {"sharpe": 0.5, "calibration_error": 0.01},
+            "counts": {"rows": 10},
+            "artifact_hashes": {"holdout": "a" * 64},
+            "evidence_refs": [
+                "research_state/control_plane/p8/attempts/p8-attempt-002/evidence/worker_result.json"
+            ],
+            "outcome": "SUCCEEDED",
+        }
+        result = validate_worker_output(payload)
+        self.assertEqual(result["outcome"], "SUCCEEDED")
+
+    def test_worker_output_rejects_unknown_fields(self) -> None:
+        from research_automation.final_eval_worker import (
+            FinalEvalWorkerOutputRejected,
+            validate_worker_output,
+        )
+
+        payload = {
+            "schema_version": "control_plane.final_eval_worker_result.v1",
+            "metrics": {},
+            "counts": {},
+            "artifact_hashes": {},
+            "evidence_refs": [],
+            "outcome": "SUCCEEDED",
+            "raw_labels": ["secret"],
+        }
+        with self.assertRaises(FinalEvalWorkerOutputRejected):
+            validate_worker_output(payload)
+
+    def test_worker_output_rejects_nan_metric(self) -> None:
+        from research_automation.final_eval_worker import (
+            FinalEvalWorkerOutputRejected,
+            validate_worker_output,
+        )
+
+        payload = {
+            "schema_version": "control_plane.final_eval_worker_result.v1",
+            "metrics": {"sharpe": float("nan")},
+            "counts": {},
+            "artifact_hashes": {},
+            "evidence_refs": [],
+            "outcome": "SUCCEEDED",
+        }
+        with self.assertRaises(FinalEvalWorkerOutputRejected):
+            validate_worker_output(payload)
+
+    def test_worker_output_rejects_unbounded_metric(self) -> None:
+        from research_automation.final_eval_worker import (
+            FinalEvalWorkerOutputRejected,
+            validate_worker_output,
+        )
+
+        payload = {
+            "schema_version": "control_plane.final_eval_worker_result.v1",
+            "metrics": {"totally_unbounded": 1e9},
+            "counts": {},
+            "artifact_hashes": {},
+            "evidence_refs": [],
+            "outcome": "SUCCEEDED",
+        }
+        with self.assertRaises(FinalEvalWorkerOutputRejected):
+            validate_worker_output(payload)
+
+    def test_worker_output_rejects_unsafe_evidence_ref(self) -> None:
+        from research_automation.final_eval_worker import (
+            FinalEvalWorkerOutputRejected,
+            validate_worker_output,
+        )
+
+        payload = {
+            "schema_version": "control_plane.final_eval_worker_result.v1",
+            "metrics": {},
+            "counts": {},
+            "artifact_hashes": {},
+            "evidence_refs": ["/etc/passwd"],
+            "outcome": "SUCCEEDED",
+        }
+        with self.assertRaises(FinalEvalWorkerOutputRejected):
+            validate_worker_output(payload)
+
+    def test_worker_process_emits_bounded_result_from_stdin(self) -> None:
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        content = b"CANARY_7f3a9c2b|" + b"x" * 128
+        sha256 = __import__("hashlib").sha256(content).hexdigest()
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "research_automation.final_eval_worker",
+                sha256,
+                "holdout-final-1",
+            ],
+            input=content,
+            capture_output=True,
+            timeout=60,
+            cwd=Path(__file__).resolve().parents[1],
+        )
+        self.assertEqual(child.returncode, 0, msg=child.stderr.decode())
+        import json as _json
+
+        payload = _json.loads(child.stdout.decode())
+        self.assertEqual(payload["outcome"], "SUCCEEDED")
+        self.assertEqual(payload["artifact_hashes"]["holdout"], sha256)
+
+    def test_worker_process_rejects_hash_mismatch(self) -> None:
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        content = b"CANARY_7f3a9c2b|" + b"x" * 128
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "research_automation.final_eval_worker",
+                "f" * 64,
+                "holdout-final-1",
+            ],
+            input=content,
+            capture_output=True,
+            timeout=60,
+            cwd=Path(__file__).resolve().parents[1],
+        )
+        self.assertEqual(child.returncode, 3)
+        self.assertIn(b"HASH_MISMATCH", child.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
