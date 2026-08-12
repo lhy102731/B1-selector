@@ -882,15 +882,11 @@ class PhaseGateVerifier:
                 raise GateEvidenceError(
                     f"TaskReport requirements.{field_name} is invalid"
                 )
-        # The coordinator always derives required_test_receipt_ids from the
-        # envelope's required_official_tests, and the gate must bind at
-        # least one mandatory obligation; review receipts may be legitimately
-        # empty when no reviewer was commissioned.
-        if not requirements["required_test_receipt_ids"]:
-            raise GateEvidenceError(
-                "TaskReport requirements.required_test_receipt_ids is "
-                "empty; the gate binds no official tests"
-            )
+        # F-04: a report that binds nothing must not PASS.  A coordinator
+        # activation always derives required_test_receipt_ids from the
+        # envelope's required_official_tests; a support ticket (e.g. policy
+        # activation) legitimately binds review or evidence obligations
+        # instead, so the gate rejects only the all-empty case.
         if not any(
             requirements[field_name]
             for field_name in (

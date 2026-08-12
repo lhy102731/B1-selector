@@ -1595,10 +1595,9 @@ class PhaseGateBuilderTests(unittest.TestCase):
         ) as fixture:
             with self.assertRaisesRegex(
                 GateEvidenceError,
-                "required_test_receipt_ids is empty|requirements are empty",
+                "requirements are empty; the gate binds nothing",
             ):
                 fixture.verifier.verify(fixture.report)
-
     def test_verifier_rejects_evidence_ref_with_parent_segments(self) -> None:
         """CR-009 negative (Reviewer B-1): a crafted evidence ref using '..'
         segments must fail closed at TaskReport parse time before any
