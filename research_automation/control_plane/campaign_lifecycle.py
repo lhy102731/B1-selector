@@ -41,6 +41,7 @@ class CampaignStatus(str, Enum):
     ACTIVE = "ACTIVE"
     BLOCKED = "BLOCKED"
     COMPLETED = "COMPLETED"
+    CLOSED = "CLOSED"
 
 
 class CampaignPauseStatus(str, Enum):
@@ -85,6 +86,7 @@ _CAMPAIGN_TRANSITIONS = frozenset(
         (CampaignStatus.CREATED, CampaignStatus.ACTIVE),
         (CampaignStatus.ACTIVE, CampaignStatus.BLOCKED),
         (CampaignStatus.ACTIVE, CampaignStatus.COMPLETED),
+        (CampaignStatus.COMPLETED, CampaignStatus.CLOSED),
     }
 )
 _CYCLE_TRANSITIONS = frozenset(
