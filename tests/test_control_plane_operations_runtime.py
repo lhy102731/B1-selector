@@ -99,7 +99,7 @@ class RealReadModelTests(unittest.TestCase):
         self.assertTrue(status["healthy"])
         self.assertEqual(status["reason"], None)
         self.assertEqual(
-            status["generation_publication"]["status"],
+            status["publication"]["status"],
             "UNAVAILABLE",
         )
 

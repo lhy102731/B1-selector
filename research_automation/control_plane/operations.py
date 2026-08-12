@@ -452,10 +452,55 @@ def read_only_audit_manifest(
     *,
     allow_real: bool = False,
 ) -> dict[str, object]:
-    """Deterministic read-only audit manifest with hashes/references."""
+    """Deterministic read-only audit manifest with logical hashes.
 
-    if not allow_real:
-        _require_synthetic_path(Path(root))
+    Never hashes the live WAL database file and never does unbounded
+    directory walks.  With ``allow_real=True`` the live v4 OperationalJournal
+    is read through the transaction-validated read model; missing/corrupt
+    stores fail closed with a stable reason.
+    """
+
+    if allow_real:
+        from .operations_projection import read_operational_snapshot
+
+        try:
+            snapshot = read_operational_snapshot()
+        except Exception as error:  # noqa: BLE001 - stable reason envelope
+            return {
+                "schema_version": "control_plane.read_only_audit_manifest.v1",
+                "healthy": False,
+                "reason": str(error),
+                "journal": None,
+                "events": None,
+                "references": [],
+                "redaction": {"api_keys": True, "raw_labels": True, "final_eval": True, "large_files": True},
+                "generated_at": "deterministic",
+            }
+        journal = snapshot["journal"]
+        logical_sha256 = hashlib.sha256(
+            b"control_plane.audit_logical_chain.v1\0"
+            + str(journal["count"]).encode("utf-8")
+            + b"\0"
+            + str(journal["max_sequence"]).encode("utf-8")
+        ).hexdigest()
+        return {
+            "schema_version": "control_plane.read_only_audit_manifest.v1",
+            "healthy": True,
+            "reason": None,
+            "journal": {
+                "logical_sha256": logical_sha256,
+                "event_count": journal["count"],
+                "max_sequence": journal["max_sequence"],
+            },
+            "events": {
+                "count": journal["count"],
+                "table": "journal_events",
+            },
+            "references": [],
+            "redaction": {"api_keys": True, "raw_labels": True, "final_eval": True, "large_files": True},
+            "generated_at": "deterministic",
+        }
+    _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     manifest = {
@@ -574,10 +619,36 @@ def read_only_doctor_report(
     *,
     allow_real: bool = False,
 ) -> dict[str, object]:
-    """Read-only doctor report with blocked states and failure causes."""
+    """Read-only doctor report with blocked states and failure causes.
 
-    if not allow_real:
-        _require_synthetic_path(Path(root))
+    With ``allow_real=True`` the live v4 store is checked for health and
+    integrity; missing/corrupt/integrity failures are reported as blocked
+    with stable reasons (never a fabricated OK).
+    """
+
+    if allow_real:
+        from .operations_projection import (
+            OperationalIntegrityError,
+            OperationalReadModelError,
+            read_operational_snapshot,
+        )
+
+        try:
+            snapshot = read_operational_snapshot()
+        except (OperationalReadModelError, OperationalIntegrityError) as error:
+            return {
+                "blocked": [str(error)],
+                "failure_causes": [str(error)],
+                "journal": None,
+                "verdict": "FAIL",
+            }
+        return {
+            "blocked": [],
+            "failure_causes": [],
+            "journal": snapshot["journal"],
+            "verdict": "OK",
+        }
+    _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     return {
@@ -593,10 +664,46 @@ def read_only_export_bundle(
     *,
     allow_real: bool = False,
 ) -> dict[str, object]:
-    """Read-only export bundle with references and hashes; never writes."""
+    """Read-only export bundle with logical references and hashes; never writes.
 
-    if not allow_real:
-        _require_synthetic_path(Path(root))
+    With ``allow_real=True`` the live v4 store is exported through the
+    transaction-validated read model; the live WAL file is never hashed and
+    protected references are redacted by name/metadata only.
+    """
+
+    if allow_real:
+        from .operations_projection import (
+            OperationalReadModelError,
+            read_operational_snapshot,
+        )
+
+        try:
+            snapshot = read_operational_snapshot()
+        except OperationalReadModelError as error:
+            return {
+                "bundle_kind": "read_only_references",
+                "healthy": False,
+                "reason": str(error),
+                "event_count": None,
+                "max_sequence": None,
+                "journal_sha256": None,
+            }
+        journal = snapshot["journal"]
+        logical_sha256 = hashlib.sha256(
+            b"control_plane.export_logical_chain.v1\0"
+            + str(journal["count"]).encode("utf-8")
+            + b"\0"
+            + str(journal["max_sequence"]).encode("utf-8")
+        ).hexdigest()
+        return {
+            "bundle_kind": "read_only_references",
+            "healthy": True,
+            "reason": None,
+            "event_count": journal["count"],
+            "max_sequence": journal["max_sequence"],
+            "journal_sha256": logical_sha256,
+        }
+    _require_synthetic_path(Path(root))
     journal = journal_path(root)
     snapshot = _read_journal_snapshot(journal)
     return {

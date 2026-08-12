@@ -120,41 +120,58 @@ def cmd_list(_args: argparse.Namespace) -> None:
         print(f"      model={p.get('model','?')}  base_url={p.get('base_url','?')}")
 
 
-def cmd_status(_args: argparse.Namespace) -> None:
+def _ops_exit_code(payload: dict) -> int:
+    """Step 11.1: healthy=0, missing/corrupt/schema/integrity/blocked=4."""
+    if payload.get("healthy", True) is False or payload.get("verdict") == "FAIL":
+        return 4
+    return 0
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
     """Read-only control-plane status; never constructs a Runner."""
 
     from research_automation.control_plane import operations
 
     status = operations.read_only_status(operations.journal_path(), allow_real=True)
     print(json.dumps(status, ensure_ascii=False, indent=2, sort_keys=True))
+    return _ops_exit_code(status)
 
 
-def cmd_audit(args: argparse.Namespace) -> None:
+def cmd_audit(args: argparse.Namespace) -> int:
     """Read-only deterministic audit manifest; never constructs a Runner."""
 
     from research_automation.control_plane import operations
 
     manifest = operations.read_only_audit_manifest(
-        Path(getattr(args, "root", None) or operations._repository_root())
+        Path(getattr(args, "root", None) or operations._repository_root()),
+        allow_real=True,
     )
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
+    return _ops_exit_code(manifest)
 
 
-def cmd_doctor(_args: argparse.Namespace) -> None:
+def cmd_doctor(_args: argparse.Namespace) -> int:
     """Read-only doctor report; never constructs a Runner."""
 
     from research_automation.control_plane import operations
 
-    report = operations.read_only_doctor_report(operations._repository_root())
+    report = operations.read_only_doctor_report(
+        operations._repository_root(),
+        allow_real=True,
+    )
     print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+    return _ops_exit_code(report)
 
 
-def cmd_export(_args: argparse.Namespace) -> None:
+def cmd_export(_args: argparse.Namespace) -> int:
     """Read-only export references; never constructs a Runner or writes."""
 
     from research_automation.control_plane import operations
 
-    bundle = operations.read_only_export_bundle(operations._repository_root())
+    bundle = operations.read_only_export_bundle(
+        operations._repository_root(),
+        allow_real=True,
+    )
     print(json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True))
     print("\n=== Profiles ===")
     cfg = _research_config_class()()
@@ -167,6 +184,7 @@ def cmd_export(_args: argparse.Namespace) -> None:
     print("\n=== Workflows ===")
     for w in cfg.list_workflows():
         print(f"  {w['id']:<22s} {w['description']}")
+    return _ops_exit_code(bundle)
 
 
 def cmd_brainstorm(args: argparse.Namespace) -> None:
@@ -778,9 +796,7 @@ def main(
         from research_automation.kbase_ag2_full_cycle import cycle_exit_code
 
         return cycle_exit_code(result)
-    if args.command == "rollout":
-        return int(result)
-    if args.command == "campaign":
+    if args.command in ("rollout", "campaign", "status", "audit", "doctor", "export"):
         return int(result)
     return 0
 
