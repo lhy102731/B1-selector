@@ -1030,6 +1030,23 @@ class ActivationCoordinator:
             raise ActivationEnvelopeError("no ticket is in progress")
         payload = dict(self._evidence_payload)
         evidence_ref = str(payload["evidence_ref"])
+        # CR-009 (Reviewer A-01): the evidence file written at issue time
+        # must still match the recorded hash when the receipts are persisted.
+        # If any party mutated the working-tree file between ISSUE and
+        # RECEIPTS, fail closed here instead of blessing a stale hash.
+        evidence_path = (self._repository_root / evidence_ref).resolve()
+        try:
+            current_bytes = evidence_path.read_bytes()
+        except OSError as error:
+            raise ActivationEnvelopeError(
+                "activation evidence file is unavailable at receipt time"
+            ) from error
+        if hashlib.sha256(current_bytes).hexdigest() != str(
+            payload["evidence_sha256"]
+        ):
+            raise ActivationEnvelopeError(
+                "activation evidence file changed between issue and receipt"
+            )
         payload_json = json.dumps(
             payload,
             ensure_ascii=False,

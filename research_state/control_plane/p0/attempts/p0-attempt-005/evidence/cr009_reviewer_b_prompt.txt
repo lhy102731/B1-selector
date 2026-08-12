@@ -1,0 +1,71 @@
+You are an independent reviewer (Reviewer B) for the P0 corrective
+recovery of the V3.4.2 control plane. Your review is fully independent of
+Reviewer A: do not assume Reviewer A's findings, reach your own verdict
+from the evidence. Bind your review to the single activated candidate
+commit and its committed evidence only. Report findings with severity
+(BLOCKER / MUST_FIX / SHOULD_FIX / OK) and a final verdict
+(APPROVE / HOLD / REJECT).
+
+CONTEXT:
+- Candidate commit: ad01bdc14ec158f2c0d22883b59a87f559e0d76f (CR-009
+  committed-blob evidence trust root fix), with add-only evidence commits
+  cb8e6ba and 3eb8466 (P0 full discovery exit 0 receipt and log archive).
+- Incident gate_lineage_dispute_incident_001.json (Gate A) marks the five
+  old gates (P0/P6/P7/P8/C0) DISPUTED_PENDING_FORWARD_REPAIR.
+- GPT review findings F-01..F-05 (see FIX UNDER REVIEW below).
+
+FIX UNDER REVIEW (CR-009):
+1. activation_coordinator._issue_ticket:
+   - evidence path derived from manifest phase/attempt (lowercase phase
+     dir under research_state/control_plane/), no more hard-coded
+     p0-attempt-005 directory;
+   - evidence_sha256 is now SHA-256 of the actual canonical evidence file
+     bytes (== committed blob SHA-256 after the caller commits it), not a
+     hash of the path string;
+   - required_test_receipt_ids derived non-empty from the envelope's
+     required_official_tests and matched to the recorded TEST receipt id.
+2. gates.PhaseGateVerifier._verify_task_report_evidence_refs:
+   every VERIFIED input_evidence_ref must dereference to a regular
+   committed blob under research_state/control_plane/<phase>/attempts/
+   <attempt>/ whose raw bytes hash to evidence_sha256; wrong-phase,
+   dangling, uncommitted, outside-namespace, hash-mismatch all fail.
+3. gates.PhaseGateVerifier._verify_task_report_requirements: reports with
+   empty required_test_receipt_ids (or all-empty requirements) fail closed.
+4. Tests: negative cases (dangling, path-string hash, wrong phase, outside
+   namespace, uncommitted, empty requirements) + positive committed-blob
+   dereference + coordinator integration (requirements match TEST receipt,
+   evidence file hash matches bytes).
+
+EVIDENCE TO REVIEW (committed at candidate HEAD):
+- research_automation/control_plane/activation_coordinator.py
+- research_automation/control_plane/gates.py
+- tests/test_control_plane_activation_coordinator.py
+- tests/test_control_plane_gates.py
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  p0_full_discovery_receipt_v2_cr009.json (2566 tests, exit 0, log sha
+  23558fb2... pinned to the committed LF-normalized blob)
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  full_discovery_2026-08-12.log
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  p0_store_migration_backup_receipt.json,
+  p0_store_migration_verification_receipt.json
+- research_state/control_plane/rollout/lineage_audits/
+  gate_lineage_dispute_incident_001.json
+
+QUESTIONS:
+1. Adversarial: can you construct a TaskReport that still PASSes a gate
+   with a fake/dangling/wrong-phase evidence ref, or with requirements
+   that bind nothing? Walk the verification path.
+2. Is evidence_sha256's binding to file bytes (pre-commit) equal to the
+   committed blob SHA-256 under gitattributes LF normalization, or is
+   there a normalization mismatch that would break the dereference for
+   real activation evidence?
+3. Does the evidence-prefix exemption for working-tree delta checks
+   (research_state/control_plane/<phase>/attempts/) weaken scope
+   enforcement in an exploitable way?
+4. Are the negative tests strong (do they reach the dereference code and
+   assert the right exception types)?
+5. Is the full-discovery exit-0 claim fully supported by the receipt and
+   log (counts, exit code, commit pin, hash semantics)?
+
+Reply with findings (each: severity, id, summary) and a final verdict.

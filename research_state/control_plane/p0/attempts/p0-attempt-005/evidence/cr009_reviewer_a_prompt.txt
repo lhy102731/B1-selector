@@ -1,0 +1,82 @@
+You are an independent reviewer (Reviewer A) for the P0 corrective recovery
+of the V3.4.2 control plane. Your review binds to a single activated
+candidate commit and its committed evidence only. This is a real, auditable
+review; report findings exactly as written, with severity tags
+(BLOCKER / MUST_FIX / SHOULD_FIX / OK) and a final verdict
+(APPROVE / HOLD / REJECT).
+
+CONTEXT:
+- Candidate commit: ad01bdc14ec158f2c0d22883b59a87f559e0d76f (CR-009
+  committed-blob evidence trust root fix), plus add-only evidence commits
+  cb8e6ba and 3eb8466 (P0 full discovery exit 0 receipt and log).
+- The 5 old phase gates (P0/P6/P7/P8/C0) were marked
+  DISPUTED_PENDING_FORWARD_REPAIR by incident
+  gate_lineage_dispute_incident_001.json (Gate A).
+- GPT independent review found (F-01..F-05):
+  F-01 evidence_sha256 was sha256 of the path string, not the committed
+     blob bytes; several input_evidence_refs pointed into
+     p6/attempts/p6-attempt-003/ from other phases.
+  F-02 the gate verifier never dereferenced nested input_evidence_refs.
+  F-03 P6's test log was committed after the gate/closure.
+  F-04 task-level requirements (required_test_receipt_ids / review /
+     evidence) were empty, so a report with missing receipts could PASS.
+  F-05 the full-discovery receipt recorded 4 failures + 8 errors while
+     the gate still PASSed.
+
+FIX UNDER REVIEW (CR-009):
+1. activation_coordinator._issue_ticket now:
+   - derives evidence_ref from the manifest phase/attempt (lowercase phase
+     dir, e.g. research_state/control_plane/p0/attempts/<attempt>/evidence/)
+     instead of a hard-coded p0-attempt-005 path;
+   - writes a real canonical evidence JSON file at issue time and sets
+     evidence_sha256 = SHA-256 of those file bytes (equal to the committed
+     blob SHA-256 after the caller commits the file); the path-string hash
+     is gone;
+   - derives non-empty required_test_receipt_ids from the envelope's
+     required_official_tests, matching the TEST receipt id recorded for the
+     same activation.
+2. gates.PhaseGateVerifier._verify_task_report_evidence_refs now
+   dereferences every VERIFIED input_evidence_ref: it must resolve to a
+   regular committed blob inside research_state/control_plane/<phase>/
+   attempts/<attempt>/ whose bytes hash to evidence_sha256. Wrong-phase,
+   dangling, uncommitted, outside-namespace or hash-mismatched refs fail.
+3. gates.PhaseGateVerifier._verify_task_report_requirements rejects
+   reports whose required_test_receipt_ids is empty (and all-requirements-
+   empty), so a report that binds nothing cannot PASS.
+4. Negative tests added: dangling ref, path-string hash, wrong-phase dir,
+   outside namespace, uncommitted evidence, empty mandatory requirements,
+   plus a positive committed-blob dereference test and a coordinator
+   integration test (requirements match recorded TEST receipt; evidence
+   file exists and hash matches its bytes).
+
+EVIDENCE TO REVIEW (all committed at the candidate HEAD):
+- research_automation/control_plane/activation_coordinator.py
+- research_automation/control_plane/gates.py
+- tests/test_control_plane_activation_coordinator.py
+- tests/test_control_plane_gates.py
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  p0_full_discovery_receipt_v2_cr009.json
+  (2566 tests, 0 failures, 0 errors, exit 0; log sha pinned to the
+  committed LF-normalized blob 23558fb2...)
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  full_discovery_2026-08-12.log
+- research_state/control_plane/p0/attempts/p0-attempt-005/evidence/
+  p0_store_migration_backup_receipt.json and
+  p0_store_migration_verification_receipt.json
+- research_state/control_plane/rollout/lineage_audits/
+  gate_lineage_dispute_incident_001.json
+
+QUESTIONS:
+1. Does the fix remove the path-string-hash root cause everywhere evidence
+   is produced and consumed? Are there remaining sites that still hash a
+   path string or never dereference committed evidence blobs?
+2. Is the phase/attempt binding check sufficient to prevent cross-phase
+   evidence reuse (the old p6-attempt-003 aliasing)?
+3. Do the negative tests actually exercise the new dereference paths (not
+   vacuously passing on empty fixtures)?
+4. Is the full-discovery receipt now a faithful exit-0 record with
+   committed-log hash binding?
+5. Any new blocker in the CR-009 changes themselves (authority binding,
+   requirements derivation, evidence file creation timing/atomicity)?
+
+Reply with findings (each: severity, id, summary) and a final verdict.

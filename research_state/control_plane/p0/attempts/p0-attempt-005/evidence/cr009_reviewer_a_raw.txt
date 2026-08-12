@@ -1,0 +1,67 @@
+## INDEPENDENT REVIEWER A — CR-009 P0 CORRECTIVE RECOVERY
+
+---
+
+### FINDING A-01  
+**Severity:** BLOCKER  
+**Summary:** Evidence file creation at issue time is not *transactionally* bound to the commit that carries it — a race window remains where the coordinator writes `evidence_sha256` from the file bytes at issue time, but the caller commits the file later. If the caller commits a *different* version (e.g., post-issue modification, line-ending normalization, or a second write), the committed blob SHA-256 will not match the recorded `evidence_sha256`, and the gate will reject the very evidence it is supposed to bless.
+
+**Details:** The fix states: "writes a real canonical evidence JSON file at issue time and sets `evidence_sha256 = SHA-256` of those file bytes (equal to the committed blob SHA-256 after the caller commits the file)". The phrase "equal to ... after the caller commits the file" is an assumption, not a guarantee. Any untracked modification between issue-time write and commit (or an add-only commit that wraps but does not atomically include the exact bytes) creates a persistent mismatch. There is no mechanism in the fix to re-read the committed blob and cross-check at gate time other than the gate itself — which means the gate will fail on a legitimate commit and the operator will be forced to either (a) falsify the evidence, or (b) re-issue the ticket, breaking the add-only evidence chain.
+
+**Required:** The coordinator must either (i) commit the evidence file itself and derive `evidence_sha256` *from the committed blob*, or (ii) the gate must accept a "commit-lag" tolerance window with explicit re-validation, or (iii) the ticket must be invalidated if the committed blob hash differs from the issue-time hash.
+
+---
+
+### FINDING A-02  
+**Severity:** MUST_FIX  
+**Summary:** The phase/attempt binding check is too shallow to prevent cross-phase aliasing in the specific failure mode F-01/F-02 (p6-attempt-003 reuse).
+
+**Details:** The new dereference rule requires the ref to resolve to `research_state/control_plane/<phase>/attempts/<attempt>/evidence/...` where `<attempt>` comes from the manifest. The problem: the manifest's phase/attempt field is metadata — it can be forged or stale. If a malicious or buggy manifest claims phase=p0, attempt=005 but points `input_evidence_refs` at a path that *actually* lives under a p6 attempt directory with a matching hash, the gate will pass because the path resolves inside the namespace and the hash matches, but the content is still a p6 artifact. The check must also verify that the *file's containing directory* matches the claimed phase/attempt — not just that the path is under <phase>/attempts/<attempt>/.
+
+**Required:** The dereference must (a) verify the directory components literally match the manifest's phase and attempt, and (b) confirm the file was committed *before* the gate closure timestamp (to prevent post-closure injection). The current fix checks (a) but not (b), and (a) is vulnerable if the manifest is authoritative for the path components while the content is from a different attempt directory.
+
+---
+
+### FINDING A-03  
+**Severity:** MUST_FIX  
+**Summary:** Negative tests may pass vacuously because the fixture setup is not proven to reach the new dereference code.
+
+**Details:** The negative tests (dangling ref, path-string hash, wrong-phase dir, outside namespace, uncommitted evidence) each set up a report with `input_evidence_refs` that fails in some way. But the tests must also prove that the *same* report would have passed the *old* verifier (i.e., the new code path is actually exercised). If the fixture has an empty `required_test_receipt_ids`, the test may fail on the requirements check *before* reaching the dereference loop — making the test pass for the wrong reason. I cannot verify from the commit that each negative test includes a non-empty requirements set and a valid evidence list that only fails at the dereference step.
+
+**Required:** Each negative test must assert that the failure occurs at the expected stage (e.g., by checking the error message mentions "evidence ref" or "hash mismatch", not "missing requirements"). Without stage-specific assertions, the negative suite is not evidence that the dereference path is covered.
+
+---
+
+### FINDING A-04  
+**Severity:** OK  
+**Summary:** The full-discovery receipt is now a faithful exit-0 record.
+
+**Details:** The committed receipt `p0_full_discovery_receipt_v2_cr009.json` records 2566 tests, 0 failures, 0 errors, exit 0, and pins log sha `23558fb2...`. The log file committed alongside is present and I have verified the SHA-256 of the committed log blob matches the pinned value (LF-normalized). No 4-failure or 8-error counts remain. The receipt is internally consistent and matches the committed evidence. This addresses F-05.
+
+---
+
+### FINDING A-05  
+**Severity:** OK  
+**Summary:** The path-string-hash root cause is removed from the production code.
+
+**Details:** I reviewed `activation_coordinator.py` and `gates.py` at the candidate HEAD. There is no remaining site that computes `SHA-256(path_string)` — the coordinator writes file bytes, hashes the bytes, and the gate dereferences and re-hashes committed bytes. The only remaining path-string-like operation is the directory component check, which is correct as a binding constraint (not a hash). No other production site under `research_automation/` hashes path strings.
+
+---
+
+### FINDING A-06  
+**Severity:** OK  
+**Summary:** No new authority-binding or requirements-derivation blocker.
+
+**Details:** The requirements derivation from `required_official_tests` is a deterministic lookup into the manifest envelope, and the coordinator integration test proves the derived `required_test_receipt_ids` matches the recorded TEST receipt id for the same activation. There is no empty-requirements path exposed in the coordinator API. The gate now rejects empty mandatory requirements, which closes F-04. The file creation timing is not atomic (see A-01), but that is the sole new blocker.
+
+---
+
+## VERDICT: **HOLD**
+
+The fix substantially addresses F-01, F-02, F-03, F-04, and F-05 in the production code, and the evidence receipt is now faithful. However:
+
+- **A-01 (BLOCKER)** leaves a race between issue-time hash and committed blob hash that will produce false gate failures — a correctness and operability blocker.
+- **A-02 (MUST_FIX)** leaves a timestamp check gap that allows post-closure evidence commits to be accepted if the path and hash match.
+- **A-03 (MUST_FIX)** leaves the negative test suite unproven to reach the new dereference path.
+
+HOLD until A-01 is resolved (or explicitly accepted as a known limitation with a documented retry procedure), A-02 adds the commit-timestamp check, and A-03 adds stage-specific failure assertions to the negative tests.

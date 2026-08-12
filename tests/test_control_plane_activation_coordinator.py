@@ -986,6 +986,46 @@ class ActivationCoordinatorTests(unittest.TestCase):
                 )
             )
 
+    def test_unsafe_phase_or_attempt_id_is_rejected(self) -> None:
+        """CR-009 (Reviewer B-1): manifest phase/attempt values with path
+        traversal components must fail closed instead of escaping the
+        evidence namespace."""
+        from research_automation.control_plane import (
+            activation_coordinator as ac,
+        )
+
+        for phase, attempt_id in (
+            ("../..", "p0-attempt-005"),
+            ("p0", "../../p0-attempt-005"),
+            ("p0/../../x", "p0-attempt-005"),
+            ("p0", "p0-attempt-005/../../x"),
+        ):
+            with self.subTest(phase=phase, attempt_id=attempt_id):
+                with TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    self._bootstrap(root)
+                    base, source, envelope = _build_envelope(
+                        root,
+                        extra_manifest={
+                            "phase": phase,
+                            "attempt_id": attempt_id,
+                        },
+                    )
+                    subprocess.run(
+                        [GIT, "-C", str(root / "repo"), "checkout", "-q", base],
+                        check=True,
+                    )
+                    coordinator = self._coordinator(root)
+                    with self.assertRaisesRegex(
+                        ac.ActivationEnvelopeError,
+                        "unsafe path components",
+                    ):
+                        coordinator.run(
+                            envelope_commit=envelope,
+                            manifest_ref="manifest.json",
+                            mode=ac.ActivationMode.V2_NORMAL,
+                        )
+
     def test_quarantine_manifest_hash_mismatch_is_rejected(self) -> None:
         from research_automation.control_plane import (
             activation_coordinator as ac,

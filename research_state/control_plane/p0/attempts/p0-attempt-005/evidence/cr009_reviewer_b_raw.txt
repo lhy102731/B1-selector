@@ -1,0 +1,56 @@
+## REVIEWER B FINDINGS
+
+### Finding B-1
+**Severity: MUST_FIX**
+**ID: B-1**
+**Summary: Evidence path traversal via phase parameter not restricted to known phases**
+
+The `_issue_ticket` method derives the evidence path from manifest's `phase` field via `research_state/control_plane/{phase}/attempts/`. The `_verify_task_report_evidence_refs` verifier checks that refs fall under `research_state/control_plane/<phase>/attempts/<attempt>/` but does NOT validate that `<phase>` itself is restricted to known phase names (e.g., `p0`, `p1`, `p6`). An adversarial manifest could set `phase` to `"../../..%2f"` or a path containing `../` sequences. While the code likely uses `os.path.join` without sanitizing `phase`, a phase value like `"../../../../etc/"` combined with attempt traversal could escape the intended namespace. **Test: construct manifest with phase="../..", attempt="../../xxx" and verify if `os.path.normpath` allows escape before the namespace check.** The verifier must validate phase against a whitelist of known phases before deriving paths.
+
+---
+
+### Finding B-2
+**Severity: OK**
+**ID: B-2**
+**Summary: Pre-commit hash binding matches post-commit LF-normalized blob**
+
+The fix computes SHA-256 of the raw file bytes as read from the working tree (pre-commit). After commit with `.gitattributes` enforcing `* text=auto` and `*.py text eol=lf`, Git normalizes the blob to LF. If the working-tree file already has LF line endings (which the evidence directory enforces per the CR-009 convention), the computed hash exactly matches the committed blob hash. However, **if the caller writes evidence with CRLF line endings**, the hash computed pre-commit will differ from the post-commit LF-normalized blob SHA-256, breaking the verification for that evidence. The verifier should either: (a) normalize to LF before hashing pre-commit, or (b) document that evidence files MUST use LF-only line endings. Given the commit's evidence files are already LF-normalized and the codebase convention likely enforces LF, this is a **latent risk** but not an immediate failure for the committed evidence. **Recommendation: add explicit LF-normalization before hashing in `_issue_ticket` to guarantee byte-level equality with the committed blob.**
+
+---
+
+### Finding B-3
+**Severity: OK**
+**ID: B-3**
+**Summary: Evidence-prefix exemption does not weaken scope enforcement**
+
+The exemption for `research_state/control_plane/<phase>/attempts/` in working-tree delta checks is scoped to the exact namespace root. The `_verify_task_report_evidence_refs` verifies that every `input_evidence_ref` resolves to a regular committed blob under that prefix AND that the blob's bytes hash to `evidence_sha256`. The exemption does not exempt the `gate_lineage_dispute_incident_001.json` or other non-evidence files from delta checks—only the evidence subdirectories, which are add-only per the incident record. **Attacker cannot place a malicious file outside the evidence dir without triggering the delta check** because the exemption requires the path to be under the exact `attempts/<attempt>/` structure with the correct phase. The check `os.path.realpath(ref).startswith(evidence_root)` combined with blob existence and hash match makes this safe. **No exploitable weakness found.**
+
+---
+
+### Finding B-4
+**Severity: SHOULD_FIX**
+**ID: B-4**
+**Summary: Negative tests do not cover path traversal via phase/attempt, and exception-type assertions are overly broad**
+
+Reviewing `tests/test_control_plane_gates.py`: 
+- The negative tests cover dangling ref, path-string hash, wrong phase, outside namespace, uncommitted blob, and empty requirements—these are strong and reach the dereference path (verified by test names and assertions like `with pytest.raises(VerificationError)`).
+- **Missing adversarial test:** a ref like `research_state/control_plane/../control_plane/p0/attempts/p0-attempt-005/evidence/valid.json` (containing `..` that resolves inside the root but tests symlink/realpath handling) is not covered.
+- The exception type assertions only check `VerificationError` but not the specific failure message (e.g., "hash mismatch" vs "dangling ref"), making it hard to confirm the right failure mode fired.
+- **Missing test:** phase value with `..` (e.g., `"p0/../../p0"`) to see if normalization escapes or maps correctly.
+
+**Recommendation:** add path-traversal negative tests and assert exception messages contain expected keywords (e.g., "hash mismatch", "dangling").
+
+---
+
+### Finding B-5
+**Severity: OK**
+**ID: B-5**
+**Summary: Full-discovery exit-0 claim fully supported by receipt and log**
+
+The receipt `p0_full_discovery_receipt_v2_cr009.json` (committed at `cb8e6ba`) records: 2566 tests passed, exit code 0, log file SHA-256 `23558fb2...`, and is pinned to the committed LF-normalized log blob. The log `full_discovery_2026-08-12.log` when hashed with SHA-256 produces `23558fb2...` (verified by running `sha256sum` on the committed blob). **Cross-check: the receipt's `log_sha256` field matches the computed hash of the actual committed log file; the test count 2566 matches the log's final summary line ("Ran 2566 tests"); exit code 0 matches "OK" in the log trailer.** The commit pin `cb8e6ba` is the evidence commit add-only receipt. **No discrepancies found.**
+
+---
+
+### Final Verdict: **HOLD**
+
+The fix is architecturally sound: it correctly binds evidence to committed blobs, fails closed on empty requirements, and uses a proper hash-of-bytes scheme. However, the **missing phase whitelist (B-1)** is a MUST_FIX because it allows a crafted manifest to attempt path traversal before the verifier's namespace check, and the **LF-normalization risk (B-2)** could silently break real-world evidence pre-commit hashing if the caller writes non-LF content. The negative test suite is strong but incomplete on traversal edge cases (B-4). These do not undermine the committed evidence's integrity but must be addressed before this becomes a general-purpose fix for the control plane.

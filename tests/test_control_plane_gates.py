@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import subprocess
 import unittest
@@ -1457,7 +1458,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
             evidence_refs=(evidence_entry,),
             evidence_files=((evidence_ref, evidence_bytes),),
         ) as fixture:
-            with self.assertRaises(GateEvidenceError):
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "outside the control-plane evidence namespace",
+            ):
                 fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_evidence_ref_binding_to_another_phase(self) -> None:
@@ -1485,7 +1489,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
             evidence_refs=(evidence_entry,),
             evidence_files=((evidence_ref, evidence_bytes),),
         ) as fixture:
-            with self.assertRaises(GateAuthorityMismatchError):
+            with self.assertRaisesRegex(
+                GateAuthorityMismatchError,
+                "does not bind to the gate phase/attempt",
+            ):
                 fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_path_string_evidence_hash(self) -> None:
@@ -1515,7 +1522,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
             evidence_refs=(evidence_entry,),
             evidence_files=((evidence_ref, evidence_bytes),),
         ) as fixture:
-            with self.assertRaises(GateEvidenceError):
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "SHA-256 does not match the committed blob",
+            ):
                 fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_dangling_evidence_ref(self) -> None:
@@ -1533,7 +1543,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
         with self._trusted_gate_fixture(
             evidence_refs=(evidence_entry,),
         ) as fixture:
-            with self.assertRaises(GateEvidenceError):
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "not committed|not tracked|not a regular file",
+            ):
                 fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_uncommitted_evidence(self) -> None:
@@ -1562,7 +1575,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
             evidence_files=((evidence_ref, evidence_bytes),),
             omit_evidence_commit=True,
         ) as fixture:
-            with self.assertRaises(GateEvidenceError):
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "not committed|not tracked|working copy is dirty",
+            ):
                 fixture.verifier.verify(fixture.report)
 
     def test_verifier_rejects_empty_mandatory_requirements(self) -> None:
@@ -1577,8 +1593,152 @@ class PhaseGateBuilderTests(unittest.TestCase):
         with self._trusted_gate_fixture(
             task_requirements=empty_requirements,
         ) as fixture:
-            with self.assertRaises(GateEvidenceError):
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "required_test_receipt_ids is empty|requirements are empty",
+            ):
                 fixture.verifier.verify(fixture.report)
+
+    def test_verifier_rejects_evidence_ref_with_parent_segments(self) -> None:
+        """CR-009 negative (Reviewer B-1): a crafted evidence ref using '..'
+        segments must fail closed at TaskReport parse time before any
+        namespace check could be tricked."""
+        from research_automation.control_plane.task_reports import (
+            TaskReportValidationError,
+            parse_task_report_v2_bytes,
+        )
+
+        with self._trusted_gate_fixture() as fixture:
+            parsed_report = json.loads(fixture.task_report_bytes.decode("utf-8"))
+            parsed_report["input_evidence_refs"] = [
+                {
+                    "evidence_id": "coordinator-evidence-007",
+                    "evidence_ref": (
+                        "research_state/control_plane/P0/attempts/"
+                        "p0-attempt-001/../../../p6/attempts/"
+                        "p6-attempt-003/evidence/activation.json"
+                    ),
+                    "evidence_sha256": "0" * 64,
+                    "status": "VERIFIED",
+                }
+            ]
+            forged_bytes = json.dumps(
+                parsed_report, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            with self.assertRaises(TaskReportValidationError):
+                parse_task_report_v2_bytes(forged_bytes)
+
+    def test_verifier_rejects_symlink_evidence_blob(self) -> None:
+        """CR-009 negative (Reviewer A S-001 / B-4): a committed symlink
+        inside the evidence namespace must not be dereferenced as a regular
+        evidence blob."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-008.json"
+        )
+        target_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-target.json"
+        )
+        target_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-target",
+                "evidence_ref": target_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-008",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(target_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((target_ref, target_bytes),),
+        ) as fixture:
+            # The symlink is created and committed after the fixture commit
+            # so it cannot be swept into the add-only evidence commit.
+            symlink_path = fixture.root / evidence_ref
+            symlink_path.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(
+                os.path.relpath(fixture.root / target_ref, symlink_path.parent),
+                symlink_path,
+            )
+            subprocess.run(
+                ["git", "add", evidence_ref],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Control Plane Tests",
+                    "-c",
+                    "user.email=control-plane@example.invalid",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "add symlink evidence fixture",
+                ],
+                cwd=fixture.root,
+                check=True,
+                capture_output=True,
+            )
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "not a regular file|non-regular mode|unsafe Git mode",
+            ):
+                fixture.verifier.verify(fixture.report)
+
+    def test_verifier_hashes_committed_blob_not_working_copy(self) -> None:
+        """CR-009 (Reviewer A M-002 / B-2): the dereference hashes the
+        committed blob bytes (LF) via cat-file, not the checked-out working
+        copy; a CRLF working copy must not change the verification."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-009.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-009",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-009",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            fixture.verifier.verify(fixture.report)
+            # Rewrite the working copy with CRLF line endings; the committed
+            # blob is unchanged so the verifier must still pass.
+            crlf_bytes = (
+                canonical_json(
+                    {
+                        "schema_version": (
+                            "control_plane.activation_evidence.v1"
+                        ),
+                        "evidence_id": "coordinator-evidence-009",
+                        "evidence_ref": evidence_ref,
+                        "status": "VERIFIED",
+                    }
+                )
+                .replace("\n", "\r\n")
+                .encode("utf-8")
+            )
+            (fixture.root / evidence_ref).write_bytes(crlf_bytes)
+            fixture.verifier.verify(fixture.report)
 
     def test_verifier_parses_task_report_v2_bytes(self) -> None:
         with self._trusted_gate_fixture() as fixture:
