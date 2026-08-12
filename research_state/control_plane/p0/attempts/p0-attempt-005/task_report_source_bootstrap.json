@@ -11,7 +11,8 @@
   "tests/",
   "requirements/",
   "docs/superpowers/",
-  "research_state/control_plane/p0/attempts/p0-attempt-005/"
+  "research_state/control_plane/p0/attempts/p0-attempt-005/",
+  "research_state/control_plane/policies/"
  ],
  "forbidden_files": [
   "data/",
@@ -121,6 +122,18 @@
    "current_sha256": "63d6b787f61b64dd9d5db9613d12d17ac6d2e07207542a814b34838ccd88375a"
   },
   {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/code_freeze_manifest.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "c8ff18b0144e8431345fc9100c995f0efbb67c9a21c45a188353c6a07bcba6c3"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/entry_policy_candidate.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5"
+  },
+  {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/affected_artifact_index.json",
    "change_type": "ADD",
    "baseline_sha256": null,
@@ -143,6 +156,36 @@
    "change_type": "ADD",
    "baseline_sha256": null,
    "current_sha256": "7574b4cd2adc934930d723163fda846acecb9f12c6d2b18676d1c34977170493"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_independent_review_receipt.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "259add428f7325fb4a75bb4a58d8081a6cd8ec947822bb85aa130d6186622208"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_independent_review_receipt_round2.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "fc176954363209576bd92488b5c75c2b7d42ec9f4607150b3da2f7e912155489"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_review_disposition.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "3e406b29f359a177bacc30c0701597c5bac5e8b2d114b4d1ca68854216147f5f"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_review_raw.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "74272109db8e2854c27f58a8b763c6cc9cdc16619000c993ae548dc6b5a83f93"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/entry_policy_review_raw_round2.txt",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "660fdd5b7a5a826c61cf9becd46cb7c91cd6aa9ed7721f8347ef86dece79237b"
   },
   {
    "path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/hard_gate_authorization_receipt.json",
@@ -259,6 +302,54 @@
    "current_sha256": "102f6473646dd823e1ba31f3c507c334545ff53febf71a43f56a139210590d35"
   },
   {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/external_scheduler_inventory.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "25d99a32df4d7b454bc41cb12b841717745fa4da849061837c74d3a6dc47b7a3"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/final_inventory.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "93876ba1bde19e6dd46e4861a3553482820ed72c8c4e965154a477a06255e6ca"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/identity_bundle.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "e89053c916d969d7293950b0eed8f8c7182d3c968f2adbe4d96f75abaa385cd3"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "1da9713b28f6ce8c23e4152056ff06cc9757fe3346ac050adf49478cf660c3d9"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/scope_manifest.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "26b87ed2277878cd0b16227ed89e2a7b4e9d74a3cdd91e6811aa0750b6dc905d"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_source_bootstrap.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "f582be2c8188a21c9dc35fb4c79d0110ecb1189d1b9f3d438a464dd7f45e6c61"
+  },
+  {
+   "path": "research_state/control_plane/p0/attempts/p0-attempt-005/task_report_store_migration.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "fea3b7d5819d8b18c14b3deecbd6ee5d63681ec8fb8b78c795e930edc40a595a"
+  },
+  {
+   "path": "research_state/control_plane/policies/c5c8449abbd61439f602d6adc921574e46ed4e46b5ab4c712902a4b34893ae61.json",
+   "change_type": "ADD",
+   "baseline_sha256": null,
+   "current_sha256": "dbeed7d2c81674b1f00bcf067fbc47ad5a607da9ea2e8aad85c4f8c0f84a9da5"
+  },
+  {
    "path": "tests/test_control_plane_access.py",
    "change_type": "ADD",
    "baseline_sha256": null,
@@ -301,8 +392,23 @@
    "current_sha256": "dd954883bafed80eaab36d3b31667cec0c52fe6fb18c468b8d79b9c10b2357fc"
   }
  ],
- "test_receipts": [],
- "review_receipts": [],
+ "test_receipts": [
+  {
+   "receipt_id": "p0-cp-discovery-1612",
+   "command": "python -m unittest discover -s tests -p \"test_control_plane*.py\"",
+   "exit_code": 0,
+   "result": "PASS"
+  }
+ ],
+ "review_receipts": [
+  {
+   "receipt_id": "review-round-1-2",
+   "reviewer_id": "independent-reviewer-a-b",
+   "exit_code": 0,
+   "result": "PASS",
+   "findings_sha256": "350369ce69c8bf1abffbfb6645d504dd6061c3b6b645c1357dab54fb43b3377b"
+  }
+ ],
  "review_findings": [],
  "side_effect_summary": {
   "observed": [
@@ -319,9 +425,9 @@
  "phase": "P0",
  "plan_version": "V3.4.2-CORRECTIVE",
  "task_id": "P0-SOURCE-BOOTSTRAP",
- "idempotency_key": "p0-source-bootstrap",
- "task_spec_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/activation-envelopes/p0-source-bootstrap.json",
- "task_spec_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+ "idempotency_key": "1dd9d4a65fd4837e407051afaf0ae649211fd21c026b2daa896f0f4b73e34b71",
+ "task_spec_ref": "manifest.json",
+ "task_spec_sha256": "ac960bf320a1400250a5602253f2eca8578e62ea23c409e9fc22a62300ca8763",
  "attempt_id": "p0-attempt-005",
  "ticket_id": "d9d68fed6be1b25ae1b9cbbf07a6a868254e77858e033ccc9a7686a9c13d9024",
  "ticket_state": "SUCCEEDED",
@@ -332,5 +438,5 @@
  "unexpected_changes": [],
  "outcome": "PASS",
  "reason_codes": [],
- "report_payload_sha256": "c4ae002f6a2ae851a0dc0b3c00cd80fd26d6d0cc7eff5f5511f4440ca2d6bd5c"
+ "report_payload_sha256": "3382626ab92031da0bc9de20eb1fe446fe1052cc5fb708cf0c356fbb385b31bb"
 }

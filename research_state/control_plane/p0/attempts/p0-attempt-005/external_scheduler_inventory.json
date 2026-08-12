@@ -1,22 +1,19 @@
 {
  "schema_version": "control_plane.external_scheduler_inventory.v1",
- "plan_version": "V3.4.2-CORRECTIVE",
  "phase": "P0",
- "attempt_id": "p0-attempt-005",
  "observed_at": "2026-08-12T00:00:00+08:00",
  "collection_mode": "read_only",
- "records": [
-  {
-   "task_path": "\\A股选股",
-   "principal": "user",
-   "action": "read",
-   "operational_classification": "PRODUCTION_DAILY"
-  },
-  {
-   "task_path": "\\A股行情更新",
-   "principal": "user",
-   "action": "read",
-   "operational_classification": "PRODUCTION_DAILY"
-  }
- ]
+ "task_path": "\\A股选股",
+ "task_state": "enabled",
+ "operational_classification": "PRODUCTION_DAILY",
+ "task_xml": {
+  "path": "tasks/stock_selection.xml",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+ },
+ "action": "read",
+ "principal": "user",
+ "trigger": "daily",
+ "acl": "user",
+ "altered_by_p0": false,
+ "unresolved_risk": null
 }
