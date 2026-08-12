@@ -8,14 +8,14 @@
     "research_state/control_plane/policies/"
   ],
   "attempt_id": "p0-attempt-005",
-  "base_commit": "6de1fd181070f59f71869475160d14fbd7484172",
-  "base_tree": "ef2d29079c244399733a65f7e285384db3f7fe12",
+  "base_commit": "3867b9245de87064c806b555c9199589a120ed32",
+  "base_tree": "51b85c58afd9667ced821912e0f212a064d925f2",
   "baseline_ref": "research_state/control_plane/p0/attempts/p0-attempt-005/implementation_baseline.json",
   "baseline_sha256": "944d4abae0ed4927b2650fe6d55dd5388bc6a42141fa2c7c02ac1f3ddac6f960",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "dependencies": [],
   "expected_side_effects": [
-    "MIGRATE_STORES"
+    "WRITE_CONTROL_PLANE"
   ],
   "forbidden_files": [
     "data/",
@@ -24,7 +24,7 @@
     "research_state/control_plane/authority/",
     "research_state/control_plane/operational/"
   ],
-  "idempotency_key": "p0-p0-store-migration-rerecord-005",
+  "idempotency_key": "p0-p0-store-migration-rerecord-006",
   "mode": "migration",
   "objective": "P0-CR-008 corrective activation and live store migration",
   "phase": "P0",
@@ -41,8 +41,8 @@
     "required_test_receipt_ids": []
   },
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "6de1fd181070f59f71869475160d14fbd7484172",
-  "source_tree": "ef2d29079c244399733a65f7e285384db3f7fe12",
+  "source_commit": "3867b9245de87064c806b555c9199589a120ed32",
+  "source_tree": "51b85c58afd9667ced821912e0f212a064d925f2",
   "task_id": "P0-STORE-MIGRATION",
   "task_spec_ref": "manifest.json"
 }
