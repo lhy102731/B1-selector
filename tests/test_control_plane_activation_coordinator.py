@@ -655,7 +655,7 @@ class ActivationCoordinatorTests(unittest.TestCase):
                 root,
                 mode="migration",
                 extra_manifest={
-                    "expected_side_effects": ["MIGRATE_STORES"],
+                    "expected_side_effects": ["WRITE_CONTROL_PLANE"],
                 },
             )
             subprocess.run(
@@ -784,7 +784,7 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     task_id="P0-TEST-MIGRATION",
                     file_suffix="-migration",
                     extra_manifest={
-                        "expected_side_effects": ["MIGRATE_STORES"],
+                        "expected_side_effects": ["WRITE_CONTROL_PLANE"],
                     },
                 )
             )

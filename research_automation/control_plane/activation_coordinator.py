@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from research_automation.control_plane import stores as _stores
+from research_automation.control_plane.contracts import SideEffect
 from research_automation.control_plane.sqlite_uow import (
     _SqliteUnitOfWork,
     _StoreSpec,
@@ -487,22 +488,18 @@ class ActivationCoordinator:
             raise ActivationEnvelopeError(
                 "activation manifest mode does not match the request"
             )
-        effects = set(manifest.get("expected_side_effects", []))
-        if mode is ActivationMode.V1_BOOTSTRAP:
-            if "MIGRATE_STORES" in effects:
+        for effect in manifest.get("expected_side_effects", []):
+            if not isinstance(effect, str) or effect not in SideEffect._value2member_map_:
                 raise ActivationEnvelopeError(
-                    "v1 bootstrap ticket cannot carry migration effects"
+                    "manifest declares an unknown side effect"
                 )
+        if mode is ActivationMode.V1_BOOTSTRAP:
             current = self._current_authority_spec()
             if current.schema_version != 1:
                 raise ActivationEnvelopeError(
                     "v1 bootstrap requires a v1 authority store"
                 )
         if mode is ActivationMode.MIGRATION:
-            if "MIGRATE_STORES" not in effects:
-                raise ActivationEnvelopeError(
-                    "migration mode requires migration effects"
-                )
             prior = _SqliteUnitOfWork(self._current_authority_spec())._read(
                 lambda connection: connection.execute(
                     "SELECT COUNT(*) FROM task_tickets_v2 "
@@ -514,10 +511,6 @@ class ActivationCoordinator:
                 raise ActivationEnvelopeError(
                     "migration requires a terminal source ticket"
                 )
-        if mode is ActivationMode.V2_NORMAL and "MIGRATE_STORES" in effects:
-            raise ActivationEnvelopeError(
-                "normal activation cannot carry migration effects"
-            )
         head = self._git("rev-parse", "HEAD")
         if head != manifest["base_commit"] and head != envelope_commit:
             raise ActivationEnvelopeError(
