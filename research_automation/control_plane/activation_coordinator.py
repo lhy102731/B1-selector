@@ -630,6 +630,31 @@ class ActivationCoordinator:
         ticket_secret_sha256 = hashlib.sha256(
             ticket_secret_value.encode("utf-8")
         ).hexdigest()
+        # The Gate contract binds the full canonical TaskSpec payload, so the
+        # coordinator persists a complete _TASK_SPEC_FIELDS structure derived
+        # from the envelope manifest (with stable defaults).
+        task_spec = {
+            "task_id": task_id,
+            "objective": str(manifest.get("objective") or "activation"),
+            "dependencies": list(manifest.get("dependencies") or []),
+            "idempotency_key": idempotency,
+            "task_spec_ref": str(manifest.get("task_spec_ref") or "manifest.json"),
+            "task_spec_sha256": manifest_sha256,
+            "requirements": dict(
+                manifest.get("requirements")
+                or {
+                    "required_test_receipt_ids": [],
+                    "required_review_receipt_ids": [],
+                    "required_evidence_ids": [],
+                }
+            ),
+            "allowed_files": list(manifest.get("allowed_files") or []),
+            "forbidden_files": list(manifest.get("forbidden_files") or []),
+            "baseline_ref": str(manifest.get("baseline_ref") or ""),
+            "baseline_sha256": str(manifest.get("baseline_sha256") or ""),
+            "input_evidence_refs": list(manifest.get("input_evidence_refs") or []),
+        }
+        task_spec_payload_json = _stores._canonical_task_spec(task_spec)
 
         def issue(connection: sqlite3.Connection) -> None:
             existing = connection.execute(
@@ -701,7 +726,7 @@ class ActivationCoordinator:
                     idempotency,
                     str(manifest.get("task_spec_ref", "manifest.json")),
                     manifest_sha256,
-                    canonical_manifest,
+                    task_spec_payload_json,
                     request_sha256,
                     effects_json,
                     ticket_secret_sha256,
