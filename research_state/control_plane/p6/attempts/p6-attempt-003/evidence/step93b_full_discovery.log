@@ -1,0 +1,520 @@
+.............................
+============================================================
+Brainstorm: test gap
+Profile: default
+============================================================
+Workflow: brainstorm (configured sequential pipeline)
+
+KBase discovery (kbase_roundtable_discovery): REJECTED - test
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmpjmprxx5n\handoff.yaml
+KBase discovery (kbase_source_first_discovery): APPROVED - all gates passed; no memory writes performed
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmpe70zh6ij\handoff.yaml
+KBase-AG2 full-cycle result:
+{
+  "status": "DRY_RUN_READY",
+  "cycle_dir": null,
+  "handoff_path": null,
+  "research_status": null,
+  "promotion_gate_passed": false,
+  "production_boundary_unchanged": null,
+  "reason": null
+}
+KBase-AG2 full-cycle result:
+{
+  "status": "DISCOVERY_STOP",
+  "cycle_dir": null,
+  "handoff_path": null,
+  "research_status": null,
+  "promotion_gate_passed": false,
+  "production_boundary_unchanged": null,
+  "reason": null
+}
+KBase discovery resume: ESCALATE_TO_USER - quota
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmpl5hvnkco\handoff.yaml
+First (to chat_manager):
+
+BEGIN_UNTRUSTED_SOURCE_DATA
+
+UNTRUSTED_DATA: GROUPCHAT_SENTINEL
+
+END_UNTRUSTED_SOURCE_DATA
+
+TASK_REQUEST
+
+bounded task
+
+--------------------------------------------------------------------------------
+
+>>>>>>>> TERMINATING RUN (4e36d5eb-b808-4279-b652-8585bbc50777): Maximum rounds (1) reached
+..............................................................................................................................................................[run_research] blocked: campaign boundary rejected for run_research.py:brainstorm: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT
+....[run_research] campaign-id exceeds the injected frozen bounds
+.[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] campaign mode exceeds the injected frozen bounds
+..[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'discover' requires a programmatic control-plane adapter
+...[run_research] blocked: CLI command 'full-cycle' requires a programmatic control-plane adapter
+..[run_research] blocked: CLI command 'brainstorm' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'repair-handoff-runner' requires a programmatic control-plane adapter
+.....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................s................Exception in thread Thread-14378 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+                  ~~~~~~~^^
+  File "<frozen codecs>", line 325, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb4 in position 96: invalid start byte
+.Exception in thread Thread-14390 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+                  ~~~~~~~^^
+  File "<frozen codecs>", line 325, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb4 in position 144: invalid start byte
+.............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................[run_research_cycle] blocked: campaign boundary rejected for run_research_cycle.py:main: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT
+    t1: COMPLETED -> promotion=tested delta={'sharpe': 0.2, 'total_return': 0.1, 'max_drawdown': None, 'trades': None}
+
+  Extracting raw signals from 1 stocks...
+    Done: 1 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_a00310c34f6b2b9a.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_a00310c34f6b2b9a.meta.json)
+
+  Extracting raw signals from 1 stocks...
+    Done: 1 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_e05a55500a544f51.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_e05a55500a544f51.meta.json)
+
+  Extracting raw signals from 0 stocks...
+    Done: 0 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.meta.json)
+  Ignoring invalid raw cache: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl
+
+  Extracting raw signals from 0 stocks...
+    Done: 0 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.meta.json)
+
+  Extracting raw signals from 0 stocks...
+    Done: 0 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.meta.json)
+  Loading raw cache: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl
+
+  Extracting raw signals from 1 stocks...
+    Done: 1 stocks, 0 raw signals
+  0 trading days with signals
+
+  Extracting raw signals from 1 stocks...
+    Done: 1 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_5fac1368660caadb.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_5fac1368660caadb.meta.json)
+
+  Extracting raw signals from 2 stocks...
+    Done: 2 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_ed28d0aaee6e36e6.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_ed28d0aaee6e36e6.meta.json)
+
+  Extracting raw signals from 0 stocks...
+    Done: 0 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_425f4cdc13e3efa7.meta.json)
+
+  Extracting raw signals from 0 stocks...
+    Done: 0 stocks, 0 raw signals
+  0 trading days with signals
+  Cached to b1v3_raw_2024-01-01_2024-06-30_a0cab9e0828becd6.pkl (meta: b1v3_raw_2024-01-01_2024-06-30_a0cab9e0828becd6.meta.json)
+Costs: commission=0.0bp stamp=0.0% slippage=0.0%
+Days: 2  Trades: 1
+
+CAGR:          +16423877.1%
+Cum Return:    +10.0%
+Max Drawdown:  0.0%
+Sharpe Ratio:  146315.508
+Calmar Ratio:  0.000
+Daily WR:      50.0%
+Daily Avg Ret: +5.00%
+NAV saved: C:\Users\Administrator\AppData\Local\Temp\tmp3kbrqsap\backtest_brick_nav_weekend_regression.csv
+{
+  "budget_summary": {},
+  "campaign_id": "c1",
+  "campaign_snapshot": {},
+  "cycle_summaries": [],
+  "cycles_completed": 1,
+  "decision": "STOP",
+  "diagnostics": [],
+  "mode": "FORMAL",
+  "namespace": "formal",
+  "reason_code": "CYCLE_BUDGET_EXHAUSTED",
+  "schema_version": "control_plane.campaign_runtime_result.v1",
+  "status": "COMPLETED"
+}
+
+=== LLM Profiles ===
+{
+  "access": {
+    "reads": 0,
+    "writes": 0
+  },
+  "budget": {
+    "remaining": 0,
+    "reserved": 0,
+    "spent": 0
+  },
+  "campaign": {
+    "active": false,
+    "cycles": 0,
+    "note": "read-only synthetic surface"
+  },
+  "evidence": {
+    "entries": 0,
+    "grade": "UNKNOWN"
+  },
+  "failure": {
+    "causes": [],
+    "count": 0
+  },
+  "generation": {
+    "count": 0,
+    "latest": 0
+  },
+  "journal": {
+    "event_count": 1483,
+    "exists": true,
+    "journal_mode": "wal",
+    "max_sequence": 1483,
+    "snapshot_error": null
+  },
+  "lease": {
+    "active": 0,
+    "expired": 0
+  },
+  "publication": {
+    "pending": 0,
+    "published": 0
+  },
+  "roster": {
+    "active": 0,
+    "members": 0
+  },
+  "usage": {
+    "events": 1483,
+    "max_sequence": 1483
+  }
+}
+{
+  "access": {
+    "reads": 0,
+    "writes": 0
+  },
+  "budget": {
+    "remaining": 0,
+    "reserved": 0,
+    "spent": 0
+  },
+  "campaign": {
+    "active": false,
+    "cycles": 0,
+    "note": "read-only synthetic surface"
+  },
+  "evidence": {
+    "entries": 0,
+    "grade": "UNKNOWN"
+  },
+  "failure": {
+    "causes": [],
+    "count": 0
+  },
+  "generation": {
+    "count": 0,
+    "latest": 0
+  },
+  "journal": {
+    "event_count": 1483,
+    "exists": true,
+    "journal_mode": "wal",
+    "max_sequence": 1483,
+    "snapshot_error": null
+  },
+  "lease": {
+    "active": 0,
+    "expired": 0
+  },
+  "publication": {
+    "pending": 0,
+    "published": 0
+  },
+  "roster": {
+    "active": 0,
+    "members": 0
+  },
+  "usage": {
+    "events": 1483,
+    "max_sequence": 1483
+  }
+}
+1/1 status=updated
+.THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpdq84yqal\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=failed:RuntimeError
+.THS daily update: updated=0 unchanged=0 failed=1
+report=C:\Users\Administrator\AppData\Local\Temp\tmprzvm8ewa\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=updated
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpu12tk13r\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=3 removed_bytes=3
+...................................................................THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpu12tk13r\data\_daily_updates\2026-08-12\ths_update_report.csv
+[OK] THSDK 数据已于 2026-08-12 更新过，跳过日更
+[ERROR] Daily pipeline stopped at: Data update (CSV)
+Daily Run - 2026-07-24
+[ERROR] Daily pipeline stopped at: Update THS ETF data
+[UPDATE] 使用 THSDK K线 + 换手率/流通市值更新 2026-07-24
+[UPDATE] 使用 THSDK K线 + 换手率/流通市值更新 2026-08-12
+[ERROR] THSDK 日更失败，已停止；不会回退到旧数据源: THS unavailable
+[daily_ret] added 1 rows (dates: 2026-08-11 ~ 2026-08-11), 1 stocks -> C:\Users\Administrator\AppData\Local\Temp\tmpvfvtook4\daily_ret.parquet
+[daily_ret] failed to read 1 indicator files
+  FAIL 000002.parquet: Could not open Parquet input source '<Buffer>': Parquet magic bytes not found in footer. Either the file is corrupted or this is not a parquet file.
+Daily Run - 2026-07-24
+
+============================================================
+  Daily run complete
+============================================================
+B1 V3 results: DingTalk notification sent
+Brick signals: artifacts/daily/brick/signals_today.csv (exec filtered)
+ETF candidates: artifacts/daily/etf/signals_today.csv (research-only, not stock-ranked)
+
+Next: T+1 09:25 -> python daily_select.py
+[ERROR] daily pipeline already active; lock=C:\Users\Administrator\AppData\Local\Temp\tmp3xo_jgh0\daily.lock
+[reduction] removed 0 signals with executive reduction (0.0%)
+[reduction] saved 2 signals to C:\Users\Administrator\AppData\Local\Temp\tmpbwim4odz\signals_today.csv
+THS resume disabled: existing dataset predates the current quality policy
+1/2 000001 written elapsed=0.0m eta=0.0m
+2/2 000002 no_history_yet elapsed=0.0m eta=0.0m
+THS fetch finished: status=COMPLETED files=2 written=1 skipped=0 no_history=1 failed=0 elapsed=0.0m
+output=C:\Users\Administrator\AppData\Local\Temp\tmpoige2tuv\data_ths
+report=C:\Users\Administrator\AppData\Local\Temp\tmpoige2tuv\data_ths\.ths_fetch_report.json
+..THS resume disabled: existing dataset predates the current quality policy
+1/2 000001 written elapsed=0.0m eta=0.0m
+THS fetch finished: status=COMPLETED files=2 written=2 skipped=0 no_history=0 failed=0 elapsed=0.0m
+output=C:\Users\Administrator\AppData\Local\Temp\tmpg0bh6onm\data_ths
+report=C:\Users\Administrator\AppData\Local\Temp\tmpg0bh6onm\data_ths\.ths_fetch_report.json
+THS interrupted-run resume: trusting 2 previously validated files
+1/2 000001 skipped_valid elapsed=0.0m eta=0.0m
+THS fetch finished: status=COMPLETED files=2 written=0 skipped=2 no_history=0 failed=0 elapsed=0.0m
+output=C:\Users\Administrator\AppData\Local\Temp\tmpg0bh6onm\data_ths
+report=C:\Users\Administrator\AppData\Local\Temp\tmpg0bh6onm\data_ths\.ths_fetch_report.json
+.THS resume disabled: existing dataset predates the current quality policy
+1/2 000001 written elapsed=0.0m eta=0.0m
+THS fetch finished: status=COMPLETED files=2 written=2 skipped=0 no_history=0 failed=0 elapsed=0.0m
+output=C:\Users\Administrator\AppData\Local\Temp\tmpwi8g8sfj\data_ths
+report=C:\Users\Administrator\AppData\Local\Temp\tmpwi8g8sfj\data_ths\.ths_fetch_report.json
+.......................................................................................................................................Traceback (most recent call last):
+  File "D:\workspace\a-share-quant-selector-main\utils\fund_flow_collector.py", line 518, in collect_all
+    concept_flow = self.collect_concept_fund_flow(date_str)
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 1169, in __call__
+    return self._mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 1173, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\unittest\mock.py", line 1228, in _execute_mock_call
+    raise effect
+RuntimeError: source unavailable
+.............................................============================================================
+[FundFlow] collecting 2024-01-03
+============================================================
+
+--- Layer 1: Concept flow ---
+[ERR] concept flow returned no rows
+
+--- Layer 2: Stock flow ---
+[ERR] stock flow returned no rows
+
+--- Layer 3: Big deal ---
+[ERR] big deal returned no rows
+
+--- Layer 4: Native THS industry/concept indices ---
+
+[FundFlow] incomplete; failed layers: concept_flow, stock_flow, big_deal
+============================================================
+[FundFlow] collecting 2024-01-03
+============================================================
+
+--- Layer 1: Concept flow ---
+[ERR] concept flow failed: source unavailable
+
+--- Layer 2: Stock flow ---
+
+--- Layer 3: Big deal ---
+
+--- Layer 4: Native THS industry/concept indices ---
+
+[FundFlow] incomplete; failed layers: concept_flow
+...............................................................................................................................................................................................................................[brick_sqnav_autorun] blocked: a live task lease is required
+============================================================
+[START] 首次全量数据抓取
+============================================================
+============================================================
+[UPDATE] 每日增量更新 (THSDK 小样本测试模式)
+============================================================
+
+[UPDATE] 执行数据更新...
+  [OK] 注册策略: AIB1Strategy
+  [OK] 注册策略: BrickChartStrategy
+  [OK] 注册策略: BrickChartV3Strategy
+  [OK] 注册策略: UnifiedB1Strategy
+从缓存加载案例库: 27 个案例
+1/2 000001 staged
+.[OK] THS 重建完成: COMMITTED files=1 no_history=1
+1/1 000001 staged
+..[OK] THS 重建完成: COMMITTED files=1 no_history=0
+[BLOCKED] THSDK 历史换手率不可用: guest permission denied
+1/1 000001 staged
+.......................................................................................[OK] THS 重建完成: STAGED_READY files=1 no_history=0
+隔离目录: C:\Users\Administrator\AppData\Local\Temp\tmpgyby3ywq\stage; 如需切换请在复核报告后加 --commit
+Scanning 1 stocks for B1 signals on 2026-07-24...
+Found 0 signals for 2026-07-24
+No B1 signals today.
+Sweep: 0 stocks | 2024-01-01 to 2024-06-30
+Sweep params: ['max_hold_days']
+  max_hold_days: [20]
+Total combinations: 1
+  Phase 0: 0s | 0 raw signals
+  [1/1] max_hold_days=20 -> 0 signals (SKIP)
+
+============================================================
+SWEEP RESULTS (sorted by score)
+============================================================
+  1. max_hold_days=20 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+
+  Results saved to C:\Users\Administrator\AppData\Local\Temp\tmpi71_fzix\artifacts\b1-v3\sweep_results_v3.csv
+Sweep: 0 stocks | 2024-01-01 to 2024-06-30
+Sweep params: ['j_max']
+  j_max: [20, 30]
+Total combinations: 2
+  Phase 0: 0s | 0 raw signals
+  [1/2] j_max=20 -> 0 signals (SKIP)
+  Phase 0: 0s | 0 raw signals
+  [2/2] j_max=30 -> 0 signals (SKIP)
+
+============================================================
+SWEEP RESULTS (sorted by score)
+============================================================
+  1. j_max=20 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  2. j_max=30 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+
+  Results saved to C:\Users\Administrator\AppData\Local\Temp\tmpe0zagdlv\outputs\sweep_results_v3.csv
+Sweep: 0 stocks | 2024-01-01 to 2024-06-30
+Sweep params: ['max_hold_days']
+  max_hold_days: [20, 35]
+Total combinations: 2
+  Phase 0: 0s | 0 raw signals
+  [1/2] max_hold_days=20 -> 0 signals (SKIP)
+  [2/2] max_hold_days=35 -> 0 signals (SKIP)
+
+============================================================
+SWEEP RESULTS (sorted by score)
+============================================================
+  1. max_hold_days=20 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  2. max_hold_days=35 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+
+  Results saved to C:\Users\Administrator\AppData\Local\Temp\tmpopurv6jb\outputs\sweep_results_v3.csv
+Sweep: 0 stocks | 2024-01-01 to 2024-06-30
+Applied preset: max_hold
+Sweep params: ['max_hold_days']
+  max_hold_days: [20, 25, 35, 45, 60]
+Total combinations: 5
+  Phase 0: 0s | 0 raw signals
+  [1/5] max_hold_days=20 -> 0 signals (SKIP)
+  [2/5] max_hold_days=25 -> 0 signals (SKIP)
+  [3/5] max_hold_days=35 -> 0 signals (SKIP)
+  [4/5] max_hold_days=45 -> 0 signals (SKIP)
+  [5/5] max_hold_days=60 -> 0 signals (SKIP)
+
+============================================================
+SWEEP RESULTS (sorted by score)
+============================================================
+  1. max_hold_days=20 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  2. max_hold_days=25 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  3. max_hold_days=35 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  4. max_hold_days=45 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+  5. max_hold_days=60 -> Ret:0.0% WR:0.0% DD:0.0% T:0 Score:-1000000000.0
+
+  Results saved to C:\Users\Administrator\AppData\Local\Temp\tmp8agsuiw5\outputs\sweep_results_v3.csv
+Sweep: 0 stocks | 2024-01-01 to 2024-06-30
+THS etf: 1/1 status=no_history
+.THS industry: 1/1 status=updated
+.THS industry: 1/1 status=updated
+.THS etf: 1/1 status=updated
+.THS etf: 1/1 status=updated
+.THS etf: 1/1 status=updated
+........1/1 status=updated
+.THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpfam9qs23\data\_daily_updates\2026-08-12\ths_update_report.csv
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpzjc9cwf2\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.THS daily update: updated=2 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpzjc9cwf2\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=updated
+.THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmp5wl59l9i\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=updated
+..THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpi26d4hm5\data\_daily_updates\2026-08-12\ths_update_report.csv
+THS daily update: updated=0 unchanged=0 failed=2
+report=C:\Users\Administrator\AppData\Local\Temp\tmptdjxxifr\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=failed:THSHistoryPermissionError
+......THS daily update: updated=0 unchanged=0 failed=1
+report=C:\Users\Administrator\AppData\Local\Temp\tmpyxtiru94\data\_daily_updates\2026-08-12\ths_update_report.csv
+THS daily update: updated=1 unchanged=0 failed=1
+report=C:\Users\Administrator\AppData\Local\Temp\tmpe38h6cm6\data\_daily_updates\2026-08-12\ths_update_report.csv
+3/3 status=failed:RuntimeError
+.....THS daily update: updated=1 unchanged=0 failed=1
+report=C:\Users\Administrator\AppData\Local\Temp\tmpdqj74en5\data\_daily_updates\2026-08-12\ths_update_report.csv
+[RECOVER] reconciled interrupted THS listing inventory: 000002
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmp6gw06_ck\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+..THS daily update: updated=2 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmp6gw06_ck\data\_daily_updates\2026-08-12\ths_update_report.csv
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpix2_g82l\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+..THS daily update: updated=2 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpix2_g82l\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=no_today_bar
+.THS daily update: updated=0 unchanged=1 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpr45xs68k\data\_daily_updates\2026-08-12\ths_update_report.csv
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpjhd8cvmj\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.THS daily update: updated=2 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpjhd8cvmj\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=updated
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpqjc67z5j\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpqjc67z5j\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=no_today_bar
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpo9o2geie\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.THS daily update: updated=0 unchanged=1 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpo9o2geie\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=updated
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpimqcx823\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.THS daily update: updated=1 unchanged=0 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpimqcx823\data\_daily_updates\2026-08-12\ths_update_report.csv
+1/1 status=no_today_bar
+checkpoint_cleanup=C:\Users\Administrator\AppData\Local\Temp\tmpxji9v3mh\data\_daily_updates\2026-08-12\checkpoint_cleanup.json removed_files=0 removed_bytes=0
+.......
+----------------------------------------------------------------------
+Ran 2465 tests in 816.628s
+
+OK (skipped=1)
+THS daily update: updated=0 unchanged=1 failed=0
+report=C:\Users\Administrator\AppData\Local\Temp\tmpxji9v3mh\data\_daily_updates\2026-08-12\ths_update_report.csv
+  [OK] 注册策略: AIB1Strategy
+  [OK] 注册策略: BrickChartStrategy
+  [OK] 注册策略: BrickChartV3Strategy
+  [OK] 注册策略: UnifiedB1Strategy

@@ -1,0 +1,139 @@
+....................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................s................Exception in thread Thread-14376 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+                  ~~~~~~~^^
+  File "<frozen codecs>", line 325, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb4 in position 96: invalid start byte
+.Exception in thread Thread-14388 (_readerthread):
+Traceback (most recent call last):
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+    ~~~~~~~~^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+                  ~~~~~~~^^
+  File "<frozen codecs>", line 325, in decode
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xb4 in position 144: invalid start byte
+......................................................C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\json_utils.py:10: DeprecationWarning: jsonschema.RefResolver is deprecated as of v4.18.0, in favor of the https://github.com/python-jsonschema/referencing library, which provides more compliant referencing behavior as well as more flexible APIs for customization. A future release will remove RefResolver. Please file a feature request (on referencing) if you are missing an API for the kind of customization you need.
+  from jsonschema import Draft7Validator, RefResolver
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.
+  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], "__version__") else None
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.
+  sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], "__version__") else None
+.......................................................................................................................................................................................................................................................................................................................................................................................................................................................
+----------------------------------------------------------------------
+Ran 1651 tests in 790.892s
+
+OK (skipped=1)
+{
+  "access": {
+    "reads": 0,
+    "writes": 0
+  },
+  "budget": {
+    "remaining": 0,
+    "reserved": 0,
+    "spent": 0
+  },
+  "campaign": {
+    "active": false,
+    "cycles": 0,
+    "note": "read-only synthetic surface"
+  },
+  "evidence": {
+    "entries": 0,
+    "grade": "UNKNOWN"
+  },
+  "failure": {
+    "causes": [],
+    "count": 0
+  },
+  "generation": {
+    "count": 0,
+    "latest": 0
+  },
+  "journal": {
+    "event_count": 1473,
+    "exists": true,
+    "journal_mode": "wal",
+    "max_sequence": 1473,
+    "snapshot_error": null
+  },
+  "lease": {
+    "active": 0,
+    "expired": 0
+  },
+  "publication": {
+    "pending": 0,
+    "published": 0
+  },
+  "roster": {
+    "active": 0,
+    "members": 0
+  },
+  "usage": {
+    "events": 1473,
+    "max_sequence": 1473
+  }
+}
+{
+  "access": {
+    "reads": 0,
+    "writes": 0
+  },
+  "budget": {
+    "remaining": 0,
+    "reserved": 0,
+    "spent": 0
+  },
+  "campaign": {
+    "active": false,
+    "cycles": 0,
+    "note": "read-only synthetic surface"
+  },
+  "evidence": {
+    "entries": 0,
+    "grade": "UNKNOWN"
+  },
+  "failure": {
+    "causes": [],
+    "count": 0
+  },
+  "generation": {
+    "count": 0,
+    "latest": 0
+  },
+  "journal": {
+    "event_count": 1473,
+    "exists": true,
+    "journal_mode": "wal",
+    "max_sequence": 1473,
+    "snapshot_error": null
+  },
+  "lease": {
+    "active": 0,
+    "expired": 0
+  },
+  "publication": {
+    "pending": 0,
+    "published": 0
+  },
+  "roster": {
+    "active": 0,
+    "members": 0
+  },
+  "usage": {
+    "events": 1473,
+    "max_sequence": 1473
+  }
+}

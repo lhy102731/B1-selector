@@ -1,0 +1,65 @@
+..............................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................[run_research] blocked: campaign boundary rejected for run_research.py:brainstorm: LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT
+....[run_research] campaign-id exceeds the injected frozen bounds
+.[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] campaign mode exceeds the injected frozen bounds
+..[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'campaign' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'discover' requires a programmatic control-plane adapter
+...[run_research] blocked: CLI command 'full-cycle' requires a programmatic control-plane adapter
+..[run_research] blocked: CLI command 'brainstorm' requires a programmatic control-plane adapter
+.[run_research] blocked: CLI command 'repair-handoff-runner' requires a programmatic control-plane adapter
+...............
+----------------------------------------------------------------------
+Ran 749 tests in 191.460s
+
+OK
+{
+  "budget_summary": {},
+  "campaign_id": "c1",
+  "campaign_snapshot": {},
+  "cycle_summaries": [],
+  "cycles_completed": 1,
+  "decision": "STOP",
+  "diagnostics": [],
+  "mode": "FORMAL",
+  "namespace": "formal",
+  "reason_code": "CYCLE_BUDGET_EXHAUSTED",
+  "schema_version": "control_plane.campaign_runtime_result.v1",
+  "status": "COMPLETED"
+}
+
+=== LLM Profiles ===
+
+============================================================
+Brainstorm: test gap
+Profile: default
+============================================================
+Workflow: brainstorm (configured sequential pipeline)
+
+KBase discovery (kbase_roundtable_discovery): REJECTED - test
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmphs3s8j_a\handoff.yaml
+KBase discovery (kbase_source_first_discovery): APPROVED - all gates passed; no memory writes performed
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmp0bxrknog\handoff.yaml
+KBase-AG2 full-cycle result:
+{
+  "status": "DRY_RUN_READY",
+  "cycle_dir": null,
+  "handoff_path": null,
+  "research_status": null,
+  "promotion_gate_passed": false,
+  "production_boundary_unchanged": null,
+  "reason": null
+}
+KBase-AG2 full-cycle result:
+{
+  "status": "DISCOVERY_STOP",
+  "cycle_dir": null,
+  "handoff_path": null,
+  "research_status": null,
+  "promotion_gate_passed": false,
+  "production_boundary_unchanged": null,
+  "reason": null
+}
+KBase discovery resume: ESCALATE_TO_USER - quota
+Discovery handoff: C:\Users\Administrator\AppData\Local\Temp\tmphfrd3xtx\handoff.yaml
+[brick_sqnav_autorun] blocked: a live task lease is required
