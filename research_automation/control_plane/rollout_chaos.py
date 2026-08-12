@@ -1603,3 +1603,48 @@ def serialize_report(outcome: ChaosOutcome) -> str:
 
 
 CHAOS_CATEGORIES = _CHAOS_CATEGORIES
+
+# Task 22.2 exact chaos category set (sorted, strict equality required).
+EXACT_CHAOS_CATEGORIES = frozenset(
+    {
+        "budget_exhaustion_fail_closed",
+        "crash_between_steps",
+        "invalid_json_fail_closed",
+        "lease_fencing_fail_closed",
+        "mid_call_doubt_fail_closed",
+        "pid_reuse_fail_closed",
+        "provider_timeout_recovery",
+        "safe_boundary_pause",
+    }
+)
+
+# Task 22.3 exact invariant set (sorted, strict equality required; the old
+# per-cycle exactly-once items move into diagnostics).
+EXACT_CHAOS_INVARIANTS = frozenset(
+    {
+        "budget_settled_exactly_once",
+        "campaign_completed",
+        "cycle_completed_exactly_once",
+        "deterministic_replay_same_seed",
+        "durable_pause_resume",
+        "fresh_process_identity",
+        "learning_commit_exactly_once",
+        "network_denied",
+        "no_duplicate_acquisition",
+        "no_real_side_effects",
+    }
+)
+
+
+def require_exact_invariant_set(invariants: object) -> None:
+    """Fail closed unless the invariants are exactly the required set."""
+    if not isinstance(invariants, Mapping):
+        raise ValueError("invariants must be a mapping")
+    observed = set(invariants)
+    if observed != EXACT_CHAOS_INVARIANTS:
+        raise ValueError(
+            "invariants must be exactly the required set: missing="
+            + ",".join(sorted(EXACT_CHAOS_INVARIANTS - observed))
+            + " extra="
+            + ",".join(sorted(observed - EXACT_CHAOS_INVARIANTS))
+        )
