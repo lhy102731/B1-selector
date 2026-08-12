@@ -964,7 +964,7 @@ class ActivationCoordinator:
                         'automation', ?, ?, ?, ?, ?)""",
                 (
                     ticket_id,
-                    f"coordinator-{ticket_id[:16]}",
+                    str(payload["evidence_id"]),
                     f"invocation-{ticket_id[:16]}",
                     payload_json,
                     payload_sha256,
