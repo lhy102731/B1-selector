@@ -633,6 +633,22 @@ class ActivationCoordinator:
         # The Gate contract binds the full canonical TaskSpec payload, so the
         # coordinator persists a complete _TASK_SPEC_FIELDS structure derived
         # from the envelope manifest (with stable defaults).
+        # The EVIDENCE receipt payload must appear identically in the task
+        # spec input_evidence_refs, the trusted receipt row and the task
+        # report, so it is derived once here and reused everywhere.
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0-attempt-005/"
+            f"evidence/activation-{ticket_id[:16]}.json"
+        )
+        evidence_payload = {
+            "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(
+                evidence_ref.encode("utf-8")
+            ).hexdigest(),
+            "status": "VERIFIED",
+        }
+        self._evidence_payload = evidence_payload
         task_spec = {
             "task_id": task_id,
             "objective": str(manifest.get("objective") or "activation"),
@@ -652,7 +668,7 @@ class ActivationCoordinator:
             "forbidden_files": list(manifest.get("forbidden_files") or []),
             "baseline_ref": str(manifest.get("baseline_ref") or "manifest.json"),
             "baseline_sha256": str(manifest.get("baseline_sha256") or manifest_sha256),
-            "input_evidence_refs": list(manifest.get("input_evidence_refs") or []),
+            "input_evidence_refs": [evidence_payload],
         }
         task_spec_payload_json = _stores._canonical_task_spec(task_spec)
 
@@ -921,18 +937,8 @@ class ActivationCoordinator:
         ticket_id = self._ticket_id
         if ticket_id is None:
             raise ActivationEnvelopeError("no ticket is in progress")
-        evidence_ref = (
-            "research_state/control_plane/p0/attempts/p0-attempt-005/"
-            f"evidence/activation-{ticket_id[:16]}.json"
-        )
-        payload = {
-            "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
-            "evidence_ref": evidence_ref,
-            "evidence_sha256": hashlib.sha256(
-                evidence_ref.encode("utf-8")
-            ).hexdigest(),
-            "status": "VERIFIED",
-        }
+        payload = dict(self._evidence_payload)
+        evidence_ref = str(payload["evidence_ref"])
         payload_json = json.dumps(
             payload,
             ensure_ascii=False,
