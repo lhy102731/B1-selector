@@ -8,8 +8,8 @@
   "scope_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e",
   "instruction_policy_hash": "1eeb9f935cf3998d1ebbbbc4897766c729a67a9215616b5fc7ce90073a53c84e"
  },
- "git_commit": "71654fefae0a2cf8a31f243a3dd69ecb885e2802",
- "git_tree": "4621b47f3ca1e57b78ac21118d7fc2221a9c3bf5",
+ "git_commit": "6dd6ce4abfc41bc2a2fecf6725bcf42784b6843c",
+ "git_tree": "005c03151f434f3d962103914e2e400b79d38e6b",
  "active_tracked_dirty_paths": [],
  "nonblocking_tracked_dirty_paths": [
   "CHANGELOG.md",
@@ -760,6 +760,6 @@
  "legacy_policy_path": "research_automation/control_plane/entry_policy.json",
  "legacy_policy_sha256": "a6e612b73db4de54a63cd25b0cf26fd44ab401d948a9d99a47c442d55b283f96",
  "legacy_quarantine_sha256": "6f1fcf8a91965ee22f06a4d7497d80cc851f6dd7c9c0e08fe028b3b99c935a90",
- "source_identity_sha256": "0d45e802c5a5b6a2184367b839fbeae2a19c85ffef11ba60e5c39744b55687ab",
- "freeze_payload_sha256": "9715de821838f932a1bb721af3029ed6cc46de212482369a2d8586b2a9f5bc9b"
+ "source_identity_sha256": "4c1789acce5443eff4af11d176f3cb201f6d559e55623b408c744f779f5831d6",
+ "freeze_payload_sha256": "8c71e34f8739a370c31c09348fb02f89f69e0df2aef99ad1d3649a89d7110ffb"
 }
