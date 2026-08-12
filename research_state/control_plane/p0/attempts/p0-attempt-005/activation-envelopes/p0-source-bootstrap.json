@@ -8,8 +8,8 @@
     "research_state/control_plane/policies/"
   ],
   "attempt_id": "p0-attempt-005",
-  "base_commit": "f1e913e97e44b931feaf2b62b3a44897574f33ea",
-  "base_tree": "e0315a62e6cbe2aade56e5c6e43566cd5d68d93c",
+  "base_commit": "b4442cea375e498257b099b9cc2ee01191f780ea",
+  "base_tree": "e9f3240c9e8406faaebd9c1fb7b9352fb3378ea7",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expected_side_effects": [
     "WRITE_CONTROL_PLANE"
@@ -31,7 +31,7 @@
     "tests.test_control_plane_gates"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "f1e913e97e44b931feaf2b62b3a44897574f33ea",
-  "source_tree": "e0315a62e6cbe2aade56e5c6e43566cd5d68d93c",
+  "source_commit": "b4442cea375e498257b099b9cc2ee01191f780ea",
+  "source_tree": "e9f3240c9e8406faaebd9c1fb7b9352fb3378ea7",
   "task_id": "P0-SOURCE-BOOTSTRAP"
 }
