@@ -13,9 +13,9 @@
  "active_tracked_dirty_paths": [],
  "nonblocking_tracked_dirty_paths": [
   "CHANGELOG.md",
-  "docs/b1_v3_results.md",
   "daily_run.py",
-  "daily_select.py"
+  "daily_select.py",
+  "docs/b1_v3_results.md"
  ],
  "untracked_executables": [
   {
@@ -761,5 +761,5 @@
  "legacy_policy_sha256": "a6e612b73db4de54a63cd25b0cf26fd44ab401d948a9d99a47c442d55b283f96",
  "legacy_quarantine_sha256": "6f1fcf8a91965ee22f06a4d7497d80cc851f6dd7c9c0e08fe028b3b99c935a90",
  "source_identity_sha256": "0d45e802c5a5b6a2184367b839fbeae2a19c85ffef11ba60e5c39744b55687ab",
- "freeze_payload_sha256": "b793249de1403a4b52aabc948eb383ad99518fe68dd03dd85eb9ddb85e357fff"
+ "freeze_payload_sha256": "9715de821838f932a1bb721af3029ed6cc46de212482369a2d8586b2a9f5bc9b"
 }
