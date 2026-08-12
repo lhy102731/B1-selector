@@ -156,6 +156,11 @@ def cmd_export(_args: argparse.Namespace) -> None:
 
     bundle = operations.read_only_export_bundle(operations._repository_root())
     print(json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True))
+    print("\n=== Profiles ===")
+    cfg = _research_config_class()()
+    for name in cfg.list_profiles():
+        marker = " (default)" if name == cfg.default_profile else ""
+        print(f"  {name}{marker}")
     print("\n=== Agents ===")
     for a in cfg.list_agents():
         print(f"  {a['id']:<22s} {a['name']:<20s} {a['description']}")

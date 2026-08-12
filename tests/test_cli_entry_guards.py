@@ -72,6 +72,33 @@ class CliEntryGuardTests(unittest.TestCase):
             self.assertEqual(0, run_research.main(["list"]))
         config_class.assert_called_once_with()
 
+    def test_discover_is_blocked_before_orchestrator_construction(self) -> None:
+        with patch.object(
+            run_research,
+            "_orchestrator_class",
+            side_effect=AssertionError("Orchestrator constructed"),
+        ):
+            status = run_research.main(
+                ["discover", "--topic", "must not start"]
+            )
+        self.assertEqual(3, status)
+
+    def test_full_cycle_is_blocked_before_orchestrator_construction(self) -> None:
+        with patch.object(
+            run_research,
+            "_orchestrator_class",
+            side_effect=AssertionError("Orchestrator constructed"),
+        ):
+            status = run_research.main(
+                [
+                    "full-cycle",
+                    "--topic",
+                    "must not start",
+                    "--dry-run",
+                ]
+            )
+        self.assertEqual(3, status)
+
 
 class CampaignBoundaryCliTests(unittest.TestCase):
     def test_authorized_legacy_command_still_requires_campaign_boundary(self) -> None:

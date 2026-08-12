@@ -13,8 +13,9 @@ import run_research
 
 class AG2CliRoutingTests(unittest.TestCase):
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("research_automation.kbase_ag2_full_cycle.run_kbase_ag2_full_cycle")
-    def test_full_cycle_defaults_to_roundtable_discovery(self, full_cycle, _preflight):
+    def test_full_cycle_defaults_to_roundtable_discovery(self, full_cycle, _preflight, _boundary):
         full_cycle.return_value = {"status": "DRY_RUN_READY"}
         args = argparse.Namespace(
             profile=None,
@@ -39,9 +40,10 @@ class AG2CliRoutingTests(unittest.TestCase):
         )
 
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("research_automation.kbase_ag2_full_cycle.run_kbase_ag2_full_cycle")
     def test_full_cycle_sequential_override_uses_legacy_discovery(
-        self, full_cycle, _preflight
+        self, full_cycle, _preflight, _boundary
     ):
         full_cycle.return_value = {"status": "DISCOVERY_STOP"}
         args = argparse.Namespace(
@@ -64,9 +66,10 @@ class AG2CliRoutingTests(unittest.TestCase):
         self.assertEqual("kbase_discovery", full_cycle.call_args.kwargs["workflow_id"])
 
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("run_research.Orchestrator")
     def test_brainstorm_uses_configured_workflow_dispatch(
-        self, orchestrator_cls, _preflight
+        self, orchestrator_cls, _preflight, _boundary
     ):
         orchestrator = MagicMock(profile="default")
         orchestrator_cls.return_value = orchestrator
@@ -82,10 +85,11 @@ class AG2CliRoutingTests(unittest.TestCase):
         orchestrator.run_brainstorm.assert_not_called()
 
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("run_research.save_discovery_handoff")
     @patch("run_research.Orchestrator")
     def test_discover_routes_to_source_first_kbase_workflow(
-        self, orchestrator_cls, save_handoff, _preflight
+        self, orchestrator_cls, save_handoff, _preflight, _boundary
     ):
         orchestrator = MagicMock(profile="default")
         orchestrator.run_workflow.return_value = {
@@ -122,10 +126,11 @@ class AG2CliRoutingTests(unittest.TestCase):
         )
 
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("run_research.save_discovery_handoff")
     @patch("run_research.Orchestrator")
     def test_discover_roundtable_first_flag_keeps_legacy_route(
-        self, orchestrator_cls, save_handoff, _preflight
+        self, orchestrator_cls, save_handoff, _preflight, _boundary
     ):
         orchestrator = MagicMock(profile="default")
         orchestrator.run_workflow.return_value = {"status": "REJECTED", "reason": "test"}
@@ -154,10 +159,11 @@ class AG2CliRoutingTests(unittest.TestCase):
         )
 
     @patch("run_research._cli_preflight")
+    @patch("run_research._campaign_boundary")
     @patch("run_research.save_discovery_handoff")
     @patch("run_research.Orchestrator")
     def test_resume_discover_routes_to_checkpoint_resume(
-        self, orchestrator_cls, save_handoff, _preflight
+        self, orchestrator_cls, save_handoff, _preflight, _boundary
     ):
         orchestrator = MagicMock(profile="default")
         orchestrator.resume_source_first_discovery.return_value = {

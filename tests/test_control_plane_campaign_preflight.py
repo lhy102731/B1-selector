@@ -4,7 +4,12 @@ import unittest
 from unittest.mock import patch
 
 from research_automation.control_plane.campaign_preflight import (
+    BLOCKED_PENDING_C1_ADAPTER_COMMANDS,
+    DRY_RUN_READ_ONLY_EXCEPTION_COMMANDS,
+    PROGRAMMATIC_CONTEXT_ONLY_COMMANDS,
+    READ_ONLY_COMMANDS,
     CampaignBoundaryError,
+    command_disposition,
     require_campaign_boundary,
     run_campaign_preflight,
 )
@@ -226,6 +231,61 @@ class CampaignBoundaryTests(unittest.TestCase):
         self.assertEqual(
             caught.exception.rejection_codes,
             ("LEARNING_HARD_BLOCK",),
+        )
+
+
+class CommandDispositionTests(unittest.TestCase):
+    def test_read_only_commands_are_allowed(self) -> None:
+        for command in ("list", "status", "audit", "doctor", "export"):
+            with self.subTest(command=command):
+                disposition = command_disposition(command)
+                self.assertEqual(
+                    disposition["disposition"],
+                    "READ_ONLY_ALLOWED",
+                )
+                self.assertIn(command, READ_ONLY_COMMANDS)
+
+    def test_campaign_requires_programmatic_context(self) -> None:
+        disposition = command_disposition("campaign")
+        self.assertEqual(
+            disposition["disposition"],
+            "PROGRAMMATIC_CONTEXT_ONLY",
+        )
+        self.assertIn("campaign", PROGRAMMATIC_CONTEXT_ONLY_COMMANDS)
+
+    def test_execute_handoff_is_dry_run_read_only_exception(self) -> None:
+        disposition = command_disposition("execute-handoff")
+        self.assertEqual(
+            disposition["disposition"],
+            "DRY_RUN_READ_ONLY_EXCEPTION",
+        )
+        self.assertIn("execute-handoff", DRY_RUN_READ_ONLY_EXCEPTION_COMMANDS)
+
+    def test_network_research_commands_are_blocked_pending_c1_adapter(self) -> None:
+        for command in (
+            "brainstorm",
+            "discover",
+            "resume-discover",
+            "full-cycle",
+            "review",
+            "chat",
+            "roundtable",
+            "interactive",
+            "repair-handoff-runner",
+        ):
+            with self.subTest(command=command):
+                disposition = command_disposition(command)
+                self.assertEqual(
+                    disposition["disposition"],
+                    "BLOCKED_PENDING_C1_ADAPTER",
+                )
+                self.assertIn(command, BLOCKED_PENDING_C1_ADAPTER_COMMANDS)
+
+    def test_unknown_command_fails_closed(self) -> None:
+        disposition = command_disposition("unknown-command")
+        self.assertEqual(
+            disposition["disposition"],
+            "BLOCKED_PENDING_C1_ADAPTER",
         )
 
 

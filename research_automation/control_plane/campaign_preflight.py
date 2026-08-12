@@ -19,6 +19,47 @@ from .memory import (
 
 
 LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT = "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT"
+BLOCKED_PENDING_C1_ADAPTER = "BLOCKED_PENDING_C1_ADAPTER"
+
+# Fixed P6R3 command disposition (Step 5.5 of the corrective recovery plan).
+# Read-only commands are always allowed; the campaign command requires a
+# programmatic control-plane context; execute-handoff --dry-run stays read-only;
+# every other legacy network/research command is blocked pending the C1 adapter.
+READ_ONLY_COMMANDS = frozenset({"list", "status", "audit", "doctor", "export"})
+PROGRAMMATIC_CONTEXT_ONLY_COMMANDS = frozenset({"campaign"})
+BLOCKED_PENDING_C1_ADAPTER_COMMANDS = frozenset(
+    {
+        "brainstorm",
+        "discover",
+        "resume-discover",
+        "full-cycle",
+        "review",
+        "chat",
+        "roundtable",
+        "interactive",
+        "repair-handoff-runner",
+    }
+)
+DRY_RUN_READ_ONLY_EXCEPTION_COMMANDS = frozenset({"execute-handoff"})
+
+
+def command_disposition(command: str) -> dict[str, object]:
+    """Return the fixed P6R3 disposition for one legacy CLI command."""
+    if command in READ_ONLY_COMMANDS:
+        disposition = "READ_ONLY_ALLOWED"
+    elif command in PROGRAMMATIC_CONTEXT_ONLY_COMMANDS:
+        disposition = "PROGRAMMATIC_CONTEXT_ONLY"
+    elif command in BLOCKED_PENDING_C1_ADAPTER_COMMANDS:
+        disposition = "BLOCKED_PENDING_C1_ADAPTER"
+    elif command in DRY_RUN_READ_ONLY_EXCEPTION_COMMANDS:
+        disposition = "DRY_RUN_READ_ONLY_EXCEPTION"
+    else:
+        disposition = "BLOCKED_PENDING_C1_ADAPTER"
+    return {
+        "schema_version": "control_plane.command_disposition.v1",
+        "command": command,
+        "disposition": disposition,
+    }
 
 
 class CampaignBoundaryError(RuntimeError):
@@ -138,8 +179,14 @@ def require_campaign_boundary(
 
 
 __all__ = [
+    "BLOCKED_PENDING_C1_ADAPTER",
+    "BLOCKED_PENDING_C1_ADAPTER_COMMANDS",
     "CampaignBoundaryError",
+    "DRY_RUN_READ_ONLY_EXCEPTION_COMMANDS",
     "LEGACY_SURFACE_WITHOUT_CAMPAIGN_CONTEXT",
+    "PROGRAMMATIC_CONTEXT_ONLY_COMMANDS",
+    "READ_ONLY_COMMANDS",
+    "command_disposition",
     "require_campaign_boundary",
     "run_campaign_preflight",
 ]
