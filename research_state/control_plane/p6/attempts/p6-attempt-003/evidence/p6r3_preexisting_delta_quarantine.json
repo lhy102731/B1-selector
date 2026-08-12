@@ -1,0 +1,1 @@
+{"attempt_id":"p6-attempt-003","entries":[],"note":"Pre-existing user-owned delta (daily_run.py/daily_select.py/CHANGELOG.md/docs/b1_v3_results.md + untracked user files) is quarantined; not imported into tests or runtime.","phase":"P6","schema":"control_plane.quarantine_manifest.v1"}
