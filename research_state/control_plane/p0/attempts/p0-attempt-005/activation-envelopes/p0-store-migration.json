@@ -8,8 +8,8 @@
     "research_state/control_plane/policies/"
   ],
   "attempt_id": "p0-attempt-005",
-  "base_commit": "79eaf91e5b6acffaef68b883d812fd6978647e06",
-  "base_tree": "29b2f23dacf0a5b295f96d6675e3aab4b391e871",
+  "base_commit": "55cfbc795da2b6824f0c63bd62f6da0489042b49",
+  "base_tree": "72ff9a24a5dff0894d20487ef6724a5b676f56b0",
   "candidate_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "expected_side_effects": [
     "MIGRATE_STORES"
@@ -21,6 +21,7 @@
     "research_state/control_plane/authority/",
     "research_state/control_plane/operational/"
   ],
+  "idempotency_key": "p0-store-migration-rerecord-001",
   "mode": "migration",
   "phase": "P0",
   "quarantine_manifest_path": "research_state/control_plane/p0/attempts/p0-attempt-005/evidence/preexisting_user_delta_quarantine.json",
@@ -31,7 +32,7 @@
     "tests.test_control_plane_store_migration"
   ],
   "schema": "control_plane.activation_envelope.v1",
-  "source_commit": "79eaf91e5b6acffaef68b883d812fd6978647e06",
-  "source_tree": "29b2f23dacf0a5b295f96d6675e3aab4b391e871",
+  "source_commit": "55cfbc795da2b6824f0c63bd62f6da0489042b49",
+  "source_tree": "72ff9a24a5dff0894d20487ef6724a5b676f56b0",
   "task_id": "P0-STORE-MIGRATION"
 }
