@@ -122,6 +122,7 @@ class ActivationCoordinator:
         self._crash_hook = crash_hook
         self._lease_secret_value: str | None = None
         self._ticket_id: str | None = None
+        self._approval_sha256: str | None = None
         # The coordinator is the root Authority holder: verify the supplied
         # root capability against the live store before any activation.
         self._verify_root()
@@ -301,11 +302,17 @@ class ActivationCoordinator:
         envelope_commit: str,
         manifest_ref: str,
         mode: ActivationMode,
+        approval_record: bytes | None = None,
     ) -> ActivationReport:
         if not isinstance(mode, ActivationMode):
             raise TypeError("mode must be an ActivationMode")
         try:
-            return self._run(envelope_commit, manifest_ref, mode)
+            return self._run(
+                envelope_commit,
+                manifest_ref,
+                mode,
+                approval_record=approval_record,
+            )
         except ActivationEnvelopeError:
             raise
         except Exception as error:  # pragma: no cover - defensive boundary
@@ -318,6 +325,8 @@ class ActivationCoordinator:
         envelope_commit: str,
         manifest_ref: str,
         mode: ActivationMode,
+        *,
+        approval_record: bytes | None = None,
     ) -> ActivationReport:
         manifest, manifest_sha256 = self._validate_envelope(
             envelope_commit,
@@ -325,6 +334,17 @@ class ActivationCoordinator:
             mode,
         )
         self._phase_done(ActivationPhase.VALIDATE)
+
+        # CR-010 F-06: when an approval record is supplied, verify it binds
+        # this exact envelope/manifest before any grant/ticket is issued.
+        # The record SHA-256 is stamped into the activation evidence so the
+        # Authority row and TaskReport can prove the candidate was approved.
+        approval_sha256 = self._verify_approval_record(
+            envelope_commit,
+            manifest_sha256,
+            approval_record,
+        )
+        self._approval_sha256 = approval_sha256
 
         ticket_id = self._issue_ticket(manifest, manifest_sha256, mode)
         self._phase_done(ActivationPhase.ISSUE)
@@ -653,6 +673,37 @@ class ActivationCoordinator:
         return manifest, manifest_sha256
 
     # ------------------------------------------------------------------
+    def _verify_approval_record(
+        self,
+        envelope_commit: str,
+        manifest_sha256: str,
+        approval_record: bytes | None,
+    ) -> str | None:
+        """Verify an optional user approval record (CR-010 F-06).
+
+        No approval record -> None (activation proceeds with the legacy
+        provenance claim; callers that require approval must supply one).
+        A record that fails verification aborts the activation before any
+        grant/ticket is issued (fail closed).  The returned SHA-256 is
+        stamped into the activation evidence.
+        """
+        if approval_record is None:
+            return None
+        from .approval_record_verifier import ApprovalRecordVerifier
+
+        verifier = ApprovalRecordVerifier(self._repository_root)
+        try:
+            return verifier.verify_record_bytes(
+                approval_record,
+                envelope_commit=envelope_commit,
+                manifest_sha256=manifest_sha256,
+            )
+        except Exception as error:
+            raise ActivationEnvelopeError(
+                f"approval record verification failed: {error}"
+            ) from error
+
+    # ------------------------------------------------------------------
     def _issue_ticket(
         self,
         manifest: Mapping[str, object],
@@ -721,6 +772,8 @@ class ActivationCoordinator:
             "task_id": task_id,
             "ticket_id": ticket_id,
         }
+        if self._approval_sha256 is not None:
+            evidence_document["approval_record_sha256"] = self._approval_sha256
         evidence_bytes = canonical_json(evidence_document).encode("utf-8")
         evidence_path = (self._repository_root / evidence_ref).resolve()
         if evidence_path.exists():
