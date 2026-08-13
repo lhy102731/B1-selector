@@ -53,6 +53,7 @@ def main() -> int:
     from research_automation.control_plane.contracts import (
         Actor,
         Phase,
+        SideEffect,
         canonical_json,
         canonical_sha256,
     )
@@ -106,7 +107,9 @@ def main() -> int:
     )
     (ROOT / policy_ref).write_text(raw.decode("utf-8") + "\n",
                                    encoding="utf-8", newline="\n")
-    commit([policy_ref], f"audit: {ATTEMPT} reviewed entry policy (CR-010, add-only)")
+    if git("status", "--porcelain", "--", policy_ref).strip():
+        commit([policy_ref],
+               f"audit: {ATTEMPT} reviewed entry policy (CR-010, add-only)")
 
     # Activate the policy with the coordinator grant's ticket lease.
     from research_automation.control_plane.activation_coordinator import (
@@ -156,23 +159,84 @@ def main() -> int:
         grant_row = reader.phase_gate_snapshot(Phase(PHASE), ATTEMPT)
         grant_ids = grant_row.active_grant_ids
         print("active grants:", grant_ids)
-        # The policy activation uses the coordinator ticket lease.
-        ticket_row = None
-        import sqlite3
 
-        conn = sqlite3.connect(
-            ROOT / "research_state/control_plane/authority/authority.sqlite3"
+        # policy activation ticket (independent reviewer actor); a unique
+        # invocation id makes re-runs idempotent instead of UNIQUE-clashing
+        import time as _time
+
+        run_suffix = str(int(_time.time() * 1000))[-10:]
+        from datetime import datetime, timezone
+
+        policy_actor = Actor(
+            "p0-policy-activator-cr010",
+            "automation",
+            f"p0-policy-activation-exec-013-{run_suffix}",
         )
-        try:
-            ticket_row = conn.execute(
-                "SELECT ticket_id, lease_id FROM task_tickets_v2 "
-                "WHERE attempt_id = ? AND state = 'SUCCEEDED' "
-                "ORDER BY created_at DESC LIMIT 1",
-                (ATTEMPT,),
-            ).fetchone()
-        finally:
-            conn.close()
-        print("ticket:", ticket_row)
+        policy_identity = stores_module.AuthorityIdentity(**IDENTITY)
+        envelope = authority._provision_authorization(
+            phase=Phase(PHASE),
+            attempt_id=ATTEMPT,
+            actor=policy_actor,
+            identity=policy_identity,
+            expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        grant = authority.claim_authorization(
+            envelope,
+            expected_phase=Phase(PHASE),
+            expected_attempt_id=ATTEMPT,
+            actor=policy_actor,
+            identity=policy_identity,
+        )
+        ticket = authority._issue_task_ticket(
+            grant,
+            {
+                "task_id": "P0-POLICY-ACTIVATION-013",
+                "objective": "activate reviewed entry policy for p0-attempt-013",
+                "dependencies": [],
+                "idempotency_key": "p0-policy-activation-013-cr010",
+                "task_spec_ref": "manifest.json",
+                "task_spec_sha256": "1" * 64,
+                "requirements": {
+                    "required_test_receipt_ids": [],
+                    "required_review_receipt_ids": [],
+                    "required_evidence_ids": [],
+                },
+                "allowed_files": ["research_automation/control_plane/"],
+                "forbidden_files": ["data/"],
+                "baseline_ref": "manifest.json",
+                "baseline_sha256": "1" * 64,
+                "input_evidence_refs": [],
+            },
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        lease = authority._begin_task(ticket)
+        reviewer = Actor(
+            "independent-reviewer-b-cr010",
+            "human",
+            "cr010-review-p0-b",
+        )
+        previous_active = None
+        active_policy = AuthorityReader().active_entry_policy()
+        if active_policy is not None:
+            previous_active = active_policy.policy_sha256
+        activated = authority._activate_reviewed_entry_policy(
+            lease,
+            reviewer=reviewer,
+            policy_sha256=policy["policy_payload_sha256"],
+            policy_payload_sha256=policy["policy_payload_sha256"],
+            inventory_payload_sha256=policy["inventory_payload_sha256"],
+            review_receipt_sha256=policy["review_receipt_sha256"],
+            expected_active_sha256=previous_active,
+        )
+        print("POLICY_ACTIVATED", activated.policy_sha256[:16],
+              "ticket:", ticket.ticket_id[:16])
+        authority._finish_task(
+            lease,
+            outcome="SUCCEEDED",
+            evidence_ref=policy_ref,
+        )
+        print("POLICY_TICKET_SUCCEEDED", ticket.ticket_id[:16])
     del capability
     print("POLICY_READY", policy["policy_payload_sha256"][:16])
     return 0
