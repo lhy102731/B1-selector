@@ -109,6 +109,8 @@ def main() -> int:
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
         "gate_tests_stderr.log"
     )
+    (ROOT / stdout_ref).parent.mkdir(parents=True, exist_ok=True)
+    (ROOT / stderr_ref).parent.mkdir(parents=True, exist_ok=True)
     (ROOT / stdout_ref).write_text(result.stdout, encoding="utf-8", newline="\n")
     (ROOT / stderr_ref).write_text(result.stderr, encoding="utf-8", newline="\n")
     receipt = {
