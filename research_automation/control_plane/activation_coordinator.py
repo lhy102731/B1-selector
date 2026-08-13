@@ -777,10 +777,11 @@ class ActivationCoordinator:
                  invocation_id, plan_hash, scope_hash, instruction_policy_hash,
                  secret_sha256, expires_at, allowed_effects_json, state,
                  created_at)
-                VALUES (?, 'P0', ?, 'activation-coordinator', 'automation',
+                VALUES (?, ?, ?, 'activation-coordinator', 'automation',
                         ?, ?, ?, ?, ?, ?, ?, 'CLAIMED', ?)""",
                 (
                     authorization_ref,
+                    str(manifest["phase"]),
                     attempt_id,
                     invocation_id,
                     plan_hash,
@@ -798,11 +799,12 @@ class ActivationCoordinator:
                  actor_type, invocation_id, plan_hash, scope_hash,
                  instruction_policy_hash, secret_sha256, allowed_effects_json,
                  state, created_at)
-                VALUES (?, ?, 'P0', ?, 'activation-coordinator', 'automation',
+                VALUES (?, ?, ?, ?, 'activation-coordinator', 'automation',
                         ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)""",
                 (
                     grant_id,
                     authorization_ref,
+                    str(manifest["phase"]),
                     attempt_id,
                     invocation_id,
                     plan_hash,
@@ -819,11 +821,12 @@ class ActivationCoordinator:
                  idempotency_key, task_spec_ref, task_spec_sha256,
                  task_spec_payload_json, request_sha256, entry_policy_sha256,
                  allowed_effects_json, secret_sha256, state, created_at)
-                VALUES (?, ?, 'P0', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?,
                         'ISSUED', ?)""",
                 (
                     ticket_id,
                     grant_id,
+                    str(manifest["phase"]),
                     attempt_id,
                     task_id,
                     idempotency,
