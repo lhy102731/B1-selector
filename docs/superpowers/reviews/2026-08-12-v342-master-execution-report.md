@@ -213,3 +213,42 @@ Provider：deepseek-chat / deepseek_direct（唯一可用；OpenAI/Gemini key �
 
 `research_state/control_plane/rollout/lineage_audits/authority_ruling_cr009.json`：
 **新 lineage ACTIVE**（authoritative predecessor chain），旧 lineage DISPUTED_PENDING_FORWARD_REPAIR（superseded，不可变保留）。
+
+---
+
+# 附录 B：整体独立 Review 与修复（2026-08-13 补充）
+
+对全部 78 个 CR-009 commit 与重建 lineage 执行了两路独立审查（general-purpose subagent，非自审）：
+
+## B.1 代码链审查（HOLD → 全部修复）
+
+| ID | 发现 | 修复 |
+|---|---|---|
+| CRITICAL-1 | reconciler 无条件 `terminal_state="SUCCEEDED"`，把 staged FAILED/TIMEOUT/CRASHED 翻转成 SUCCEEDED ticket | `_derive_terminal_state` 从 committed staged claim 派生 outcome（校验 claim SHA-256）；负向测试 `test_failed_staged_result_recovered_as_failed` |
+| WARN-2 | `_recover_final_eval_binding` terminal UPDATE 无版本谓词 | WHERE 增加 `saga_version` CAS |
+| WARN-3 | orchestrator REQUEST_FROZEN 分支为死代码 | 改为 fail-closed；CRASH_POINTS/docstring 对齐持久化状态机 |
+| WARN-4 | reconciler 异常范围过窄 | 增加 TaskTicketError |
+| WARN-5 | coordinator 不校验 manifest phase 属 Phase enum | VALIDATE 阶段拒绝未知 phase |
+| WARN-6 | porcelain -z rename 记录误解析 | rename/copy 源路径行跳过，dest 仍检查 |
+
+审查确认 OK：gate bypass 关闭、无 path-string hash、phase 全参数化、reconciler 无 reopen/recompute/reissue、自我背书有界、路径穿越/symlink/TOCTOU/secret 泄漏全部关闭。
+
+## B.2 lineage 一致性审查（9/10 → 10/10）
+
+| 项 | 结果 |
+|---|---|
+| 5 个新 closure 与 receipt 匹配 | PASS |
+| 旧 lineage 5 个 closure 零改写（不可变） | PASS |
+| evidence blob 绑定（sha256 + ticket_id）全 attempt | PASS |
+| TaskReport requirements 非空 | PASS |
+| phase 正确性（P0/P6/P7/P8/C0） | PASS |
+| commit 顺序满足 F-03 | PASS |
+| active policy = reviewed C0 policy | PASS |
+| receipt/reviewer 文件齐全且 hash 匹配 | PASS |
+| pending outbox | **FAIL→FIXED**（C0 PHASE_GATE_CLOSED 事件补 mirror，现 0） |
+
+审查记录：`research_state/control_plane/rollout/lineage_audits/overall_review_fixes_cr009.json`。
+
+## B.3 修复后验证
+
+受影响的 4 个套件 45 passed + 10 subtests；完整 control-plane suite 重跑结果见本报告更新（2026-08-13）。
