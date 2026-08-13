@@ -436,6 +436,13 @@ class PhaseGateBuilderTests(unittest.TestCase):
                         "GIT_MUTATION",
                     ],
                 ),
+                (
+                    "research_automation/control_plane/final_evaluator.py",
+                    "callable:research_automation.final_evaluator:"
+                    "TrustedEvaluator.evaluate_v2",
+                    "TrustedEvaluator.evaluate_v2",
+                    ["OPEN_HOLDOUT"],
+                ),
             )
             freeze_files: list[dict[str, object]] = []
             seam_digests: dict[str, str] = {}

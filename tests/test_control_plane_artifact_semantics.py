@@ -226,6 +226,12 @@ class FinalInventoryTests(unittest.TestCase):
             "run_kbase_ag2_full_cycle",
             ["READ", "WRITE_STAGING", "RUN_RESEARCH", "GIT_MUTATION"],
         ),
+        (
+            "research_automation/control_plane/final_evaluator.py",
+            "callable:research_automation.control_plane.final_evaluator:TrustedEvaluator.evaluate_v2",
+            "TrustedEvaluator.evaluate_v2",
+            ["OPEN_HOLDOUT"],
+        ),
     )
 
     def _freeze(self, root: Path) -> dict[str, object]:

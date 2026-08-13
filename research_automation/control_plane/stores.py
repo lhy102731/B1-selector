@@ -5112,6 +5112,18 @@ class _AuthorityStore:
 
         return _SqliteUnitOfWork(_authority_spec())._write(stage)
 
+    def final_eval_binding_snapshot(
+        self,
+        binding_id: str,
+    ) -> FinalEvalBindingSnapshot:
+        """Read one binding's durable snapshot (P8 CR-009 Gate D)."""
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        return _SqliteUnitOfWork(_authority_spec())._read(
+            lambda connection: _final_eval_snapshot_from_row(
+                connection, trusted_binding
+            )
+        )
+
     def _scan_final_eval_bindings(
         self,
         *,

@@ -326,6 +326,13 @@ _REQUIRED_IMPORT_SEAM_BINDINGS = {
             "GIT_MUTATION",
         ],
     },
+    # P8 CR-009 (GPT F-03): the TrustedEvaluator is the only seam that
+    # declares OPEN_HOLDOUT; the reviewed entry policy must bind it exactly.
+    "callable:research_automation.control_plane.final_evaluator:TrustedEvaluator.evaluate_v2": {
+        "path": "research_automation/control_plane/final_evaluator.py",
+        "callable_name": "TrustedEvaluator.evaluate_v2",
+        "declared_side_effects": ["OPEN_HOLDOUT"],
+    },
 }
 _REQUIRED_IMPORT_SEAM_IDS = frozenset(_REQUIRED_IMPORT_SEAM_BINDINGS)
 _REQUIRED_SCHEDULER_ENTRY_ID = "external:scheduler:/A\u80a1\u9009\u80a1"

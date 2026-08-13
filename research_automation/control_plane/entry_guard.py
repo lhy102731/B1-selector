@@ -250,6 +250,16 @@ _REQUIRED_IMPORT_SEAMS = (
         "research_automation/discovery_execution_bridge.py",
         (SideEffect.WRITE_STAGING, SideEffect.RUN_RESEARCH),
     ),
+    # P8 CR-009 (GPT F-03): the TrustedEvaluator is the ONLY entry that
+    # declares OPEN_HOLDOUT; every other seam and runner stays deny-by-
+    # default for the holdout effect.  The inventory scan emits this seam
+    # so the reviewed entry policy declares the effect explicitly.
+    (
+        "research_automation.control_plane.final_evaluator",
+        "TrustedEvaluator.evaluate_v2",
+        "research_automation/control_plane/final_evaluator.py",
+        (SideEffect.OPEN_HOLDOUT,),
+    ),
 )
 
 
