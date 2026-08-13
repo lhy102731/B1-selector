@@ -1,8 +1,9 @@
 """Durable final evaluation orchestration (P8 CR-009 Gate D).
 
 The orchestrator drives a FinalEval binding through the durable Authority
-state machine (REQUEST_FROZEN -> AUTHORIZED -> CONSUMED -> EVALUATING ->
-RESULT_STAGED) using the versioned CAS primitives in stores.py.  Every
+state machine (AUTHORIZED -> CONSUMED -> EVALUATING -> RESULT_STAGED;
+REQUEST_FROZEN is the conceptual pre-bind state and is never persisted)
+using the versioned CAS primitives in stores.py.  Every
 transition commits durably before the next step starts, so a crash at any
 of the fixed crash points leaves the binding in a known durable state that
 a fresh process can observe and a bounded reconciler can close.
@@ -35,12 +36,12 @@ class FinalEvalOrchestrationError(RuntimeError):
 # preceding transition committed durably (the fresh recovery process can
 # observe it) and the next transition was never applied.
 CRASH_POINTS = (
-    "CRASH_AFTER.REQUEST_FROZEN",
     "CRASH_AFTER.AUTHORIZED",
     "CRASH_AFTER.CONSUMED",
     "CRASH_AFTER.EVALUATING",
     "CRASH_AFTER.RESULT_STAGED",
     "CRASH_AFTER.CLOSED",
+    "CRASH_AFTER.AUTHORITY_TERMINAL",
 )
 
 
@@ -85,15 +86,17 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
     if state in ("RESULT_STAGED", "CLOSED", "AUTHORITY_TERMINAL"):
         return snapshot
 
-    # REQUEST_FROZEN -> AUTHORIZED
+    # Bindings are created at AUTHORIZED (the authority broker binds the
+    # request, which consumes to CONSUMED in the same transaction), so the
+    # orchestrator's durable work starts from CONSUMED.  REQUEST_FROZEN is
+    # the conceptual pre-bind state only; it is never persisted and the
+    # stores transition map has no entry for it, so fail closed instead of
+    # attempting an impossible advance.
     if state == "REQUEST_FROZEN":
-        snapshot = authority._advance_final_eval_binding(
-            binding_id,
-            expected_state="REQUEST_FROZEN",
-            next_state="AUTHORIZED",
-            expected_version=version,
+        raise FinalEvalOrchestrationError(
+            "binding is in the pre-bind REQUEST_FROZEN state; "
+            "it was never durably created"
         )
-        _maybe_crash(inputs, "CRASH_AFTER.AUTHORIZED")
 
     # AUTHORIZED -> CONSUMED
     if snapshot.saga_state == "AUTHORIZED":

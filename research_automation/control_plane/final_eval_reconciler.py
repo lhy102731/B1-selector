@@ -7,17 +7,26 @@ original lease and never advances an intermediate state.  A binding stuck
 in an intermediate state (REQUEST_FROZEN/AUTHORIZED/CONSUMED/EVALUATING)
 is reported as UNRESOLVED -- the orchestrator's idempotent CAS replay is
 the only path forward, and only with the original trusted inputs.
+
+The terminal outcome is DERIVED from the committed claim document (the
+worker result staged by the orchestrator), never caller-supplied: a staged
+FAILED/TIMEOUT/CRASHED result must be recovered as FAILED, not flipped to
+SUCCEEDED.
 """
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
+from .git_evidence import GitBlobReader
 from .stores import (
     FinalEvalBindingSnapshot,
     FinalEvalRecoveryError,
     TaskExecutionLease,
+    TaskTicketError,
     _AuthorityStore,
 )
 
@@ -45,11 +54,67 @@ class FinalEvalReconcilerError(RuntimeError):
     """Base error for the final evaluation reconciler."""
 
 
+def _derive_terminal_state(
+    authority: _AuthorityStore,
+    binding: FinalEvalBindingSnapshot,
+    *,
+    repository_root: str | Path,
+) -> str:
+    """Derive the terminal outcome from the committed staged claim.
+
+    Reads the committed claim blob (the worker result document the
+    orchestrator staged), verifies its bytes hash against the binding's
+    result_claim_sha256, and maps its declared outcome to the authority
+    terminal state.  A missing/mismatched claim fails closed (raised), so a
+    binding is never recovered with an outcome it did not stage.
+    """
+
+    claim_ref = binding.result_claim_ref
+    claim_sha256 = binding.result_claim_sha256
+    if not claim_ref or not claim_sha256:
+        raise FinalEvalRecoveryError("binding has no staged claim to derive from")
+    try:
+        claim = GitBlobReader(repository_root).read(
+            claim_ref,
+            max_bytes=4 * 1024 * 1024,
+            evidence_name="final-eval result claim",
+        )
+    except Exception as error:
+        raise FinalEvalRecoveryError(
+            "staged claim blob is unavailable: " + claim_ref
+        ) from error
+    if not hmac.compare_digest(
+        claim.sha256, claim_sha256
+    ):
+        raise FinalEvalRecoveryError(
+            "staged claim hash does not match the binding"
+        )
+    import json as _json
+
+    try:
+        document = _json.loads(claim.raw.decode("utf-8"))
+    except (UnicodeDecodeError, _json.JSONDecodeError) as error:
+        raise FinalEvalRecoveryError(
+            "staged claim is not valid JSON"
+        ) from error
+    if not isinstance(document, Mapping):
+        raise FinalEvalRecoveryError("staged claim is not an object")
+    outcome = str(document.get("outcome", ""))
+    if outcome == "SUCCEEDED":
+        return "SUCCEEDED"
+    if outcome in ("FAILED", "TIMEOUT", "CRASHED"):
+        return "FAILED"
+    raise FinalEvalRecoveryError(
+        "staged claim has no derivable outcome: " + outcome
+    )
+
+
 def reconcile(
     authority: _AuthorityStore,
     maintenance_lease: TaskExecutionLease,
     *,
     evidence_ref_for: Mapping[str, str] | None = None,
+    repository_root: str | Path | None = None,
 ) -> ReconciliationReport:
     """Close every recoverable binding with a bounded recovery lease.
 
@@ -58,6 +123,8 @@ def reconcile(
     - no recompute: staged results are closed as-is, never recomputed;
     - no reissue: the original lease is never restored; a fresh recovery
       lease is issued per binding and only for RESULT_STAGED/CLOSED;
+    - outcome integrity: the terminal state is derived from the committed
+      staged claim, so a failed evaluation cannot be flipped to SUCCEEDED;
     - intermediate states stay untouched (UNRESOLVED).
     """
 
@@ -68,6 +135,11 @@ def reconcile(
             "a maintenance TaskExecutionLease is required"
         )
     evidence_refs = dict(evidence_ref_for or {})
+    root = Path(
+        repository_root
+        if repository_root is not None
+        else Path(__file__).resolve().parents[2]
+    ).resolve(strict=True)
 
     recovered: list[str] = []
     unresolved: list[str] = []
@@ -92,6 +164,11 @@ def reconcile(
             binding.result_claim_ref,
         )
         try:
+            terminal_state = _derive_terminal_state(
+                authority,
+                binding,
+                repository_root=root,
+            )
             recovery_lease = authority._issue_final_eval_recovery_lease(
                 maintenance_lease,
                 binding_id=binding.ticket_id,
@@ -99,11 +176,11 @@ def reconcile(
             )
             authority._recover_final_eval_binding(
                 recovery_lease,
-                terminal_state="SUCCEEDED",
+                terminal_state=terminal_state,
                 evidence_ref=evidence_ref,
             )
             recovered.append(binding.ticket_id)
-        except (FinalEvalRecoveryError, ValueError):
+        except (FinalEvalRecoveryError, ValueError, TaskTicketError):
             unresolved.append(binding.ticket_id)
 
     return ReconciliationReport(

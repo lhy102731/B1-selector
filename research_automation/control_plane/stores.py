@@ -5271,12 +5271,14 @@ class _AuthorityStore:
                 """UPDATE final_eval_authorizations_v1
                 SET saga_state = 'AUTHORITY_TERMINAL', saga_version = ?,
                     terminal_binding = ?, updated_at = ?
-                WHERE ticket_id = ? AND saga_state = 'CLOSED'""",
+                WHERE ticket_id = ? AND saga_state = 'CLOSED'
+                      AND saga_version = ?""",
                 (
                     int(row["saga_version"]) + 2,
                     terminal,
                     _utc_text(now),
                     trusted_binding,
+                    int(row["saga_version"]) + 1,
                 ),
             )
             if terminal_update.rowcount != 1:

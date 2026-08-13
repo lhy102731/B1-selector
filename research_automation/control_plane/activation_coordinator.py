@@ -475,8 +475,18 @@ class ActivationCoordinator:
         allowed: list[str],
         quarantine: frozenset[str],
     ) -> str | None:
+        previous_was_rename_source = False
         for line in status.split("\x00"):
             if len(line) < 4:
+                continue
+            # Porcelain -z emits rename/copy entries as "R  dest" (status
+            # char + two spaces) followed by a bare source path line; that
+            # source line has no status code and must not be parsed as a
+            # path of its own.  The dest line itself is still checked.
+            if line[0] in "RC" and line[1] == " " and line[2] == " ":
+                previous_was_rename_source = True
+            elif previous_was_rename_source:
+                previous_was_rename_source = False
                 continue
             path = line[3:].strip()
             if path in allowed or path in quarantine:
@@ -539,6 +549,12 @@ class ActivationCoordinator:
         if manifest["schema"] != _MANIFEST_SCHEMA:
             raise ActivationEnvelopeError(
                 "activation manifest schema is unsupported"
+            )
+        phase_value = str(manifest["phase"])
+        if phase_value not in _stores.Phase._value2member_map_:
+            raise ActivationEnvelopeError(
+                "activation manifest phase is not a known phase: "
+                + phase_value
             )
         if manifest["mode"] != mode.value:
             raise ActivationEnvelopeError(

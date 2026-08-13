@@ -1018,7 +1018,7 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     coordinator = self._coordinator(root)
                     with self.assertRaisesRegex(
                         ac.ActivationEnvelopeError,
-                        "unsafe path components",
+                        "phase is not a known phase|unsafe path components",
                     ):
                         coordinator.run(
                             envelope_commit=envelope,

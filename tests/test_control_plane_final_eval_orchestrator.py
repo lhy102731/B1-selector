@@ -24,7 +24,10 @@ import unittest
 from unittest.mock import patch
 
 from research_automation.control_plane import stores as stores_module
-from research_automation.control_plane.contracts import SideEffect
+from research_automation.control_plane.contracts import (
+    SideEffect,
+    canonical_json,
+)
 from research_automation.control_plane.final_eval_authority import (
     FINAL_EVAL_REQUEST_V2,
     AuthorityFinalEvalBroker,
@@ -233,16 +236,68 @@ class FinalEvalOrchestrationTests(unittest.TestCase):
                 task_spec_sha256="1" * 64,
             )
             authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+            claim_ref = (
+                "research_state/control_plane/p8/attempts/"
+                "p8-attempt-003/evidence/worker_result.json"
+            )
+            claim_path = root / claim_ref
+            claim_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-c", "user.name=Control Plane Tests",
+                 "-c", "user.email=control-plane@example.invalid",
+                 "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-c", "user.name=Control Plane Tests",
+                 "-c", "user.email=control-plane@example.invalid",
+                 "config", "user.email", "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True,
+            )
+
+            def sink(document):
+                # The claim must be a committed blob for the reconciler to
+                # derive the terminal outcome from it.  The bytes must match
+                # the claim sha the orchestrator staged (canonical JSON).
+                claim_path.write_text(
+                    canonical_json(document),
+                    encoding="utf-8",
+                )
+                subprocess.run(
+                    ["git", "add", claim_ref],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Control Plane Tests",
+                        "-c",
+                        "user.email=control-plane@example.invalid",
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        "stage final-eval claim",
+                    ],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                )
+                return claim_ref
+
             orchestrate(
                 OrchestrationInputs(
                     authority=authority,
                     binding_id=binding.ticket_id,
                     expected_version=binding.saga_version,
                     worker_launcher=lambda: 0,
-                    evidence_sink=lambda doc: (
-                        "research_state/control_plane/p8/attempts/"
-                        "p8-attempt-003/evidence/worker_result.json"
-                    ),
+                    evidence_sink=sink,
                 )
             )
             # Fresh maintenance ticket + lease for the reconciler.
@@ -250,12 +305,8 @@ class FinalEvalOrchestrationTests(unittest.TestCase):
             report = reconcile(
                 authority,
                 lease,
-                evidence_ref_for={
-                    binding.ticket_id: (
-                        "research_state/control_plane/p8/attempts/"
-                        "p8-attempt-003/evidence/worker_result.json"
-                    )
-                },
+                evidence_ref_for={binding.ticket_id: claim_ref},
+                repository_root=root,
             )
             self.assertIn(binding.ticket_id, report.recovered)
             snapshot = authority.final_eval_binding_snapshot(binding.ticket_id)
@@ -637,3 +688,92 @@ print(snapshot.saga_state, snapshot.saga_version)
             # The fresh process sees the durable RESULT_STAGED state.
             self.assertEqual(state, "RESULT_STAGED")
             self.assertEqual(int(version), 4)
+
+
+class FinalEvalOutcomeIntegrityTests(unittest.TestCase):
+    """CR-009 overall-review CRITICAL-1: a staged FAILED result must never
+    be recovered as SUCCEEDED."""
+
+    def test_failed_staged_result_recovered_as_failed(self) -> None:
+        campaign_id = "campaign-outcome-failed"
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            broker = _make_broker(root, grant)
+            binding = broker.bind(
+                request=_make_request(
+                    campaign_id="campaign-fail-1",
+                    holdout_id="holdout-fail-1",
+                    plan_sha256="4" * 64,
+                    holdout_sha256="5" * 64,
+                    nonce="6" * 64,
+                ),
+                nonce="6" * 64,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-fail-1",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+            claim_ref = (
+                "research_state/control_plane/p8/attempts/"
+                "p8-attempt-003/evidence/worker_result_fail.json"
+            )
+            claim_path = root / claim_ref
+            claim_path.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email",
+                 "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True,
+            )
+
+            def sink(document):
+                claim_path.write_text(
+                    canonical_json(document), encoding="utf-8"
+                )
+                subprocess.run(
+                    ["git", "add", claim_ref],
+                    cwd=root, check=True, capture_output=True,
+                )
+                subprocess.run(
+                    [
+                        "git", "-c", "user.name=Control Plane Tests",
+                        "-c", "user.email=control-plane@example.invalid",
+                        "commit", "--quiet", "-m", "stage failed claim",
+                    ],
+                    cwd=root, check=True, capture_output=True,
+                )
+                return claim_ref
+
+            # Worker exits non-zero -> staged outcome FAILED.
+            orchestrate(
+                OrchestrationInputs(
+                    authority=authority,
+                    binding_id=binding.ticket_id,
+                    expected_version=binding.saga_version,
+                    worker_launcher=lambda: 7,
+                    evidence_sink=sink,
+                )
+            )
+            lease = FinalEvalOrchestrationTests()._maintenance_lease(
+                root, grant, "p8-cr009-fail-maint"
+            )
+            report = reconcile(
+                authority,
+                lease,
+                evidence_ref_for={binding.ticket_id: claim_ref},
+                repository_root=root,
+            )
+            self.assertIn(binding.ticket_id, report.recovered)
+            snapshot = authority.final_eval_binding_snapshot(binding.ticket_id)
+            self.assertEqual(snapshot.saga_state, "AUTHORITY_TERMINAL")
+            # The failed evaluation must NOT be recorded as SUCCEEDED.
+            self.assertEqual(snapshot.terminal_binding, "FAILED")
