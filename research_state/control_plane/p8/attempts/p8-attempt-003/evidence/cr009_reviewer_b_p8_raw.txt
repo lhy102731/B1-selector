@@ -1,0 +1,109 @@
+## Independent Review — Reviewer B
+
+**Scope reviewed:**  
+- `research_state/control_plane/p8/attempts/p8-attempt-003/**`  
+- `research_automation/control_plane/final_eval_orchestrator.py`  
+- `research_automation/control_plane/final_eval_reconciler.py`  
+- `tests/test_control_plane_final_eval_orchestrator.py`  
+- Closure receipt `578dd875...`, activation `6df7f692...`
+
+---
+
+### Finding B-01 — Severity: **HOLD**  
+**ID: P8-003-B01 — Reopen-after-crash via missing lease-epoch tie-break in reconciler**
+
+**Scenario walkthrough:**
+
+1. Evaluator E1 writes `OPEN_HOLDOUT` state (intent to hold) and leases `lease_id = L1` (epoch=1) to storage.  
+2. Process crashes *after* writing the holdout record but *before* committing the lease update to the CAS log.  
+3. A new reconciler process starts (fresh), reads only the committed CAS log (which does **not** yet contain the lease), and sees the holdout as "orphaned" (no owner lease).  
+4. The reconciler's recovery rule — *"if holdout exists and no lease is in the committed log, reopen the holdout"* — is triggered. It recomputes evaluation state and can reissue an internal `re-open` event.  
+5. Meanwhile, E1’s lease commit lands in the CAS log *after* the reconciler’s reopen check, leaving two owners: E1’s lease (epoch 1) and the reconciler’s reopen.  
+6. The next reconcile pass sees two owners with different epochs, and — lacking a strict `max(epoch)=winner` rule — may close the reopen by *reissuing the original lease*, which is exactly what the gate forbids.
+
+**Recovery path failing:** The reconciler should **never** act on uncommitted lease state, but the current code checks `lease_table` in the same transaction as the holdout record. No epoch-ordered tie-break is enforced.
+
+**Recommendation:** Add an invariant: a holdout may only be reopened if the *last committed CAS record for the holdout* is a `CLOSE` action, never on missing lease. Enforce an epoch monotonicity check before any reopen.
+
+---
+
+### Finding B-02 — Severity: **HOLD**  
+**ID: P8-003-B02 — CAS versioning does not prevent two-recovery lost-update race**
+
+**Evidence:**  
+`final_eval_orchestrator.py` uses an append-only CAS log with per-object `version` counters. However, the reconciler’s `recover_and_reconcile()` path reads the latest CAS snapshot, **mutates in memory**, and then writes a new CAS record — without holding a per-object lock or comparing expected version on write.
+
+**Adversarial race:**
+
+1. Process A and B both start as recovery (both fresh, both after crash).  
+2. A reads snapshot `v5`, B reads snapshot `v5`.  
+3. A writes `reopen` — CAS increments to `v6`.  
+4. B writes `lease-renew` based on stale snapshot `v5` — CAS accepts because the version check is only against the *last record for that key*, not the *last read snapshot version*. B’s write becomes `v7` and supersedes A’s decision.  
+5. Final state: `v7` says "lease renewed and reopen cancelled" even though A's reopen was the correct crash-recovery decision.
+
+**Recommendation:** Implement conditional writes: `put_if_version(object_key, expected_read_version, new_record)` and abort if the version advanced. This is a mandatory invariant for a no-reopen/no-recompute gate.
+
+---
+
+### Finding B-03 — Severity: **WARN**  
+**ID: P8-003-B03 — Hard-crash tests are partially mocked (SIG-KILL is real, but recovery is replayed in-process)**
+
+**Evidence:**  
+`tests/test_control_plane_final_eval_orchestrator.py` uses `subprocess.run` with `SIGKILL` — so crash is real at OS level. **However**, the *recovery* is tested in the same process via direct function call `recover_and_reconcile()`. This does **not** prove the reconciler can start from a fresh process with only the CAS log on disk.
+
+**Impact:** Replication of the actual gate path (fresh process, re-read state from committed CAS, no in-memory state) is not exercised. This weakens assurance for the 6 hard-crash points.
+
+**Recommendation:** Add at least one integration test that spawns the reconciler as a *separate subprocess* with a fresh environment, post-crash.
+
+---
+
+### Finding B-04 — Severity: **CRITICAL**  
+**ID: P8-003-B04 — Non-evaluator path can still declare OPEN_HOLDOUT**
+
+**Evidence:**  
+In `final_eval_reconciler.py`, the `recover_and_reconcile()` function contains this branch:
+
+```python
+if not holdout_record and stale_lease:
+    self._write_holdout(status='OPEN_HOLDOUT', reason='stale-lease-recovery')
+```
+
+This is a **reconciler path** — not the TrustedEvaluator — that writes `OPEN_HOLDOUT`. This directly violates the gate’s invariant that the evaluator is the *only* seam that can declare an open holdout.
+
+**Adversarial scenario:** A stale lease left by a crash triggers the reconciler to declare `OPEN_HOLDOUT` — bypassing the evaluator’s trust boundary entirely. This breaks the separation-of-duty model.
+
+**Recommendation:** Remove this branch from the reconciler. The reconciler must only *reconcile* states that already exist without creating new holdout intents.
+
+---
+
+### Finding B-05 — Severity: **WARN**  
+**ID: P8-003-B05 — Evidence blob commit order shows no F-03 violation, but recovery re-run edge case exists**
+
+**Evidence:**  
+The committed blobs in `p8-attempt-003/**` are written with a timestamp pre-ordered before gate activation. No F-03 violation (evidence committed after gate) is observed in the static ledger.  
+
+**However:** a crash during *evidence-blob writing* (after activation, before evidence commit) is not explicitly tested in the 6 hard-crash points. If the system restarts and re-runs the gate, the new run could re-commit evidence with a *later timestamp*, falsely looking post-gate — which could be misread as an F-03 violation by an external auditor.
+
+**Recommendation:** Add a monotonic counter to evidence commit records (tie-break), or freeze evidence timestamps at *first write* attempt, not final commit.
+
+---
+
+### Non-blocking minor notes
+
+- `research_automation/control_plane/final_eval_orchestrator.py` has no unit test for the epoch tie-break (B-01).  
+- The 6 hard-crash points are enumerated, but no crash-during-crash-during-recovery is tested (double-fault).  
+- No explicit test that `OPEN_HOLDOUT` cannot be written from any other function than the evaluator.
+
+---
+
+## Final Verdict
+
+**HOLD**
+
+The gate cannot be APPROVED because:
+
+1. **CRITICAL B-04** — reconciler can write `OPEN_HOLDOUT`, violating the single-seam invariant.  
+2. **HOLD B-01** — reopen-after-crash is demonstrably reachable through a race between lease-commit and reopen-check.  
+3. **HOLD B-02** — CAS versioning is ineffective against two-process lost-update.
+
+These are gate-forwarding liabilities. The reviewer recognizes the high quality of the test suite and the real SIGKILL crash tests, but the three blocking findings above prevent approval. The reconciler must be hardened before this gate is forwarded to P9.

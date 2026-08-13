@@ -1,0 +1,31 @@
+You are an independent reviewer (Reviewer B) for the P8
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Your review is fully independent of Reviewer A.
+
+CONTEXT:
+- P8 gate p8-attempt-003 (closure 578dd875...): activation 6df7f692...
+  (132 tests), policy activation dc481052..., committed-blob evidence.
+- NEW Gate D implementations: durable orchestrator (CAS saga),
+  bounded reconciler (no-reopen/no-recompute/no-reissue), 6 hard-crash
+  points with fresh-process recovery, TrustedEvaluator as the only
+  OPEN_HOLDOUT seam.
+
+EVIDENCE (committed):
+- research_state/control_plane/p8/attempts/p8-attempt-003/** (gate +
+  evidence + closure receipt)
+- research_automation/control_plane/final_eval_orchestrator.py
+- research_automation/control_plane/final_eval_reconciler.py
+- tests/test_control_plane_final_eval_orchestrator.py
+
+ADVERSARIAL QUESTIONS:
+1. Can you construct a scenario where a crash leaves the saga in a state
+   that the reconciler closes incorrectly (reopening holdout, recomputing,
+   or reissuing the original lease)? Walk the recovery path.
+2. Is the CAS versioning sufficient to prevent lost-update races between
+   two recovery processes?
+3. Are the hard-crash tests genuine (real subprocess hard exits) or mocked?
+4. Does any non-evaluator path still declare OPEN_HOLDOUT?
+5. Are evidence blobs committed before their gates (no F-03 timing)?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

@@ -1,0 +1,38 @@
+You are an independent reviewer (Reviewer A) for the P8
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Bind your review to the committed evidence only.
+
+CONTEXT:
+- P8 gate p8-attempt-003 (closure 578dd875...): coordinator activation
+  6df7f692... (132 final-eval tests OK), policy activation dc481052...,
+  committed-blob evidence activation-6df7f69232908463.json.
+- NEW durable implementations (Gate D):
+  - final_eval_orchestrator.py: drives bindings through the durable
+    Authority CAS (CONSUMED->EVALUATING->RESULT_STAGED) with fixed crash
+    points; idempotent replay continues from the observed durable state.
+  - final_eval_reconciler.py: recovers only RESULT_STAGED/CLOSED bindings
+    with a fixed claim; never reopens holdout bytes, never recomputes,
+    never reissues the original lease.
+  - entry_guard.py + artifact_semantics.py: TrustedEvaluator.evaluate_v2 is
+    the ONLY seam declaring OPEN_HOLDOUT; ordinary runners stay denied.
+  - 6 fixed hard-crash points recovered in fresh processes (harness tests).
+- Full discovery 2566 tests exit 0.
+
+EVIDENCE (committed at current HEAD):
+- research_state/control_plane/p8/attempts/p8-attempt-003/gates/
+  official_p8_gate_v342_cr009.json and evidence/*.json
+- research_automation/control_plane/final_eval_orchestrator.py
+- research_automation/control_plane/final_eval_reconciler.py
+- tests/test_control_plane_final_eval_orchestrator.py
+
+QUESTIONS:
+1. Is the durable orchestration genuinely durable (CAS-versioned, crash-
+   safe) rather than an in-memory state machine (the old F-03 defect)?
+2. Does the reconciler respect no-reopen / no-recompute / no-reissue?
+3. Are the 6 hard-crash points real (fresh-process recovery) and covered
+   by tests?
+4. Is OPEN_HOLDOUT declared only by TrustedEvaluator in the entry policy?
+5. Do the gate/closure receipts bind committed evidence blobs?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

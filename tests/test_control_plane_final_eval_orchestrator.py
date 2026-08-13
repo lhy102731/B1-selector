@@ -513,3 +513,127 @@ except Exception as exc:
 
     def test_crash_points_are_six_fixed_boundaries(self) -> None:
         self.assertGreaterEqual(len(CRASH_POINTS), 6)
+
+
+class FinalEvalFreshProcessRecoveryTests(unittest.TestCase):
+    """Recovery from a genuinely fresh subprocess (B-03 hardening)."""
+
+    def test_recovery_in_fresh_subprocess_after_crash(self) -> None:
+        campaign_id = "campaign-fresh-recovery"
+        with _authorized_campaign(campaign_id) as (root, grant, journal):
+            from tests.test_control_plane_campaign_store import ROOT_SECRET
+
+            # 1. bind in the parent process
+            broker = _make_broker(root, grant)
+            binding = broker.bind(
+                request=_make_request(
+                    campaign_id="campaign-fresh-1",
+                    holdout_id="holdout-fresh-1",
+                    plan_sha256="1" * 64,
+                    holdout_sha256="2" * 64,
+                    nonce="3" * 64,
+                ),
+                nonce="3" * 64,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-fresh-1",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            # 2. hard-exit child after RESULT_STAGED
+            child = """
+import os
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from research_automation.control_plane import stores as stores_module
+from research_automation.control_plane.final_eval_orchestrator import (
+    OrchestrationInputs,
+    orchestrate,
+)
+
+root = Path(sys.argv[1])
+ROOT_SECRET = sys.argv[2]
+binding_id = sys.argv[3]
+expected_version = int(sys.argv[4])
+
+patch.multiple(
+    stores_module,
+    _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+    _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+).start()
+stores_module._expected_schema_sha256.cache_clear()
+authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+
+def crash_hook(state):
+    if state == "CRASH_AFTER.RESULT_STAGED":
+        os._exit(9)
+
+def worker():
+    return 0
+
+def sink(document):
+    return ("research_state/control_plane/p8/attempts/p8-attempt-003/"
+            "evidence/worker_result_" + binding_id[:16] + ".json")
+
+orchestrate(
+    OrchestrationInputs(
+        authority=authority,
+        binding_id=binding_id,
+        expected_version=expected_version,
+        worker_launcher=worker,
+        evidence_sink=sink,
+        crash_hook=crash_hook,
+    )
+)
+"""
+            result = subprocess.run(
+                [
+                    sys.executable, "-c", child,
+                    str(root), ROOT_SECRET, binding.ticket_id,
+                    str(binding.saga_version),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(result.returncode, 9)  # hard exit at crash point
+
+            # 3. recover in a FRESH subprocess (new env, only disk state)
+            recovery_child = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from research_automation.control_plane import stores as stores_module
+
+root = Path(sys.argv[1])
+ROOT_SECRET = sys.argv[2]
+binding_id = sys.argv[3]
+
+patch.multiple(
+    stores_module,
+    _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+    _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+).start()
+stores_module._expected_schema_sha256.cache_clear()
+authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+snapshot = authority.final_eval_binding_snapshot(binding_id)
+print(snapshot.saga_state, snapshot.saga_version)
+"""
+            recovery = subprocess.run(
+                [
+                    sys.executable, "-c", recovery_child,
+                    str(root), ROOT_SECRET, binding.ticket_id,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(recovery.returncode, 0)
+            state, version = recovery.stdout.strip().split()
+            # The fresh process sees the durable RESULT_STAGED state.
+            self.assertEqual(state, "RESULT_STAGED")
+            self.assertEqual(int(version), 4)

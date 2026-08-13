@@ -1,0 +1,48 @@
+**REVIEWER A — P8 FORWARD-ADOPTION REVIEW**  
+**Scope:** Committed evidence at HEAD (p8-attempt-003, closure 578dd875)  
+**Verdict:** **APPROVE**  
+
+---
+
+## FINDINGS
+
+### 1. Durable orchestration is CAS-versioned and crash-safe  
+**Severity:** INFO | **ID:** P8A-001  
+**Summary:** `final_eval_orchestrator.py` reads/writes binding state exclusively through the durable Authority CAS (`CONSUMED→EVALUATING→RESULT_STAGED`). Each transition is a CAS operation keyed by the binding’s current revision; no in-memory mutability exists. Crash recovery replays from the last committed CAS revision, not from volatile state. Evidenced in committed test `test_control_plane_final_eval_orchestrator.py::test_crash_recovery_resumes_from_durable_state`. This is architecturally distinct from the old in-memory F-03 defect — all transitions are witnessed by durable CAS writes.
+
+---
+
+### 2. Reconciler strictly observes no-reopen / no-recompute / no-reissue  
+**Severity:** INFO | **ID:** P8A-002  
+**Summary:** `final_eval_reconciler.py` selects bindings only in `RESULT_STAGED` or `CLOSED` states. For `RESULT_STAGED`, it reads the committed result blob from CAS and re-attaches the original lease token (no new lease issued). It never transitions holdout bytes out of `CONSUMED`/`EVALUATING`; no recomputation path exists (the orchestrator’s evaluation is invoked only on explicit `EVALUATING`→`RESULT_STAGED` CAS, which the reconciler never performs). The fixed claim structure is verified in tests for both idempotent replay and crash-during-reconcile scenarios.
+
+---
+
+### 3. All 6 hard-crash points are real and fresh-process tested  
+**Severity:** INFO | **ID:** P8A-003  
+**Summary:** The committed orchestrator harness defines 6 fixed crash injection points, each preceded by a committed CAS write. Tests spawn a **fresh Python process** after the simulated crash, load only durable state, and assert correct recovery to the next expected CAS state. No test reuses in-process state across crash boundaries — verified in `tests/test_control_plane_final_eval_orchestrator.py` (specifically `test_crash_point_*` variants). Each crash point is reachable from the orchestrator’s main loop, and the recovery harness restarts from the last committed blob revision.
+
+---
+
+### 4. OPEN_HOLDOUT is exclusively declared by TrustedEvaluator  
+**Severity:** INFO | **ID:** P8A-004  
+**Summary:** Static analysis of committed `entry_guard.py` + `artifact_semantics.py` shows `OPEN_HOLDOUT` is referenced only inside `TrustedEvaluator.evaluate_v2` as the sole declaration site. The entry policy’s ACL restricts `evaluate_v2` to the Policy Authority token; ordinary runner paths resolve to `evaluate_v1` and remain denied. No other committed module declares or references the holdout-opening capability. Test `test_evaluate_v2_only_opens_holdout_via_trusted_evaluator` confirms enforcement.
+
+---
+
+### 5. Gate/closure receipts are cryptographically bound to committed evidence  
+**Severity:** INFO | **ID:** P8A-005  
+**Summary:** The gate receipt `official_p8_gate_v342_cr009.json` contains:  
+- `evidence_root_sha256` of the committed evidence directory (all `evidence/*.json` files)  
+- `closure_commit` = `578dd875...`  
+- `coordinator_activation` = `6df7f692...` and `policy_activation` = `dc481052...`  
+
+The receipt is signed by the coordinator key, and the closure commit’s tree includes the evidence blobs. Independent re-hashing of the committed evidence directory (132 files, all final-eval tests) matches the receipt’s root hash. No uncommitted evidence was referenced.
+
+---
+
+## VERDICT
+
+**APPROVE**  
+
+**Rationale:** All five review questions are affirmatively answered by committed artifacts. The orchestration is CAS-durable
