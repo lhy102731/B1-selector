@@ -54,7 +54,10 @@ def main() -> int:
         build_code_freeze_manifest,
         build_final_entry_inventory,
     )
-    from research_automation.control_plane.contracts import canonical_json
+    from research_automation.control_plane.contracts import (
+        canonical_json,
+        canonical_sha256,
+    )
 
     attempt_dir = ROOT / "research_state/control_plane/p0/attempts" / ATTEMPT
     attempt_dir.mkdir(parents=True, exist_ok=True)
@@ -108,7 +111,7 @@ def main() -> int:
     freeze_path = ROOT / freeze_ref
     freeze_path.parent.mkdir(parents=True, exist_ok=True)
     freeze_path.write_text(
-        canonical_json(freeze) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(freeze), encoding="utf-8", newline="\n"
     )
 
     # 2) inventory -- same git state (freeze file is untracked, not counted)
@@ -124,7 +127,7 @@ def main() -> int:
     inventory_path = ROOT / inventory_ref
     inventory_path.parent.mkdir(parents=True, exist_ok=True)
     inventory_path.write_text(
-        canonical_json(inventory) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(inventory), encoding="utf-8", newline="\n"
     )
 
     # 3) baseline + scheduler documents (v2 implementation baseline schema)
@@ -158,7 +161,7 @@ def main() -> int:
         "baseline": baseline_payload,
     }
     (ROOT / baseline_ref).write_text(
-        canonical_json(baseline) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(baseline), encoding="utf-8", newline="\n"
     )
     scheduler_doc = {
         "schema_version": "control_plane.external_scheduler_inventory.v1",
@@ -168,13 +171,66 @@ def main() -> int:
         "entry_count": len(scheduler_records),
     }
     (ROOT / scheduler_ref).write_text(
-        canonical_json(scheduler_doc) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(scheduler_doc), encoding="utf-8", newline="\n"
     )
 
-    # 4) commit everything in ONE commit (freeze identity stays valid)
+    # 4) policy document (content derived from the inventory; committed in
+    # the SAME commit as freeze/inventory so the freeze identity stays
+    # valid and no non-evidence commit lands after the freeze.  The
+    # authority-side policy activation must have happened BEFORE this
+    # stage (stage3 runs first).
+    from research_automation.control_plane.artifact_semantics import (
+        reviewed_policy_receipt_sha256,
+        validate_reviewed_entry_policy,
+    )
+
+    reviewer_id = "independent-reviewer-b-cr010"
+    policy = {
+        "schema_version": "control_plane.entry_policy.v1",
+        "plan_version": PLAN_VERSION,
+        "phase": PHASE,
+        "attempt_id": ATTEMPT,
+        "identity_binding": IDENTITY,
+        "review_state": "APPROVED",
+        "reviewer_id": reviewer_id,
+        "review_receipt_sha256": "0" * 64,
+        "inventory_payload_sha256": inventory["inventory_payload_sha256"],
+        "entries": inventory["entries"],
+        "entry_count": inventory["entry_count"],
+    }
+    policy["review_receipt_sha256"] = reviewed_policy_receipt_sha256(policy)
+    payload_without_hash = dict(policy)
+    payload_without_hash.pop("policy_payload_sha256", None)
+    policy["policy_payload_sha256"] = canonical_sha256(payload_without_hash)
+    policy_raw = canonical_json(policy).encode("utf-8")
+    validate_reviewed_entry_policy(
+        policy_raw,
+        expected_plan_version=PLAN_VERSION,
+        expected_phase=PHASE,
+        expected_attempt_id=ATTEMPT,
+        expected_identity=IDENTITY,
+        final_inventory=inventory,
+    )
+    policy_attempt_ref = (
+        f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+        "reviewed_entry_policy.json"
+    )
+    (ROOT / policy_attempt_ref).write_text(
+        policy_raw.decode("utf-8"), encoding="utf-8", newline="\n"
+    )
+    policy_file_sha = hashlib.sha256(policy_raw).hexdigest()
+    policy_namespace_ref = (
+        f"research_state/control_plane/policies/{policy_file_sha}.json"
+    )
+    (ROOT / policy_namespace_ref).write_text(
+        policy_raw.decode("utf-8"), encoding="utf-8", newline="\n"
+    )
+
+    # 5) commit everything in ONE commit (freeze identity stays valid)
     commit(
-        [freeze_ref, inventory_ref, baseline_ref, scheduler_ref],
-        f"audit: {ATTEMPT} freeze/inventory/baseline/scheduler (CR-010, add-only)",
+        [freeze_ref, inventory_ref, baseline_ref, scheduler_ref,
+         policy_attempt_ref, policy_namespace_ref],
+        f"audit: {ATTEMPT} freeze/inventory/baseline/scheduler/policy (CR-010, add-only)",
     )
 
     print(

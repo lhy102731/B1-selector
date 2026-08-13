@@ -105,7 +105,7 @@ def main() -> int:
         expected_identity=IDENTITY,
         final_inventory=inventory,
     )
-    (ROOT / policy_ref).write_text(raw.decode("utf-8") + "\n",
+    (ROOT / policy_ref).write_text(raw.decode("utf-8"),
                                    encoding="utf-8", newline="\n")
     if git("status", "--porcelain", "--", policy_ref).strip():
         commit([policy_ref],

@@ -204,7 +204,7 @@ def main() -> int:
         "task_report_gate_013.json"
     )
     (ROOT / report_ref).write_text(
-        canonical_json(task_report) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(task_report), encoding="utf-8", newline="\n"
     )
 
     draft = {
@@ -269,7 +269,7 @@ def main() -> int:
     gate_path = ROOT / gate_ref
     gate_path.parent.mkdir(parents=True, exist_ok=True)
     gate_path.write_text(
-        canonical_json(report) + "\n", encoding="utf-8", newline="\n"
+        canonical_json(report), encoding="utf-8", newline="\n"
     )
     print("GATE_BUILT", report["verdict"], report["gate_report_sha256"][:16])
 
