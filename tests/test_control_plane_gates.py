@@ -36,6 +36,7 @@ from research_automation.control_plane.gates import (
     PhaseGateCloser,
     PhaseGateVerifier,
     parse_gate_report_v1_bytes,
+    validate_closure_receipt,
     validate_gate_report,
 )
 from research_automation.control_plane.stores import (
@@ -2940,6 +2941,105 @@ class PhaseGateBuilderTests(unittest.TestCase):
             self.assertIsNotNone(capability_stdin.requested_size)
             self.assertGreaterEqual(capability_stdin.requested_size, 0)
             self.assertLessEqual(capability_stdin.requested_size, 4097)
+
+
+
+
+class ClosureReceiptUtcTests(unittest.TestCase):
+    """CR-010 F-01: closure receipts must be canonical UTC + causally bound."""
+
+    def _receipt(
+        self,
+        *,
+        closed_at: str = "2026-08-14T02:00:00Z",
+        phase: str = "P0",
+        attempt_id: str = "p0-attempt-013",
+        gate_hash: str = "a" * 64,
+        closure_id: str = "b" * 64,
+        verdict: str = "PASS",
+        schema: str = "control_plane.phase_gate_closure_receipt.v1",
+    ) -> dict[str, object]:
+        return {
+            "schema": schema,
+            "phase": phase,
+            "attempt_id": attempt_id,
+            "closure_id": closure_id,
+            "grant_id": "coordinator-grant-test",
+            "gate_ref": (
+                "research_state/control_plane/p0/attempts/p0-attempt-013/"
+                "gates/official_p0_gate_v342_cr010.json"
+            ),
+            "gate_report_sha256": gate_hash,
+            "closed_at": closed_at,
+            "verdict": verdict,
+            "tickets": ["t" * 64],
+            "trust_root": "test",
+        }
+
+    def test_valid_utc_receipt_passes(self) -> None:
+        receipt = self._receipt()
+        parsed = validate_closure_receipt(
+            receipt,
+            expected_phase="P0",
+            expected_attempt_id="p0-attempt-013",
+            expected_gate_report_sha256="a" * 64,
+        )
+        self.assertEqual(parsed.isoformat().replace("+00:00", "Z"),
+                         "2026-08-14T02:00:00Z")
+
+    def test_local_offset_receipt_rejected(self) -> None:
+        # The old defect: closed_at written as +08:00 while the gate is Z.
+        receipt = self._receipt(closed_at="2026-08-14T02:00:00+08:00")
+        with self.assertRaisesRegex(
+            GateValidationError,
+            "closed_at must be canonical UTC",
+        ):
+            validate_closure_receipt(
+                receipt,
+                expected_phase="P0",
+                expected_attempt_id="p0-attempt-013",
+                expected_gate_report_sha256="a" * 64,
+            )
+
+    def test_wrong_phase_or_attempt_rejected(self) -> None:
+        receipt = self._receipt(phase="P6")
+        with self.assertRaisesRegex(
+            GateValidationError,
+            "closure receipt phase mismatch",
+        ):
+            validate_closure_receipt(
+                receipt,
+                expected_phase="P0",
+                expected_attempt_id="p0-attempt-013",
+                expected_gate_report_sha256="a" * 64,
+            )
+
+    def test_wrong_gate_hash_rejected(self) -> None:
+        receipt = self._receipt(gate_hash="c" * 64)
+        with self.assertRaisesRegex(
+            GateValidationError,
+            "closure receipt binds a different gate report hash",
+        ):
+            validate_closure_receipt(
+                receipt,
+                expected_phase="P0",
+                expected_attempt_id="p0-attempt-013",
+                expected_gate_report_sha256="a" * 64,
+            )
+
+    def test_unknown_field_rejected(self) -> None:
+        receipt = self._receipt()
+        receipt["bogus"] = "x"
+        with self.assertRaisesRegex(
+            GateValidationError,
+            "closure receipt has an invalid field contract",
+        ):
+            validate_closure_receipt(
+                receipt,
+                expected_phase="P0",
+                expected_attempt_id="p0-attempt-013",
+                expected_gate_report_sha256="a" * 64,
+            )
 
 
 if __name__ == "__main__":

@@ -639,9 +639,85 @@ def validate_gate_report(report: Mapping[str, object]) -> None:
         raise GateValidationError("gate_report_sha256 mismatch")
 
 
+CLOSURE_RECEIPT_V1 = "control_plane.phase_gate_closure_receipt.v1"
+_CLOSURE_RECEIPT_FIELDS = frozenset(
+    {
+        "schema",
+        "phase",
+        "attempt_id",
+        "closure_id",
+        "grant_id",
+        "gate_ref",
+        "gate_report_sha256",
+        "closed_at",
+        "verdict",
+        "tickets",
+        "trust_root",
+    }
+)
+
+
+def validate_closure_receipt(
+    receipt: Mapping[str, object],
+    *,
+    expected_phase: str,
+    expected_attempt_id: str,
+    expected_gate_report_sha256: str,
+) -> datetime:
+    """Validate a closure receipt (CR-010 F-01).
+
+    The receipt must:
+    - carry the exact closure receipt schema and field contract;
+    - bind the expected phase/attempt/gate-report hash;
+    - declare ``closed_at`` as canonical UTC (Z), never a local offset;
+    - declare ``verdict`` PASS/FAIL and a closure_id sha256.
+    Returns the parsed UTC closed_at for causality checks against the gate.
+    """
+    if not isinstance(receipt, Mapping):
+        raise GateValidationError("closure receipt must be a mapping")
+    if set(receipt) != _CLOSURE_RECEIPT_FIELDS:
+        raise GateValidationError(
+            "closure receipt has an invalid field contract"
+        )
+    if receipt["schema"] != CLOSURE_RECEIPT_V1:
+        raise GateValidationError("closure receipt schema is unsupported")
+    if receipt["phase"] != expected_phase:
+        raise GateValidationError("closure receipt phase mismatch")
+    if receipt["attempt_id"] != expected_attempt_id:
+        raise GateValidationError("closure receipt attempt mismatch")
+    gate_hash = _require_sha256(
+        receipt["gate_report_sha256"],
+        "closure_receipt.gate_report_sha256",
+    )
+    if gate_hash != expected_gate_report_sha256:
+        raise GateValidationError(
+            "closure receipt binds a different gate report hash"
+        )
+    closure_id = _require_sha256(
+        receipt["closure_id"],
+        "closure_receipt.closure_id",
+    )
+    if receipt["verdict"] not in ("PASS", "FAIL"):
+        raise GateValidationError("closure receipt verdict is invalid")
+    closed_at_text = _require_nonempty(
+        receipt["closed_at"],
+        "closure_receipt.closed_at",
+    )
+    try:
+        parsed = datetime.fromisoformat(
+            closed_at_text.replace("Z", "+00:00")
+        )
+    except ValueError as error:
+        raise GateValidationError("closure receipt closed_at is invalid") from error
+    if parsed.tzinfo is None or _utc_text(parsed) != closed_at_text:
+        raise GateValidationError(
+            "closure receipt closed_at must be canonical UTC"
+        )
+    return parsed
+
+
 class PhaseGateBuilder:
     """Build a gate candidate while keeping verdict fields controller-owned."""
-
     __slots__ = ("_clock",)
 
     def __init__(
