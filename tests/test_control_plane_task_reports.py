@@ -1773,5 +1773,110 @@ class TaskReportV2TracerTests(unittest.TestCase):
             validate_task_report_v2(report)
 
 
+class TestReceiptContractTests(unittest.TestCase):
+    """CR-010 F-05: full-contract test receipts + legacy compatibility."""
+
+    def _legacy_report(self) -> dict[str, object]:
+        report = TaskReportV2TracerTests()._complete_report()
+        return report
+
+    def _contract(self) -> dict[str, object]:
+        return {
+            "executable": "C:\python\python.exe",
+            "cwd": "D:\workspace\a-share-quant-selector-main",
+            "runtime_version": "Python 3.13",
+            "lock_hash": "a" * 64,
+            "candidate_commit": "b" * 64,
+            "candidate_tree": "c" * 64,
+            "started_at_utc": "2026-08-14T00:00:00Z",
+            "completed_at_utc": "2026-08-14T00:05:00Z",
+            "stdout_ref": "research_state/control_plane/full_discovery.log",
+            "stdout_sha256": "d" * 64,
+            "stderr_ref": "research_state/control_plane/full_discovery.err",
+            "stderr_sha256": "e" * 64,
+        }
+
+    def test_legacy_receipt_without_contract_still_validates(self) -> None:
+        report = self._legacy_report()
+        for receipt in report["test_receipts"]:
+            self.assertNotIn("candidate_commit", receipt)
+        validate_task_report_v2(report)  # must not raise
+
+    def test_new_style_receipt_with_full_contract_validates(self) -> None:
+        report = self._legacy_report()
+        contract = self._contract()
+        receipt = report["test_receipts"][0]
+        receipt.update(contract)
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+        validate_task_report_v2(report)  # must not raise
+
+    def test_new_style_receipt_missing_contract_fields_rejected(self) -> None:
+        report = self._legacy_report()
+        contract = self._contract()
+        receipt = report["test_receipts"][0]
+        receipt.update(contract)
+        del receipt["stdout_sha256"]
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "test_receipts\[0\] is missing fields: stdout_sha256",
+        ):
+            validate_task_report_v2(report)
+
+    def test_new_style_receipt_unknown_contract_field_rejected(self) -> None:
+        report = self._legacy_report()
+        contract = self._contract()
+        receipt = report["test_receipts"][0]
+        receipt.update(contract)
+        receipt["bogus_extra"] = "x"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "test_receipts\[0\] contains unknown fields: bogus_extra",
+        ):
+            validate_task_report_v2(report)
+
+    def test_new_style_receipt_non_utc_timestamp_rejected(self) -> None:
+        report = self._legacy_report()
+        contract = self._contract()
+        receipt = report["test_receipts"][0]
+        receipt.update(contract)
+        receipt["started_at_utc"] = "2026-08-14T08:00:00+08:00"
+        report["report_payload_sha256"] = task_report_v2_payload_sha256(report)
+        with self.assertRaisesRegex(
+            TaskReportValidationError,
+            "started_at_utc must be normalized to UTC",
+        ):
+            validate_task_report_v2(report)
+
+    def test_builder_stamps_contract_from_receipt_contract_block(self) -> None:
+        draft = TaskReportV2TracerTests()._complete_report()
+        draft.pop("report_payload_sha256", None)
+        draft.pop("schema_version", None)
+        draft.pop("outcome", None)
+        draft.pop("reason_codes", None)
+        draft.pop("unexpected_changes", None)
+        receipt = draft["test_receipts"][0]
+        receipt["candidate_commit"] = "b" * 64  # mark new-style
+        draft["receipt_contract"] = self._contract()
+        report = build_task_report_v2(draft)
+        stamped = report["test_receipts"][0]
+        self.assertEqual(stamped["executable"], self._contract()["executable"])
+        self.assertEqual(stamped["candidate_tree"], "c" * 64)
+        self.assertEqual(stamped["stdout_sha256"], "d" * 64)
+
+    def test_builder_keeps_legacy_receipts_untouched(self) -> None:
+        draft = TaskReportV2TracerTests()._complete_report()
+        draft.pop("report_payload_sha256", None)
+        draft.pop("schema_version", None)
+        draft.pop("outcome", None)
+        draft.pop("reason_codes", None)
+        draft.pop("unexpected_changes", None)
+        report = build_task_report_v2(draft)
+        for receipt in report["test_receipts"]:
+            self.assertNotIn("candidate_commit", receipt)
+            self.assertNotIn("executable", receipt)
+
+
 if __name__ == "__main__":
     unittest.main()

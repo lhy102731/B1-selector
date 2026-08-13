@@ -44,8 +44,54 @@ _REQUIREMENT_FIELDS = frozenset(
     }
 )
 _SIDE_EFFECT_SUMMARY_FIELDS = frozenset({"observed", "unauthorized"})
+# Base closed field set for LEGACY test receipts (CR-010 F-05 keeps legacy
+# receipts valid); new-style receipts additionally carry the full contract
+# fields below and are validated as a closed superset.
 _TEST_RECEIPT_FIELDS = frozenset(
     {"receipt_id", "command", "exit_code", "result"}
+)
+# CR-010 F-05 full contract (plan receipt contract): executable, cwd,
+# runtime version, lock hash, candidate commit/tree, UTC start/end,
+# stdout/stderr refs + hashes.  A new-style receipt (identified by
+# candidate_commit) must carry EXACTLY this closed set.
+_TEST_RECEIPT_CONTRACT_FIELDS = frozenset(
+    {
+        "receipt_id",
+        "command",
+        "exit_code",
+        "result",
+        "executable",
+        "cwd",
+        "runtime_version",
+        "lock_hash",
+        "candidate_commit",
+        "candidate_tree",
+        "started_at_utc",
+        "completed_at_utc",
+        "stdout_ref",
+        "stdout_sha256",
+        "stderr_ref",
+        "stderr_sha256",
+    }
+)
+# Ordered contract fields for the builder's completeness message.
+_TEST_RECEIPT_CONTRACT_ORDER = (
+    "receipt_id",
+    "command",
+    "exit_code",
+    "result",
+    "executable",
+    "cwd",
+    "runtime_version",
+    "lock_hash",
+    "candidate_commit",
+    "candidate_tree",
+    "started_at_utc",
+    "completed_at_utc",
+    "stdout_ref",
+    "stdout_sha256",
+    "stderr_ref",
+    "stderr_sha256",
 )
 _REVIEW_RECEIPT_FIELDS = frozenset(
     {
@@ -177,6 +223,22 @@ def _require_aware_timestamp(value: object, field_name: str) -> datetime:
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise TaskReportValidationError(
             f"{field_name} must be a timezone-aware ISO-8601 timestamp"
+        )
+    return parsed
+
+
+def _require_utc_timestamp(value: object, field_name: str) -> datetime:
+    """Require an ISO-8601 timestamp normalized to UTC (CR-010 F-01/F-05).
+
+    The gate/closure time-causality contract requires a single time base:
+    ``Z`` (UTC) or an explicit ``+00:00`` offset.  A non-UTC offset is
+    rejected so a closure can never be mechanically compared against a gate
+    on a different time base.
+    """
+    parsed = _require_aware_timestamp(value, field_name)
+    if parsed.utcoffset().total_seconds() != 0:
+        raise TaskReportValidationError(
+            f"{field_name} must be normalized to UTC (Z or +00:00)"
         )
     return parsed
 
@@ -345,6 +407,41 @@ def _validate_receipt_common(
         raise TaskReportValidationError(
             f"{field_name} PASS requires exit_code 0"
         )
+    # CR-010 F-05: a NEW-style receipt (identified by having a
+    # candidate_commit) must carry the FULL contract.
+    if "candidate_commit" in receipt:
+        _require_non_empty_string(
+            receipt["executable"], f"{field_name}.executable"
+        )
+        _require_non_empty_string(receipt["cwd"], f"{field_name}.cwd")
+        _require_non_empty_string(
+            receipt["runtime_version"], f"{field_name}.runtime_version"
+        )
+        _require_sha256(receipt["lock_hash"], f"{field_name}.lock_hash")
+        _require_sha256(
+            receipt["candidate_commit"], f"{field_name}.candidate_commit"
+        )
+        _require_sha256(
+            receipt["candidate_tree"], f"{field_name}.candidate_tree"
+        )
+        _require_utc_timestamp(
+            receipt["started_at_utc"], f"{field_name}.started_at_utc"
+        )
+        _require_utc_timestamp(
+            receipt["completed_at_utc"], f"{field_name}.completed_at_utc"
+        )
+        _require_non_empty_string(
+            receipt["stdout_ref"], f"{field_name}.stdout_ref"
+        )
+        _require_sha256(
+            receipt["stdout_sha256"], f"{field_name}.stdout_sha256"
+        )
+        _require_non_empty_string(
+            receipt["stderr_ref"], f"{field_name}.stderr_ref"
+        )
+        _require_sha256(
+            receipt["stderr_sha256"], f"{field_name}.stderr_sha256"
+        )
 
 
 def review_findings_sha256(
@@ -417,11 +514,21 @@ def _receipt_results(
                 f"{field_name}[{index}] must be a mapping"
             )
         if field_name == "test_receipts":
-            _require_closed_mapping(
-                receipt,
-                f"{field_name}[{index}]",
-                _TEST_RECEIPT_FIELDS,
-            )
+            # CR-010 F-05: new-style receipts (candidate_commit present)
+            # must be a closed mapping over the FULL contract; legacy
+            # receipts use the base 4-field set.
+            if "candidate_commit" in receipt:
+                _require_closed_mapping(
+                    receipt,
+                    f"{field_name}[{index}]",
+                    _TEST_RECEIPT_CONTRACT_FIELDS,
+                )
+            else:
+                _require_closed_mapping(
+                    receipt,
+                    f"{field_name}[{index}]",
+                    _TEST_RECEIPT_FIELDS,
+                )
             _validate_receipt_common(receipt, f"{field_name}[{index}]")
             _require_non_empty_string(
                 receipt["command"],
@@ -951,6 +1058,17 @@ def build_task_report_v2(draft: Mapping[str, object]) -> dict[str, object]:
         )
 
     report = dict(draft)
+    # CR-010 F-05: stamp the full contract on every new-style test receipt.
+    # The builder fills missing contract fields from the draft's receipt
+    # metadata or environment; a new-style receipt (one that already carries
+    # candidate_commit) is validated for completeness by validate_task_report_v2.
+    # The receipt_contract block is builder input only and is never part of
+    # the emitted report.
+    report["test_receipts"] = _stamp_test_receipt_contract(
+        report.get("test_receipts"),
+        draft,
+    )
+    report.pop("receipt_contract", None)
     report["schema_version"] = TASK_REPORT_V2
     try:
         report["unexpected_changes"] = _derive_unexpected_changes(report)
@@ -967,6 +1085,40 @@ def build_task_report_v2(draft: Mapping[str, object]) -> dict[str, object]:
     ) as error:
         raise TaskReportBuildError(str(error)) from error
     return report
+
+
+def _stamp_test_receipt_contract(
+    receipts: object,
+    draft: Mapping[str, object],
+) -> list[object]:
+    """Stamp full-contract fields onto new-style test receipts.
+
+    Legacy receipts (no ``candidate_commit``) are returned untouched.  For a
+    new-style receipt, every missing contract field is filled from the draft
+    ``receipt_contract`` block (executable/cwd/runtime_version/lock_hash/
+    candidate_commit/candidate_tree/started_at_utc/completed_at_utc and the
+    stdout/stderr refs + hashes), so a caller can build a full-contract
+    receipt without repeating the environment values on every item.
+    """
+    if not isinstance(receipts, list):
+        return receipts if isinstance(receipts, list) else []
+    contract = draft.get("receipt_contract")
+    if not isinstance(contract, Mapping):
+        contract = {}
+    stamped: list[object] = []
+    for receipt in receipts:
+        if not isinstance(receipt, Mapping):
+            stamped.append(receipt)
+            continue
+        if "candidate_commit" not in receipt:
+            stamped.append(receipt)
+            continue
+        filled = dict(receipt)
+        for field_name in _TEST_RECEIPT_CONTRACT_FIELDS:
+            if field_name not in filled and field_name in contract:
+                filled[field_name] = contract[field_name]
+        stamped.append(filled)
+    return stamped
 
 
 def _reject_duplicate_json_keys(
