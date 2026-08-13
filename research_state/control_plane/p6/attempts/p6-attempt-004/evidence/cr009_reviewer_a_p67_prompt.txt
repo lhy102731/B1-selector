@@ -1,0 +1,44 @@
+You are an independent reviewer (Reviewer A) for the P6/P7
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Bind your review to the committed evidence only.
+
+CONTEXT:
+- P6 gate p6-attempt-004: coordinator activation ticket 0324bfd4... (733
+  campaign tests), policy activation 8749513e..., gate PASS/VERIFIED/CLOSED
+  (closure 87e58b3e...), committed-blob evidence
+  activation-0324bfd487deff14.json with evidence_sha256 == blob bytes.
+- P7 gate p7-attempt-003: coordinator activation ticket 4295569e... (51
+  operations tests), policy activation d73a2a03..., gate PASS/VERIFIED/
+  CLOSED (closure e3445b76...), committed-blob evidence
+  activation-4295569e6035cf35.json.
+- The coordinator was fixed to write the manifest phase (P6/P7) instead of
+  hardcoded P0 -- this was the root cause of the old cross-phase evidence
+  aliasing (F-01). Tickets/grants/authorizations all record phase P6/P7.
+- Full discovery: 2566 tests exit 0 (p0 receipt).
+
+EVIDENCE TO REVIEW (committed at current HEAD):
+- research_state/control_plane/p6/attempts/p6-attempt-004/gates/
+  official_p6_gate_v342_cr009.json
+- research_state/control_plane/p6/attempts/p6-attempt-004/evidence/
+  activation-0324bfd487deff14.json, policy_activation_receipt.json,
+  official_p6_closure_receipt_v342_cr009.json
+- research_state/control_plane/p7/attempts/p7-attempt-003/gates/
+  official_p7_gate_v342_cr009.json
+- research_state/control_plane/p7/attempts/p7-attempt-003/evidence/
+  activation-4295569e6035cf35.json, policy_activation_receipt.json,
+  official_p7_closure_receipt_v342_cr009.json
+- research_automation/control_plane/activation_coordinator.py (phase fix)
+- research_automation/control_plane/gates.py (evidence dereference)
+
+QUESTIONS:
+1. Do the P6/P7 gates bind real committed evidence blobs whose
+   evidence_sha256 equals the blob bytes hash (not path strings)?
+2. Is the phase binding now correct (P6/P7 in tickets/grants/
+   authorizations/gates)?
+3. Are the TaskReports requirements non-empty and authority-bound?
+4. Are the closure receipts consistent with the gate reports and the
+   authority closure rows?
+5. Any remaining cross-phase aliasing or dangling evidence refs?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

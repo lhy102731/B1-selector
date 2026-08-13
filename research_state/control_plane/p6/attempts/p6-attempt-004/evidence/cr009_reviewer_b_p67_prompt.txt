@@ -1,0 +1,39 @@
+You are an independent reviewer (Reviewer B) for the P6/P7
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Your review is fully independent of Reviewer A: reach
+your own verdict from the committed evidence.
+
+CONTEXT:
+- P6 gate p6-attempt-004 (closure 87e58b3e...): coordinator activation
+  0324bfd4... (733 campaign tests OK), policy activation 8749513e...,
+  committed-blob evidence activation-0324bfd487deff14.json.
+- P7 gate p7-attempt-003 (closure e3445b76...): coordinator activation
+  4295569e... (51 operations tests OK), policy activation d73a2a03...,
+  committed-blob evidence activation-4295569e6035cf35.json.
+- Coordinator phase fix: manifest phase now written to authorizations/
+  grants/tickets (was hardcoded P0) -- the F-01 cross-phase aliasing root.
+- Full discovery 2566 tests exit 0.
+
+EVIDENCE (committed at current HEAD):
+- research_state/control_plane/p6/attempts/p6-attempt-004/gates/
+  official_p6_gate_v342_cr009.json and evidence/*.json
+- research_state/control_plane/p7/attempts/p7-attempt-003/gates/
+  official_p7_gate_v342_cr009.json and evidence/*.json
+- research_automation/control_plane/activation_coordinator.py (phase fix)
+- research_automation/control_plane/gates.py (evidence dereference)
+
+ADVERSARIAL QUESTIONS:
+1. Can you construct a P6/P7 TaskReport that still PASSes the gate with a
+   fake/dangling/wrong-phase evidence ref, or with requirements binding
+   nothing? Walk the verification path.
+2. Is the committed blob evidence_sha256 binding correct (bytes hash, not
+   path string) for both activation evidence files?
+3. Are phase bindings consistent end-to-end (envelope -> authorization ->
+   grant -> ticket -> TaskReport -> gate -> closure)?
+4. Do the closure receipts match the authority closure rows and gate
+   report hashes?
+5. Is there any remaining evidence committed after its gate/closure (the
+   old F-03 timing violation)?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

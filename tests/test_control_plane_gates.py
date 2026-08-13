@@ -1598,6 +1598,39 @@ class PhaseGateBuilderTests(unittest.TestCase):
                 "requirements are empty; the gate binds nothing",
             ):
                 fixture.verifier.verify(fixture.report)
+    def test_verifier_rejects_evidence_blob_ticket_mismatch(self) -> None:
+        """CR-009 (Reviewer B-01): a committed evidence blob whose content
+        binds a different ticket must fail the semantic check even when the
+        blob hash matches."""
+        evidence_ref = (
+            "research_state/control_plane/p0/attempts/p0r2-attempt-001/"
+            "evidence/activation-evidence-010.json"
+        )
+        evidence_bytes = canonical_json(
+            {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": "coordinator-evidence-010",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+                "ticket_id": "forged-ticket",
+            }
+        ).encode("utf-8")
+        evidence_entry = {
+            "evidence_id": "coordinator-evidence-010",
+            "evidence_ref": evidence_ref,
+            "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+            "status": "VERIFIED",
+        }
+        with self._trusted_gate_fixture(
+            evidence_refs=(evidence_entry,),
+            evidence_files=((evidence_ref, evidence_bytes),),
+        ) as fixture:
+            with self.assertRaisesRegex(
+                GateEvidenceError,
+                "ticket_id does not match the TaskReport ticket",
+            ):
+                fixture.verifier.verify(fixture.report)
+
     def test_verifier_rejects_evidence_ref_with_parent_segments(self) -> None:
         """CR-009 negative (Reviewer B-1): a crafted evidence ref using '..'
         segments must fail closed at TaskReport parse time before any

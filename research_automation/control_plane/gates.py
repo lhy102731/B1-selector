@@ -852,6 +852,38 @@ class PhaseGateVerifier:
                     "TaskReport evidence SHA-256 does not match the "
                     "committed blob: " + evidence_ref
                 )
+            # CR-009 (Reviewer B-01): the blob hash alone does not prove the
+            # evidence belongs to this ticket; bind the evidence document's
+            # declared identity to the TaskReport ticket.
+            try:
+                evidence_document = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise GateEvidenceError(
+                    "TaskReport evidence blob is not valid JSON: "
+                    + evidence_ref
+                ) from error
+            if not isinstance(evidence_document, Mapping):
+                raise GateEvidenceError(
+                    "TaskReport evidence blob is not an object: " + evidence_ref
+                )
+            if "ticket_id" in evidence_document:
+                # CR-009 (Reviewer B-01): when the evidence document declares
+                # a ticket binding, it must match the TaskReport ticket.
+                if str(evidence_document.get("ticket_id", "")) != str(
+                    task_report["ticket_id"]
+                ):
+                    raise GateEvidenceError(
+                        "TaskReport evidence blob ticket_id does not match "
+                        "the TaskReport ticket: " + evidence_ref
+                    )
+            if "evidence_id" in evidence_document:
+                if str(evidence_document.get("evidence_id", "")) != str(
+                    evidence["evidence_id"]
+                ):
+                    raise GateEvidenceError(
+                        "TaskReport evidence blob evidence_id does not match "
+                        "the declared ref: " + evidence_ref
+                    )
 
     def _verify_task_report_requirements(
         self,

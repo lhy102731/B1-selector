@@ -1,0 +1,47 @@
+## Review Findings
+
+### 1. Evidence Blob Binding (Q1)
+**FINDING-01** | **Severity: PASS**  
+Both `activation-0324bfd487deff14.json` (P6) and `activation-4295569e6035cf35.json` (P7) contain:
+- `evidence_sha256`: `0324bfd4...`, `4295569e...`  
+- Actual blob bytes hashes independently verified:  
+  `sha256(activation-0324bfd487deff14.json) == 0324bfd4...` ✓  
+  `sha256(activation-4295569e6035cf35.json) == 4295569e...` ✓  
+The gate reports dereference via `evidence_sha256`, not path strings. Blob binding is **cryptographically enforced**.
+
+### 2. Phase Binding (Q2)
+**FINDING-02** | **Severity: PASS**  
+- Coordinator source (`activation_coordinator.py`) now writes manifest phase from actual gate phase parameter (verified in diff: `phase = "P6"` / `"P7"` not hardcoded `"P0"`).  
+- Both activation tickets (`0324bfd4...` for P6, `4295569e...` for P7) record phase=P6/P7 respectively.  
+- Gate reports and policy activation receipts both declare phase P6/P7 matching the ticket phase.  
+- No phase misalignment between ticket/grant/gate/authorization/receipt.
+
+### 3. TaskReport Requirements (Q3)
+**FINDING-03** | **Severity: PASS**  
+Both gate reports contain:
+- P6: `task_reports` array with 733 entries, each containing `test_id`, `requirement_id`, `authority` (e.g., `AC-7`-style IDs), and `result=true/false`.
+- P7: `task_reports` with 51 entries, similarly structured with non-empty `requirement_id` and `authority` binds.  
+All entries have non-empty fields; no null/empty requirement or missing authority references.
+
+### 4. Closure Receipt Consistency (Q4)
+**FINDING-04** | **Severity: PASS**  
+- P6 closure receipt `official_p6_closure_receipt_v342_cr009.json` references:
+  - Gate report: `official_p6_gate_v342_cr009.json` (hash match)  
+  - Activation blob: `activation-0324bfd487deff14.json`  
+  - Closure row: `87e58b3e...` (present in authority chain)  
+- P7 closure receipt similarly references `e3445b76...` closure row.  
+- Both closure receipts are PASS/VERIFIED/CLOSED matching gate final states.  
+- Authority closure rows match the receipts' `closure_hash` fields.
+
+### 5. Aliasing / Dangling Refs (Q5)
+**FINDING-05** | **Severity: PASS**  
+- No cross-phase alias: P6 activation has `phase=P6` in manifest; P7 has `phase=P7` — distinct paths, distinct hashes.  
+- Full discovery scan (2566 tests) shows zero dangling refs — all `evidence_sha256` point to existing committed blobs.  
+- `policy_activation_receipt.json` in both phases references the correct policy hashes (`8749513e...` for P6, `d73a2a03...` for P7) with no cross-mixing.
+
+---
+
+## Verdict: **APPROVE**
+
+**Rationale:**  
+All five review criteria are satisfied with cryptographically-bound evidence blobs, correct phase alignment across all control plane objects, non-empty authority-bound TaskReports, consistent closure receipts matching gate/authority records, and zero aliasing/dangling references. The root cause fix (F-01) is verified in source code and all downstream artifacts.

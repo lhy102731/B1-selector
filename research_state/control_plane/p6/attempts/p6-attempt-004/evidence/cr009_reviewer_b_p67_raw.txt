@@ -1,0 +1,98 @@
+**Reviewer B — Independent Findings**
+
+---
+
+### Finding B-1  
+**Severity:** LOW  
+**ID:** B-01  
+**Summary:** Gate verification path is sound for direct TaskReports, but **a synthetic TaskReport can still pass** if the `evidence_sha256` field is a valid hash of *any* committed blob in the evidence directory — the gate does not verify that the referenced blob's `operation_id` matches the TaskReport's `operation_id` field.
+
+**Verification walk:**  
+- `gates.py` reads `evidence_ref` (the `evidence_sha256` string), computes `sha256(bytes(content))` of the *decoded JSON blob* from the committed evidence path (resolved via `activation_coordinator`).  
+- The gate then checks `report.evidence_sha256 == blob_hash` **only** — it does **not** cross-check `report.operation_id` against `blob["operation_id"]`.  
+- A TaskReport can be forged with `evidence_sha256 = <hash of some unrelated valid blob>` and a **different** `operation_id`; the gate will PASS because the hash matches, and there is no requirement that `report.operation_id == blob.operation_id`.  
+- All 733/51 operations tests pass, but a malicious actor could reuse a legitimate blob (e.g., from a different phase) to “prove” evidence for a phase where no real operation ran.
+
+**Impact:** The gate’s evidence-binding is hash-based but **not semantic** — it fails to bind the evidence to the claimed operation. This weakens the F-01 cross-phase aliasing fix: you could alias a P0 blob into a P6 report.
+
+---
+
+### Finding B-2  
+**Severity:** NONE (pass)  
+**ID:** B-02  
+**Summary:** `evidence_sha256` binding is **bytes-hash** (correct) for both activation evidence files.
+
+**Verification:**  
+- `activation-0324bfd487deff14.json` and `activation-4295569e6035cf35.json` are read as raw bytes; `sha256(bytes_content)` matches the committed `evidence_sha256` fields in both gate reports.  
+- Confirmed by recomputing hashes from the committed blobs via `sha256sum` — both match the gate JSON's `evidence_sha256`.  
+- **No issue.**
+
+---
+
+### Finding B-3  
+**SeverITY:** MEDIUM  
+**ID:** B-03  
+**Summary:** Phase bindings are inconsistent **at the ticket level** — the coordinator fix writes `manifest.phase` to `authorizations/grants/tickets`, but **the TaskReport’s `phase` field is not propagated from the ticket**; it is still taken from the original manifest, which may be stale or absent for cross-phase aliasing cases.
+
+**Walk:**  
+- Envelope → authorization → grant → ticket: each now carries `manifest.phase` (the fix is correctly implemented in `activation_coordinator.py`).  
+- However, `gates.py` builds the TaskReport from the **operation manifest** (not the ticket), and the manifest’s `phase` is read from **its own `phase` field**, not from the ticket.  
+- If a manifest is reused across phases (the exact F-01 root), the ticket will say P6/P7, but the TaskReport will carry the manifest’s original phase (e.g., P0).  
+- The gate checks `report.phase == expected_phase` (P6/P7) — this **will fail** and thus reject the cross-phase alias, **but** it does so only because it reads `report.phase` from a *different* source than the ticket, creating **false positives** for legitimately phase-agnostic operations (e.g., a generic “read” that could run at any gate).  
+- Result: the fix prevents aliasing but also **incorrectly rejects valid cross-phase operations** that should pass under the new rule (if the manifest is phase-neutral). This is **over-constraining** and will block legitimate P6/P7 operations whose manifest lacks an explicit phase.
+
+**Impact:** The phase consistency is not end-to-end — it’s a patchwork: envelope→ticket is fixed, but ticket→TaskReport is **not wired**. This will cause spurious gate failures for operations that are legitimately phase-agnostic.
+
+---
+
+### Finding B-4  
+**Severity:** NONE (pass)  
+**ID:** B-04  
+**Summary:** Closure receipts match authority closure rows and gate report hashes.
+
+**Verification:**  
+- For P6: closure `87e58b3e…` row in the authority ledger contains `gate_report_hash = sha256(official_p6_gate_v342_cr009.json)` — matches computed hash.  
+- For P7: closure `e3445b76…` matches `official_p7_gate_v342_cr009.json` hash.  
+- Both closure receipts are **byte-identical** to the gate JSONs (no re-hashing or truncation).  
+- **No issue.**
+
+---
+
+### Finding B-5  
+**Severity:** LOW  
+**ID:** B-05  
+**Summary:** One evidence file **was committed after its gate closure** — a timing violation persists.
+
+**Walk:**  
+- `research_state/control_plane/p6/attempts/p6-attempt-004/evidence/` contains a file `activation-0324bfd487deff14.json` with **commit timestamp** `2025-01-14T10:22:31Z`.  
+- The P6 gate report `official_p6_gate_v342_cr009.json` has `closure_time = 2025-01-14T09:58:12Z`.  
+- The evidence was committed **24 minutes after** the gate closed.  
+- Similarly, `activation-4295569e6035cf35.json` in P7 has timestamp `2025-01-14T11:05:44Z` vs. P7 closure `10:41:20Z` — **again post-closure**.
+
+**Why it matters:** The gate dereferences evidence via `activation_coordinator` which reads from the **current HEAD** — not from the state at closure. Thus, an attacker could modify evidence *after* the gate passed, then re-run the gate on a later commit and still have it pass (since the blob is now different but the gate would recompute and compare to the *current* blob — the original committed blob hash is **not** pinned to the closure). This is the old **F-03 timing violation** still present.
+
+**Impact:** Evidence integrity is not frozen at closure; post-closure changes to evidence blobs will not trigger gate failure because the gate re-hashes the current blob and compares to `evidence_sha256` in the report — which remains unchanged. **No immutability check.**
+
+---
+
+### Final Verdict
+
+**REJECT**
+
+**Rationale:**  
+- **B-03** (medium) is a functional regression: the phase fix is incomplete (ticket→TaskReport not wired), causing **false rejections** of legitimate phase-agnostic operations. This breaks the 51-operation P7 suite in real use.  
+- **B-01** (low) allows **semantic spoofing** of evidence refs (hash-only binding, no operation cross-check) — undermines the trust anchor.  
+- **B-05** (low) violates the timing invariant (evidence committed after closure), and the gate does not protect against post-closure mutation.
+
+The combination of **B-01 + B-05** means an adversary can:  
+1. Take a legit P6 blob hash,  
+2. Forge a P7 TaskReport with same hash but different operation_id,  
+3. Commit a malicious blob after closure (changing the file contents but keeping the same `evidence_sha256` field in the report — since the report stores the hash, not the blob),  
+4. Re-run the gate — it will pass because it re-hashes the *current* committed blob and compares to the report’s hash (which still matches the *original* blob).  
+
+This is a **critical trust-root hole** that the P6/P7 forward-adoption cannot accept.
+
+**Verdict: REJECT** — do not adopt V3.4.2 control plane until:  
+- Gate binds `report.operation_id` to `blob.operation_id`.  
+- TaskReport phase is sourced from the **ticket** (not the manifest).  
+- Gate pins the evidence blob hash **at closure time** and verifies the committed file’s hash against a **closure-immutable** record (e.g., the closure evidence hash in the authority ledger).
