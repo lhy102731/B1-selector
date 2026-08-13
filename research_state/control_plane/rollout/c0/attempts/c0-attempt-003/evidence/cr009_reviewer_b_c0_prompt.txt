@@ -1,0 +1,27 @@
+You are an independent reviewer (Reviewer B) for the C0
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Your review is fully independent of Reviewer A.
+
+CONTEXT:
+- C0 gate c0-attempt-003 (closure 57f8de4b...): activation e64b5db2...
+  (109 tests), policy activation e0b13db7..., committed-blob evidence.
+- Rebuilt predecessor chain P0->P6->P7->P8->C0 with phase fix, committed-
+  blob evidence, dereferencing gate verifier, non-empty requirements,
+  P8 durable saga/reconciler/hard-crash, single OPEN_HOLDOUT seam.
+
+EVIDENCE (committed):
+- research_state/control_plane/rollout/c0/attempts/c0-attempt-003/**
+- research_state/control_plane/c0/attempts/c0-attempt-003/evidence/
+
+ADVERSARIAL QUESTIONS:
+1. Can you construct a C0 TaskReport that passes with a fake/dangling/
+   wrong-phase evidence ref or empty requirements?
+2. Is the coordinator evidence path (research_state/control_plane/c0/) 
+   consistent with the gate's evidence dereference?
+3. Is the predecessor chain genuinely complete (each gate closes before
+   the next opens)?
+4. Are evidence blobs committed before their gates (no F-03 timing)?
+5. Is OPEN_HOLDOUT still only declared by TrustedEvaluator?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

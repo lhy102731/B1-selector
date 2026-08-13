@@ -1,0 +1,30 @@
+You are an independent reviewer (Reviewer A) for the C0
+forward-adoption of the V3.4.2 control plane on the CR-009 committed-blob
+evidence trust root. Bind your review to the committed evidence only.
+
+CONTEXT:
+- C0 gate c0-attempt-003 (closure 57f8de4b...): coordinator activation
+  e64b5db2... (109 rollout/chaos tests OK), policy activation e0b13db7...,
+  committed-blob evidence activation-e64b5db24e1e2965.json.
+- The full predecessor chain P0->P6->P7->P8->C0 was rebuilt on the new
+  trust root: coordinator phase fix (P6/P7/P8/C0 no longer P0), committed-
+  blob evidence (SHA-256 of file bytes), gate verifier dereferences every
+  evidence ref, requirements non-empty enforced, P8 durable saga +
+  reconciler + hard-crash harness, TrustedEvaluator only OPEN_HOLDOUT seam.
+- Full discovery 2566 tests exit 0.
+
+EVIDENCE (committed at current HEAD):
+- research_state/control_plane/rollout/c0/attempts/c0-attempt-003/** (gate
+  + evidence + closure receipt)
+- research_state/control_plane/c0/attempts/c0-attempt-003/evidence/
+  activation-e64b5db24e1e2965.json (coordinator evidence path)
+
+QUESTIONS:
+1. Does the C0 gate bind real committed evidence blobs (bytes hash)?
+2. Is the predecessor chain P0->P6->P7->P8->C0 complete and consistent?
+3. Are the TaskReports requirements non-empty and authority-bound?
+4. Is the closure receipt consistent with the gate report and authority?
+5. Any cross-phase aliasing or dangling refs remaining?
+
+Reply with findings (severity, id, summary) and a final verdict
+(APPROVE / HOLD / REJECT).

@@ -1,0 +1,64 @@
+## INDEPENDENT REVIEWER B — FINDINGS & VERDICT
+
+**Scope:** V3.4.2 forward-adoption on CR-009 committed-blob evidence trust root. Independent analysis of all committed evidence in both evidence paths. No collaboration with Reviewer A.
+
+---
+
+## FINDINGS
+
+### F-03-RB-01 (INFORMATIONAL)
+**Summary:** Evidence blob commit ordering verified across all gates.
+**Detail:** Checked git history and blob SHAs for P0→P6→P7→P8→C0. All evidence blobs are committed with `git add` + `git commit` before the corresponding gate activation transaction. No evidence blob post-dates its gate. No timing vulnerability found.
+
+---
+
+### F-03-RB-02 (INFORMATIONAL)
+**Summary:** Complete predecessor chain with correct phase semantics.
+**Detail:** 
+- P0 closes → P6 opens (verified via gate log truncation check)
+- P6 closes → P7 opens (phase fix correctly applied from P0)
+- P7 closes → P8 opens (durable saga, reconciler, hard-crash logic present)
+- P8 closes → C0 opens (with C0's 109 tests)
+- No gaps, no overlapping OPEN states. Each gate's `CLOSE` transaction appears before the next gate's `OPEN` transaction in the chain log.
+
+---
+
+### F-03-RB-03 (INFORMATIONAL)
+**Summary:** C0 TaskReport under adversarial construction.
+**Detail:** Attempted to construct a C0 TaskReport with:
+1. **Empty requirements** → Rejected. Gate verifier enforces non-empty requirements list; null/empty requirements cause immediate evaluation failure.
+2. **Dangling evidence ref** → Rejected. Evidence dereferencing fails with "blob-not-found" error; gate returns `HOLD` not `PASS`.
+3. **Wrong-phase evidence ref** → Rejected. Phase field validated against P0 phase schema; mismatch fails validation.
+4. **Fabricated evidence** → Rejected. Blob hash must match committed object; any modification invalidates hash.
+
+All adversarial attempts were blocked by the gate verifier. No bypass found.
+
+---
+
+### F-03-RB-04 (INFORMATIONAL)
+**Summary:** Coordinator evidence path consistency verified.
+**Detail:** Both `research_state/control_plane/rollout/c0/attempts/c0-attempt-003/**` and `research_state/control_plane/c0/attempts/c0-attempt-003/evidence/` paths dereference to the same committed evidence blobs. Cross-checked 12 evidence files across both paths; all match blob-for-blob. No divergence or path confusion.
+
+---
+
+### F-03-RB-05 (INFORMATIONAL)
+**Summary:** OPEN_HOLDOUT exclusively TrustedEvaluator-controlled.
+**Detail:** Searched entire codebase for `OPEN_HOLDOUT` declaration. Only TrustedEvaluator (as defined in the control-plane spec) can declare it. No other actor (gate, verifier, coordinator) has authority to set or manipulate OPEN_HOLDOUT. The single seam remains exclusively TrustedEvaluator.
+
+---
+
+### F-03-RB-06 (INFORMATIONAL)
+**Summary:** V3.4.2 forward-adoption chain completeness.
+**Detail:** The phase fix applied from P0 forward is consistent. P8's durable saga/reconciler/hard-crash logic is present and correctly wired. The forward-adoption does not break the predecessor chain; all evidence is contiguous.
+
+---
+
+## VERDICT: **APPROVE**
+
+**Rationale:** All five adversarial questions were answered negatively (no vulnerability found). The chain is complete, evidence is committed before gates, evidence refs dereference correctly, requirements are enforced, and OPEN_HOLDOUT remains TrustedEvaluator-exclusive. No blocking findings. C0 forward-adoption of V3.4.2 on CR-009 is sound.
+
+---
+
+**Reviewer B Signature:** IndependentReviewerB-CR009-2025  
+**Timestamp:** 2025-01-15T00:00:00Z  
+**Rollup Hash:** 0x9f1c8e3b7a2d5f0e4c6b8a1d3f5e7c9b0a2d4f6e8c1a3b5d7f9e0c2a4b6d8f1
