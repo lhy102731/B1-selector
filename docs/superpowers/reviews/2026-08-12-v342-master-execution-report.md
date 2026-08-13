@@ -251,4 +251,4 @@ Provider：deepseek-chat / deepseek_direct（唯一可用；OpenAI/Gemini key �
 
 ## B.3 修复后验证
 
-受影响的 4 个套件 45 passed + 10 subtests；完整 control-plane suite 重跑结果见本报告更新（2026-08-13）。
+受影响的 4 个套件 45 passed + 10 subtests；完整 control-plane suite 重跑：**1765 passed + 482 subtests, 0 failed**（2026-08-13）。
