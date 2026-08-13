@@ -157,3 +157,59 @@
 
 - 本报告为 corrective recovery 综合执行总报告；已获批准前不 push、不建 PR、不 merge 到 main/production、不 deploy。
 - 建议下一会话：C1 真实 rerun（需用户单独授权真实 LLM 调用）。
+
+---
+
+# 附录 A：CR-009 Corrective Recovery 整改总账（2026-08-13）
+
+> 前置：GPT 独立审阅 `2026-08-12-v342-deepseek-execution-review.md`（HOLD，F-01 至 F-05）。
+> 本附录记录 Gate 0→F 的完整整改，并列 old/new lineage。
+
+## A.1 信任根缺陷（GPT F-01 至 F-05，全部修复）
+
+| 缺陷 | 修复 |
+|---|---|
+| F-01 evidence_sha256 是路径字符串 hash | coordinator 写入真实 canonical evidence 文件，`evidence_sha256 = SHA-256(文件 bytes)`（= committed blob hash） |
+| F-01 跨 phase refs 指向 p6-attempt-003 | evidence 路径从 manifest phase/attempt 派生；coordinator 不再硬编码 P0（phase 修复：tickets/grants/authorizations 全部写 manifest phase） |
+| F-02 verifier 不解引用嵌套 evidence | `_verify_task_report_evidence_refs` 解引用每个 VERIFIED ref（namespace + phase/attempt binding + blob hash + ticket_id 语义绑定） |
+| F-03 P6 日志晚于 Gate | 新 gate 的 evidence/receipts 全部在 gate 前提交（commit 顺序验证） |
+| F-04 task requirements 为空 | requirements 非空强制（三者全空 FAIL）；policy activation 类允许 review-only 义务 |
+| F-05 full discovery 4 failures + 8 errors 仍 PASS | 2566 tests exit 0（旧 12 个 failures 根因修复） |
+
+## A.2 old / new lineage 并列
+
+| Phase | 旧（DISPUTED，不可变保留） | 新（ACTIVE） |
+|---|---|---|
+| P0 | p0-attempt-005 / closure `9ebe251f…` | p0-attempt-012 / closure `e2ad5121…` |
+| P6 | p6-attempt-003 / closure `41db6e16…` | p6-attempt-004 / closure `87e58b3e…` |
+| P7 | p7-attempt-002 / closure `81a38917…` | p7-attempt-003 / closure `e3445b76…` |
+| P8 | p8-attempt-002 / closure `7777b794…` | p8-attempt-003 / closure `578dd875…` |
+| C0 | c0-attempt-002 / closure `c8645762…` | c0-attempt-003 / closure `57f8de4b…` |
+
+每 phase：adoption activation（真实测试 exit 0）→ TaskReport（requirements 非空 + authority binding）→ freeze/inventory/policy → policy 激活（CAS）→ gate build/verify/close → closure receipt → Reviewer A/B。
+
+## A.3 真实 Reviewer A/B 结果
+
+| Phase | Reviewer A | Reviewer B |
+|---|---|---|
+| P0 | HOLD → 全部整改 | HOLD → 全部整改 |
+| P6/P7 | APPROVE | REJECT → B-01 修复、B-03/B-05 论证不成立 |
+| P8 | APPROVE | HOLD → B-01/02/04 论证不成立（幻觉代码）、B-03 fresh-process 测试补齐 |
+| C0 | APPROVE | APPROVE |
+
+Provider：deepseek-chat / deepseek_direct（唯一可用；OpenAI/Gemini key 无效、volcano relay 不可达；已披露）。
+
+## A.4 新增生产模块
+
+`final_eval_orchestrator.py`（durable CAS saga）、`final_eval_reconciler.py`（bounded reconciler，no-reopen/no-recompute/no-reissue）；entry_guard/artifact_semantics 增加 TrustedEvaluator 唯一 OPEN_HOLDOUT seam。
+
+## A.5 约束遵守
+
+- 旧 evidence/Gate/closure/store 行零改写（add-only）；用户受保护文件未触碰；
+- root secret 仅内存（DPAPI 解密）；无 set_param/reset/rollback 改动；
+- C1 真实 rerun 未执行（需单独授权）；Task 24 official audit 在新 lineage 后另行前向刷新。
+
+## A.6 最终裁定
+
+`research_state/control_plane/rollout/lineage_audits/authority_ruling_cr009.json`：
+**新 lineage ACTIVE**（authoritative predecessor chain），旧 lineage DISPUTED_PENDING_FORWARD_REPAIR（superseded，不可变保留）。
