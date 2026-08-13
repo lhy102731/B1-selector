@@ -152,6 +152,10 @@ class GitSourceIdentityTests(unittest.TestCase):
             "research_automation/kbase_ag2_full_cycle.py": (
                 "def run_kbase_ag2_full_cycle():\n    pass\n"
             ),
+            "research_automation/control_plane/final_evaluator.py": (
+                "class TrustedEvaluator:\n"
+                "    def evaluate_v2(self):\n        pass\n"
+            ),
         }
         for relative, content in seam_sources.items():
             target = root.joinpath(*relative.split("/"))
