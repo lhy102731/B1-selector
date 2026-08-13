@@ -17,7 +17,7 @@ SUCCEEDED.
 from __future__ import annotations
 
 import hmac
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -115,6 +115,7 @@ def reconcile(
     *,
     evidence_ref_for: Mapping[str, str] | None = None,
     repository_root: str | Path | None = None,
+    crash_hook: Callable[[str], None] | None = None,
 ) -> ReconciliationReport:
     """Close every recoverable binding with a bounded recovery lease.
 
@@ -174,11 +175,20 @@ def reconcile(
                 binding_id=binding.ticket_id,
                 evidence_ref=evidence_ref,
             )
+            # Crash boundary: the recovery lease is committed but the
+            # binding is untouched; a fresh reconciler pass must re-derive
+            # and recover the same binding (never reopened).
+            if crash_hook is not None:
+                crash_hook("CRASH_AFTER.RECOVERY_LEASE")
             authority._recover_final_eval_binding(
                 recovery_lease,
                 terminal_state=terminal_state,
                 evidence_ref=evidence_ref,
             )
+            # Crash boundary: the terminal transition committed; a fresh
+            # pass must observe AUTHORITY_TERMINAL and skip it.
+            if crash_hook is not None:
+                crash_hook("CRASH_AFTER.AUTHORITY_TERMINAL")
             recovered.append(binding.ticket_id)
         except (FinalEvalRecoveryError, ValueError, TaskTicketError):
             unresolved.append(binding.ticket_id)

@@ -393,28 +393,38 @@ if __name__ == "__main__":
 
 
 class FinalEvalHardCrashHarnessTests(unittest.TestCase):
-    """Fresh-process hard-crash recovery for the durable saga.
+    """Fresh-process hard-crash recovery for the durable saga (CR-010 F-02).
 
-    Each crash point hard-exits the child AFTER the corresponding durable
-    transition commits.  A fresh process then re-runs the orchestrator: the
-    CAS replay continues from the observed durable state, never reopening
-    holdout bytes, never recomputing a staged result.
+    Each of the 6 fixed crash points maps to exactly one REACHABLE durable
+    boundary of the saga:
+
+      CONSUMED          -- broker bind committed (binding observable);
+      EVALUATING        -- CONSUMED -> EVALUATING committed;
+      CLAIM_WRITTEN     -- the sink wrote the claim blob, not yet staged;
+      RESULT_STAGED     -- the claim was staged durably;
+      RECOVERY_LEASE    -- the reconciler issued the recovery lease, the
+                           binding is still untouched;
+      AUTHORITY_TERMINAL-- the recover transaction committed.
+
+    A child process hard-exits AFTER the boundary commits; a FRESH process
+    observes the committed state and either continues the CAS replay
+    (orchestrator) or closes the binding (reconciler), asserting that the
+    next state never happened.  The sink really writes and commits the
+    claim blob, so the fresh process can dereference it (same-volume
+    object + fixed claim + Authority CAS binding).
     """
 
     CRASH_POINT_CASES = (
         # (crash point, expected durable state after crash, terminal?)
-        ("CRASH_AFTER.REQUEST_FROZEN", "CONSUMED", False),
-        ("CRASH_AFTER.AUTHORIZED", "CONSUMED", False),
         ("CRASH_AFTER.CONSUMED", "CONSUMED", False),
         ("CRASH_AFTER.EVALUATING", "EVALUATING", False),
+        ("CRASH_AFTER.CLAIM_WRITTEN", "EVALUATING", False),
         ("CRASH_AFTER.RESULT_STAGED", "RESULT_STAGED", True),
-        ("CRASH_AFTER.CLOSED", "RESULT_STAGED", True),
+        ("CRASH_AFTER.RECOVERY_LEASE", "RESULT_STAGED", False),
+        ("CRASH_AFTER.AUTHORITY_TERMINAL", "AUTHORITY_TERMINAL", True),
     )
 
-    def _run_child(self, root, crash_point, binding_id, expected_version):
-        from tests.test_control_plane_campaign_store import ROOT_SECRET
-
-        child = """
+    _CHILD = """
 import os
 import sys
 from pathlib import Path
@@ -431,13 +441,14 @@ from research_automation.control_plane.final_eval_orchestrator import (
     OrchestrationInputs,
     orchestrate,
 )
-from research_automation.control_plane.contracts import Actor
+from research_automation.control_plane.contracts import Actor, canonical_json
 
 root = Path(sys.argv[1])
 crash_point = sys.argv[2]
 ROOT_SECRET = sys.argv[3]
 binding_id = sys.argv[4]
 expected_version = int(sys.argv[5])
+maintenance_id = sys.argv[6]
 
 patch.multiple(
     stores_module,
@@ -455,8 +466,32 @@ def worker():
     return 0
 
 def sink(document):
-    return ("research_state/control_plane/p8/attempts/p8-attempt-003/"
-            "evidence/worker_result_" + binding_id[:16] + ".json")
+    ref = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
+           "evidence/worker_result_" + binding_id[:16] + ".json")
+    path = root / ref
+    payload = canonical_json(document)
+    if path.exists():
+        return ref  # idempotent create-only sink (recovery replay)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    import subprocess as _sp
+    if not (root / ".git").exists():
+        _sp.run(["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True)
+        _sp.run(["git", "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True)
+        _sp.run(["git", "config", "user.email",
+                 "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True)
+    _sp.run(["git", "add", "--", ref], cwd=root, check=True,
+            capture_output=True)
+    _sp.run(
+        ["git", "-c", "user.name=Control Plane Tests",
+         "-c", "user.email=control-plane@example.invalid",
+         "commit", "--quiet", "-m", "stage worker claim"],
+        cwd=root, check=True, capture_output=True,
+    )
+    return ref
 
 try:
     orchestrate(
@@ -469,21 +504,100 @@ try:
             crash_hook=crash_hook,
         )
     )
+    if crash_point in (
+        "CRASH_AFTER.RECOVERY_LEASE",
+        "CRASH_AFTER.AUTHORITY_TERMINAL",
+    ):
+        from research_automation.control_plane.final_eval_reconciler import (
+            reconcile,
+        )
+        from research_automation.control_plane.contracts import SideEffect
+        from datetime import datetime, timezone
+
+        maintenance_actor = stores_module.Actor(
+            "p8-reconciler-maintenance", "automation",
+            "p8-rec-maint-" + maintenance_id[-8:],
+        )
+        maintenance_identity = stores_module.AuthorityIdentity(
+            plan_hash="0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+            scope_hash="8c6b4a7547275728c7beef294cd8e5d56fdddf5da82509e09e88162e8c6243be",
+            instruction_policy_hash="0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+        )
+        envelope = authority._provision_authorization(
+            phase=stores_module.Phase.P0,
+            attempt_id="p8-reconciler-maint",
+            actor=maintenance_actor,
+            identity=maintenance_identity,
+            expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            allowed_side_effects=(SideEffect.READ,),
+        )
+        maintenance_grant = authority.claim_authorization(
+            envelope,
+            expected_phase=stores_module.Phase.P0,
+            expected_attempt_id="p8-reconciler-maint",
+            actor=maintenance_actor,
+            identity=maintenance_identity,
+        )
+        ticket = authority._issue_task_ticket(
+            maintenance_grant,
+            {
+                "task_id": "P8-RECONCILER-MAINT",
+                "objective": "bounded reconciler maintenance",
+                "dependencies": [],
+                "idempotency_key": maintenance_id,
+                "task_spec_ref": "manifest.json",
+                "task_spec_sha256": "1" * 64,
+                "requirements": {
+                    "required_test_receipt_ids": [],
+                    "required_review_receipt_ids": [],
+                    "required_evidence_ids": [],
+                },
+                "allowed_files": ["research_automation/control_plane/"],
+                "forbidden_files": ["data/"],
+                "baseline_ref": "manifest.json",
+                "baseline_sha256": "1" * 64,
+                "input_evidence_refs": [],
+            },
+            allowed_side_effects=(SideEffect.READ,),
+        )
+        maintenance_lease = authority._begin_task(ticket)
+        claim_ref = ("research_state/control_plane/p8/attempts/"
+                     "p8-attempt-003/evidence/worker_result_"
+                     + binding_id[:16] + ".json")
+        reconcile(
+            authority,
+            maintenance_lease,
+            evidence_ref_for={binding_id: claim_ref},
+            repository_root=root,
+            crash_hook=crash_hook,
+        )
     print("ORCHESTRATED", binding_id)
 except Exception as exc:
     print("CHILD_ERROR", type(exc).__name__, str(exc)[:200])
     sys.exit(2)
 """
+
+    def _run_child(
+        self,
+        root,
+        crash_point,
+        binding_id,
+        expected_version,
+        maintenance_id,
+    ):
+        from tests.test_control_plane_campaign_store import ROOT_SECRET
+
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
-                child,
+                self._CHILD,
                 str(root),
                 crash_point,
                 ROOT_SECRET,
                 binding_id,
                 str(expected_version),
+                maintenance_id,
             ],
             capture_output=True,
             text=True,
@@ -491,41 +605,279 @@ except Exception as exc:
         )
         return result
 
-    def _recover(self, root, binding_id):
+    def _observe(self, root, binding_id):
+        """Read the durable binding in a FRESH process (disk only)."""
         from tests.test_control_plane_campaign_store import ROOT_SECRET
 
-        authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
-        snapshot = authority.final_eval_binding_snapshot(binding_id)
-        if snapshot.saga_state in ("RESULT_STAGED", "CLOSED"):
-            return snapshot
-        # Idempotent CAS replay continues from the durable state.
-        return orchestrate(
-            OrchestrationInputs(
-                authority=authority,
-                binding_id=binding_id,
-                expected_version=snapshot.saga_version,
-                worker_launcher=lambda: 0,
-                evidence_sink=lambda doc: (
-                    "research_state/control_plane/p8/attempts/"
-                    "p8-attempt-003/evidence/worker_result_"
-                    + binding_id[:16]
-                    + ".json"
-                ),
-            )
+        observer = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from research_automation.control_plane import stores as stores_module
+
+root = Path(sys.argv[1])
+ROOT_SECRET = sys.argv[2]
+binding_id = sys.argv[3]
+
+patch.multiple(
+    stores_module,
+    _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+    _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+).start()
+stores_module._expected_schema_sha256.cache_clear()
+authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+snapshot = authority.final_eval_binding_snapshot(binding_id)
+print("|".join([snapshot.saga_state, str(snapshot.saga_version),
+                snapshot.terminal_binding or "",
+                snapshot.result_claim_ref or ""]))
+"""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                observer,
+                str(root),
+                ROOT_SECRET,
+                binding_id,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parts = result.stdout.strip().split("|")
+        return {
+            "state": parts[0],
+            "version": int(parts[1]),
+            "terminal": parts[2],
+            "claim_ref": parts[3],
+        }
+
+    def _recover(
+        self,
+        root,
+        binding_id,
+        crash_point,
+        maintenance_id,
+    ):
+        """Continue the saga in a FRESH process without any crash hook."""
+        from tests.test_control_plane_campaign_store import ROOT_SECRET
+
+        if crash_point in (
+            "CRASH_AFTER.RECOVERY_LEASE",
+            "CRASH_AFTER.AUTHORITY_TERMINAL",
+        ):
+            # Re-run the reconciler (bounded, no crash hook): recover the
+            # binding or observe it already terminal.
+            recoverer = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from research_automation.control_plane import stores as stores_module
+
+root = Path(sys.argv[1])
+ROOT_SECRET = sys.argv[2]
+binding_id = sys.argv[3]
+maintenance_id = sys.argv[4]
+
+patch.multiple(
+    stores_module,
+    _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+    _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+).start()
+stores_module._expected_schema_sha256.cache_clear()
+authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+from research_automation.control_plane.final_eval_reconciler import reconcile
+from research_automation.control_plane.contracts import SideEffect, Actor
+from datetime import datetime, timezone
+
+maintenance_actor = stores_module.Actor(
+    "p8-reconciler-maintenance", "automation",
+    "p8-rec-maint-" + maintenance_id[-8:] + "-rec",
+)
+maintenance_identity = stores_module.AuthorityIdentity(
+    plan_hash="0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+    scope_hash="8c6b4a7547275728c7beef294cd8e5d56fdddf5da82509e09e88162e8c6243be",
+    instruction_policy_hash="0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+)
+envelope = authority._provision_authorization(
+    phase=stores_module.Phase.P0,
+    attempt_id="p8-reconciler-maint",
+    actor=maintenance_actor,
+    identity=maintenance_identity,
+    expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+    allowed_side_effects=(SideEffect.READ,),
+)
+maintenance_grant = authority.claim_authorization(
+    envelope,
+    expected_phase=stores_module.Phase.P0,
+    expected_attempt_id="p8-reconciler-maint",
+    actor=maintenance_actor,
+    identity=maintenance_identity,
+)
+ticket = authority._issue_task_ticket(
+    maintenance_grant,
+    {
+        "task_id": "P8-RECONCILER-MAINT",
+        "objective": "bounded reconciler maintenance",
+        "dependencies": [],
+        "idempotency_key": maintenance_id,
+        "task_spec_ref": "manifest.json",
+        "task_spec_sha256": "1" * 64,
+        "requirements": {
+            "required_test_receipt_ids": [],
+            "required_review_receipt_ids": [],
+            "required_evidence_ids": [],
+        },
+        "allowed_files": ["research_automation/control_plane/"],
+        "forbidden_files": ["data/"],
+        "baseline_ref": "manifest.json",
+        "baseline_sha256": "1" * 64,
+        "input_evidence_refs": [],
+    },
+    allowed_side_effects=(SideEffect.READ,),
+)
+maintenance_lease = authority._begin_task(ticket)
+claim_ref = ("research_state/control_plane/p8/attempts/"
+             "p8-attempt-003/evidence/worker_result_"
+             + binding_id[:16] + ".json")
+report = reconcile(
+    authority,
+    maintenance_lease,
+    evidence_ref_for={binding_id: claim_ref},
+    repository_root=root,
+)
+snapshot = authority.final_eval_binding_snapshot(binding_id)
+print(snapshot.saga_state, snapshot.saga_version,
+      snapshot.terminal_binding or "", "|", ",".join(report.recovered))
+"""
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    recoverer,
+                    str(root),
+                    ROOT_SECRET,
+                    binding_id,
+                    maintenance_id,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            line = result.stdout.strip()
+            state, version, terminal, rest = line.split(" ", 3)
+            return {
+                "state": state,
+                "version": int(version),
+                "terminal": terminal,
+                "recovered": rest.split("|")[1].split(","),
+                "claim_ref": "",
+            }
+        # Orchestrator path: continue the CAS replay in a fresh process.
+        replayer = """
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+from research_automation.control_plane import stores as stores_module
+
+root = Path(sys.argv[1])
+ROOT_SECRET = sys.argv[2]
+binding_id = sys.argv[3]
+
+patch.multiple(
+    stores_module,
+    _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+    _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+).start()
+stores_module._expected_schema_sha256.cache_clear()
+authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+from research_automation.control_plane.final_eval_orchestrator import (
+    OrchestrationInputs,
+    orchestrate,
+)
+
+snapshot = authority.final_eval_binding_snapshot(binding_id)
+
+def worker():
+    return 0
+
+def sink(document):
+    from research_automation.control_plane.contracts import canonical_json
+    ref = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
+           "evidence/worker_result_" + binding_id[:16] + ".json")
+    path = root / ref
+    if path.exists():
+        return ref
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(canonical_json(document), encoding="utf-8")
+    import subprocess as _sp
+    if not (root / ".git").exists():
+        _sp.run(["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True)
+        _sp.run(["git", "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True)
+        _sp.run(["git", "config", "user.email",
+                 "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True)
+    _sp.run(["git", "add", "--", ref], cwd=root, check=True,
+            capture_output=True)
+    _sp.run(
+        ["git", "-c", "user.name=Control Plane Tests",
+         "-c", "user.email=control-plane@example.invalid",
+         "commit", "--quiet", "-m", "stage worker claim"],
+        cwd=root, check=True, capture_output=True,
+    )
+    return ref
+
+final = orchestrate(
+    OrchestrationInputs(
+        authority=authority,
+        binding_id=binding_id,
+        expected_version=snapshot.saga_version,
+        worker_launcher=worker,
+        evidence_sink=sink,
+    )
+)
+print("|".join([final.saga_state, str(final.saga_version),
+                final.terminal_binding or ""]))
+"""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                replayer,
+                str(root),
+                ROOT_SECRET,
+                binding_id,
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state, version, terminal = result.stdout.strip().split("|")
+        return {
+            "state": state,
+            "version": int(version),
+            "terminal": terminal,
+            "claim_ref": "",
+        }
 
     def test_hard_crash_at_each_fixed_point_recovers_in_fresh_process(
         self,
     ) -> None:
         campaign_id = "campaign-crash-matrix"
         with _authorized_campaign(campaign_id) as (root, grant, journal):
-            from tests.test_control_plane_campaign_store import ROOT_SECRET
-
             for index, (crash_point, expected_state, terminal) in enumerate(
                 self.CRASH_POINT_CASES
             ):
                 with self.subTest(crash_point=crash_point):
-                    # bind
+                    # bind (in this process, to get a real ticket id)
                     broker = _make_broker(root, grant)
                     binding = broker.bind(
                         request=_make_request(
@@ -539,31 +891,63 @@ except Exception as exc:
                         actor=stores_module.Actor(
                             "operator-1", "human", "final-eval-op-cr009"
                         ),
-                        idempotency_key=f"p8-cr009-crash-{crash_point}",
+                        idempotency_key=f"p8-cr009-crash-{index}",
                         task_spec_ref="manifest.json",
                         task_spec_sha256="1" * 64,
                     )
-                    # hard-exit child at the crash point
+                    maintenance_id = f"p8-cr009-crash-maint-{index}"
+                    # 1. child hard-exits AFTER the boundary committed
                     result = self._run_child(
                         root,
                         crash_point,
                         binding.ticket_id,
                         binding.saga_version,
+                        maintenance_id,
                     )
-                    # fresh process observes + continues
-                    snapshot = self._recover(root, binding.ticket_id)
-                    if terminal:
-                        self.assertEqual(snapshot.saga_state, "RESULT_STAGED")
-                        self.assertIsNotNone(snapshot.result_claim_ref)
-                    else:
-                        # CAS replay advanced past the crash point
-                        self.assertIn(
-                            snapshot.saga_state,
-                            ("EVALUATING", "RESULT_STAGED"),
+                    self.assertEqual(
+                        result.returncode, 9,
+                        "child must hard-exit at the crash point:\n"
+                        + result.stdout
+                        + result.stderr,
+                    )
+                    # 2. fresh process observes the committed durable state
+                    observed = self._observe(root, binding.ticket_id)
+                    self.assertEqual(
+                        observed["state"], expected_state,
+                        "crash must leave the binding in the durable state "
+                        "committed BEFORE the crash point",
+                    )
+                    # 3. fresh process continues; next state never happened
+                    recovered = self._recover(
+                        root,
+                        binding.ticket_id,
+                        crash_point,
+                        maintenance_id,
+                    )
+                    if crash_point in (
+                        "CRASH_AFTER.RECOVERY_LEASE",
+                        "CRASH_AFTER.AUTHORITY_TERMINAL",
+                    ):
+                        if crash_point == "CRASH_AFTER.RECOVERY_LEASE":
+                            self.assertIn(
+                                binding.ticket_id, recovered["recovered"]
+                            )
+                        self.assertEqual(
+                            recovered["state"], "AUTHORITY_TERMINAL"
                         )
+                        self.assertEqual(recovered["terminal"], "SUCCEEDED")
+                    else:
+                        self.assertEqual(recovered["state"], "RESULT_STAGED")
+                        self.assertEqual(recovered["terminal"], "")
 
     def test_crash_points_are_six_fixed_boundaries(self) -> None:
         self.assertGreaterEqual(len(CRASH_POINTS), 6)
+        self.assertEqual(
+            set(CRASH_POINTS),
+            {case[0] for case in self.CRASH_POINT_CASES},
+        )
+        for case in self.CRASH_POINT_CASES:
+            self.assertIn(case[0], CRASH_POINTS)
 
 
 class FinalEvalFreshProcessRecoveryTests(unittest.TestCase):

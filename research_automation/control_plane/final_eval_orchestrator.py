@@ -31,17 +31,20 @@ class FinalEvalOrchestrationError(RuntimeError):
     """Base error for the final evaluation orchestrator."""
 
 
-# Fixed hard-crash points: one per durable state transition boundary.
-# A harness child that hard-exits at CRASH_AFTER.<STATE> proves the
-# preceding transition committed durably (the fresh recovery process can
-# observe it) and the next transition was never applied.
+# Fixed hard-crash points: one per real durable boundary of the saga.
+# A harness child that hard-exits at CRASH_AFTER.<POINT> proves the
+# preceding durable step committed (a fresh recovery process can observe
+# it) and the next step was never applied.  Each name below has exactly
+# one trigger site in the durable path (CR-010 F-02: removed names with no
+# reachable trigger -- AUTHORIZED/CLOSED are transactional in-between
+# states never persisted; added CLAIM_WRITTEN and RECOVERY_LEASE).
 CRASH_POINTS = (
-    "CRASH_AFTER.AUTHORIZED",
-    "CRASH_AFTER.CONSUMED",
-    "CRASH_AFTER.EVALUATING",
-    "CRASH_AFTER.RESULT_STAGED",
-    "CRASH_AFTER.CLOSED",
-    "CRASH_AFTER.AUTHORITY_TERMINAL",
+    "CRASH_AFTER.CONSUMED",          # bind committed (binding observable)
+    "CRASH_AFTER.EVALUATING",        # CONSUMED -> EVALUATING committed
+    "CRASH_AFTER.CLAIM_WRITTEN",     # sink wrote the claim, not yet staged
+    "CRASH_AFTER.RESULT_STAGED",     # claim staged durably
+    "CRASH_AFTER.RECOVERY_LEASE",    # recovery lease issued, recover not run
+    "CRASH_AFTER.AUTHORITY_TERMINAL",  # recover committed terminal state
 )
 
 
@@ -98,7 +101,16 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
             "it was never durably created"
         )
 
-    # AUTHORIZED -> CONSUMED
+    # Crash boundary: the binding is durably observable in CONSUMED (the
+    # broker's atomic AUTHORIZED -> CONSUMED commit has landed).  A harness
+    # child hard-exits here to prove a fresh process sees the created
+    # binding; the recovery process runs without a crash hook and replays.
+    if snapshot.saga_state == "CONSUMED":
+        _maybe_crash(inputs, "CRASH_AFTER.CONSUMED")
+
+    # AUTHORIZED -> CONSUMED (defensive: only reachable for a binding that
+    # was externally created without the atomic broker consume; the broker
+    # path commits AUTHORIZED and CONSUMED in one transaction).
     if snapshot.saga_state == "AUTHORIZED":
         snapshot = authority._advance_final_eval_binding(
             binding_id,
@@ -131,6 +143,10 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
             ),
         }
         result_ref = inputs.evidence_sink(result_document)
+        # Crash boundary: the claim blob exists on disk but the binding has
+        # not been staged yet; a fresh process re-runs the worker and sink
+        # idempotently (create-only sink must tolerate an existing blob).
+        _maybe_crash(inputs, "CRASH_AFTER.CLAIM_WRITTEN")
         snapshot = authority._stage_final_eval_result(
             binding_id,
             expected_version=snapshot.saga_version,
