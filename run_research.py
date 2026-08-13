@@ -434,7 +434,13 @@ def cmd_campaign(args: argparse.Namespace) -> int:
 
 
 def cmd_rollout(args: argparse.Namespace) -> int:
-    """Run the offline C0 rollout chaos simulation and publish its canonical report."""
+    """Run the offline C0 rollout chaos simulation and publish its canonical report.
+
+    CR-010 F-03: the official attempt id is injected via --attempt
+    (authority-required CLI, see cli_registry) and the report is published
+    with the create-only AtomicPublisher -- the driver never overwrites an
+    existing report and never writes evidence under a hardcoded attempt.
+    """
     _cli_preflight(args, "rollout")
     from research_automation.control_plane import rollout_chaos
 
@@ -442,10 +448,18 @@ def cmd_rollout(args: argparse.Namespace) -> int:
     if stage != "c0":
         print(f"[run_research] unsupported rollout stage: {stage}", file=sys.stderr)
         return 2
+    attempt_id = getattr(args, "attempt", None) or rollout_chaos._ATTEMPT_ID
+    if not attempt_id.startswith("c0-attempt-"):
+        print(
+            f"[run_research] invalid attempt id: {attempt_id}",
+            file=sys.stderr,
+        )
+        return 2
     try:
         outcome = rollout_chaos.run_c0_simulation(
             seed=getattr(args, "seed", 20260811),
             cycles=getattr(args, "cycles", 24),
+            attempt_id=attempt_id,
         )
     except ValueError as error:
         print(f"[run_research] invalid rollout parameters: {error}", file=sys.stderr)
@@ -463,11 +477,20 @@ def cmd_rollout(args: argparse.Namespace) -> int:
     root = Path(__file__).resolve().parent
     evidence = (
         root
-        / "research_state/control_plane/rollout/c0/attempts/c0-attempt-001/evidence"
+        / "research_state/control_plane/rollout/c0/attempts"
+        / attempt_id
+        / "evidence"
     )
-    evidence.mkdir(parents=True, exist_ok=True)
-    report = evidence / "c0_chaos_simulation_report.json"
-    report.write_text(rollout_chaos.serialize_report(outcome), encoding="utf-8")
+    publisher = rollout_chaos.AtomicPublisher(
+        evidence_dir=evidence,
+        attempt_id=attempt_id,
+    )
+    result = publisher.publish(
+        outcome.to_payload(),
+        seed=payload["seed"],
+        cycles=payload["cycles_requested"],
+    )
+    report = evidence / "c0_chaos_simulation_report_v2.json"
     print(
         json.dumps(
             {
@@ -481,6 +504,7 @@ def cmd_rollout(args: argparse.Namespace) -> int:
                 "final_state_digest": payload["final_state_digest"],
                 "offline_only": payload["offline_only"],
                 "pass": True,
+                "publish_status": result["status"],
                 "report_ref": str(report.relative_to(root)).replace("\\", "/"),
             },
             ensure_ascii=False,
@@ -744,6 +768,14 @@ def main(
     )
     p_rollout.add_argument("--seed", type=int, default=20260811)
     p_rollout.add_argument("--cycles", type=int, default=24)
+    p_rollout.add_argument(
+        "--attempt",
+        default=None,
+        help=(
+            "Official attempt id (c0-attempt-XXX). Required for evidence "
+            "writing; must be injected from the authorized context."
+        ),
+    )
 
     # authorized fake-only campaign (programmatic context required)
     p_campaign = sub.add_parser(

@@ -54,7 +54,9 @@ COMMAND_SPECS: dict[str, CliCommandSpec] = {
         "rollout",
         "cmd_rollout",
         SideEffect.WRITE_CONTROL_PLANE,
-        authority_required=False,
+        # CR-010 F-03: rollout writes official C0 evidence, so it must be
+        # authorized exactly like any other control-plane write.
+        authority_required=True,
     ),
 }
 

@@ -47,11 +47,10 @@ class C0RolloutChaosTests(unittest.TestCase):
         )
 
     def test_deterministic_replay_same_seed(self) -> None:
-        rollout_chaos._run_main_campaign.cache_clear()
-        rollout_chaos._run_negative_scenarios.cache_clear()
+        # CR-010 F-03: no process-level cache on the official path; every
+        # call re-executes the full deterministic simulation, so the replay
+        # assertion is a REAL second run, not a cache hit.
         first = rollout_chaos.run_c0_simulation(seed=20260811, cycles=24).to_payload()
-        rollout_chaos._run_main_campaign.cache_clear()
-        rollout_chaos._run_negative_scenarios.cache_clear()
         second = rollout_chaos.run_c0_simulation(seed=20260811, cycles=24).to_payload()
 
         self.assertEqual(first["scenario_log"], second["scenario_log"])

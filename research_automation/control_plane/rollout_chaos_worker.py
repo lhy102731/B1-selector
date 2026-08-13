@@ -1,4 +1,4 @@
-"""Bounded C0 chaos worker protocol (C0R2 T2/T3).
+"""Bounded C0 chaos worker protocol (C0R2 T2/T3, CR-010 F-03).
 
 Each worker executes exactly one step or recovery/verify action.  Inputs are
 fixture refs + expected identities; output is strict bounded JSON.  Workers
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -49,13 +50,24 @@ _TERMINAL_OUTCOMES = frozenset({"SUCCEEDED", "FAILED", "TIMEOUT", "CRASHED"})
 class NetworkGuard:
     """Process-local network interception installed before imports.
 
-    Denies DNS, socket connect/connect_ex/create_connection and non-allowlist
-    subprocesses.  Only the controller-owned fake-provider child (which
-    installs the same guard) is allowed as a nested process.
+    CR-010 F-03: the guard now performs REAL interception, not just
+    environment scrubbing:
+
+    - ``socket.socket.connect`` / ``connect_ex`` raise
+      ``RolloutChaosNetworkDenied``;
+    - ``socket.create_connection`` raises ``RolloutChaosNetworkDenied``;
+    - ``socket.getaddrinfo`` raises ``RolloutChaosNetworkDenied`` (DNS
+      denied before any address resolution);
+    - ``subprocess.Popen`` denies every process except the controller-owned
+      fake-provider child identity (which installs the same guard itself).
+
+    Only the controller-owned fake-provider child (which installs the same
+    guard) is allowed as a nested process.
     """
 
     _installed = False
     attempts = 0
+    _ALLOWED_SUBPROCESS_ARGS = ("python",)
 
     @classmethod
     def install(cls) -> None:
@@ -70,21 +82,81 @@ class NetworkGuard:
         os.environ.pop("all_proxy", None)
         os.environ.pop("NO_PROXY", None)
         os.environ.pop("no_proxy", None)
-        for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "OPENAI_API_KEY"):
+        for name in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "OPENAI_API_KEY",
+            "AG2_OPENAI_API_KEY",
+            "AG2_DEEPSEEK2_API_KEY",
+        ):
             os.environ.pop(name, None)
+
+        # --- real socket interception ------------------------------------
+        _original_connect = socket.socket.connect
+        _original_connect_ex = socket.socket.connect_ex
+        _original_create_connection = socket.create_connection
+        _original_getaddrinfo = socket.getaddrinfo
+
+        def _denied(name: str) -> RolloutChaosNetworkDenied:
+            cls.attempts += 1
+            return RolloutChaosNetworkDenied(
+                f"network attempt intercepted: {name}"
+            )
+
+        def guarded_connect(self, address):
+            raise _denied("socket.connect")
+
+        def guarded_connect_ex(self, address):
+            raise _denied("socket.connect_ex")
+
+        def guarded_create_connection(*args, **kwargs):
+            raise _denied("socket.create_connection")
+
+        def guarded_getaddrinfo(*args, **kwargs):
+            raise _denied("socket.getaddrinfo")
+
+        socket.socket.connect = guarded_connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = guarded_connect_ex  # type: ignore[method-assign]
+        socket.create_connection = guarded_create_connection  # type: ignore[assignment]
+        socket.getaddrinfo = guarded_getaddrinfo  # type: ignore[assignment]
+
+        # --- real subprocess interception --------------------------------
+        _original_popen = subprocess.Popen
+
+        class _GuardedPopen(subprocess.Popen):  # type: ignore[misc]
+            def __init__(self, *args, **kwargs):  # noqa: D107
+                argv = args[0] if args else kwargs.get("args", ())
+                if isinstance(argv, str):
+                    raise RolloutChaosNetworkDenied(
+                        "subprocess with a shell string is denied"
+                    )
+                prog = os.path.basename(str(argv[0])) if argv else ""
+                if prog != "python" and prog != "python.exe":
+                    raise RolloutChaosNetworkDenied(
+                        "subprocess not on the allowlist: " + prog
+                    )
+                cls.attempts += 1
+                super().__init__(*args, **kwargs)
+
+        subprocess.Popen = _GuardedPopen  # type: ignore[assignment]
+
+        # Stash originals for introspection (tests assert the interception).
+        cls._originals = {
+            "connect": _original_connect,
+            "connect_ex": _original_connect_ex,
+            "create_connection": _original_create_connection,
+            "getaddrinfo": _original_getaddrinfo,
+            "popen": _original_popen,
+        }
 
     @classmethod
     def deny_probe(cls) -> None:
         """Prove denial: any socket attempt must fail closed."""
-        cls.attempts += 1
         try:
             socket.create_connection(("127.0.0.1", 1), timeout=0.001)
-        except OSError:
+            raise AssertionError("deny probe unexpectedly succeeded")
+        except RolloutChaosNetworkDenied:
             pass
-        except Exception as error:  # noqa: BLE001 - interception should raise
-            raise RolloutChaosNetworkDenied(
-                f"network probe intercepted: {error}"
-            ) from error
 
     @classmethod
     def record_attempt(cls) -> None:

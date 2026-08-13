@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 import base64
 import shutil
@@ -69,7 +70,7 @@ from research_automation.task_queue import ExperimentTask
 
 from types import SimpleNamespace
 
-from research_automation.control_plane.contracts import SideEffect
+from research_automation.control_plane.contracts import SideEffect, canonical_json
 from research_automation.control_plane.task_reports import build_task_report_v2
 
 from research_automation.control_plane import stores as stores_module
@@ -116,7 +117,10 @@ def _test_fixtures():
 
 _MIN_CYCLES = 20
 _DEFAULT_CYCLES = 24
-_ATTEMPT_ID = "c0-attempt-001"
+# Official attempt id is injected by the authorized CLI (CR-010 F-03); the
+# legacy default is kept only for unit/read-only contexts and the production
+# driver never writes evidence under it.
+_ATTEMPT_ID = "c0-attempt-003"
 _PLAN_VERSION = "V3.4.2-P0R2"
 _SCHEMA_VERSION = "C0_CHAOS_SIMULATION_REPORT_V1"
 _CAMPAIGN_ID = "c0-main-campaign"
@@ -638,11 +642,13 @@ def _count_event(rows, event_type: str) -> int:
     return sum(1 for row in rows if row[0] == event_type)
 
 
-@functools.lru_cache(maxsize=None)
 def _run_main_campaign(
     seed: int,
     cycles: int,
 ) -> tuple[dict[str, object], Path]:
+    # CR-010 F-03: no process-level cache on the official path.  Every run
+    # re-executes the full deterministic simulation (fresh root, fresh
+    # stores) so an official report always reflects a real execution.
     root_path = _deterministic_root(seed, cycles)
     with _deterministic_root_lock(seed, cycles):
         if root_path.exists():
@@ -1113,6 +1119,14 @@ def _run_main_campaign_locked(
                 "invariants": invariants,
                 "final_state_digest": digest,
                 "campaign_status": completed.status.value,
+                "cycles_completed": len(
+                    [
+                        n
+                        for n in range(1, cycles + 1)
+                        if controller.cycle_snapshot(f"c0-cycle-{n:03d}").status
+                        == CycleStatus.COMPLETED
+                    ]
+                ),
             },
             root,
         )
@@ -1526,8 +1540,9 @@ def _verify_binding_side_effect(bindings_by_ticket: dict[str, object]):
 
     return verify
 
-@functools.lru_cache(maxsize=None)
 def _run_negative_scenarios() -> list[dict[str, object]]:
+    # CR-010 F-03: no cache; every official run re-executes the negative
+    # scenarios against fresh fixture stores.
     return [
         _negative_pid_reuse(),
         _negative_lease_fencing(),
@@ -1547,6 +1562,7 @@ class ChaosOutcome:
     negative_scenarios: tuple[dict[str, object], ...]
     final_state_digest: str
     campaign_status: str
+    attempt_id: str = _ATTEMPT_ID
 
     def to_payload(self) -> dict[str, object]:
         passed = all(
@@ -1556,7 +1572,7 @@ class ChaosOutcome:
         )
         return {
             "schema_version": _SCHEMA_VERSION,
-            "attempt_id": _ATTEMPT_ID,
+            "attempt_id": self.attempt_id,
             "plan_version": _PLAN_VERSION,
             "seed": self.seed,
             "cycles_requested": self.cycles_requested,
@@ -1575,20 +1591,30 @@ def run_c0_simulation(
     *,
     seed: int = 20260811,
     cycles: int = _DEFAULT_CYCLES,
+    attempt_id: str = _ATTEMPT_ID,
 ) -> ChaosOutcome:
     if type(cycles) is not int or cycles < _MIN_CYCLES:
         raise ValueError(f"cycles must be an integer >= {_MIN_CYCLES}")
+    if not attempt_id or not isinstance(attempt_id, str):
+        raise ValueError("attempt_id must be a non-empty string")
     main, _root = _run_main_campaign(seed, cycles)
     negatives = _run_negative_scenarios()
+    # CR-010 F-03: cycles_completed must reflect the actual campaign run.
+    # The main campaign loop only returns after every scheduled cycle
+    # COMPLETED (it raises otherwise), so the completed count equals the
+    # scheduled cycles; it is derived from the run, not the caller's request
+    # alone.
+    completed = int(main.get("cycles_completed", cycles))
     return ChaosOutcome(
         seed=seed,
         cycles_requested=cycles,
-        cycles_completed=cycles,
+        cycles_completed=completed,
         scenario_log=tuple(main["scenario_log"]),
         invariants=tuple(main["invariants"]),
         negative_scenarios=tuple(negatives),
         final_state_digest=str(main["final_state_digest"]),
         campaign_status=str(main["campaign_status"]),
+        attempt_id=attempt_id,
     )
 
 
@@ -1600,6 +1626,73 @@ def serialize_report(outcome: ChaosOutcome) -> str:
         separators=(",", ":"),
         allow_nan=False,
     ) + "\n"
+
+
+class AtomicPublisher:
+    """Create-only content-addressed evidence publisher (C0R2 T5, CR-010 F-03).
+
+    Production-owned: the official 24-cycle C0 report is published through
+    this publisher, never via a destructive write.  same-volume temp write
+    -> flush/fsync -> exclusive object create -> exclusive claim create
+    -> second barrier.  A claim already present means the report is final:
+    identical bytes return IDEMPOTENT_EXISTING, different bytes return
+    CLAIM_CONFLICT and nothing is overwritten.
+    """
+
+    def __init__(
+        self,
+        *,
+        evidence_dir: Path,
+        attempt_id: str = _ATTEMPT_ID,
+    ) -> None:
+        self._objects = evidence_dir / "objects"
+        self._objects.mkdir(parents=True, exist_ok=True)
+        self._claim = evidence_dir / "c0_chaos_simulation_report_v2.json"
+        self._attempt_id = attempt_id
+
+    def publish(
+        self,
+        payload: Mapping[str, object],
+        *,
+        seed: int,
+        cycles: int,
+    ) -> dict[str, object]:
+        raw = canonical_json(payload).encode("utf-8")
+        sha256 = hashlib.sha256(raw).hexdigest()
+        object_path = self._objects / f"{sha256}.json"
+        try:
+            fd = os.open(
+                object_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            return {"status": "IDEMPOTENT_EXISTING", "ref": object_path.name}
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            fd = os.open(
+                self._claim,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            return {"status": "CLAIM_CONFLICT", "ref": object_path.name}
+        claim = {
+            "schema_version": "control_plane.c0_chaos_report_claim.v1",
+            "attempt_id": self._attempt_id,
+            "seed": seed,
+            "cycles": cycles,
+            "report_ref": str(object_path.relative_to(self._objects.parent)),
+            "report_blob_sha256": sha256,
+        }
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(canonical_json(claim).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        return {"status": "CREATED", "ref": object_path.name, "sha256": sha256}
 
 
 CHAOS_CATEGORIES = _CHAOS_CATEGORIES
