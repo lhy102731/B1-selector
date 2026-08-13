@@ -1502,6 +1502,18 @@ class EntryInventory:
                     raise EntryNotDeclaredError(
                         f"required import seam is missing or unsafe: {relative}"
                     )
+                # CR-010 F-07: the OPEN_HOLDOUT seam is the single controlled
+                # holdout entry; the inventory scan classifies it as
+                # CONTROLLED_RESEARCH with an explicit phase so the reviewed
+                # policy binds a real controlled entry (not LEGACY_UNAUDITED).
+                if effects == (SideEffect.OPEN_HOLDOUT,):
+                    disposition = "CONTROLLED_RESEARCH"
+                    trust_state = "reviewed_controlled"
+                    declared_phase = Phase.P8
+                else:
+                    disposition = "LEGACY_UNAUDITED"
+                    trust_state = "legacy_unaudited"
+                    declared_phase = None
                 records.append(
                     EntryRecord(
                         entry_id=f"callable:{module_name}:{callable_name}",
@@ -1511,6 +1523,9 @@ class EntryInventory:
                         actor_type="legacy_runner",
                         content_sha256=_content_sha256(seam_path),
                         declared_side_effects=effects,
+                        disposition=disposition,
+                        trust_state=trust_state,
+                        declared_phase=declared_phase,
                         source="required_import_seam",
                     )
                 )

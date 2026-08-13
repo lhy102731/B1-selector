@@ -943,6 +943,22 @@ def validate_final_inventory(
             "external_metadata": {},
             "source": "required_import_seam",
         }
+        # CR-010 F-07: the OPEN_HOLDOUT seam (TrustedEvaluator.evaluate_v2)
+        # is the single controlled holdout entry; it may be re-audited from
+        # LEGACY_UNAUDITED to CONTROLLED_RESEARCH with an explicit phase.
+        # Every other seam must keep the legacy default.
+        if expected.get("declared_side_effects") == ["OPEN_HOLDOUT"]:
+            expected_binding = {
+                **expected,
+                "kind": "python_callable",
+                "actor_type": "legacy_runner",
+                "disposition": "CONTROLLED_RESEARCH",
+                "trust_state": "reviewed_controlled",
+                "declared_phase": entry.get("declared_phase"),
+                "resource_roots": [],
+                "external_metadata": {},
+                "source": "required_import_seam",
+            }
         if actual_binding != expected_binding:
             raise ArtifactSemanticError(
                 f"required import seam binding is invalid: {entry_id}"

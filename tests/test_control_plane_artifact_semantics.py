@@ -330,6 +330,17 @@ class FinalInventoryTests(unittest.TestCase):
             },
         ]
         for path, entry_id, callable_name, effects in self.seam_specs:
+            # CR-010 F-07: the OPEN_HOLDOUT seam is the single CONTROLLED
+            # holdout entry (disposition/trust_state/phase upgraded); all
+            # other seams keep the legacy default.
+            if effects == ["OPEN_HOLDOUT"]:
+                disposition = "CONTROLLED_RESEARCH"
+                trust_state = "reviewed_controlled"
+                declared_phase = "P8"
+            else:
+                disposition = "LEGACY_UNAUDITED"
+                trust_state = "legacy_unaudited"
+                declared_phase = None
             entries.append(
                 {
                     "entry_id": entry_id,
@@ -338,10 +349,10 @@ class FinalInventoryTests(unittest.TestCase):
                     "callable_name": callable_name,
                     "actor_type": "legacy_runner",
                     "content_sha256": digests[path],
-                    "disposition": "LEGACY_UNAUDITED",
-                    "trust_state": "legacy_unaudited",
+                    "disposition": disposition,
+                    "trust_state": trust_state,
                     "declared_side_effects": effects,
-                    "declared_phase": None,
+                    "declared_phase": declared_phase,
                     "resource_roots": [],
                     "external_metadata": {},
                     "source": "required_import_seam",
