@@ -127,15 +127,35 @@ def main() -> int:
         canonical_json(inventory) + "\n", encoding="utf-8", newline="\n"
     )
 
-    # 3) baseline + scheduler documents
-    baseline = {
-        "schema_version": "control_plane.implementation_baseline.v1",
-        "phase": PHASE,
+    # 3) baseline + scheduler documents (v2 implementation baseline schema)
+    baseline_payload = {
         "attempt_id": ATTEMPT,
+        "branch": "HEAD",
+        "data_scan_policy": (
+            "Live store files and pre-existing user delta are quarantined; "
+            "no data scan."
+        ),
+        "file_state_count": 0,
+        "file_states": {},
+        "git_head": freeze["git_commit"],
+        "large_data_scanned": False,
+        "production_or_research_task_started": False,
+        "protected_tracked_changes": [],
+        "tracked_user_status_line_count": 0,
+        "tracked_user_status_sha256": "0" * 64,
+    }
+    baseline_payload_sha256 = hashlib.sha256(
+        canonical_json(baseline_payload).encode("utf-8")
+    ).hexdigest()
+    baseline = {
+        "schema_version": "control_plane.implementation_baseline.v2",
         "plan_version": PLAN_VERSION,
-        "identity_binding": IDENTITY,
-        "git_commit": freeze["git_commit"],
-        "git_tree": freeze["git_tree"],
+        "phase": PHASE,
+        "baseline_payload_hash_algorithm": (
+            "sha256(canonical UTF-8 JSON of baseline)"
+        ),
+        "baseline_payload_sha256": baseline_payload_sha256,
+        "baseline": baseline_payload,
     }
     (ROOT / baseline_ref).write_text(
         canonical_json(baseline) + "\n", encoding="utf-8", newline="\n"

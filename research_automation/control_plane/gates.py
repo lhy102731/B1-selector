@@ -486,19 +486,49 @@ def _validate_nested_contracts(report: Mapping[str, object]) -> None:
         raise GateValidationError("test_receipts must be a list")
     receipt_ids: set[tuple[str, str]] = set()
     for index, item in enumerate(receipts):
-        receipt = _require_closed_mapping(
-            item,
-            f"test_receipts[{index}]",
-            frozenset(
-                {
-                    "ticket_id",
-                    "receipt_id",
-                    "command",
-                    "exit_code",
-                    "result",
-                }
-            ),
-        )
+        # CR-010 F-05: a NEW-style receipt (candidate_commit present) must
+        # be a closed mapping over the FULL contract; legacy receipts keep
+        # the base 5-field gate set.
+        if isinstance(item, Mapping) and "candidate_commit" in item:
+            receipt = _require_closed_mapping(
+                item,
+                f"test_receipts[{index}]",
+                frozenset(
+                    {
+                        "ticket_id",
+                        "receipt_id",
+                        "command",
+                        "exit_code",
+                        "result",
+                        "executable",
+                        "cwd",
+                        "runtime_version",
+                        "lock_hash",
+                        "candidate_commit",
+                        "candidate_tree",
+                        "started_at_utc",
+                        "completed_at_utc",
+                        "stdout_ref",
+                        "stdout_sha256",
+                        "stderr_ref",
+                        "stderr_sha256",
+                    }
+                ),
+            )
+        else:
+            receipt = _require_closed_mapping(
+                item,
+                f"test_receipts[{index}]",
+                frozenset(
+                    {
+                        "ticket_id",
+                        "receipt_id",
+                        "command",
+                        "exit_code",
+                        "result",
+                    }
+                ),
+            )
         ticket_id = _require_nonempty(
             receipt["ticket_id"],
             f"test_receipts[{index}].ticket_id",

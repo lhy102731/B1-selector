@@ -70,9 +70,9 @@ def main() -> int:
     try:
         ticket = conn.execute(
             "SELECT ticket_id, task_id, state FROM task_tickets_v2 "
-            "WHERE attempt_id = ? AND state = 'SUCCEEDED' "
+            "WHERE attempt_id = ? AND task_id = ? AND state = 'SUCCEEDED' "
             "ORDER BY created_at DESC LIMIT 1",
-            (ATTEMPT,),
+            (ATTEMPT, "P0-GATE-013"),
         ).fetchone()
     finally:
         conn.close()
@@ -112,6 +112,7 @@ def main() -> int:
     (ROOT / stdout_ref).write_text(result.stdout, encoding="utf-8", newline="\n")
     (ROOT / stderr_ref).write_text(result.stderr, encoding="utf-8", newline="\n")
     receipt = {
+        "ticket_id": ticket_id,
         "receipt_id": f"test-{ticket_id[:16]}",
         "command": test_cmd,
         "exit_code": result.returncode,
@@ -135,7 +136,9 @@ def main() -> int:
         print(result.stderr[-800:])
         return 1
 
-    # TaskReport draft (builder computes outcome + hashes)
+    # TaskReport receipts omit ticket_id (the TaskReport schema binds it at
+    # the top level); the gate receipt includes it.  Full contract kept.
+    task_report_receipt = {k: v for k, v in receipt.items() if k != "ticket_id"}
     task_report = build_task_report_v2(
         {
             "plan_version": PLAN_VERSION,
@@ -143,8 +146,17 @@ def main() -> int:
             "attempt_id": ATTEMPT,
             "task_id": ticket[1],
             "ticket_id": ticket_id,
+            "authorization_ref": f"coordinator-auth-{ticket_id[:24]}",
             "ticket_state": "SUCCEEDED",
             "identity_binding": IDENTITY,
+            "objective": f"CR-010 P0 re-gate activation for {ATTEMPT}",
+            "dependencies": [],
+            "idempotency_key": f"{ATTEMPT}-cr010",
+            "task_spec_ref": (
+                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+                "activation-envelopes/p0-gate-013.json"
+            ),
+            "task_spec_sha256": "1" * 64,
             "requirements": {
                 "required_test_receipt_ids": [receipt["receipt_id"]],
                 "required_review_receipt_ids": [],
@@ -152,6 +164,20 @@ def main() -> int:
                     f"coordinator-evidence-{ticket_id[:16]}"
                 ],
             },
+            "allowed_files": [
+                "research_automation/control_plane/",
+                "tests/",
+                f"research_state/control_plane/p0/attempts/{ATTEMPT}/",
+            ],
+            "forbidden_files": ["data/", "strategy/"],
+            "baseline_ref": (
+                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+                "implementation_baseline.json"
+            ),
+            "baseline_sha256": file_sha256(
+                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+                "implementation_baseline.json"
+            ),
             "input_evidence_refs": [
                 {
                     "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
@@ -160,16 +186,17 @@ def main() -> int:
                     "status": "VERIFIED",
                 }
             ],
-            "test_receipts": [receipt],
+            "test_receipts": [task_report_receipt],
             "review_receipts": [],
+            "review_findings": [],
+            "changed_files": [],
+            "external_invocations": [],
+            "started_at": started.isoformat().replace("+00:00", "Z"),
+            "completed_at": completed.isoformat().replace("+00:00", "Z"),
             "side_effect_summary": {
                 "observed": ["WRITE_CONTROL_PLANE"],
                 "unauthorized": [],
             },
-            "baseline_sha256": file_sha256(
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                "implementation_baseline.json"
-            ),
         }
     )
     report_ref = (
@@ -199,10 +226,11 @@ def main() -> int:
             ),
         },
         "reviewed_entry_policy": {
-            "ref": f"research_state/control_plane/p0/attempts/{ATTEMPT}/reviewed_entry_policy.json",
-            "sha256": file_sha256(
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/reviewed_entry_policy.json"
+            "ref": (
+                f"research_state/control_plane/policies/"
+                f"{snapshot.active_entry_policy_sha256}.json"
             ),
+            "sha256": snapshot.active_entry_policy_sha256,
         },
         "scheduler_inventory": {
             "ref": f"research_state/control_plane/p0/attempts/{ATTEMPT}/external_scheduler_inventory.json",

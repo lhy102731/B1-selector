@@ -178,6 +178,18 @@ def _require_sha256(value: object, field_name: str) -> str:
     return value
 
 
+_GIT_OBJECT_ID_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _require_git_object_id(value: object, field_name: str) -> str:
+    """Require a lowercase 40-hex Git object id (commit/tree)."""
+    if not isinstance(value, str) or not _GIT_OBJECT_ID_PATTERN.fullmatch(value):
+        raise TaskReportValidationError(
+            f"{field_name} must be a lowercase Git object id (40 hex)"
+        )
+    return value
+
+
 def _require_non_empty_string(value: object, field_name: str) -> str:
     if (
         not isinstance(value, str)
@@ -418,10 +430,11 @@ def _validate_receipt_common(
             receipt["runtime_version"], f"{field_name}.runtime_version"
         )
         _require_sha256(receipt["lock_hash"], f"{field_name}.lock_hash")
-        _require_sha256(
+        # Git object ids are 40-hex SHA-1 (commit/tree), not 64-hex.
+        _require_git_object_id(
             receipt["candidate_commit"], f"{field_name}.candidate_commit"
         )
-        _require_sha256(
+        _require_git_object_id(
             receipt["candidate_tree"], f"{field_name}.candidate_tree"
         )
         _require_utc_timestamp(

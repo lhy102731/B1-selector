@@ -1786,8 +1786,8 @@ class TestReceiptContractTests(unittest.TestCase):
             "cwd": "D:\workspace\a-share-quant-selector-main",
             "runtime_version": "Python 3.13",
             "lock_hash": "a" * 64,
-            "candidate_commit": "b" * 64,
-            "candidate_tree": "c" * 64,
+            "candidate_commit": "b" * 40,
+            "candidate_tree": "c" * 40,
             "started_at_utc": "2026-08-14T00:00:00Z",
             "completed_at_utc": "2026-08-14T00:05:00Z",
             "stdout_ref": "research_state/control_plane/full_discovery.log",
@@ -1857,12 +1857,12 @@ class TestReceiptContractTests(unittest.TestCase):
         draft.pop("reason_codes", None)
         draft.pop("unexpected_changes", None)
         receipt = draft["test_receipts"][0]
-        receipt["candidate_commit"] = "b" * 64  # mark new-style
+        receipt["candidate_commit"] = "b" * 40  # mark new-style
         draft["receipt_contract"] = self._contract()
         report = build_task_report_v2(draft)
         stamped = report["test_receipts"][0]
         self.assertEqual(stamped["executable"], self._contract()["executable"])
-        self.assertEqual(stamped["candidate_tree"], "c" * 64)
+        self.assertEqual(stamped["candidate_tree"], "c" * 40)
         self.assertEqual(stamped["stdout_sha256"], "d" * 64)
 
     def test_builder_keeps_legacy_receipts_untouched(self) -> None:

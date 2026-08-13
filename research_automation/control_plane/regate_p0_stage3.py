@@ -223,7 +223,12 @@ def main() -> int:
         activated = authority._activate_reviewed_entry_policy(
             lease,
             reviewer=reviewer,
-            policy_sha256=policy["policy_payload_sha256"],
+            # policy_sha256 is the CONTENT hash of the policy file bytes
+            # (gate binds ref filename == sha256 == file bytes hash); the
+            # payload hash stays in policy_payload_sha256.
+            policy_sha256=__import__("hashlib").sha256(
+                (ROOT / policy_ref).read_bytes()
+            ).hexdigest(),
             policy_payload_sha256=policy["policy_payload_sha256"],
             inventory_payload_sha256=policy["inventory_payload_sha256"],
             review_receipt_sha256=policy["review_receipt_sha256"],
