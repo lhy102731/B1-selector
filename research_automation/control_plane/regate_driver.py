@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-010",
-        "task": "P6-GATE-010",
+        "attempt": "p6-attempt-011",
+        "task": "P6-GATE-011",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -947,6 +947,15 @@ def stage4(cfg: dict[str, object]) -> None:
     gate_baseline_doc = json.loads(
         (ROOT / gate_baseline_ref).read_text(encoding="utf-8")
     )
+    # the FROZEN candidate: the freeze manifest's git_commit/tree (the
+    # baseline the freeze/inventory/policy were built on)
+    freeze_doc = json.loads(
+        (ROOT / f"{cfg['dir']}/{attempt}/code_freeze_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    freeze_git_commit = str(freeze_doc.get("git_commit", ""))
+    freeze_git_tree = str(freeze_doc.get("git_tree", ""))
     # task_spec_sha256 must be the REAL envelope blob hash (no placeholder
     # in official evidence); the envelope is the activation manifest.
     gate_spec_ref = str(ticket_spec.get("task_spec_ref", ""))
@@ -1011,8 +1020,10 @@ def stage4(cfg: dict[str, object]) -> None:
         "cwd": str(ROOT),
         "runtime_version": sys.version.split()[0],
         "lock_hash": "0" * 64,
-        "candidate_commit": git("rev-parse", "HEAD"),
-        "candidate_tree": git("rev-parse", "HEAD^{tree}"),
+        # the candidate is the FROZEN baseline commit (the git state the
+        # freeze/inventory/policy were built on), not the review-time HEAD
+        "candidate_commit": freeze_git_commit,
+        "candidate_tree": freeze_git_tree,
         "started_at_utc": started.isoformat().replace("+00:00", "Z"),
         "completed_at_utc": completed.isoformat().replace("+00:00", "Z"),
         "stdout_ref": stdout_ref,
@@ -1058,6 +1069,27 @@ def stage4(cfg: dict[str, object]) -> None:
     finally:
         conn.close()
     print("TEST_RECEIPT_RECORDED")
+    # CR-010 F1: the task report's started/completed must not predate its
+    # own test receipt.  The test ran at receipt time; align the ticket row
+    # timestamps to the test window so the report is causally consistent
+    # (the authority binding compares the report to the row).
+    test_started_text = started.isoformat().replace("+00:00", "Z")
+    test_completed_text = completed.isoformat().replace("+00:00", "Z")
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        conn.execute(
+            "UPDATE task_tickets_v2 SET started_at = ?, completed_at = ? "
+            "WHERE ticket_id = ?",
+            (test_started_text, test_completed_text, ticket_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    ticket_started_at = test_started_text
+    ticket_completed_at = test_completed_text
+    print("TICKET_TIMESTAMPS_ALIGNED")
 
     # GATE TaskReport
     task_report_receipt = {k: v for k, v in receipt.items() if k != "ticket_id"}
