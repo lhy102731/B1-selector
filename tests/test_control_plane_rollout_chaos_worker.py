@@ -94,25 +94,38 @@ class WorkerOutputTests(unittest.TestCase):
 
 class WorkerProcessTests(unittest.TestCase):
     def test_worker_process_emits_bounded_json(self) -> None:
-        child = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "research_automation.control_plane.rollout_chaos_worker",
-                "prepare",
-                "fixture-ref",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            cwd=Path(__file__).resolve().parents[1],
-        )
-        self.assertEqual(child.returncode, 0, msg=child.stderr)
-        import json as _json
+        import tempfile
 
-        payload = _json.loads(child.stdout)
-        self.assertEqual(payload["outcome"], "SUCCEEDED")
-        self.assertEqual(payload["step"], "prepare")
+        with tempfile.TemporaryDirectory() as tmp:
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "research_automation.control_plane.rollout_chaos_worker",
+                    "prepare",
+                    "fixture-ref",
+                    tmp,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=Path(__file__).resolve().parents[1],
+            )
+            self.assertEqual(child.returncode, 0, msg=child.stderr)
+            import json as _json
+
+            payload = _json.loads(child.stdout)
+            self.assertEqual(payload["outcome"], "SUCCEEDED")
+            self.assertEqual(payload["step"], "prepare")
+            # CR010-R05b: the worker output binds a REAL state digest, the
+            # real PID identity and the guard interception attempts
+            self.assertTrue(payload["state_digest"])
+            self.assertGreaterEqual(
+                int(payload["worker_identity"]["pid"]), 1
+            )
+            self.assertGreaterEqual(
+                int(payload["network_attempts"]), 1
+            )
 
     def test_worker_rejects_unknown_step(self) -> None:
         child = subprocess.run(

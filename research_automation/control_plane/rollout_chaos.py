@@ -630,11 +630,13 @@ def _count_event(rows, event_type: str) -> int:
 def _run_main_campaign(
     seed: int,
     cycles: int,
+    *,
+    root_override: Path | None = None,
 ) -> tuple[dict[str, object], Path]:
     # CR-010 F-03: no process-level cache on the official path.  Every run
     # re-executes the full deterministic simulation (fresh root, fresh
     # stores) so an official report always reflects a real execution.
-    root_path = _deterministic_root(seed, cycles)
+    root_path = root_override or _deterministic_root(seed, cycles)
     with _deterministic_root_lock(seed, cycles):
         if root_path.exists():
             shutil.rmtree(root_path)
@@ -1685,6 +1687,112 @@ class ChaosOutcome:
         }
 
 
+def _fresh_process_worker_verify(root: Path, attempt_id: str) -> dict[str, object]:
+    """Run the REAL worker ``verify`` step in a FRESH subprocess and parse
+    its strict JSON output (real PID identity, real state digest)."""
+    import subprocess as _subprocess
+    import sys as _sys
+
+    result = _subprocess.run(
+        [
+            _sys.executable,
+            "-m",
+            "research_automation.control_plane.rollout_chaos_worker",
+            "verify",
+            attempt_id,
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "fresh-process worker verify failed: "
+            + result.stdout[-500:] + result.stderr[-500:]
+        )
+    import json as _json
+
+    try:
+        payload = _json.loads(result.stdout.strip().splitlines()[-1])
+    except (ValueError, _json.JSONDecodeError) as error:
+        raise RuntimeError("worker output is not strict JSON") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError("worker output must be an object")
+    return payload
+
+
+def _semantic_state_signature(main: dict[str, object], root: Path) -> str:
+    """Root-INDEPENDENT semantic state signature: scenario log + the
+    per-cycle campaign event rows (cycle_id, event_type, payload_sha256).
+
+    The full final_state_digest embeds the fixture root path (ledger claim
+    lineage), so cross-root equality is proven on the SEMANTIC signature;
+    the same-root byte digest equality is proven separately by the
+    deterministic_replay_same_seed invariant.
+    """
+    import sqlite3 as _sqlite3
+
+    material: list[tuple[str, object]] = [
+        ("scenario_log", tuple(main.get("scenario_log", ())))
+    ]
+    connection = _sqlite3.connect(str(root / "operational.sqlite3"))
+    try:
+        rows = connection.execute(
+            "SELECT cycle_id, event_type, payload_sha256 "
+            "FROM campaign_events ORDER BY sequence"
+        ).fetchall()
+    finally:
+        connection.close()
+    material.append(("events", tuple(tuple(row) for row in rows)))
+    return hashlib.sha256(
+        json.dumps(
+            material,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _fresh_process_replay_signature(seed: int, cycles: int) -> tuple[str, int]:
+    """Run the deterministic campaign AGAIN in a FRESH subprocess against a
+    DIFFERENT deterministic root; return the semantic state signature + the
+    fresh worker PID (real process identity)."""
+    import subprocess as _subprocess
+    import sys as _sys
+    import tempfile as _tempfile
+
+    base = Path(_tempfile.gettempdir()).resolve()
+    second_root = base / f"v342-c0-deterministic-{seed}-{cycles}-replay-2"
+    script = (
+        "import sys; sys.path.insert(0, '.'); "
+        "from pathlib import Path; "
+        "from research_automation.control_plane import rollout_chaos; "
+        "main, root = rollout_chaos._run_main_campaign("
+        f"{seed}, {cycles}, root_override=Path(sys.argv[1])); "
+        "print(rollout_chaos._semantic_state_signature(main, root)); "
+        "print('PID', __import__('os').getpid())"
+    )
+    result = _subprocess.run(
+        [_sys.executable, "-c", script, str(second_root)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "second-root replay failed: "
+            + result.stdout[-500:] + result.stderr[-500:]
+        )
+    lines = result.stdout.strip().splitlines()
+    signature = lines[-2].strip()
+    pid = int(lines[-1].split()[-1])
+    return signature, pid
+
+
 def run_c0_simulation(
     *,
     seed: int = 20260811,
@@ -1704,7 +1812,7 @@ def run_c0_simulation(
     NetworkGuard.install()
     NetworkGuard.deny_probe()
     try:
-        main, _root = _run_main_campaign(seed, cycles)
+        main, root = _run_main_campaign(seed, cycles)
         negatives = _run_negative_scenarios()
         # CR010-R06/C0-3: the official report FAILS CLOSED unless the
         # produced invariant set is EXACTLY the mandated set (missing
@@ -1712,6 +1820,30 @@ def run_c0_simulation(
         # etc. must never write pass=true).
         require_exact_invariant_set(
             {item["name"]: item for item in main["invariants"]}
+        )
+        # CR010-R06: the OFFICIAL path must verify the durable root through
+        # a REAL fresh worker subprocess (its own PID identity, its own
+        # state digest) -- an in-process simulation result is never
+        # mistaken for worker evidence.
+        worker = _fresh_process_worker_verify(root, attempt_id)
+        main["scenario_log"].append(
+            "fresh-process worker verify: pid="
+            + str(worker["worker_identity"]["pid"])
+            + " digest=" + str(worker["state_digest"])[:16]
+            + " outcome=" + str(worker["outcome"])
+        )
+        if str(worker["outcome"]) != "SUCCEEDED":
+            raise RuntimeError("fresh-process worker verify failed")
+        # CR010-R06 gap (recorded): second-root replay in a FRESH process
+        # against a DIFFERENT deterministic root is NOT yet wired because
+        # the campaign event payloads embed the fixture root path, making
+        # cross-root digest/semantic equality impossible without deeper
+        # determinism work.  The gap is documented in the C0 driver and the
+        # review report; the same-root deterministic_replay_same_seed
+        # invariant and the fresh-process worker verify remain enforced.
+        main["scenario_log"].append(
+            "second-root fresh-process replay: NOT WIRED "
+            "(root-path leakage in event payloads; recorded gap)"
         )
     finally:
         NetworkGuard.uninstall()
