@@ -68,8 +68,8 @@ PHASES = {
         ),
     },
     "C0": {
-        "attempt": "c0-attempt-004",
-        "task": "C0-GATE-004",
+        "attempt": "c0-attempt-005",
+        "task": "C0-GATE-005",
         "dir": "research_state/control_plane/rollout/c0/attempts",
         "identity": {
             "plan_hash": "89f0661ecc65ea9dcc4fcbbffb3f748d626432aaeb6e03e72c5be4dc4503701e",
