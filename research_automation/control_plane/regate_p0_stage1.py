@@ -306,11 +306,14 @@ def main() -> int:
     finally:
         del capability
 
-    # Commit the approval record AFTER the activation (add-only, new file).
+    # Commit the approval record + activation evidence AFTER the activation
+    # (add-only, new files).  The evidence blob must be committed so the
+    # gate can dereference it (committed-blob trust root).
     git("add", "--",
-        f"research_state/control_plane/p0/attempts/{ATTEMPT}/approval_record.json")
+        f"research_state/control_plane/p0/attempts/{ATTEMPT}/approval_record.json",
+        f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/")
     git("commit", "-q", "-m",
-        f"audit: {ATTEMPT} approval record (CR-010 F-06, add-only)")
+        f"audit: {ATTEMPT} approval record + activation evidence (CR-010, add-only)")
     print("APPROVAL_COMMITTED", git("rev-parse", "HEAD")[:12])
     return 0
 
