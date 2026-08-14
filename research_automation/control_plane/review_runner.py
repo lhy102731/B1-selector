@@ -153,21 +153,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
     else:
+        # List the committed evidence files the reviewer can dereference.
+        evidence_files = []
+        for path in sorted(out_dir.rglob("*")):
+            if path.is_file():
+                rel = str(path.relative_to(repository_root)).replace("\\", "/")
+                if rel.startswith("research_state/control_plane/"):
+                    evidence_files.append(rel)
+        evidence_list = "\n".join(
+            "  - " + rel for rel in evidence_files[:80]
+        )
+        # Embed the gate and closure receipts verbatim so the reviewer can
+        # mechanically verify the causality and binding contracts.
+        embedded = []
+        for name, pattern in (
+            ("gate", "gates/official_*gate*.json"),
+            ("closure", "evidence/official_*closure*"),
+        ):
+            for path in sorted(out_dir.glob(pattern)):
+                if path.is_file():
+                    content = path.read_text(encoding="utf-8")
+                    embedded.append(
+                        f"=== {name.upper()} {path.name} ===\n{content}"
+                    )
+        embedded_block = "\n\n".join(embedded)
         prompt = (
             "You are an independent reviewer (Reviewer " + args.reviewer
             + ") for the " + args.phase + " gate of the V3.4.2 control plane "
             "(CR-010 corrective recovery).\n"
             "CANDIDATE (commit/tree): " + commit + " / " + tree + "\n"
             "ATTEMPT: " + args.attempt + "\n\n"
+            "COMMITTED EVIDENCE FILES at the candidate:\n"
+            + evidence_list + "\n\n"
+            "EMBEDDED GATE / CLOSURE CONTENT (verbatim from the committed "
+            "JSON):\n" + embedded_block + "\n\n"
             "Review ONLY committed evidence at the candidate above. Never "
             "reference files or code branches that do not exist in the "
             "committed tree. Verify: (1) gate/closure time causality "
-            "(closure closed_at UTC > gate created_at); (2) evidence blob "
-            "binding (sha256 + ticket/evidence semantics); (3) test receipt "
-            "full contract; (4) any hard-crash/reconciler claims match real "
-            "code; (5) the C0 official 24-cycle evidence chain. Reply with "
-            "findings (severity, id, summary, code refs) and a final verdict "
-            "(APPROVE / HOLD / REJECT)."
+            "(closure closed_at UTC > gate created_at; use the embedded "
+            "created_at/closed_at); (2) evidence blob binding (sha256 + "
+            "ticket/evidence semantics); (3) test receipt full contract; "
+            "(4) any hard-crash/reconciler claims match real code; (5) the "
+            "C0 official 24-cycle evidence chain. Cite the exact file paths "
+            "you inspected. Reply with findings (severity, id, summary, "
+            "code refs) and a final verdict (APPROVE / HOLD / REJECT)."
         )
 
     prompt_sha256 = _sha256_bytes(prompt.encode("utf-8"))
