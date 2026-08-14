@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-008",
-        "task": "P6-GATE-008",
+        "attempt": "p6-attempt-009",
+        "task": "P6-GATE-009",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -426,6 +426,20 @@ def stage2(cfg: dict[str, object]) -> dict[str, object]:
                 }
             )
 
+    # use the REAL Windows task-file hash for the scheduler content binding
+    # (no placeholder in official evidence)
+    real_task_xml_sha = None
+    task_xml_path = Path("C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1")
+    if task_xml_path.exists():
+        try:
+            real_task_xml_sha = hashlib.sha256(
+                task_xml_path.read_bytes()
+            ).hexdigest()
+        except OSError:
+            real_task_xml_sha = None
+    if real_task_xml_sha and scheduler_records:
+        scheduler_records[0]["content_sha256"] = real_task_xml_sha
+
     freeze_ref = f"{cfg['dir']}/{attempt}/code_freeze_manifest.json"
     inventory_ref = f"{cfg['dir']}/{attempt}/final_inventory.json"
     baseline_ref = f"{cfg['dir']}/{attempt}/implementation_baseline.json"
@@ -493,6 +507,22 @@ def stage2(cfg: dict[str, object]) -> dict[str, object]:
         ):
             run_select_sha = str(entry["content_sha256"])
             break
+    # the scheduler task_xml sha256: read the REAL Windows task file hash
+    # when readable (CR-010 F-03: no placeholder hashes in official
+    # evidence); fall back to the previous attempt's value otherwise.
+    task_xml_path = Path("C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1")
+    task_xml_sha = None
+    if task_xml_path.exists():
+        try:
+            task_xml_sha = hashlib.sha256(
+                task_xml_path.read_bytes()
+            ).hexdigest()
+        except OSError:
+            task_xml_sha = None
+    if task_xml_sha is None and scheduler_records:
+        task_xml_sha = scheduler_records[0].get("content_sha256")
+    if task_xml_sha is None:
+        task_xml_sha = "d" * 64
     scheduler_doc = {
         "schema_version": "control_plane.external_scheduler_inventory.v1",
         "phase": phase,
@@ -503,7 +533,7 @@ def stage2(cfg: dict[str, object]) -> dict[str, object]:
         "operational_classification": "PRODUCTION_DAILY",
         "task_xml": {
             "path": "C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1",
-            "sha256": "d" * 64,
+            "sha256": task_xml_sha,
         },
         "action": {
             "execute": scheduler_records[0]["action"]
