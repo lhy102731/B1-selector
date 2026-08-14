@@ -1,4 +1,4 @@
-"""CR-010 P0 re-gate STAGE 1: activate p0-attempt-034 (coordinator only).
+"""CR-010 P0 re-gate STAGE 1: activate p0-attempt-035 (coordinator only).
 
 Creates the activation envelope (committed), builds the approval record
 (committed), runs the coordinator with the approval record, and prints the
@@ -18,9 +18,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-034"
+ATTEMPT = "p0-attempt-035"
 PHASE = "P0"
-TASK_ID = "P0-GATE-034"
+TASK_ID = "P0-GATE-035"
 ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 IDENTITY = {
     "plan_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
@@ -133,7 +133,7 @@ def main() -> int:
             "test receipts)"
         ),
     }
-    env_rel = f"activation-envelopes/p0-gate-034.json"
+    env_rel = f"activation-envelopes/p0-gate-035.json"
     (attempt_dir / env_rel).write_text(
         json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -153,7 +153,7 @@ def main() -> int:
         ["git", "-C", str(ROOT), "cat-file", "blob",
          f"{envelope_commit}:"
          f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-         "activation-envelopes/p0-gate-034.json"],
+         "activation-envelopes/p0-gate-035.json"],
         capture_output=True,
     ).stdout
     manifest_sha256 = hashlib.sha256(manifest_blob).hexdigest()
@@ -216,7 +216,7 @@ def main() -> int:
                     "idempotency_key": f"{ATTEMPT}-cr010",
                     "task_spec_ref": (
                         f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                        "activation-envelopes/p0-gate-034.json"
+                        "activation-envelopes/p0-gate-035.json"
                     ),
                     "task_spec_sha256": "1" * 64,
                     "requirements": {
