@@ -1663,6 +1663,7 @@ class ChaosOutcome:
     final_state_digest: str
     campaign_status: str
     attempt_id: str = _ATTEMPT_ID
+    worker_verify: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
         passed = all(
@@ -1683,6 +1684,7 @@ class ChaosOutcome:
             "invariants": list(self.invariants),
             "negative_scenarios": list(self.negative_scenarios),
             "final_state_digest": self.final_state_digest,
+            "worker_verify": self.worker_verify,
             "pass": passed,
         }
 
@@ -1826,12 +1828,12 @@ def run_c0_simulation(
         # state digest) -- an in-process simulation result is never
         # mistaken for worker evidence.
         worker = _fresh_process_worker_verify(root, attempt_id)
-        main["scenario_log"].append(
-            "fresh-process worker verify: pid="
-            + str(worker["worker_identity"]["pid"])
-            + " digest=" + str(worker["state_digest"])[:16]
-            + " outcome=" + str(worker["outcome"])
-        )
+        main["worker_verify"] = {
+            "pid": worker["worker_identity"]["pid"],
+            "state_digest": worker["state_digest"],
+            "outcome": worker["outcome"],
+            "network_attempts": worker["network_attempts"],
+        }
         if str(worker["outcome"]) != "SUCCEEDED":
             raise RuntimeError("fresh-process worker verify failed")
         # CR010-R06 gap (recorded): second-root replay in a FRESH process
@@ -1844,6 +1846,9 @@ def run_c0_simulation(
         main["scenario_log"].append(
             "second-root fresh-process replay: NOT WIRED "
             "(root-path leakage in event payloads; recorded gap)"
+        )
+        main["worker_verify"]["second_root_replay"] = (
+            "NOT_WIRED_ROOT_PATH_LEAK"
         )
     finally:
         NetworkGuard.uninstall()
@@ -1863,6 +1868,7 @@ def run_c0_simulation(
         final_state_digest=str(main["final_state_digest"]),
         campaign_status=str(main["campaign_status"]),
         attempt_id=attempt_id,
+        worker_verify=main.get("worker_verify"),
     )
 
 
