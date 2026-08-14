@@ -72,8 +72,8 @@ def main() -> int:
     try:
         ticket = conn.execute(
             "SELECT ticket_id, task_id, idempotency_key, task_spec_ref, "
-            "task_spec_sha256, state, grant_id, started_at, completed_at "
-            "FROM task_tickets_v2 "
+            "task_spec_sha256, state, grant_id, started_at, completed_at, "
+            "task_spec_payload_json FROM task_tickets_v2 "
             "WHERE attempt_id = ? AND task_id = ? AND state = 'SUCCEEDED' "
             "ORDER BY created_at DESC LIMIT 1",
             (ATTEMPT, f"P0-GATE-{ATTEMPT[-3:]}"),
@@ -95,6 +95,9 @@ def main() -> int:
     # TaskReport timestamps must EXACTLY match the authority ticket row.
     ticket_started_at = str(ticket[7])
     ticket_completed_at = str(ticket[8])
+    # The task-spec fields (requirements/allowed/forbidden/baseline/evidence)
+    # must match the authority's stored ticket payload exactly.
+    ticket_spec = json.loads(str(ticket[9]))
     evidence_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
         f"activation-{ticket_id[:16]}.json"
@@ -188,35 +191,14 @@ def main() -> int:
             "idempotency_key": ticket[2],
             "task_spec_ref": ticket[3],
             "task_spec_sha256": ticket[4],
-            "requirements": {
-                "required_test_receipt_ids": [receipt["receipt_id"]],
-                "required_review_receipt_ids": [],
-                "required_evidence_ids": [
-                    f"coordinator-evidence-{ticket_id[:16]}"
-                ],
-            },
-            "allowed_files": [
-                "research_automation/control_plane/",
-                "tests/",
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/",
-            ],
-            "forbidden_files": ["data/", "strategy/"],
-            "baseline_ref": (
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                "implementation_baseline.json"
+            "requirements": ticket_spec.get("requirements", {}),
+            "allowed_files": ticket_spec.get("allowed_files", []),
+            "forbidden_files": ticket_spec.get("forbidden_files", []),
+            "baseline_ref": ticket_spec.get("baseline_ref", "manifest.json"),
+            "baseline_sha256": ticket_spec.get(
+                "baseline_sha256", "1" * 64
             ),
-            "baseline_sha256": file_sha256(
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                "implementation_baseline.json"
-            ),
-            "input_evidence_refs": [
-                {
-                    "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
-                    "evidence_ref": evidence_ref,
-                    "evidence_sha256": file_sha256(evidence_ref),
-                    "status": "VERIFIED",
-                }
-            ],
+            "input_evidence_refs": ticket_spec.get("input_evidence_refs", []),
             "test_receipts": [task_report_receipt],
             "review_receipts": [],
             "review_findings": [],
