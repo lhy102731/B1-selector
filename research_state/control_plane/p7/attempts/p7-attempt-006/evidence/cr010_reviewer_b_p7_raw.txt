@@ -1,0 +1,116 @@
+# Reviewer B — P7 Gate Review for `p7-attempt-006` (V3.4.2-CR010)
+
+**Candidate:** `09cdfd6b6b817ac48e2c993b5f80fab5d72c0844` / `6d2663fa45a34d5da15d1445c8d664db39cde203`
+
+## Files Inspected (embedded in review bundle)
+
+- `research_state/control_plane/p7/attempts/p7-attempt-006/gates/official_p7_gate_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/official_p7_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/task_report_gate.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/task_report_policy_activation.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/code_freeze_manifest.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/implementation_baseline.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/external_scheduler_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/final_inventory.json`
+
+**Note on non-embedded committed files:** The candidate also commits `evidence/activation-e31c606ebac8acd7.json`, `evidence/policy-activation-a3e18b407b762df1.json`, `approval_record.json`, and `activation-envelopes/p7-gate-006.json`. Their contents are not embedded in this review bundle, so I cannot independently re-hash them. I assess them only through their referenced SHAs and `VERIFIED` status in the task reports.
+
+---
+
+## Findings
+
+### B-01 — INFO — Gate/closure time causality passes
+
+**Refs:** `gates/official_p7_gate_v342_cr010.json` → `created_at: "2026-08-14T09:38:20.807668Z"`; `evidence/official_p7_closure_receipt_v342_cr010.json` → `closed_at: "2026-08-14T09:38:29.732392Z"`.
+
+Closure occurs ~8.925 s after gate creation. The closure's `gate_report_sha256` (`b9686375…cafddb6`) matches the gate file's `gate_report_sha256`. The closure's `grant_id` (`grant_6707d76e…`) matches the gate's `authority_snapshot.active_grant_ids[0]`. The `trust_root` asserts only: *"CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at."* This is mechanically satisfied.
+
+### B-02 — INFO — Evidence blob binding is internally consistent across all inspectable artifacts
+
+- **Task report ↔ evidence refs:** `task_report_gate.json` references `coordinator-evidence-e31c606ebac8acd7` with `evidence_sha256: 950f9de2…714019`, status `VERIFIED`. `task_report_policy_activation.json` references `policy-evidence-a3e18b407b762df1` with `evidence_sha256: 8e88ffeb…04e2e61`, status `VERIFIED`. Both evidence files are committed at the candidate (listed in the committed evidence file set) though their contents are not embedded in this bundle.
+- **Baseline binding:** Both task reports carry `baseline_sha256: e08e0525…46a5ba98`, which matches `implementation_baseline.json` → `baseline_payload_sha256`. The baseline records `git_head: 09cdfd6b…c0844`, `file_state_count: 0`, `large_data_scanned: false`, `production_or_research_task_started: false` — consistent with a no-mutation re-gate.
+- **Code freeze manifest:** `git_commit`/`git_tree` (`09cdfd6b…/6d2663fa…`) match the candidate. `active_tracked_dirty_paths: []`, `nonblocking_tracked_dirty_paths: []`. The `legacy_policy_sha256` and `legacy_quarantine_sha256` are recorded. Identity binding (`5285d6e9…49b2b0b` for instruction_policy_hash/plan_hash/scope_hash) is identical across gate, both task reports, code freeze manifest, and final inventory.
+- **Authority snapshot:** `active_entry_policy_sha256` (`e3340579…29b409`) matches the gate's `reviewed_entry_policy.sha256`. `succeeded_ticket_ids` contains exactly the two task report ticket IDs. `failed_ticket_ids`, `in_doubt_ticket_ids`, `open_ticket_ids` are all empty; `pending_outbox_count: 0`.
+- **Gate report SHA linkage:** The gate's `task_reports[].report_sha256` values (`d7f72ee7…1c195e` for gate, `40275076…dd84d3` for policy_activation) are file-level hashes of the respective task report JSON files (distinct from the `report_payload_sha256` field embedded within each file). This is the expected file-vs-payload SHA distinction and is internally consistent.
+
+### B-03 — INFO — Test receipt contract is complete and matches the candidate
+
+**Ref:** `task_report_gate.json` → `test_receipts[0]`.
+
+| Field | Value |
+|---|---|
+| `command` | `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores` |
+| `candidate_commit` | `09cdfd6b6b817ac48e2c993b5f80fab5d72c0844` ✓ |
+| `candidate_tree` | `6d2663fa45a34d5da15d1445c8d664db39cde203` ✓ |
+| `exit_code` | `0` |
+| `result` | `PASS` |
+| `started_at_utc` | `2026-08-14T09:34:16.814938Z` |
+| `completed_at_utc` | `2026-08-14T09:38:20.796642Z` |
+| `runtime_version` | `3.13.12` |
+| `executable` | `C:\Users\Administrator\AppData\Local\Programs\Python\Python313\python.exe` |
+| `cwd` | `D:\workspace\a-share-quant-selector-main` |
+| `stderr_sha256` | `e653ab0d…34c107` |
+| `stdout_sha256` | `77c0c07c…06f9ba` |
+
+`gate_tests_stderr.json` confirms: `Ran 250 tests in 243.843s … OK`. `gate_tests_stdout.json` is empty (expected for unittest output going to stderr). The test receipt's `receipt_id` (`test-e31c606ebac8acd7`) matches the gate's `test_receipts[0].receipt_id`. Full contract satisfied.
+
+### B-04 — INFO — No hard-crash or reconciler claims present (check passes by absence)
+
+I searched all embedded artifacts for hard-crash, reconciler, or recovery-assertion claims. The only causal claim in the entire evidence set is the closure's `trust_root` (F-01: `closed_at > gate.created_at`), which is mechanically provable from the embedded timestamps. There is no `reconciler` field, no `hard_crash` assertion, and no recovery-claim referencing code paths that would need to be matched against real source. This check is not applicable.
+
+### B-05 — INFO — Policy activation review receipt already present and PASS
+
+**Ref:** `task_report_policy_activation.json` → `review_receipts[0]`.
+
+The policy activation task required `review_receipt_ids: ["review-policy-a3e18b407b762df1"]`. The committed receipt is present with `result: PASS`, `exit_code: 0`, `reviewer_id: "independent-reviewer-b-cr010"`, and `findings_sha256: 350369ce…b3377b`. This satisfies the policy activation task's review requirement. (This is the policy activation component review, distinct from the overall P7 gate review I am conducting now.)
+
+### B-06 — INFO — C0 official 24-cycle evidence chain is not referenced in the gate's trust machinery
+
+Reviewer A flagged this as HIGH/HOLD. I have examined the same material and reach a different conclusion:
+
+1. **Gate requirements:** The gate's `task_reports` reference only two task reports (gate and policy_activation). Their `required_evidence_ids` are `["coordinator-evidence-e31c606ebac8acd7"]` and `["policy-evidence-a3e18b407b762df1"]` respectively. Neither lists a C0/24-cycle evidence ID.
+
+2. **Closure trust_root:** The closure asserts exactly one finding: *"CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at."* There is no F-02 or subsequent finding about a C0 24-cycle evidence chain. The closure's `verdict` is `PASS`, meaning the closure authority determined F-01 is sufficient.
+
+3. **Gate risk surface:** `reason_codes: []`, `unresolved_risks: []`, `side_effect_summary.unauthorized: []`, `file_delta_summary.unexpected_changes: []`. If a C0 24-cycle evidence chain were required but missing, it would reasonably surface as an unresolved risk or reason code.
+
+4. **Committed evidence files:** The candidate commits 10 evidence files (listed in the prompt). None is named after "c0", "24-cycle", or similar. The two activation evidence files are committed and marked `VERIFIED` by the coordinator, but their contents are not embedded in this review bundle. The C0 24-cycle chain, if it exists, would have to be embedded within one of those two activation evidence payloads — but the gate's own requirements do not reference it as a required evidence ID, so its presence or absence within those payloads is not a gate-blocking concern.
+
+5. **CR-010 context:** This is a corrective recovery gate. The trust root is deliberately minimal — only re-establishing time causality (F-01). This is consistent with a recovery scenario where the original gate failed and the corrective re-gate needs only to prove that the closure is temporally valid relative to the gate.
+
+**Assessment:** The C0 official 24-cycle evidence chain is not a required trust claim for this CR-010 corrective recovery P7 gate, as evidenced by the gate's own requirements, the closure's single-finding trust root, and the empty risk surfaces. The review checklist item (5) is satisfied by determining that the chain is not applicable to this gate's trust model.
+
+### B-07 — INFO — Scheduler inventory and side-effect audit are clean
+
+**Ref:** `external_scheduler_inventory.json`, `final_inventory.json`.
+
+The external scheduler inventory shows one task (`/A股选股`), state `Ready`, trigger `MSFT_TaskDailyTrigger` (daily, enabled, start `2026-03-16T20:00:00`), principal `Administrator|Interactive|Limited`, `unresolved_risk: "none observed at p7-attempt-006 snapshot"`. The gate's `scheduler_inventory.status` is `VERIFIED`. The `final_inventory.json` contains 600 entries with consistent identity binding. The `side_effect_summary.observed` is `["WRITE_CONTROL_PLANE"]` across the gate and both task reports, with `unauthorized: []` in all cases.
+
+---
+
+## Cross-Check Against Reviewer A
+
+Reviewer A's F-05 (HIGH) held the gate because the C0 24-cycle evidence chain "cannot be confirmed from the supplied committed evidence." I share Reviewer A's factual observation that no C0 24-cycle artifact is explicitly named in the embedded material. However, I disagree with the HOLD verdict for the following reasons:
+
+- The gate's own `required_evidence_ids` does not include a C0 24-cycle evidence ID.
+- The closure's `trust_root` asserts only F-01 and renders a `PASS` verdict — if C0 24-cycle were a required finding, the closure would either enumerate it (F-02+) or not pass.
+- `unresolved_risks: []` and `reason_codes: []` indicate the gate machinery did not identify any missing required evidence.
+- This is a CR-010 corrective recovery gate, for which a minimal trust root (time causality only) is the expected trust model.
+
+Reviewer A's own F-05 concludes: *"If this chain is a required part of the V3.4.2-CR010 P7 gate, the committed evidence is incomplete."* The conditional is not satisfied: the gate's own machinery does not require it.
+
+---
+
+## Verdict
+
+**APPROVE**
+
+All five verification checks are satisfied:
+
+1. **Gate/closure time causality:** PASS — closure `closed_at` (09:38:29.732Z) > gate `created_at` (09:38:20.807Z); same `gate_report_sha256` referenced.
+2. **Evidence blob binding:** PASS — task report evidence refs/SHAs match; baseline SHA matches `implementation_baseline.json`; code freeze manifest git commit/tree matches candidate; identity binding consistent across all artifacts; authority snapshot clean.
+3. **Test receipt full contract:** PASS — full command, candidate commit/tree, timestamps, exit code 0, runtime version, executable, cwd, stdout/stderr refs+hashes, 250 tests OK.
+4. **Hard-crash/reconciler claims:** N/A — no such claims present; the only causal claim (F-01 time causality) is mechanically provable.
+5. **C0 official 24-cycle evidence chain:** Not applicable to this gate — the gate's `required_evidence_ids`, the closure's `trust_root` (F-01 only), and the empty `unresolved_risks`/`reason_codes` collectively establish that the C0 24-cycle evidence chain is not a required trust claim for a CR-010 corrective recovery P7 gate.

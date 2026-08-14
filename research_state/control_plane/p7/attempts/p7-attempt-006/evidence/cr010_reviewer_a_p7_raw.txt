@@ -1,0 +1,74 @@
+Reviewer A — P7 gate review for `p7-attempt-006`
+
+Files inspected:
+- `research_state/control_plane/p7/attempts/p7-attempt-006/gates/official_p7_gate_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/official_p7_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/task_report_gate.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/task_report_policy_activation.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/code_freeze_manifest.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/implementation_baseline.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/external_scheduler_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-006/final_inventory.json`
+
+## Findings
+
+### F-01 — INFO — Gate/closure time causality passes
+`official_p7_gate_v342_cr010.json` has:
+- `created_at`: `2026-08-14T09:38:20.807668Z`
+
+`official_p7_closure_receipt_v342_cr010.json` has:
+- `closed_at`: `2026-08-14T09:38:29.732392Z`
+
+The closure is ~8.925 seconds after gate creation. The closure also references the same gate report SHA-256 (`b9686375629cea4189bd3c1c6e8df3b583c99c00f5a0bc3dbeecb7d59cafddb6`). Causality is satisfied.
+
+### F-02 — INFO — Evidence blob binding is internally consistent for the inspectable material
+The gate report’s `task_reports` entries match the committed task reports by ref/hash. The task reports reference:
+- `coordinator-evidence-e31c606ebac8acd7` with `evidence_sha256` `950f9de2c52aeedd90347bbc5443bb4497f40e9f8771e0597f699d93bd714019`
+- `policy-evidence-a3e18b407b762df1` with `evidence_sha256` `8e88ffeb5fd6947027ae157188be63b84e81696aa8e27df5b1b81ead604e2e61`
+
+Both are marked `VERIFIED` in the task reports. The baseline payload SHA-256 in both task reports (`e08e0525aae68ea6e245b83f3dc84d7cf6de56df9ed621882ba4e56946a5ba98`) matches `implementation_baseline.json`. The `code_freeze_manifest.json` git commit/tree also matches the candidate commit/tree in the test receipt.
+
+However, the actual contents of the two `evidence/*.json` files are not exposed in this review bundle, so the referenced evidence payloads themselves cannot be independently re-hashed here.
+
+### F-03 — INFO — Test receipt contract is complete
+`task_report_gate.json` contains a `test_receipts` entry with:
+- full command
+- candidate commit/tree
+- start and completion timestamps
+- exit code `0`
+- runtime version
+- executable
+- cwd
+- stdout/stderr refs and hashes
+- receipt id and result `PASS`
+
+`gate_tests_stderr.json` confirms `Ran 250 tests ... OK`; `gate_tests_stdout.json` is empty. The contract is satisfied.
+
+### F-04 — INFO — No hard-crash/reconciler claim is present to verify
+I found no hard-crash or reconciler assertion in the committed gate, closure, task reports, inventory, or baseline. The only causal claim is the closure timestamp trust root, which is mechanically satisfied by the embedded timestamps. This check is therefore not applicable / passes by absence.
+
+### F-05 — HIGH — C0 official 24-cycle evidence chain is not present/verifiable in the supplied evidence set
+The review checklist requires verification of the “C0 official 24-cycle evidence chain.” I could not find any such chain in:
+- the gate report
+- the closure receipt
+- either task report
+- the code freeze manifest
+- the implementation baseline
+- the external scheduler inventory
+- the final inventory
+
+The gate task’s `requirements.required_evidence_ids` only lists:
+- `coordinator-evidence-e31c606ebac8acd7`
+- `policy-evidence-a3e18b407b762df1`
+
+No C0/24-cycle evidence ID or artifact is referenced. The two activation evidence files are listed as committed evidence, but their contents are not embedded in the review bundle, so I cannot confirm that either file contains the C0 official 24-cycle evidence chain.
+
+If this chain is a required part of the V3.4.2-CR010 P7 gate, the committed evidence is incomplete for independent verification.
+
+## Verdict
+
+**HOLD**
+
+All inspectable core gate mechanics pass, but the required C0 official 24-cycle evidence chain cannot be confirmed from the supplied committed evidence. The candidate should either expose that chain or explicitly demonstrate that it is not required for this gate.

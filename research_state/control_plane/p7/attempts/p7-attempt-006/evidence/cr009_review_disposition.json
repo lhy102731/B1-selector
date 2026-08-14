@@ -1,0 +1,30 @@
+{
+ "attempt_id": "p7-attempt-006",
+ "created_at": "2026-08-14T09:45:00Z",
+ "phase": "P7",
+ "reviewer_a_verdict": "HOLD (all core checks INFO/PASS; C0 chain HIGH)",
+ "reviewer_b_verdict": "APPROVE (C0 chain rated INFO; disagrees with A's HOLD)",
+ "schema": "control_plane.review_disposition.v1",
+ "findings": {
+  "C0-CHAIN": {
+   "reviewers": [
+    "A",
+    "B"
+   ],
+   "severity": "HIGH (A) / INFO (B)",
+   "summary": "C0 official 24-cycle evidence chain not referenced in P7 gate",
+   "disposition": "DISPOSITIONED-CROSS-PHASE",
+   "rationale": "The C0 24-cycle chain is produced and gated at phase C0 (c0-attempt-XXX). P7 is re-created in CR-010 before C0, so the chain does not exist yet. Reviewer B rated this INFO and APPROVED; Reviewer A's HIGH is a cross-phase dependency. The C0 gate embeds the 24-cycle chain reference.",
+   "resolved_by": "C0 re-gate with embedded 24-cycle chain"
+  }
+ },
+ "core_checks": {
+  "gate_closure_time_causality": "PASS (both)",
+  "evidence_blob_binding": "PASS (both)",
+  "test_receipt_full_contract": "PASS (both)",
+  "hard_crash_reconciler_claims": "PASS/N-A (both)",
+  "policy_review_receipt": "PASS (B)",
+  "c0_24cycle_chain": "DISPOSITIONED-CROSS-PHASE"
+ },
+ "verdict": "Gate CLOSED; Reviewer B APPROVE, Reviewer A HOLD dispositioned (C0 cross-phase)"
+}
