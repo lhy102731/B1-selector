@@ -37,7 +37,7 @@
 |---|---|
 | `python -m unittest tests.test_control_plane_final_eval_saga tests.test_control_plane_final_eval_runtime tests.test_control_plane_final_evaluator tests.test_control_plane_final_eval_orchestrator` | **Ran 117 tests OK**（含 7 个 R02 负向 + 7 个 crash 边界 + fresh-process recovery + runtime durable saga） |
 | `python -B -s -m unittest tests.test_control_plane_rollout_chaos_fixtures tests.test_control_plane_rollout_chaos_worker tests.test_control_plane_rollout_chaos tests.test_control_plane_rollout_chaos_publication` | **Ran 35 tests OK**（含 4 个 exact-set fail-closed + 4 个并发/崩溃 publication + worker 真实 step） |
-| `python -m unittest discover -s tests -p "test_*.py"` | **PENDING（后台运行中）** — 见 receipt |
+| `python -B -s -m unittest discover -s tests -p "test_*.py"` | **Ran 2630 tests OK（skipped=1）** — receipt: `receipt_full_discovery.json`（绑定 HEAD 8deb0b3） |
 | 附加：`python -m unittest tests.test_control_plane_c0_no_side_effect` | **Ran 6 tests OK**（R07） |
 
 ## 4. 仍存在的功能缺口
