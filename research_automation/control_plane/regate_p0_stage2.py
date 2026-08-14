@@ -71,17 +71,41 @@ def main() -> int:
     )
     if old_scheduler.exists():
         data = json.loads(old_scheduler.read_text(encoding="utf-8"))
-        entries = data.get("entries", []) if isinstance(data, dict) else []
-        for entry in entries:
-            if isinstance(entry, dict):
-                scheduler_records.append(
-                    {
-                        "path": str(entry.get("path", "")),
-                        "command": str(entry.get("command", "")),
-                        "sha256": str(entry.get("sha256", "")),
-                        "task_path": str(entry.get("task_path", "")),
-                    }
-                )
+        if isinstance(data, dict):
+            action = data.get("action") or {}
+            action_execute = (
+                str(action.get("execute", "")) if isinstance(action, dict) else ""
+            )
+            principal = data.get("principal") or {}
+            trigger = data.get("trigger") or {}
+            acl = data.get("acl") or {}
+            task_xml = data.get("task_xml") or {}
+            task_xml_sha = (
+                str(task_xml.get("sha256", "")) if isinstance(task_xml, dict) else ""
+            )
+            scheduler_records.append(
+                {
+                    "task_path": str(data.get("task_path", "")),
+                    "action": action_execute,
+                    "content_sha256": task_xml_sha,
+                    "state": str(data.get("task_state", "")),
+                    "principal": (
+                        f"{principal.get('user_id', '')}|"
+                        f"{principal.get('logon_type', '')}|"
+                        f"{principal.get('run_level', '')}"
+                    ),
+                    "trigger": (
+                        f"{trigger.get('type', '')}|"
+                        f"start={trigger.get('start_boundary', '')}|"
+                        f"days_interval={trigger.get('days_interval', '')}|"
+                        f"enabled={str(trigger.get('enabled', '')).lower()}"
+                    ),
+                    "acl_summary": (
+                        f"owner={acl.get('owner', '')};"
+                        f"sddl={acl.get('sddl', '')}"
+                    ),
+                }
+            )
 
     freeze_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
