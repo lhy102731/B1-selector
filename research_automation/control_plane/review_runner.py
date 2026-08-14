@@ -181,6 +181,44 @@ def main(argv: list[str] | None = None) -> int:
                     f"=== CLOSURE {path.name} ===\n"
                     + path.read_text(encoding="utf-8")
                 )
+        # Also embed test outputs, task reports and the freeze/inventory/
+        # baseline/scheduler inputs so stdout binding and the
+        # changed_files/scheduler claims are independently checkable.
+        for pattern in (
+            "gate_tests_stdout.json",
+            "gate_tests_stderr.json",
+            "task_report_gate.json",
+            "task_report_policy_activation.json",
+        ):
+            for path in sorted(out_dir.glob(pattern)):
+                if path.is_file():
+                    embedded.append(
+                        f"=== EVIDENCE {path.name} ===\n"
+                        + path.read_text(encoding="utf-8")
+                    )
+        for name in (
+            "code_freeze_manifest.json",
+            "final_inventory.json",
+            "implementation_baseline.json",
+            "external_scheduler_inventory.json",
+        ):
+            path = attempt_root / name
+            if path.is_file():
+                embedded.append(
+                    f"=== INPUT {name} ===\n"
+                    + path.read_text(encoding="utf-8")
+                )
+        # embed the OTHER reviewer's raw verdict for cross-reviewer
+        # consistency (Reviewer A when running B and vice versa)
+        other = "a" if args.reviewer == "B" else "b"
+        for path in sorted(
+            out_dir.glob(f"cr010_reviewer_{other}_{args.phase.lower()}_raw.txt")
+        ):
+            if path.is_file():
+                embedded.append(
+                    f"=== REVIEWER {other.upper()} RAW VERDICT ===\n"
+                    + path.read_text(encoding="utf-8")
+                )
         embedded_block = "\n\n".join(embedded)
         prompt = (
             "You are an independent reviewer (Reviewer " + args.reviewer
