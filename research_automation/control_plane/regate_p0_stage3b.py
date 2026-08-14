@@ -18,7 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-013"
+ATTEMPT = "p0-attempt-014"
 PHASE = "P0"
 IDENTITY = {
     "plan_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
@@ -93,7 +93,7 @@ def main() -> int:
             policy_actor = Actor(
                 "p0-policy-activator-cr010",
                 "automation",
-                f"p0-policy-activation-exec-013-{run_suffix}",
+                f"p0-policy-activation-exec-014-{run_suffix}",
             )
             policy_identity = stores_module.AuthorityIdentity(**IDENTITY)
             envelope = authority._provision_authorization(
@@ -114,10 +114,10 @@ def main() -> int:
             ticket = authority._issue_task_ticket(
                 grant,
                 {
-                    "task_id": "P0-POLICY-ACTIVATION-013",
-                    "objective": "activate reviewed entry policy for p0-attempt-013",
+                    "task_id": "P0-POLICY-ACTIVATION-014",
+                    "objective": "activate reviewed entry policy for p0-attempt-014",
                     "dependencies": [],
-                    "idempotency_key": f"p0-policy-activation-013-cr010-{run_suffix}",
+                    "idempotency_key": f"p0-policy-activation-014-cr010-{run_suffix}",
                     "task_spec_ref": "manifest.json",
                     "task_spec_sha256": "1" * 64,
                     "requirements": {
