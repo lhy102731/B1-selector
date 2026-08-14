@@ -213,13 +213,10 @@ def main() -> int:
         expected_identity=IDENTITY,
         final_inventory=inventory,
     )
-    policy_attempt_ref = (
-        f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-        "reviewed_entry_policy.json"
-    )
-    (ROOT / policy_attempt_ref).write_text(
-        policy_raw.decode("utf-8"), encoding="utf-8", newline="\n"
-    )
+    # Only the policies/ namespace copy is committed (the gate binds
+    # policies/<file_sha256>.json); writing the same bytes into the attempt
+    # dir as well would create a duplicate blob in the same commit, which
+    # the post-freeze immutable-evidence check rejects.
     policy_file_sha = hashlib.sha256(policy_raw).hexdigest()
     policy_namespace_ref = (
         f"research_state/control_plane/policies/{policy_file_sha}.json"
@@ -231,7 +228,7 @@ def main() -> int:
     # 5) commit everything in ONE commit (freeze identity stays valid)
     commit(
         [freeze_ref, inventory_ref, baseline_ref, scheduler_ref,
-         policy_attempt_ref, policy_namespace_ref],
+         policy_namespace_ref],
         f"audit: {ATTEMPT} freeze/inventory/baseline/scheduler/policy (CR-010, add-only)",
     )
 
