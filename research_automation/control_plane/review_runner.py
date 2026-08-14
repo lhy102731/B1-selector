@@ -206,15 +206,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
     else:
-        # List the committed evidence files the reviewer can dereference.
+        # List the committed evidence files the reviewer can dereference
+        # (evidence/ dir + attempt root task reports + gate + inputs).
         evidence_files = []
-        for path in sorted(out_dir.rglob("*")):
-            if path.is_file():
-                rel = str(path.relative_to(repository_root)).replace("\\", "/")
-                if rel.startswith("research_state/control_plane/"):
-                    evidence_files.append(rel)
+        for base in (out_dir, attempt_root):
+            for path in sorted(base.rglob("*")):
+                if path.is_file():
+                    rel = str(path.relative_to(repository_root)).replace(
+                        "\\", "/"
+                    )
+                    if rel.startswith("research_state/control_plane/"):
+                        evidence_files.append(rel)
         evidence_list = "\n".join(
-            "  - " + rel for rel in evidence_files[:80]
+            "  - " + rel for rel in sorted(set(evidence_files))[:100]
         )
         # Embed the gate and closure receipts verbatim so the reviewer can
         # mechanically verify the causality and binding contracts.  The
@@ -244,6 +248,13 @@ def main(argv: list[str] | None = None) -> int:
             "task_report_policy_activation.json",
         ):
             for path in sorted(out_dir.glob(pattern)):
+                if path.is_file():
+                    embedded.append(
+                        f"=== EVIDENCE {path.name} ===\n"
+                        + path.read_text(encoding="utf-8")
+                    )
+            # task reports live in the attempt root (not evidence/)
+            for path in sorted(attempt_root.glob(pattern)):
                 if path.is_file():
                     embedded.append(
                         f"=== EVIDENCE {path.name} ===\n"
