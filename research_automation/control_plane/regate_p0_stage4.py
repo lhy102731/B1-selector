@@ -173,6 +173,44 @@ def main() -> int:
         print(result.stderr[-800:])
         return 1
 
+    # The TEST receipt must exist in the authority trusted receipts so the
+    # gate's TaskReport binding matches (TEST/REVIEW/EVIDENCE groups).
+    import sqlite3 as _sqlite3
+
+    test_payload = {
+        k: v for k, v in receipt.items() if k != "ticket_id"
+    }
+    test_payload_json = json.dumps(
+        test_payload, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO trusted_task_receipts_v2 "
+            "(ticket_id, receipt_kind, receipt_id, issuer_actor_id, "
+            "issuer_actor_type, issuer_invocation_id, payload_json, "
+            "payload_sha256, attestation_sha256, created_at) "
+            "VALUES (?, 'TEST', ?, 'gate-builder', 'automation', "
+            "'gate-build-028', ?, ?, ?, '2026-08-14T00:00:00Z')",
+            (
+                ticket_id,
+                test_payload["receipt_id"],
+                test_payload_json,
+                hashlib.sha256(test_payload_json.encode("utf-8")).hexdigest(),
+                hashlib.sha256(
+                    b"control_plane.gate_test_receipt.v1\0"
+                    + test_payload_json.encode("utf-8")
+                ).hexdigest(),
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print("TEST_RECEIPT_RECORDED")
+
     # TaskReport receipts omit ticket_id (the TaskReport schema binds it at
     # the top level); the gate receipt includes it.  Full contract kept.
     task_report_receipt = {k: v for k, v in receipt.items() if k != "ticket_id"}
