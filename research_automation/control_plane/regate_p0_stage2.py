@@ -220,7 +220,7 @@ def main() -> int:
         },
         "acl": {"owner": "BUILTIN\\Administrators", "sddl": "O:BA"},
         "altered_by_p0": False,
-        "unresolved_risk": "none observed at gate-016 snapshot",
+        "unresolved_risk": f"none observed at {ATTEMPT} snapshot",
     }
     (ROOT / scheduler_ref).write_text(
         canonical_json(scheduler_doc), encoding="utf-8", newline="\n"
