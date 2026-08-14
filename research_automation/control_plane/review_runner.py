@@ -208,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         # List the committed evidence files the reviewer can dereference
         # (evidence/ dir + attempt root task reports + gate + inputs).
+        attempt_root = out_dir.parent
         evidence_files = []
         for base in (out_dir, attempt_root):
             for path in sorted(base.rglob("*")):
@@ -224,7 +225,6 @@ def main(argv: list[str] | None = None) -> int:
         # mechanically verify the causality and binding contracts.  The
         # gate lives in the attempt's gates/ dir (parent of the evidence
         # out-dir); closures live in evidence/.
-        attempt_root = out_dir.parent
         embedded = []
         for path in sorted(attempt_root.glob("gates/*.json")):
             if path.is_file():
