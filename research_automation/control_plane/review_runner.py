@@ -164,18 +164,23 @@ def main(argv: list[str] | None = None) -> int:
             "  - " + rel for rel in evidence_files[:80]
         )
         # Embed the gate and closure receipts verbatim so the reviewer can
-        # mechanically verify the causality and binding contracts.
+        # mechanically verify the causality and binding contracts.  The
+        # gate lives in the attempt's gates/ dir (parent of the evidence
+        # out-dir); closures live in evidence/.
+        attempt_root = out_dir.parent
         embedded = []
-        for name, pattern in (
-            ("gate", "gates/official_*gate*.json"),
-            ("closure", "evidence/official_*closure*"),
-        ):
-            for path in sorted(out_dir.glob(pattern)):
-                if path.is_file():
-                    content = path.read_text(encoding="utf-8")
-                    embedded.append(
-                        f"=== {name.upper()} {path.name} ===\n{content}"
-                    )
+        for path in sorted(attempt_root.glob("gates/*.json")):
+            if path.is_file():
+                embedded.append(
+                    f"=== GATE {path.name} ===\n"
+                    + path.read_text(encoding="utf-8")
+                )
+        for path in sorted(out_dir.glob("official_*closure*")):
+            if path.is_file():
+                embedded.append(
+                    f"=== CLOSURE {path.name} ===\n"
+                    + path.read_text(encoding="utf-8")
+                )
         embedded_block = "\n\n".join(embedded)
         prompt = (
             "You are an independent reviewer (Reviewer " + args.reviewer
