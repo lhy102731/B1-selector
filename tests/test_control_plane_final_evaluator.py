@@ -1350,5 +1350,131 @@ class TerminalAuditClosureTests(unittest.TestCase):
         self.assertEqual(record["taint"], [FINAL_HOLDOUT_TAINT])
 
 
+class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
+    """CR010-R01: evaluate_v2 real call path with derived Authority outcome.
+
+    The OPEN_HOLDOUT entry must execute a REAL evaluation: the worker
+    payload is derived into an outcome, the Authority broker consumes the
+    holdout nonce atomically with that outcome, and the adapter produces a
+    bounded view.  Incomplete payloads, caller-supplied outcomes, invalid
+    outcomes and broker/derivation disagreement must all fail closed.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.mkdtemp(prefix="p8r2_v2_real_")
+        try:
+            _write_t4_fixture(Path(self._tmp))
+            self._data_root = seal_trusted_data_root(
+                Path(self._tmp),
+                ("frozen/holdout.parquet",),
+            )
+        except Exception:
+            shutil.rmtree(self._tmp, ignore_errors=True)
+            raise
+        self._request = _request()
+        self._adapter = TrustedEvaluatorAdapter(backend=_FakeHoldoutBackend())
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
+    def _evaluator(self, store=None, adapter=None):
+        return TrustedEvaluator(
+            broker=AuthorityBroker(
+                store=store if store is not None else InMemoryHoldoutStore()
+            ),
+            adapter=adapter if adapter is not None else self._adapter,
+        )
+
+    def test_evaluate_v2_derives_outcome_and_consumes_atomically(self) -> None:
+        store = InMemoryHoldoutStore()
+        evaluator = self._evaluator(store=store)
+        result = evaluator.evaluate_v2(
+            self._request,
+            data_root=self._data_root,
+            worker_payload={"outcome": "SUCCEEDED"},
+        )
+        self.assertEqual(result.outcome, "SUCCEEDED")
+        self.assertEqual(result.request_sha256, self._request.request_sha256)
+        # the nonce was consumed permanently with the derived outcome
+        consumed = store._consumed[self._request.holdout.authorization_nonce]
+        self.assertEqual(consumed.outcome, "SUCCEEDED")
+        # second consume of the same nonce is a replay and must fail
+        with self.assertRaises(HoldoutAlreadyConsumedError):
+            evaluator.evaluate_v2(
+                self._request,
+                data_root=self._data_root,
+                worker_payload={"outcome": "SUCCEEDED"},
+            )
+
+    def test_evaluate_v2_fails_closed_without_worker_payload(self) -> None:
+        evaluator = self._evaluator()
+        with self.assertRaises(TrustedEvaluatorError):
+            evaluator.evaluate_v2(self._request, data_root=self._data_root)
+
+    def test_evaluate_v2_rejects_incomplete_worker_payload(self) -> None:
+        evaluator = self._evaluator()
+        with self.assertRaises(TrustedEvaluatorError):
+            evaluator.evaluate_v2(
+                self._request,
+                data_root=self._data_root,
+                worker_payload={"exit_code": 0},  # no outcome field
+            )
+
+    def test_evaluate_v2_rejects_invalid_outcome_in_payload(self) -> None:
+        evaluator = self._evaluator()
+        with self.assertRaises(TrustedEvaluatorError):
+            evaluator.evaluate_v2(
+                self._request,
+                data_root=self._data_root,
+                worker_payload={"outcome": "MAYBE"},
+            )
+
+    def test_evaluate_v2_rejects_caller_supplied_outcome_field(self) -> None:
+        # derive_outcome itself rejects an explicit caller outcome argument;
+        # evaluate_v2 has no outcome parameter at all, so a caller can never
+        # choose the outcome that gets consumed
+        from research_automation.control_plane.final_eval_saga import (
+            FinalEvalSagaOutcomeRejected,
+            derive_outcome,
+        )
+
+        with self.assertRaises(FinalEvalSagaOutcomeRejected):
+            derive_outcome(
+                worker_payload={"outcome": "SUCCEEDED"},
+                caller_outcome="FAILED",
+            )
+
+    def test_evaluate_v2_fails_when_broker_disagrees_with_derived_outcome(self) -> None:
+        class WanderingStore(InMemoryHoldoutStore):
+            def consume(self, *, nonce, request_sha256, outcome):
+                # broker commits a DIFFERENT outcome than derived
+                return super().consume(
+                    nonce=nonce,
+                    request_sha256=request_sha256,
+                    outcome="FAILED" if outcome == "SUCCEEDED" else outcome,
+                )
+
+        evaluator = self._evaluator(store=WanderingStore())
+        with self.assertRaises(TrustedEvaluatorError):
+            evaluator.evaluate_v2(
+                self._request,
+                data_root=self._data_root,
+                worker_payload={"outcome": "SUCCEEDED"},
+            )
+
+    def test_evaluate_v2_result_never_leaks_holdout_content(self) -> None:
+        evaluator = self._evaluator()
+        result = evaluator.evaluate_v2(
+            self._request,
+            data_root=self._data_root,
+            worker_payload={"outcome": "FAILED"},
+        )
+        serialized = canonical_json(result.to_payload())
+        self.assertNotIn("CANARY_7f3a9c2b", serialized)
+        self.assertNotIn(self._tmp, serialized)
+
+
+
+
 if __name__ == "__main__":
     unittest.main()

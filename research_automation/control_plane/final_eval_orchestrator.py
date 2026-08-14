@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from .contracts import canonical_json
 from .stores import (
@@ -25,6 +26,8 @@ from .stores import (
     FinalEvalBindingSnapshot,
     _AuthorityStore,
 )
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
 class FinalEvalOrchestrationError(RuntimeError):
@@ -56,8 +59,9 @@ class OrchestrationInputs:
     binding_id: str
     expected_version: int
     worker_launcher: Callable[[], int]
-    evidence_sink: Callable[[Mapping[str, object]], str]
+    evidence_sink: Callable[[Mapping[str, object]], dict[str, object]]
     crash_hook: Callable[[str], None] | None = None
+    repository_root: str | os.PathLike[str] | None = None
 
 
 def _maybe_crash(inputs: OrchestrationInputs, state: str) -> None:
@@ -83,6 +87,19 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
     snapshot = authority.final_eval_binding_snapshot(binding_id)
     state = snapshot.saga_state
     version = snapshot.saga_version
+
+    # CR010-R03: a stale/wrong expected_version must fail closed -- the
+    # caller's expected version has to match the durable saga version or
+    # the orchestration refuses to touch the binding.
+    if type(inputs.expected_version) is not int or inputs.expected_version < 1:
+        raise FinalEvalOrchestrationError(
+            "expected_version must be a positive integer"
+        )
+    if inputs.expected_version != version:
+        raise FinalEvalOrchestrationError(
+            f"stale expected_version {inputs.expected_version} does not "
+            f"match the durable saga version {version}"
+        )
 
     # Idempotent replay: if the binding is already past the requested work,
     # return the durable state without re-doing anything.
@@ -131,7 +148,8 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
         _maybe_crash(inputs, "CRASH_AFTER.EVALUATING")
 
     # EVALUATING -> RESULT_STAGED (worker runs; result is derived, never
-    # caller-supplied; the sink writes the evidence and returns its ref).
+    # caller-supplied; the sink publishes the content-addressed object +
+    # per-ticket fixed claim and returns the four refs).
     if snapshot.saga_state == "EVALUATING":
         exit_code = inputs.worker_launcher()
         result_document = {
@@ -142,18 +160,57 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
                 "SUCCEEDED" if exit_code == 0 else "FAILED"
             ),
         }
-        result_ref = inputs.evidence_sink(result_document)
+        sink_result = inputs.evidence_sink(result_document)
+        if not isinstance(sink_result, Mapping) or not all(
+            field_name in sink_result
+            for field_name in (
+                "object_ref",
+                "object_sha256",
+                "claim_ref",
+                "claim_sha256",
+            )
+        ):
+            raise FinalEvalOrchestrationError(
+                "evidence sink must return object_ref/object_sha256/"
+                "claim_ref/claim_sha256 for the staged result"
+            )
         # Crash boundary: the claim blob exists on disk but the binding has
         # not been staged yet; a fresh process re-runs the worker and sink
         # idempotently (create-only sink must tolerate an existing blob).
         _maybe_crash(inputs, "CRASH_AFTER.CLAIM_WRITTEN")
+        # CR010-R02: verify the committed object + fixed claim BEFORE the
+        # binding may enter RESULT_STAGED (dangling refs and wrong hashes
+        # fail closed here, never in the Authority CAS).
+        from .final_eval_evidence import (
+            FinalEvalEvidenceError,
+            verify_result_evidence,
+        )
+
+        repository_root = (
+            inputs.repository_root
+            if inputs.repository_root is not None
+            else _REPOSITORY_ROOT
+        )
+        try:
+            verify_result_evidence(
+                binding_id,
+                ticket_id=binding_id,
+                object_ref=str(sink_result["object_ref"]),
+                object_sha256=str(sink_result["object_sha256"]),
+                claim_ref=str(sink_result["claim_ref"]),
+                claim_sha256=str(sink_result["claim_sha256"]),
+                repository_root=repository_root,
+            )
+        except FinalEvalEvidenceError as error:
+            raise FinalEvalOrchestrationError(str(error)) from error
         snapshot = authority._stage_final_eval_result(
             binding_id,
             expected_version=snapshot.saga_version,
-            result_object_ref=result_ref,
-            result_object_sha256=_document_sha256(result_document),
-            result_claim_ref=result_ref,
-            result_claim_sha256=_document_sha256(result_document),
+            result_object_ref=str(sink_result["object_ref"]),
+            result_object_sha256=str(sink_result["object_sha256"]),
+            result_claim_ref=str(sink_result["claim_ref"]),
+            result_claim_sha256=str(sink_result["claim_sha256"]),
+            repository_root=repository_root,
         )
         _maybe_crash(inputs, "CRASH_AFTER.RESULT_STAGED")
 

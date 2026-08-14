@@ -114,6 +114,58 @@ def sink(document):
 """
 
 
+def _ensure_git(root: Path) -> None:
+    """Idempotent git repo in the fixture root for committed evidence."""
+    if not (root / ".git").exists():
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Control Plane Tests"],
+                       cwd=root, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email",
+                        "control-plane@example.invalid"],
+                       cwd=root, check=True, capture_output=True)
+
+
+TEST_EVIDENCE_VOLUME = (
+    "research_state/control_plane/p8/attempts/p8-attempt-003/"
+    "evidence/final_eval_cr010"
+)
+
+
+def _real_publisher_sink(root: Path, binding_id: str):
+    """CR010-R02: real create-only object + per-ticket fixed claim sink.
+
+    Publishes the content-addressed object and the fixed claim (committed,
+    same volume) and returns the four refs the orchestrator stages.
+    """
+    from research_automation.control_plane.final_eval_evidence import (
+        FinalEvalResultPublisher,
+    )
+
+    _ensure_git(root)
+    publisher = FinalEvalResultPublisher(
+        repository_root=root,
+        evidence_volume=TEST_EVIDENCE_VOLUME,
+    )
+
+    def sink(document):
+        outcome = str(document.get("outcome", "SUCCEEDED"))
+        refs = publisher.publish(
+            binding_id,
+            binding_id,
+            dict(document),
+            outcome=outcome,
+        )
+        return refs.to_payload()
+
+    return sink
+
+
+def _claim_ref_for(binding_id: str) -> str:
+    return TEST_EVIDENCE_VOLUME + "/claims/" + binding_id + ".json"
+
+
+
 def _make_request(
     *,
     campaign_id: str = "campaign-final-cr009",
@@ -184,13 +236,11 @@ class FinalEvalOrchestrationTests(unittest.TestCase):
             self.assertEqual(binding.saga_state, "CONSUMED")
             authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
             results = {}
+            sink = _real_publisher_sink(root, binding.ticket_id)
 
-            def sink(document):
+            def recording_sink(document):
                 results["document"] = document
-                return (
-                    "research_state/control_plane/p8/attempts/"
-                    "p8-attempt-003/evidence/worker_result.json"
-                )
+                return sink(document)
 
             snapshot = orchestrate(
                 OrchestrationInputs(
@@ -198,18 +248,180 @@ class FinalEvalOrchestrationTests(unittest.TestCase):
                     binding_id=binding.ticket_id,
                     expected_version=binding.saga_version,
                     worker_launcher=lambda: 0,
-                    evidence_sink=sink,
+                    evidence_sink=recording_sink,
+                    repository_root=root,
                 )
             )
             self.assertEqual(snapshot.saga_state, "RESULT_STAGED")
             self.assertEqual(
                 snapshot.result_claim_ref,
-                "research_state/control_plane/p8/attempts/"
-                "p8-attempt-003/evidence/worker_result.json",
+                _claim_ref_for(binding.ticket_id),
+            )
+            self.assertEqual(
+                snapshot.result_object_ref,
+                TEST_EVIDENCE_VOLUME + "/objects/" +
+                snapshot.result_object_sha256 + ".json",
             )
             self.assertEqual(results["document"]["binding_id"], binding.ticket_id)
             self.assertEqual(results["document"]["exit_code"], 0)
             self.assertEqual(results["document"]["outcome"], "SUCCEEDED")
+
+    def test_orchestrator_rejects_dangling_result_ref(self) -> None:
+        """CR010-R02: a sink returning a nonexistent object/claim path must
+        fail closed -- dangling refs never enter RESULT_STAGED."""
+        with _authorized_campaign("campaign-orch-dangling") as (root, grant, journal):
+            broker = self._broker(root, grant)
+            binding = broker.bind(
+                request=self._request(),
+                nonce=NONCE,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-orch-dangling",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+
+            def dangling_sink(document):
+                return {
+                    "object_ref": TEST_EVIDENCE_VOLUME + "/objects/" + "d" * 64 + ".json",
+                    "object_sha256": "d" * 64,
+                    "claim_ref": TEST_EVIDENCE_VOLUME + "/claims/" + binding.ticket_id + ".json",
+                    "claim_sha256": "e" * 64,
+                }
+
+            with self.assertRaises(FinalEvalOrchestrationError):
+                orchestrate(
+                    OrchestrationInputs(
+                        authority=authority,
+                        binding_id=binding.ticket_id,
+                        expected_version=binding.saga_version,
+                        worker_launcher=lambda: 0,
+                        evidence_sink=dangling_sink,
+                        repository_root=root,
+                    )
+                )
+            observed = authority.final_eval_binding_snapshot(binding.ticket_id)
+            self.assertEqual(observed.saga_state, "EVALUATING")
+
+    def test_orchestrator_rejects_wrong_result_hash(self) -> None:
+        """CR010-R02: a committed object whose bytes do not match the
+        declared content hash must fail closed."""
+        from research_automation.control_plane.final_eval_evidence import (
+            FinalEvalResultPublisher,
+        )
+
+        with _authorized_campaign("campaign-orch-badhash") as (root, grant, journal):
+            broker = self._broker(root, grant)
+            binding = broker.bind(
+                request=self._request(),
+                nonce=NONCE,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-orch-badhash",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+            _ensure_git(root)
+            publisher = FinalEvalResultPublisher(
+                repository_root=root,
+                evidence_volume=TEST_EVIDENCE_VOLUME,
+            )
+            real = publisher.publish(
+                binding.ticket_id,
+                binding.ticket_id,
+                {"binding_id": binding.ticket_id, "outcome": "SUCCEEDED"},
+                outcome="SUCCEEDED",
+            )
+
+            def wrong_hash_sink(document):
+                payload = real.to_payload()
+                payload["object_sha256"] = "f" * 64
+                return payload
+
+            with self.assertRaises(FinalEvalOrchestrationError):
+                orchestrate(
+                    OrchestrationInputs(
+                        authority=authority,
+                        binding_id=binding.ticket_id,
+                        expected_version=binding.saga_version,
+                        worker_launcher=lambda: 0,
+                        evidence_sink=wrong_hash_sink,
+                        repository_root=root,
+                    )
+                )
+            observed = authority.final_eval_binding_snapshot(binding.ticket_id)
+            self.assertEqual(observed.saga_state, "EVALUATING")
+
+    def test_orchestrator_rejects_stale_expected_version(self) -> None:
+        """CR010-R03: a stale/wrong expected_version fails closed before
+        any durable advance."""
+        with _authorized_campaign("campaign-orch-stale") as (root, grant, journal):
+            broker = self._broker(root, grant)
+            binding = broker.bind(
+                request=self._request(),
+                nonce=NONCE,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-orch-stale",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+            with self.assertRaises(FinalEvalOrchestrationError):
+                orchestrate(
+                    OrchestrationInputs(
+                        authority=authority,
+                        binding_id=binding.ticket_id,
+                        expected_version=binding.saga_version + 99,
+                        worker_launcher=lambda: 0,
+                        evidence_sink=_real_publisher_sink(root, binding.ticket_id),
+                        repository_root=root,
+                    )
+                )
+            observed = authority.final_eval_binding_snapshot(binding.ticket_id)
+            self.assertEqual(observed.saga_state, "CONSUMED")
+
+    def test_orchestrator_rejects_orphan_claim(self) -> None:
+        """CR010-R02: a claim that does not reference the staged object is
+        an orphan and must fail closed."""
+        with _authorized_campaign("campaign-orch-orphan") as (root, grant, journal):
+            broker = self._broker(root, grant)
+            binding = broker.bind(
+                request=self._request(),
+                nonce=NONCE,
+                actor=stores_module.Actor(
+                    "operator-1", "human", "final-eval-op-cr009"
+                ),
+                idempotency_key="p8-cr009-orch-orphan",
+                task_spec_ref="manifest.json",
+                task_spec_sha256="1" * 64,
+            )
+            authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
+
+            def orphan_sink(document):
+                return {
+                    "object_ref": TEST_EVIDENCE_VOLUME + "/objects/" + "a" * 64 + ".json",
+                    "object_sha256": "a" * 64,
+                    "claim_ref": _claim_ref_for(binding.ticket_id),
+                    "claim_sha256": "b" * 64,
+                }
+
+            with self.assertRaises(FinalEvalOrchestrationError):
+                orchestrate(
+                    OrchestrationInputs(
+                        authority=authority,
+                        binding_id=binding.ticket_id,
+                        expected_version=binding.saga_version,
+                        worker_launcher=lambda: 0,
+                        evidence_sink=orphan_sink,
+                        repository_root=root,
+                    )
+                )
 
     def test_orchestrator_rejects_wrong_inputs(self) -> None:
         with self.assertRaises(FinalEvalOrchestrationError):
@@ -236,68 +448,15 @@ class FinalEvalOrchestrationTests(unittest.TestCase):
                 task_spec_sha256="1" * 64,
             )
             authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
-            claim_ref = (
-                "research_state/control_plane/p8/attempts/"
-                "p8-attempt-003/evidence/worker_result.json"
-            )
-            claim_path = root / claim_ref
-            claim_path.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["git", "init", "--quiet"], cwd=root, check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "-c", "user.name=Control Plane Tests",
-                 "-c", "user.email=control-plane@example.invalid",
-                 "config", "user.name", "Control Plane Tests"],
-                cwd=root, check=True, capture_output=True,
-            )
-            subprocess.run(
-                ["git", "-c", "user.name=Control Plane Tests",
-                 "-c", "user.email=control-plane@example.invalid",
-                 "config", "user.email", "control-plane@example.invalid"],
-                cwd=root, check=True, capture_output=True,
-            )
-
-            def sink(document):
-                # The claim must be a committed blob for the reconciler to
-                # derive the terminal outcome from it.  The bytes must match
-                # the claim sha the orchestrator staged (canonical JSON).
-                claim_path.write_text(
-                    canonical_json(document),
-                    encoding="utf-8",
-                )
-                subprocess.run(
-                    ["git", "add", claim_ref],
-                    cwd=root,
-                    check=True,
-                    capture_output=True,
-                )
-                subprocess.run(
-                    [
-                        "git",
-                        "-c",
-                        "user.name=Control Plane Tests",
-                        "-c",
-                        "user.email=control-plane@example.invalid",
-                        "commit",
-                        "--quiet",
-                        "-m",
-                        "stage final-eval claim",
-                    ],
-                    cwd=root,
-                    check=True,
-                    capture_output=True,
-                )
-                return claim_ref
-
+            claim_ref = _claim_ref_for(binding.ticket_id)
             orchestrate(
                 OrchestrationInputs(
                     authority=authority,
                     binding_id=binding.ticket_id,
                     expected_version=binding.saga_version,
                     worker_launcher=lambda: 0,
-                    evidence_sink=sink,
+                    evidence_sink=_real_publisher_sink(root, binding.ticket_id),
+                    repository_root=root,
                 )
             )
             # Fresh maintenance ticket + lease for the reconciler.
@@ -466,14 +625,11 @@ def worker():
     return 0
 
 def sink(document):
-    ref = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
-           "evidence/worker_result_" + binding_id[:16] + ".json")
-    path = root / ref
-    payload = canonical_json(document)
-    if path.exists():
-        return ref  # idempotent create-only sink (recovery replay)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(payload, encoding="utf-8")
+    # CR010-R02: real create-only object + fixed claim publisher (committed
+    # evidence in the fixture root's git repo, same volume).
+    from research_automation.control_plane.final_eval_evidence import (
+        FinalEvalResultPublisher,
+    )
     import subprocess as _sp
     if not (root / ".git").exists():
         _sp.run(["git", "init", "--quiet"], cwd=root, check=True,
@@ -483,15 +639,19 @@ def sink(document):
         _sp.run(["git", "config", "user.email",
                  "control-plane@example.invalid"],
                 cwd=root, check=True, capture_output=True)
-    _sp.run(["git", "add", "--", ref], cwd=root, check=True,
-            capture_output=True)
-    _sp.run(
-        ["git", "-c", "user.name=Control Plane Tests",
-         "-c", "user.email=control-plane@example.invalid",
-         "commit", "--quiet", "-m", "stage worker claim"],
-        cwd=root, check=True, capture_output=True,
+    volume = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
+              "evidence/final_eval_cr010")
+    publisher = FinalEvalResultPublisher(
+        repository_root=root,
+        evidence_volume=volume,
     )
-    return ref
+    refs = publisher.publish(
+        binding_id,
+        binding_id,
+        dict(document),
+        outcome=str(document.get("outcome", "SUCCEEDED")),
+    )
+    return refs.to_payload()
 
 try:
     orchestrate(
@@ -502,6 +662,7 @@ try:
             worker_launcher=worker,
             evidence_sink=sink,
             crash_hook=crash_hook,
+            repository_root=root,
         )
     )
     if crash_point in (
@@ -562,8 +723,8 @@ try:
         )
         maintenance_lease = authority._begin_task(ticket)
         claim_ref = ("research_state/control_plane/p8/attempts/"
-                     "p8-attempt-003/evidence/worker_result_"
-                     + binding_id[:16] + ".json")
+                     "p8-attempt-003/evidence/final_eval_cr010/claims/"
+                     + binding_id + ".json")
         reconcile(
             authority,
             maintenance_lease,
@@ -807,14 +968,9 @@ def worker():
     return 0
 
 def sink(document):
-    from research_automation.control_plane.contracts import canonical_json
-    ref = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
-           "evidence/worker_result_" + binding_id[:16] + ".json")
-    path = root / ref
-    if path.exists():
-        return ref
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(canonical_json(document), encoding="utf-8")
+    from research_automation.control_plane.final_eval_evidence import (
+        FinalEvalResultPublisher,
+    )
     import subprocess as _sp
     if not (root / ".git").exists():
         _sp.run(["git", "init", "--quiet"], cwd=root, check=True,
@@ -824,15 +980,19 @@ def sink(document):
         _sp.run(["git", "config", "user.email",
                  "control-plane@example.invalid"],
                 cwd=root, check=True, capture_output=True)
-    _sp.run(["git", "add", "--", ref], cwd=root, check=True,
-            capture_output=True)
-    _sp.run(
-        ["git", "-c", "user.name=Control Plane Tests",
-         "-c", "user.email=control-plane@example.invalid",
-         "commit", "--quiet", "-m", "stage worker claim"],
-        cwd=root, check=True, capture_output=True,
+    volume = ("research_state/control_plane/p8/attempts/p8-attempt-003/"
+              "evidence/final_eval_cr010")
+    publisher = FinalEvalResultPublisher(
+        repository_root=root,
+        evidence_volume=volume,
     )
-    return ref
+    refs = publisher.publish(
+        binding_id,
+        binding_id,
+        dict(document),
+        outcome=str(document.get("outcome", "SUCCEEDED")),
+    )
+    return refs.to_payload()
 
 final = orchestrate(
     OrchestrationInputs(
@@ -841,6 +1001,7 @@ final = orchestrate(
         expected_version=snapshot.saga_version,
         worker_launcher=worker,
         evidence_sink=sink,
+        repository_root=root,
     )
 )
 print("|".join([final.saga_state, str(final.saga_version),
@@ -1010,8 +1171,28 @@ def worker():
     return 0
 
 def sink(document):
-    return ("research_state/control_plane/p8/attempts/p8-attempt-003/"
-            "evidence/worker_result_" + binding_id[:16] + ".json")
+    import subprocess as _sp
+    if not (root / ".git").exists():
+        _sp.run(["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True)
+        _sp.run(["git", "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True)
+        _sp.run(["git", "config", "user.email",
+                 "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True)
+    from research_automation.control_plane.final_eval_evidence import (
+        FinalEvalResultPublisher,
+    )
+    publisher = FinalEvalResultPublisher(
+        repository_root=root,
+        evidence_volume=("research_state/control_plane/p8/attempts/"
+                         "p8-attempt-003/evidence/final_eval_cr010"),
+    )
+    refs = publisher.publish(
+        binding_id, binding_id, dict(document),
+        outcome=str(document.get("outcome", "SUCCEEDED")),
+    )
+    return refs.to_payload()
 
 orchestrate(
     OrchestrationInputs(
@@ -1021,6 +1202,7 @@ orchestrate(
         worker_launcher=worker,
         evidence_sink=sink,
         crash_hook=crash_hook,
+        repository_root=root,
     )
 )
 """
@@ -1099,43 +1281,7 @@ class FinalEvalOutcomeIntegrityTests(unittest.TestCase):
                 task_spec_sha256="1" * 64,
             )
             authority = stores_module._AuthorityStore(root_secret=ROOT_SECRET)
-            claim_ref = (
-                "research_state/control_plane/p8/attempts/"
-                "p8-attempt-003/evidence/worker_result_fail.json"
-            )
-            claim_path = root / claim_ref
-            claim_path.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(
-                ["git", "init", "--quiet"], cwd=root, check=True,
-                capture_output=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "Control Plane Tests"],
-                cwd=root, check=True, capture_output=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.email",
-                 "control-plane@example.invalid"],
-                cwd=root, check=True, capture_output=True,
-            )
-
-            def sink(document):
-                claim_path.write_text(
-                    canonical_json(document), encoding="utf-8"
-                )
-                subprocess.run(
-                    ["git", "add", claim_ref],
-                    cwd=root, check=True, capture_output=True,
-                )
-                subprocess.run(
-                    [
-                        "git", "-c", "user.name=Control Plane Tests",
-                        "-c", "user.email=control-plane@example.invalid",
-                        "commit", "--quiet", "-m", "stage failed claim",
-                    ],
-                    cwd=root, check=True, capture_output=True,
-                )
-                return claim_ref
+            claim_ref = _claim_ref_for(binding.ticket_id)
 
             # Worker exits non-zero -> staged outcome FAILED.
             orchestrate(
@@ -1144,7 +1290,8 @@ class FinalEvalOutcomeIntegrityTests(unittest.TestCase):
                     binding_id=binding.ticket_id,
                     expected_version=binding.saga_version,
                     worker_launcher=lambda: 7,
-                    evidence_sink=sink,
+                    evidence_sink=_real_publisher_sink(root, binding.ticket_id),
+                    repository_root=root,
                 )
             )
             lease = FinalEvalOrchestrationTests()._maintenance_lease(

@@ -9,6 +9,7 @@ import logging
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 from tempfile import TemporaryDirectory
 from threading import Barrier, BrokenBarrierError, Event
 import unittest
@@ -2188,6 +2189,55 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             task_spec_sha256=task_spec_sha,
         )
 
+    def _stage_verified(self, binding_id, *, expected_version=3):
+        """CR010-R02: stage with REAL committed object + fixed claim.
+
+        Writes + commits the content-addressed object and the per-ticket
+        fixed claim in the fixture root's git repo, then stages through the
+        Authority CAS with the verified refs.
+        """
+        from research_automation.control_plane.final_eval_evidence import (
+            FinalEvalResultPublisher,
+        )
+
+        root = Path(self.temporary.name)
+        if not (root / ".git").exists():
+            subprocess.run(
+                ["git", "init", "--quiet"], cwd=root, check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "Control Plane Tests"],
+                cwd=root, check=True, capture_output=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.email",
+                 "control-plane@example.invalid"],
+                cwd=root, check=True, capture_output=True,
+            )
+        publisher = FinalEvalResultPublisher(
+            repository_root=root,
+            evidence_volume=(
+                "research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test"
+            ),
+        )
+        refs = publisher.publish(
+            binding_id,
+            binding_id,
+            {"binding_id": binding_id, "outcome": "SUCCEEDED"},
+            outcome="SUCCEEDED",
+        )
+        return self.authority._stage_final_eval_result(
+            binding_id,
+            expected_version=expected_version,
+            result_object_ref=refs.object_ref,
+            result_object_sha256=refs.object_sha256,
+            result_claim_ref=refs.claim_ref,
+            result_claim_sha256=refs.claim_sha256,
+            repository_root=root,
+        )
+
     def tearDown(self) -> None:
         self.paths.stop()
         stores_module._expected_schema_sha256.cache_clear()
@@ -2335,18 +2385,7 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             next_state="EVALUATING",
             expected_version=2,
         )
-        staged = self.authority._stage_final_eval_result(
-            binding_id,
-            expected_version=3,
-            result_object_ref=(
-                "research_state/control_plane/p8/evidence/result-object.json"
-            ),
-            result_object_sha256="a" * 64,
-            result_claim_ref=(
-                "research_state/control_plane/p8/evidence/result-claim.json"
-            ),
-            result_claim_sha256="b" * 64,
-        )
+        staged = self._stage_verified(binding_id)
         self.assertEqual(staged.saga_state, "RESULT_STAGED")
         self.assertEqual(staged.saga_version, 4)
         with self.assertRaises(stores_module.FinalEvalBindingStateError):
@@ -2361,6 +2400,7 @@ class FinalEvalBindingContractTests(unittest.TestCase):
                     "research_state/control_plane/p8/evidence/result-claim.json"
                 ),
                 result_claim_sha256="b" * 64,
+                repository_root=Path(self.temporary.name),
             )
         second = self._begin(
             self.grant,
@@ -2377,7 +2417,14 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             next_state="EVALUATING",
             expected_version=2,
         )
-        with self.assertRaises(stores_module.FinalEvalBindingConflictError):
+        # CR010-R02: the claim is the ticket's UNIQUE fixed claim path; a
+        # second ticket cannot reuse a foreign claim (verification fails
+        # closed before any CAS write).
+        from research_automation.control_plane.final_eval_evidence import (
+            FinalEvalEvidenceError,
+        )
+
+        with self.assertRaises(FinalEvalEvidenceError):
             self.authority._stage_final_eval_result(
                 second_id,
                 expected_version=3,
@@ -2389,7 +2436,35 @@ class FinalEvalBindingContractTests(unittest.TestCase):
                     "research_state/control_plane/p8/evidence/result-claim.json"
                 ),
                 result_claim_sha256="b" * 64,
+                repository_root=Path(self.temporary.name),
             )
+
+    def test_staging_without_repository_root_fails_closed(self) -> None:
+        """CR010-R02: the Authority CAS refuses to stage a result when it
+        cannot verify the committed object/claim (no repository root)."""
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        with self.assertRaises(stores_module.FinalEvalBindingError):
+            self.authority._stage_final_eval_result(
+                binding_id,
+                expected_version=3,
+                result_object_ref=(
+                    "research_state/control_plane/p8/evidence/result-object.json"
+                ),
+                result_object_sha256="a" * 64,
+                result_claim_ref=(
+                    "research_state/control_plane/p8/evidence/result-claim.json"
+                ),
+                result_claim_sha256="b" * 64,
+            )
+        observed = self.authority.final_eval_binding_snapshot(binding_id)
+        self.assertEqual(observed.saga_state, "EVALUATING")
 
     def test_recovery_scan_returns_safe_bindings_without_secret_or_holdout_path(
         self,
@@ -2433,18 +2508,7 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             next_state="EVALUATING",
             expected_version=2,
         )
-        self.authority._stage_final_eval_result(
-            binding_id,
-            expected_version=3,
-            result_object_ref=(
-                "research_state/control_plane/p8/evidence/result-object.json"
-            ),
-            result_object_sha256="a" * 64,
-            result_claim_ref=(
-                "research_state/control_plane/p8/evidence/result-claim.json"
-            ),
-            result_claim_sha256="b" * 64,
-        )
+        self._stage_verified(binding_id)
         maintenance_grant = self._grant("fe-maintenance-attempt")
         task_spec = {
             "task_id": "P8-MAINTENANCE-RECOVERY",
@@ -2534,18 +2598,7 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             next_state="EVALUATING",
             expected_version=2,
         )
-        self.authority._stage_final_eval_result(
-            binding_id,
-            expected_version=3,
-            result_object_ref=(
-                "research_state/control_plane/p8/evidence/result-object.json"
-            ),
-            result_object_sha256="a" * 64,
-            result_claim_ref=(
-                "research_state/control_plane/p8/evidence/result-claim.json"
-            ),
-            result_claim_sha256="b" * 64,
-        )
+        self._stage_verified(binding_id)
         fresh_authority = stores_module._AuthorityStore(
             root_secret=ROOT_SECRET, clock=lambda: self.now
         )

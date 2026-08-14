@@ -5053,6 +5053,7 @@ class _AuthorityStore:
         result_object_sha256: str,
         result_claim_ref: str,
         result_claim_sha256: str,
+        repository_root: str | os.PathLike[str] | None = None,
     ) -> FinalEvalBindingSnapshot:
         trusted_binding = _require_nonempty(binding_id, "binding_id")
         object_ref = _require_canonical_evidence_ref(
@@ -5067,6 +5068,16 @@ class _AuthorityStore:
         claim_sha = _require_sha256(result_claim_sha256, "result_claim_sha256")
         if type(expected_version) is not int or expected_version < 1:
             raise ValueError("expected_version must be a positive integer")
+        # CR010-R02: staging without a repository root to verify the
+        # committed object/claim fails closed; a dangling ref or a wrong
+        # content hash must never enter RESULT_STAGED.
+        if repository_root is None:
+            raise FinalEvalBindingError(
+                "staging a final-eval result requires a repository root to "
+                "verify the committed object and fixed claim"
+            )
+        from .final_eval_evidence import verify_result_evidence
+
         now = self._now()
 
         def stage(
@@ -5082,6 +5093,17 @@ class _AuthorityStore:
                 raise FinalEvalBindingStateError(
                     "final-eval binding is not EVALUATING at the expected version"
                 )
+            # fail closed BEFORE the CAS write: committed object/claim must
+            # exist, hash correctly and bind this ticket (R02).
+            verify_result_evidence(
+                trusted_binding,
+                ticket_id=trusted_binding,
+                object_ref=object_ref,
+                object_sha256=object_sha,
+                claim_ref=claim_ref,
+                claim_sha256=claim_sha,
+                repository_root=repository_root,
+            )
             try:
                 update = connection.execute(
                     """UPDATE final_eval_authorizations_v1

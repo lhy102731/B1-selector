@@ -25,6 +25,7 @@ from __future__ import annotations
 import math
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -39,6 +40,10 @@ from research_automation.control_plane.contracts import (
     SideEffect,
     canonical_json,
     canonical_sha256,
+)
+from research_automation.control_plane.final_eval_saga import (
+    FinalEvalSagaError,
+    derive_outcome,
 )
 from research_automation.foundations.protocols import ExecutionSpec
 
@@ -1207,19 +1212,37 @@ class TrustedEvaluator:
         *,
         data_root: TrustedEvaluatorDataRoot,
         refs: tuple[str, ...] | None = None,
+        worker_payload: Mapping[str, object] | None = None,
     ) -> EvaluatorResult:
-        """V2 production path: outcome derived from the adapter result.
+        """V2 production path: outcome derived from the REAL worker result.
 
-        Caller cannot specify outcome, lease id or ticket id; the real
-        Authority lease lineage is bound by the broker.  This is the only
-        path P8R3 production uses.
+        The caller can never specify the outcome: ``worker_payload`` must be
+        the real worker's result mapping (the runtime feeds the worker
+        subprocess output here); ``derive_outcome`` rejects caller-supplied
+        outcomes and an incomplete payload fails closed.  The Authority
+        broker then consumes the holdout nonce ATOMICALLY with the derived
+        outcome -- the one and only place the nonce is committed.
         """
         if not isinstance(request, FinalEvalRequest):
             raise TypeError("request must be a FinalEvalRequest")
         require_evaluator_spec_holdout_free(request.execution_spec.execution_spec)
-        consumed = self._broker.consume(request)
-        if consumed.outcome not in _TERMINAL_OUTCOMES:
-            raise ValueError("broker returned a non-terminal outcome")
+        if not isinstance(worker_payload, Mapping):
+            raise TrustedEvaluatorError(
+                "evaluate_v2 requires the real worker result payload; "
+                "a caller-supplied outcome is never accepted"
+            )
+        try:
+            outcome = derive_outcome(worker_payload=worker_payload)
+        except FinalEvalSagaError as error:
+            raise TrustedEvaluatorError(
+                "worker payload did not derive a terminal outcome"
+            ) from error
+        consumed = self._broker.consume(request, outcome=outcome)
+        if consumed.outcome != outcome:
+            raise TrustedEvaluatorError(
+                "Authority consumed a different outcome than the worker "
+                "result derived"
+            )
         lease = HoldoutLease(
             lease_id="authority-bound-lease",
             ticket_id="authority-bound-ticket",
