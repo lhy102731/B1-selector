@@ -260,6 +260,19 @@ def main() -> int:
 
             import sqlite3 as _sqlite3
 
+            # Build the EVIDENCE receipt payload once; payload_sha256 and
+            # attestation hash that SAME canonical payload (the gate
+            # re-verifies payload_sha256 == sha256(payload_json)).
+            receipt_payload = canonical_json(
+                {
+                    "evidence_id": f"coordinator-evidence-{ticket.ticket_id[:16]}",
+                    "evidence_ref": evidence_ref,
+                    "evidence_sha256": hashlib.sha256(
+                        evidence_bytes
+                    ).hexdigest(),
+                    "status": "VERIFIED",
+                }
+            )
             conn = _sqlite3.connect(
                 ROOT / "research_state/control_plane/authority/authority.sqlite3"
             )
@@ -276,20 +289,13 @@ def main() -> int:
                         "activation-coordinator",
                         "automation",
                         f"invocation-{ATTEMPT}",
-                        canonical_json(
-                            {
-                                "evidence_id": f"coordinator-evidence-{ticket.ticket_id[:16]}",
-                                "evidence_ref": evidence_ref,
-                                "evidence_sha256": hashlib.sha256(
-                                    evidence_bytes
-                                ).hexdigest(),
-                                "status": "VERIFIED",
-                            }
-                        ),
-                        hashlib.sha256(evidence_bytes).hexdigest(),
+                        receipt_payload,
+                        hashlib.sha256(
+                            receipt_payload.encode("utf-8")
+                        ).hexdigest(),
                         hashlib.sha256(
                             b"control_plane.coordinator_receipt.v1\0"
-                            + evidence_bytes
+                            + receipt_payload.encode("utf-8")
                         ).hexdigest(),
                         "2026-08-14T00:00:00Z",
                     ),
