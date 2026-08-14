@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-027"
+ATTEMPT = "p0-attempt-028"
 PHASE = "P0"
 PLAN_VERSION = "V3.4.2-CR010"
 IDENTITY = {
