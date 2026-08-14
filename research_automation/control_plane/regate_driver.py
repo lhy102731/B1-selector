@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-007",
-        "task": "P6-GATE-007",
+        "attempt": "p6-attempt-008",
+        "task": "P6-GATE-008",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -693,14 +693,40 @@ def stage3b(cfg: dict[str, object]) -> None:
                 expected_active_sha256=previous_active,
             )
             print("POLICY_ACTIVATED", activated.policy_sha256[:16])
+            # EVIDENCE for the policy ticket: an activation evidence
+            # document inside the attempt dir (gate requires evidence refs
+            # under {phase}/attempts/{attempt}/ with a ticket binding).
+            policy_evidence_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/"
+                f"policy-activation-{ticket.ticket_id[:16]}.json"
+            )
+            policy_evidence_doc = {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": f"policy-evidence-{ticket.ticket_id[:16]}",
+                "evidence_ref": policy_evidence_ref,
+                "status": "VERIFIED",
+                "manifest_sha256": policy["review_receipt_sha256"],
+                "task_id": f"{phase}-POLICY-ACTIVATION-{attempt[-3:]}",
+                "ticket_id": ticket.ticket_id,
+            }
+            policy_evidence_bytes = canonical_json(
+                policy_evidence_doc
+            ).encode("utf-8")
+            policy_evidence_path = ROOT / policy_evidence_ref
+            policy_evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_evidence_path.write_bytes(policy_evidence_bytes)
+            policy_evidence_sha = hashlib.sha256(
+                policy_evidence_bytes
+            ).hexdigest()
             authority._finish_task(
                 lease,
                 outcome="SUCCEEDED",
-                evidence_ref=str(policy_path.relative_to(ROOT)).replace(
-                    "\\", "/"
-                ),
+                evidence_ref=policy_evidence_ref,
             )
             print("POLICY_TICKET_SUCCEEDED", ticket.ticket_id[:16])
+            git("add", "--", policy_evidence_ref)
+            git("commit", "-q", "-m",
+                f"audit: {attempt} policy activation evidence (CR-010, add-only)")
             # REVIEW receipt
             review_receipt_id = f"review-policy-{ticket.ticket_id[:16]}"
             review_payload = {
@@ -746,16 +772,13 @@ def stage3b(cfg: dict[str, object]) -> None:
             finally:
                 conn2.close()
             print("POLICY_REVIEW_RECEIPT_RECORDED")
-            # EVIDENCE receipt for the policy file itself (the policy
-            # TaskReport binds it as input evidence).
-            policy_ref = str(policy_path.relative_to(ROOT)).replace("\\", "/")
+            # EVIDENCE receipt for the policy ticket (the file + doc were
+            # created before _finish_task above).
             policy_evidence_payload = canonical_json(
                 {
-                    "evidence_id": (
-                        f"policy-evidence-{ticket.ticket_id[:16]}"
-                    ),
-                    "evidence_ref": policy_ref,
-                    "evidence_sha256": policy_file_sha,
+                    "evidence_id": f"policy-evidence-{ticket.ticket_id[:16]}",
+                    "evidence_ref": policy_evidence_ref,
+                    "evidence_sha256": policy_evidence_sha,
                     "status": "VERIFIED",
                 }
             )
