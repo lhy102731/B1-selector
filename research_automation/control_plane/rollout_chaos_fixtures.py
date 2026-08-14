@@ -21,7 +21,53 @@ from types import SimpleNamespace
 
 from .campaign_offline_provider import CampaignOfflineProvider
 from . import stores as stores_module
+from .campaign_store import OperationalCampaignJournal
+from .stores import Phase
 from .contracts import canonical_json
+from contextlib import contextmanager
+from dataclasses import replace
+from datetime import datetime, timezone
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from research_automation.control_plane.campaign_controller import (
+    operational_prompt_sha256,
+)
+from research_automation.control_plane.campaign_store import (
+    campaign_scope_sha256,
+)
+from research_automation.control_plane.contracts import (
+    Actor,
+    SideEffect,
+    canonical_json,
+)
+from research_automation.control_plane.contracts import canonical_sha256
+from research_automation.control_plane.contracts import canonical_json as _canonical_json
+def canonical_bytes(value):
+    return _canonical_json(value).encode("utf-8")
+
+from research_automation.foundations.artifact_identity import (
+    artifact_identity_from_bytes,
+)
+from research_automation.foundations.protocols import (
+    DatasetBinding,
+    FeatureBoundary,
+    FeatureField,
+    FoldSelection,
+    FoldSpec,
+    LabelDefinition,
+    ModelThresholdSpec,
+    OutputContract,
+    ProtocolApproval,
+    ProtocolApprovalStatement,
+    ProtocolDefinition,
+    ProtocolMetadata,
+    RosterMember,
+    RunnerSpec,
+    compile_execution_spec,
+    protocol_sha256,
+)
+
 from .memory import ClaimScope
 
 
@@ -57,21 +103,63 @@ class SequentialMonotonicClock:
 
 
 class FakeProcessIdentityProvider:
-    """Deterministic fake ProcessIdentityProvider for offline runs."""
+    """Deterministic fake ProcessIdentityProvider for offline runs.
 
-    def __init__(self, identity: OfflineChaosIdentity) -> None:
-        self._identity = identity
+    Duck-typed: accepts either an ``OfflineChaosIdentity`` (which carries a
+    ``process_identity()`` factory), a raw ``ProcessIdentity`` object, or
+    the campaign-lease call style ``current=..., process_starts=...``.
+    """
+
+    def __init__(
+        self,
+        identity: object = None,
+        *,
+        current: object = None,
+        process_starts: dict[tuple[str, int], int | None] | None = None,
+        probe=None,
+    ) -> None:
+        self._identity = identity if identity is not None else current
+        self.current_calls = 0
+        self.probe_calls: list[tuple[str, int]] = []
+        self._process_starts = dict(process_starts or {})
+        self._probe = probe
+        if self._identity is not None:
+            host_id = getattr(self._identity, "host_id", None)
+            pid = getattr(self._identity, "pid", None)
+            started = getattr(self._identity, "process_started_at_ns", None)
+            if host_id is not None and pid is not None:
+                self._process_starts.setdefault(
+                    (host_id, pid), started
+                )
+
+    def set_current(self, current: object) -> None:
+        self._identity = current
+        host_id = getattr(current, "host_id", None)
+        pid = getattr(current, "pid", None)
+        started = getattr(current, "process_started_at_ns", None)
+        if host_id is not None and pid is not None:
+            self._process_starts[(host_id, pid)] = started
 
     def current(self):
-        return self._identity.process_identity()
+        self.current_calls += 1
+        factory = getattr(self._identity, "process_identity", None)
+        if callable(factory):
+            return factory()
+        return self._identity
 
     def probe(self, host_id: str, pid: int) -> int | None:
-        if (host_id, pid) == (
-            self._identity.host_id,
-            self._identity.pid,
-        ):
-            return self._identity.process_started_at_ns
-        return None
+        self.probe_calls.append((host_id, pid))
+        if self._probe is not None:
+            return self._probe(host_id, pid)
+        if self._identity is not None:
+            if (host_id, pid) == (
+                getattr(self._identity, "host_id", None),
+                getattr(self._identity, "pid", None),
+            ):
+                return getattr(
+                    self._identity, "process_started_at_ns", None
+                )
+        return self._process_starts.get((host_id, pid))
 
 
 def deterministic_scope(*, generation: str = "c0-generation-1") -> dict[str, object]:
@@ -191,3 +279,569 @@ __all__ = [
     "deterministic_protocol",
     "deterministic_scope",
 ]
+
+
+# ---------------------------------------------------------------------------
+# CR010-R05a: production-owned offline fixtures ported from tests.* -- the
+# production path must never import tests.* private fixtures.
+# ---------------------------------------------------------------------------
+
+FIXTURE_ROOT_SECRET = "test-only-authority-root-capability-0123456789abcdef"
+FIXTURE_NOW = datetime(2026, 8, 11, 1, 0, tzinfo=timezone.utc)
+
+def fixture_artifact(
+    content: bytes,
+    *,
+    content_schema: str,
+    generation: str,
+    kind: str,
+    logical_role: str,
+    producer: str = "unit-test",
+) -> ArtifactIdentity:
+    return artifact_identity_from_bytes(
+        content,
+        content_schema=content_schema,
+        producer=producer,
+        generation=generation,
+        kind=kind,
+        logical_role=logical_role,
+    )
+
+def fixture_protocol() -> ProtocolDefinition:
+    generation_manifest = fixture_artifact(
+        b"generation-1-manifest",
+        content_schema="research.generation_manifest.v1",
+        generation="generation-1",
+        kind="manifest",
+        logical_role="generation-manifest",
+    )
+    market_data = fixture_artifact(
+        b"market-data-generation-1",
+        content_schema="research.market_data.v1",
+        generation="generation-1",
+        kind="dataset",
+        logical_role="dataset-bars",
+    )
+    hyperparameters = fixture_artifact(
+        b"hyperparameters-v1",
+        content_schema="research.hyperparameters.v1",
+        generation="generation-1",
+        kind="model-config",
+        logical_role="model-hyperparameters",
+    )
+    code = fixture_artifact(
+        b"runner-source-v1",
+        content_schema="research.source_snapshot.v1",
+        generation="git-abc123",
+        kind="source",
+        logical_role="runner-source",
+    )
+    inputs = tuple(
+        sorted(
+            (generation_manifest, market_data, hyperparameters),
+            key=lambda item: item.artifact_id,
+        )
+    )
+    code_artifacts = (code,)
+    datasets = tuple(
+        sorted(
+            (
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="test-1",
+                    role="FOLD_TEST",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2024-01-01",
+                    window_end="2024-12-31",
+                ),
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="test-2",
+                    role="FOLD_TEST",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2025-01-01",
+                    window_end="2025-12-31",
+                ),
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="train-1",
+                    role="TRAIN",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2020-01-01",
+                    window_end="2022-12-31",
+                ),
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="train-2",
+                    role="TRAIN",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2021-01-01",
+                    window_end="2023-12-31",
+                ),
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="validation-1",
+                    role="VALIDATION",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2023-01-01",
+                    window_end="2023-12-31",
+                ),
+                DatasetBinding(
+                    schema_version="research.dataset_binding.v1",
+                    dataset_id="validation-2",
+                    role="VALIDATION",
+                    artifact_id=market_data.artifact_id,
+                    window_start="2024-01-01",
+                    window_end="2024-12-31",
+                ),
+            ),
+            key=lambda item: item.dataset_id,
+        )
+    )
+    return ProtocolDefinition(
+        schema_version="research.protocol_definition.v1",
+        protocol_id="brick-forward-v1",
+        metadata=ProtocolMetadata(
+            schema_version="research.protocol_metadata.v1",
+            display_name="Brick forward validation",
+            notes="fixture",
+        ),
+        generation_id="generation-1",
+        generation_manifest_artifact_id=generation_manifest.artifact_id,
+        universe_id="a-share-point-in-time-v1",
+        calendar_id="sse-szse-trading-v1",
+        adjustment_scheme_id="hfq-v1",
+        validation_design="ROLLING_FORWARD",
+        fold_window_policy_id="train3y-validate1y-test1y-v1",
+        label=LabelDefinition(
+            schema_version="research.label_definition.v1",
+            label_id="return-after-entry-v1",
+            entry_rule_id="signal-close-next-open",
+            exit_rule_id="fixed-horizon-or-stop",
+            horizon_trading_days=5,
+        ),
+        datasets=datasets,
+        folds=(
+            FoldSpec(
+                schema_version="research.fold_spec.v1",
+                fold_id="fold-1",
+                train_dataset_id="train-1",
+                validation_dataset_id="validation-1",
+                test_dataset_id="test-1",
+                purge_trading_days=5,
+                embargo_trading_days=2,
+            ),
+            FoldSpec(
+                schema_version="research.fold_spec.v1",
+                fold_id="fold-2",
+                train_dataset_id="train-2",
+                validation_dataset_id="validation-2",
+                test_dataset_id="test-2",
+                purge_trading_days=5,
+                embargo_trading_days=2,
+            ),
+        ),
+        feature_boundary=FeatureBoundary(
+            schema_version="research.feature_boundary.v1",
+            boundary_id="brick-v2-0925-v1",
+            feature_fields=(
+                FeatureField(
+                    schema_version="research.feature_field.v1",
+                    name="entry_open_to_ma5_pct",
+                    availability="ENTRY_DATE_OPEN",
+                    reference_fields=("signal_day_ma5",),
+                ),
+                FeatureField(
+                    schema_version="research.feature_field.v1",
+                    name="entry_open_to_yellow_pct",
+                    availability="ENTRY_DATE_OPEN",
+                    reference_fields=("signal_day_yellow",),
+                ),
+                FeatureField(
+                    schema_version="research.feature_field.v1",
+                    name="overnight_gap_pct",
+                    availability="ENTRY_DATE_OPEN",
+                    reference_fields=("signal_day_close",),
+                ),
+                FeatureField(
+                    schema_version="research.feature_field.v1",
+                    name="white_line",
+                    availability="SIGNAL_DAY_CLOSE",
+                    reference_fields=("signal_day_close",),
+                ),
+            ),
+            forbidden_feature_names=(
+                "entry_date_close",
+                "entry_date_high",
+                "entry_date_low",
+                "exit_date",
+                "exit_price",
+                "hold_days",
+                "return_pct",
+                "t1_close",
+            ),
+        ),
+        code_artifacts=code_artifacts,
+        input_artifacts=inputs,
+        runner=RunnerSpec(
+            schema_version="research.runner_spec.v1",
+            runner_id="brick-v2-research",
+            entrypoint="research.brick.runner:main",
+            code_artifact_ids=(code.artifact_id,),
+            argument_schema_sha256="a" * 64,
+            compute_backend="CPU",
+            backend_version="python-3.13",
+        ),
+        model=ModelThresholdSpec(
+            schema_version="research.model_threshold_spec.v1",
+            model_mode="TRAIN_NEW",
+            model_family="ranker",
+            model_artifact_id=None,
+            hyperparameter_artifact_id=hyperparameters.artifact_id,
+            selection_by_fold=(
+                FoldSelection(
+                    schema_version="research.fold_selection.v1",
+                    fold_id="fold-1",
+                    training_dataset_id="train-1",
+                    threshold_source="VALIDATION_SELECTED",
+                    threshold_dataset_ids=("validation-1",),
+                    threshold_value=0.5,
+                ),
+                FoldSelection(
+                    schema_version="research.fold_selection.v1",
+                    fold_id="fold-2",
+                    training_dataset_id="train-2",
+                    threshold_source="VALIDATION_SELECTED",
+                    threshold_dataset_ids=("validation-2",),
+                    threshold_value=0.5,
+                ),
+            ),
+            promotion_gate_id="strict-forward-v1",
+        ),
+        roster=(
+            RosterMember(
+                schema_version="research.roster_member.v1",
+                role="factor_engineer",
+                provider_profile_id="offline-local",
+                model_id="deterministic-reviewer",
+                public_identity_sha256="b" * 64,
+                redacted=True,
+            ),
+        ),
+        output_contracts=(
+            OutputContract(
+                schema_version="research.output_contract.v1",
+                logical_role="fold-report",
+                output_schema_id="research.fold_report.v1",
+                destination_class="STAGING_ONLY",
+            ),
+        ),
+        allowed_side_effects=(
+            SideEffect.READ,
+            SideEffect.RUN_RESEARCH,
+            SideEffect.START_SUBPROCESS,
+            SideEffect.WRITE_STAGING,
+        ),
+    )
+
+def fixture_approval(protocol: ProtocolDefinition) -> ProtocolApproval:
+    approver = Actor(
+        actor_id="independent-reviewer",
+        actor_type="human",
+        invocation_id="review-1",
+    )
+    statement = ProtocolApprovalStatement(
+        schema_version="research.protocol_approval_statement.v1",
+        approved_protocol_sha256=protocol_sha256(protocol),
+        decision="APPROVED",
+        approver=approver,
+    )
+    evidence = fixture_artifact(
+        canonical_json(statement.model_dump(mode="json")).encode("utf-8"),
+        content_schema="research.protocol_approval_statement.v1",
+        generation="approval-1",
+        kind="review",
+        logical_role="protocol-approval",
+        producer=approver.actor_id,
+    )
+    return ProtocolApproval(
+        schema_version="research.protocol_approval.v1",
+        statement=statement,
+        approval_evidence=evidence,
+        evidence_trust="UNVERIFIED_EXTERNAL_STATEMENT",
+    )
+
+def fixture_member() -> RosterMember:
+    from research_automation.control_plane.campaign_roster import (
+        RosterMember as _CampaignRosterMember,
+    )
+
+    return _CampaignRosterMember(
+        member_id="factor-engineer",
+        provider="fake-provider",
+        profile="offline-local",
+        model="deterministic-reviewer",
+        role="factor_engineer",
+        prompt_sha256="1" * 64,
+        config_sha256="2" * 64,
+        capability_sha256="3" * 64,
+    )
+
+def fixture_execution_spec_and_member(prompt: object):
+    protocol = fixture_protocol()
+    execution_spec = compile_execution_spec(
+        protocol,
+        approved_protocol=protocol,
+        approval=fixture_approval(protocol),
+        amendment=None,
+    )
+    member = replace(
+        fixture_member(),
+        prompt_sha256=operational_prompt_sha256(prompt),
+    )
+    return execution_spec, member
+
+def fixture_claim_campaign_grant(
+    *,
+    campaign_id: str,
+    namespace: str,
+    actor_id: str,
+    invocation_id: str,
+    attempt_id: str,
+    plan_sha256: str,
+    instruction_sha256: str,
+) -> stores_module.AuthorityGrant:
+    actor = Actor(actor_id, "automation", invocation_id)
+    identity = stores_module.AuthorityIdentity(
+        plan_sha256,
+        campaign_scope_sha256(
+            namespace=namespace,
+            campaign_id=campaign_id,
+        ),
+        instruction_sha256,
+    )
+    authority = stores_module._AuthorityStore(
+        root_secret=FIXTURE_ROOT_SECRET,
+        clock=lambda: FIXTURE_NOW,
+    )
+    authorization = authority._provision_authorization(
+        phase=Phase.P6,
+        attempt_id=attempt_id,
+        actor=actor,
+        identity=identity,
+        expires_at=FIXTURE_NOW.replace(year=2027),
+        allowed_side_effects=(
+            SideEffect.READ,
+            SideEffect.WRITE_CONTROL_PLANE,
+        ),
+    )
+    return authority.claim_authorization(
+        authorization,
+        expected_phase=Phase.P6,
+        expected_attempt_id=attempt_id,
+        actor=actor,
+        identity=identity,
+    )
+
+
+@contextmanager
+
+def fixture_authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        with patch.multiple(
+            stores_module,
+            _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+            _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+        ):
+            stores_module._expected_schema_sha256.cache_clear()
+            stores_module._trusted_bootstrap(root_secret=FIXTURE_ROOT_SECRET)
+            grant = fixture_claim_campaign_grant(
+                campaign_id=campaign_id,
+                namespace=namespace,
+                actor_id="p6-runner",
+                invocation_id=f"{campaign_id}-test",
+                attempt_id=f"{campaign_id}-attempt",
+                plan_sha256="a" * 64,
+                instruction_sha256="c" * 64,
+            )
+            try:
+                yield root, grant, OperationalCampaignJournal(
+                    root_secret=FIXTURE_ROOT_SECRET,
+                    grant=grant,
+                    namespace=namespace,
+                    campaign_id=campaign_id,
+                    clock=lambda: FIXTURE_NOW,
+                )
+            finally:
+                stores_module._expected_schema_sha256.cache_clear()
+
+def fixture_write_json(root, ref, payload):
+    raw = canonical_bytes(payload)
+    path = root / ref
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    return {
+        "evidence_ref": ref,
+        "evidence_sha256": hashlib.sha256(raw).hexdigest(),
+        "status": "VERIFIED",
+    }
+
+def fixture_authority_fixture(root, *, claim=None, protocol=None):
+    from research_automation.control_plane.contracts import SideEffect
+    from research_automation.control_plane.evidence_learning import EvidenceAdapter
+    from research_automation.control_plane import evidence_learning as module
+    from research_automation.control_plane.task_reports import build_task_report_v2
+
+    if claim is None:
+        claim = {
+            "kind": "NEGATIVE",
+            "scope": canonical_bytes(
+                {
+                    "mechanisms": ["volume-contraction-rebound"],
+                    "usage_modes": ["factor-candidate"],
+                    "market_regimes": ["all"],
+                    "time_windows": [
+                        {"start": "2020-01-01", "end": "2026-12-31"}
+                    ],
+                    "universes": ["a-share"],
+                    "liquidity_buckets": ["production-minimum"],
+                    "label_protocol_families": ["rolling-forward-v1"],
+                    "generation_families": ["generation-1"],
+                }
+            ).decode("utf-8"),
+        }
+    protocol = (
+        {"label": "signal-day", "embargo_days": 5}
+        if protocol is None
+        else protocol
+    )
+    artifact = {
+        "schema_version": "runner.artifact.v1",
+        "runner": "fixture-runner",
+        "runner_version": "1.0.0",
+        "status": "COMPLETED",
+        "claim": claim,
+        "protocol_conformance": "CONFORMING",
+        "executed_protocol": protocol,
+        "artifact_refs": [
+            {"ref": "fixtures/result.json", "sha256": "e" * 64}
+        ],
+        "access_event_ids": ["event:fixture-001"],
+        "taint_refs": [],
+    }
+    source_ref = "research_automation/control_plane/evidence_learning.py"
+    source_raw = Path(module.__file__).read_bytes()
+    source_path = root / source_ref
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(source_raw)
+    adapter = {
+        "schema_version": "control_plane.runner_adapter.v1",
+        "adapter_id": "EvidenceAdapter.v1",
+        "source_ref": source_ref,
+        "source_sha256": hashlib.sha256(source_raw).hexdigest(),
+        "runners": {"fixture-runner": "1.0.0"},
+    }
+    base = "research_state/control_plane/p4/fixtures"
+    refs = {
+        "approved-claim": fixture_write_json(root, f"{base}/claim.json", claim),
+        "approved-protocol": fixture_write_json(
+            root, f"{base}/protocol.json", protocol
+        ),
+        "runner-adapter": fixture_write_json(
+            root, f"{base}/adapter.json", adapter
+        ),
+        "runner-artifact": fixture_write_json(
+            root, f"{base}/artifact.json", artifact
+        ),
+    }
+    evidence = EvidenceAdapter(
+        known_runners=adapter["runners"],
+        approved_protocol=protocol,
+        approved_claim=claim,
+    ).evaluate(artifact)
+    decision = {
+        "schema_version": "control_plane.evidence_decision.v1",
+        "bindings": {
+            name: refs[name]["evidence_sha256"]
+            for name in sorted(refs)
+        },
+        "claim": claim,
+        "evidence": {
+            "verdict": evidence.verdict,
+            "protocol_conformance": evidence.protocol_conformance,
+            "audit_grade": evidence.audit_grade,
+            "scientific_outcome": evidence.scientific_outcome,
+            "promotion_eligible": evidence.promotion_eligible,
+            "evidence_refs": list(evidence.evidence_refs),
+            "access_event_ids": list(evidence.access_event_ids),
+            "taint_refs": list(evidence.taint_refs),
+            "invalidation_codes": list(evidence.invalidation_codes),
+        },
+    }
+    refs["learning-decision"] = fixture_write_json(
+        root, f"{base}/decision.json", decision
+    )
+    baseline_ref = "research_state/control_plane/p3/baseline.json"
+    baseline_raw = canonical_bytes(
+        {
+            "phase": "P3",
+            "repository_root": str(root.resolve()),
+            "status": "PASS",
+        }
+    )
+    baseline_path = root / baseline_ref
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_bytes(baseline_raw)
+    input_refs = []
+    for evidence_id in sorted(refs):
+        input_refs.append({"evidence_id": evidence_id, **refs[evidence_id]})
+    report = build_task_report_v2({
+        "plan_version": "V3.4.2-P0R2",
+        "phase": "P4",
+        "task_id": "P4-LEARNING-COMMIT",
+        "attempt_id": "p4-fixture",
+        "authorization_ref": "auth-learning-001",
+        "ticket_id": "ticket-learning-001",
+        "identity_binding": {
+            "plan_hash": "a" * 64,
+            "scope_hash": "b" * 64,
+            "instruction_policy_hash": "c" * 64,
+        },
+        "objective": "Project one independently reviewed Learning decision.",
+        "dependencies": [],
+        "idempotency_key": "p4-learning-commit-001",
+        "task_spec_ref": "research_state/control_plane/p4/task_specs/learning.json",
+        "task_spec_sha256": "d" * 64,
+        "requirements": {
+            "required_test_receipt_ids": [],
+            "required_review_receipt_ids": [],
+            "required_evidence_ids": sorted(refs),
+        },
+        "ticket_state": "SUCCEEDED",
+        "allowed_files": [
+            "research_state/control_plane/learning_commit.sqlite3",
+            "research_state/control_plane/learning_packets/",
+        ],
+        "forbidden_files": ["data/", "knowledge/"],
+        "baseline_ref": baseline_ref,
+        "baseline_sha256": hashlib.sha256(baseline_raw).hexdigest(),
+        "input_evidence_refs": input_refs,
+        "test_receipts": [],
+        "review_receipts": [],
+        "review_findings": [],
+        "changed_files": [],
+        "external_invocations": [],
+        "side_effect_summary": {"observed": [], "unauthorized": []},
+        "started_at": "2026-07-30T08:00:00Z",
+        "completed_at": "2026-07-30T08:01:00Z",
+    })
+    binding = SimpleNamespace(
+        ticket_id="ticket-learning-001",
+        report_payload_sha256=report["report_payload_sha256"],
+        actor_id="independent-evidence-reviewer",
+        allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        ticket_state="SUCCEEDED",
+        terminal_evidence_ref=refs["learning-decision"]["evidence_ref"],
+    )
+    return report, binding, artifact, evidence, refs

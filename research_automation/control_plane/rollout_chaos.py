@@ -78,41 +78,25 @@ from research_automation.control_plane import stores as stores_module
 
 
 def _test_fixtures():
-    """Lazy test-fixture imports (C0 chaos driver reuses fixture builders).
+    """Production-owned offline fixtures (CR010-R05a).
 
-    Kept inside a function so the production import graph never contains
-    ``tests.*`` (corrective plan Step 9.4 production-import scan).  This
-    module is the C0 rollout driver only; P6/P7/P8 production modules must
-    not import these fixtures.
+    The C0 driver uses ONLY the production fixture module -- never
+    ``tests.*`` private fixtures and never unittest.mock in the
+    production-owned simulation path.
     """
-    from tests.test_control_plane_campaign_freeze import _protocol_member
-    from tests.test_control_plane_campaign_lease import _FakeProcessIdentityProvider
-    from tests.test_control_plane_campaign_preflight import _scope
-    from tests.test_control_plane_campaign_store import (
-        NOW,
-        ROOT_SECRET,
-        _authorized_campaign,
-        _claim_campaign_grant,
-    )
-    from tests.test_control_plane_campaign_two_cycle import (
-        _execution_spec_and_member,
-    )
-    from tests.test_control_plane_evidence_learning import (
-        EvidenceLearningVerticalSliceTests,
-    )
-    from tests.test_foundations_protocols import _protocol
+    from . import rollout_chaos_fixtures as fixtures
 
     return {
-        "protocol_member": _protocol_member,
-        "fake_process_identity_provider": _FakeProcessIdentityProvider,
-        "scope": _scope,
-        "now": NOW,
-        "root_secret": ROOT_SECRET,
-        "authorized_campaign": _authorized_campaign,
-        "claim_campaign_grant": _claim_campaign_grant,
-        "execution_spec_and_member": _execution_spec_and_member,
-        "evidence_vertical_slice": EvidenceLearningVerticalSliceTests,
-        "protocol": _protocol,
+        "protocol_member": fixtures.fixture_member,
+        "fake_process_identity_provider": fixtures.FakeProcessIdentityProvider,
+        "scope": fixtures.deterministic_scope,
+        "now": fixtures.FIXTURE_NOW,
+        "root_secret": fixtures.FIXTURE_ROOT_SECRET,
+        "authorized_campaign": fixtures.fixture_authorized_campaign,
+        "claim_campaign_grant": fixtures.fixture_claim_campaign_grant,
+        "execution_spec_and_member": fixtures.fixture_execution_spec_and_member,
+        "evidence_vertical_slice": fixtures.fixture_authority_fixture,
+        "protocol": fixtures.fixture_protocol,
     }
 
 
@@ -1249,7 +1233,7 @@ def _run_main_campaign_locked(
 def _negative_pid_reuse() -> dict[str, object]:
     with _test_fixtures()["authorized_campaign"]("c0-neg-pid-reuse") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
@@ -1314,7 +1298,7 @@ def _negative_pid_reuse() -> dict[str, object]:
 def _negative_lease_fencing() -> dict[str, object]:
     with _test_fixtures()["authorized_campaign"]("c0-neg-lease-fencing") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
@@ -1372,7 +1356,7 @@ def _negative_lease_fencing() -> dict[str, object]:
 def _negative_budget_exhaustion() -> dict[str, object]:
     with _test_fixtures()["authorized_campaign"]("c0-neg-budget") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
@@ -1431,7 +1415,7 @@ def _negative_budget_exhaustion() -> dict[str, object]:
 def _negative_mid_call_doubt() -> dict[str, object]:
     with _test_fixtures()["authorized_campaign"]("c0-neg-mid-call") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
@@ -1536,7 +1520,7 @@ def _negative_mid_call_doubt() -> dict[str, object]:
 def _negative_invalid_json() -> dict[str, object]:
     with _test_fixtures()["authorized_campaign"]("c0-neg-invalid-json") as (root, _, journal):
         claim = _claim_for_cycle(1)
-        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"]()._authority_fixture(
+        report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
         )
         prompt = {"instruction": "Return the authority-bound synthetic artifact"}
