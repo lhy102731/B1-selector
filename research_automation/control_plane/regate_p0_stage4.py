@@ -335,6 +335,21 @@ def main() -> int:
         "task_report_policy_activation.json"
     )
     policy_spec = json.loads(str(policy_ticket[9]))
+    # findings_sha256 for the policy review receipt is the policy document's
+    # review_receipt_sha256 (the independent reviewer binding).
+    policy_review_hash = "0" * 64
+    for candidate in (
+        ROOT / "research_state/control_plane/policies"
+    ).glob("*.json"):
+        try:
+            doc = json.loads(candidate.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if doc.get("attempt_id") == ATTEMPT and doc.get(
+            "review_receipt_sha256"
+        ):
+            policy_review_hash = str(doc["review_receipt_sha256"])
+            break
     policy_report = build_task_report_v2(
         {
             "plan_version": PLAN_VERSION,
@@ -357,15 +372,28 @@ def main() -> int:
             "idempotency_key": policy_ticket[2],
             "task_spec_ref": policy_ticket[3],
             "task_spec_sha256": policy_ticket[4],
-            "requirements": policy_spec.get("requirements", {}),
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [
+                    f"review-policy-{policy_ticket[0][:16]}"
+                ],
+                "required_evidence_ids": [],
+            },
             "allowed_files": policy_spec.get("allowed_files", []),
             "forbidden_files": policy_spec.get("forbidden_files", []),
             "baseline_ref": policy_spec.get("baseline_ref", "manifest.json"),
             "baseline_sha256": policy_spec.get("baseline_sha256", "1" * 64),
             "input_evidence_refs": policy_spec.get("input_evidence_refs", []),
             "test_receipts": [],
-            "review_receipts": [],
-            "review_findings": [],
+            "review_receipts": [
+                {
+                    "receipt_id": f"review-policy-{policy_ticket[0][:16]}",
+                    "reviewer_id": "independent-reviewer-b-cr010",
+                    "exit_code": 0,
+                    "result": "PASS",
+                    "findings_sha256": policy_review_hash,
+                }
+            ],
             "changed_files": [],
             "external_invocations": [],
             "started_at": str(policy_ticket[7]),

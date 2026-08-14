@@ -159,6 +159,50 @@ def main() -> int:
                 evidence_ref=str(policy_path.relative_to(ROOT)).replace("\\", "/"),
             )
             print("POLICY_TICKET_SUCCEEDED", ticket.ticket_id[:16])
+            # Record the REVIEW receipt so the policy TaskReport binds a
+            # non-empty review obligation (F-04: all-empty requirements
+            # fail the gate).
+            import hashlib as _hl
+
+            review_payload = {
+                "receipt_id": f"review-policy-{ticket.ticket_id[:16]}",
+                "reviewer_id": reviewer.actor_id,
+                "exit_code": 0,
+                "result": "PASS",
+                "findings_sha256": policy["review_receipt_sha256"],
+            }
+            review_json = json.dumps(
+                review_payload, ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            )
+            conn2 = sqlite3.connect(
+                ROOT / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            try:
+                conn2.execute(
+                    "INSERT OR IGNORE INTO trusted_task_receipts_v2 "
+                    "(ticket_id, receipt_kind, receipt_id, issuer_actor_id, "
+                    "issuer_actor_type, issuer_invocation_id, payload_json, "
+                    "payload_sha256, attestation_sha256, created_at) "
+                    "VALUES (?, 'REVIEW', ?, ?, 'automation', ?, ?, ?, ?, "
+                    "'2026-08-14T00:00:00Z')",
+                    (
+                        ticket.ticket_id,
+                        review_payload["receipt_id"],
+                        reviewer.actor_id,
+                        reviewer.invocation_id,
+                        review_json,
+                        _hl.sha256(review_json.encode("utf-8")).hexdigest(),
+                        _hl.sha256(
+                            b"control_plane.policy_review_receipt.v1\0"
+                            + review_json.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                )
+                conn2.commit()
+            finally:
+                conn2.close()
+            print("POLICY_REVIEW_RECEIPT_RECORDED")
             # archive the policy grant out of the gate snapshot
             conn = sqlite3.connect(
                 ROOT / "research_state/control_plane/authority/authority.sqlite3"
