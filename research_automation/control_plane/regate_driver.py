@@ -948,8 +948,20 @@ def stage3c(cfg: dict[str, object]) -> None:
     )
     baseline_sha256 = str(baseline_doc.get("baseline_payload_sha256", "1" * 64))
 
-    # no-side-effect baseline: every change later must be confined to the
-    # attempt evidence dir (the chain artifacts) and nothing else.
+    # no-side-effect baseline: CR010-R07 full-surface snapshot (stores,
+    # trees, protected files, network counter, git status) -- every change
+    # later must be confined to the attempt evidence dir.
+    from research_automation.control_plane.c0_no_side_effect import (
+        snapshot_surface,
+    )
+    from research_automation.control_plane.rollout_chaos_worker import (
+        NetworkGuard as _ChaosNetworkGuard,
+    )
+
+    surface_before = snapshot_surface(
+        ROOT,
+        network_attempts=_ChaosNetworkGuard.attempts,
+    )
     before_status = git("status", "--porcelain")
 
     # 1) immutable official run spec (committed BEFORE the ticket is issued,
@@ -1197,37 +1209,48 @@ def stage3c(cfg: dict[str, object]) -> None:
                 canonical_json(replay_receipt), encoding="utf-8", newline="\n"
             )
 
-            # 6) no-side-effect receipt: git status delta confined to the
-            #    attempt evidence dir; deterministic root under the temp dir
-            after_status = git("status", "--porcelain")
-            intended_prefix = f"{cfg['dir']}/{attempt}/evidence/"
-            before_set = set(before_status.splitlines())
-            after_set = set(after_status.splitlines())
-            delta = after_set - before_set
-            unexpected = [
-                line
-                for line in delta
-                if not line.lstrip("?AMDRCU ").startswith(intended_prefix)
-            ]
+            # 6) CR010-R07 no-side-effect receipt: the FULL surface snapshot
+            #    (Authority/Operational stores, data/knowledge/config/
+            #    strategy/research_automation/tools trees, protected user
+            #    files, network probe counter, git status) must be
+            #    byte-identical except the intended evidence deltas.
+            from research_automation.control_plane.c0_no_side_effect import (
+                build_no_side_effect_receipt,
+                snapshot_surface,
+            )
+
             import tempfile as _tempfile
 
             temp_root = Path(_tempfile.gettempdir()).resolve()
             det_root = rollout_chaos._deterministic_root(seed, cycles).resolve()
-            no_side_effect = {
-                "schema": "control_plane.c0_no_side_effect_receipt.v1",
-                "attempt_id": attempt,
-                "git_status_delta_count": len(delta),
-                "unexpected_changes": unexpected,
-                "deterministic_root": str(det_root),
-                "deterministic_root_under_tempdir": det_root.is_relative_to(
-                    temp_root
+            evidence_prefix = f"{cfg['dir']}/{attempt}/evidence/"
+            intended_deltas = tuple(
+                line
+                for line in after_status.splitlines()
+                if line.lstrip("?AMDRCU ").startswith(evidence_prefix)
+            )
+            no_side_effect = build_no_side_effect_receipt(
+                ROOT,
+                surface_before,
+                snapshot_surface(
+                    ROOT,
+                    network_attempts=_ChaosNetworkGuard.attempts,
                 ),
-                "pass": not unexpected and det_root.is_relative_to(temp_root),
-            }
+                allowed_git_deltas=intended_deltas,
+            )
+            no_side_effect["attempt_id"] = attempt
+            no_side_effect["deterministic_root"] = str(det_root)
+            no_side_effect["deterministic_root_under_tempdir"] = (
+                det_root.is_relative_to(temp_root)
+            )
+            no_side_effect["pass"] = (
+                no_side_effect["pass"]
+                and det_root.is_relative_to(temp_root)
+            )
             if not no_side_effect["pass"]:
                 raise RuntimeError(
-                    "C0 official run had unexpected side effects: "
-                    + json.dumps(unexpected, ensure_ascii=False)
+                    "C0 official run had unexpected side effects "
+                    "(full-surface check)"
                 )
             no_side_ref = (
                 f"{cfg['dir']}/{attempt}/evidence/"
