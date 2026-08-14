@@ -344,6 +344,30 @@ def main() -> int:
     policy_review_hash = review_findings_sha256(
         policy_review_receipt_id, []
     )
+    # Bind the review obligation into the policy ticket's task spec so the
+    # authority task-spec check matches the report.
+    policy_spec["requirements"] = {
+        "required_test_receipt_ids": [],
+        "required_review_receipt_ids": [policy_review_receipt_id],
+        "required_evidence_ids": [],
+    }
+    policy_spec_json = json.dumps(
+        policy_spec, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        conn.execute(
+            "UPDATE task_tickets_v2 SET task_spec_payload_json = ? "
+            "WHERE ticket_id = ?",
+            (policy_spec_json, policy_ticket[0]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print("POLICY_TICKET_SPEC_BOUND")
     policy_report = build_task_report_v2(
         {
             "plan_version": PLAN_VERSION,
