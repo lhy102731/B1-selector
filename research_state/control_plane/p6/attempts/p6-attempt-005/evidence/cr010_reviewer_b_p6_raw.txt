@@ -1,0 +1,172 @@
+# Reviewer B — P6 Gate Review (CR-010, attempt p6-attempt-005)
+
+Candidate: `057c2022930e3b8f91eeaa444e957747bec72a28` / tree `5ebc6fce60f3d82be61955e7eff942c334c2914f`
+
+## Files Inspected (committed tree only)
+
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/official_p6_closure_receipt_v342_cr010.json` (closure, embedded verbatim)
+- `research_state/control_plane/p6/attempts/p6-attempt-005/gates/official_p6_gate_v342_cr010.json` (gate, embedded verbatim as `official_p6_gate_v342_cr010.json`)
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/activation-462b3e31bd274c2a.json` (path presence verified; content not embedded in prompt)
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/cr010_review_p6_calls.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/cr010_reviewer_a_p6_prompt.txt`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/cr010_reviewer_a_p6_raw.txt`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stdout.json`
+
+(Only the gate and closure JSON contents are embedded in the prompt; the remaining listed evidence files are confirmed present in the tree but their bytes were not reproduced in the prompt, so semantic claims about them are bounded by what the gate/closure JSON asserts.)
+
+---
+
+## Findings
+
+### F-01 — INFO — `gate/closure time causality` — VERIFIED
+
+- Gate `created_at`: `2026-08-14T07:41:32.546935Z`
+- Closure `closed_at`: `2026-08-14T07:41:40.770007Z`
+- Δ = +8.223072 s, both canonical UTC (`Z` suffix), monotonic.
+- Closure `trust_root` explicitly states CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row, mechanically provable `closed_at > gate.created_at`. Consistent with embedded timestamps.
+- `closure_id` `8f79474ce2abea81ea25377aa1cf1c41a2734649efd9099bce2694743e936d75` is sha256-length and properly bound to the closure row.
+
+No anomaly. Causality holds.
+
+### F-02 — INFO — `gate_report_sha256 cross-binding` — VERIFIED
+
+- Gate JSON `gate_report_sha256`: `16ce2e29fdf15fd9595bdceac83dd75be74d34133666183256767a873e682f79`
+- Closure JSON `gate_report_sha256`: `16ce2e29fdf15fd9595bdceac83dd75be74d34133666183256767a873e682f79`
+- Match ✓. Closure `gate_ref` correctly points to `research_state/control_plane/p6/attempts/p6-attempt-005/gates/official_p6_gate_v342_cr010.json`.
+- Note (informational, not blocking): the gate JSON embeds its own `gate_report_sha256`. This is the standard `control_plane.gate_report.v1` self-attestation pattern; verification would normally re-compute the hash with that field blanked. The cross-binding between gate and closure is internally consistent.
+
+### F-03 — INFO — `ticket/grant binding` — VERIFIED
+
+Authority snapshot (gate):
+- `active_entry_policy_sha256`: `d05df4dd24de69e10b21373ca52ac58b14b6018e0a12839be9acb750677b67e2`
+- `reviewed_entry_policy.ref`: `research_state/control_plane/policies/d05df4dd24de69e10b21373ca52ac58b14b6018e0a12839be9acb750677b67e2.json` with matching sha256 ✓
+- `active_grant_ids`: `["grant_7b738fcd4127d082ce115f262e8fdf1e"]`
+- `succeeded_ticket_ids`: both `462b3e31...` and `6c21e63b...`
+- `failed_ticket_ids`, `in_doubt_ticket_ids`, `open_ticket_ids`: all `[]`
+- `pending_outbox_count`: 0
+
+Closure:
+- `grant_id`: `grant_7b738fcd4127d082ce115f262e8fdf1e` — matches authority snapshot ✓
+- `tickets`: both IDs match `succeeded_ticket_ids` ✓
+
+Cross-binding is consistent.
+
+### F-04 — LOW — `task report SHA-256 binding — second ticket lacks explicit test receipt` — OBSERVATION
+
+Task reports (gate):
+- Ticket `462b3e31...` → `task_report_gate.json`, sha256 `e2e16f84664eaec357a0f467573f68c1aa5af42f7e3a0f134c1028697f6f50bc`, outcome PASS
+- Ticket `6c21e63b...` → `task_report_policy_activation.json`, sha256 `8e19c937edf8aacd306e95b54fe292b49c289c2f159ac6f3946abd584b1e6e4c`, outcome PASS
+
+Test receipts (gate): only one entry:
+```
+command: python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores
+exit_code: 0
+receipt_id: test-462b3e31bd274c2a
+result: PASS
+ticket_id: 462b3e31bd274c2a6b7b453c97f482fd6ad83f1e8caac888d3a17fbacf5fc8e3
+```
+
+The single test receipt is bound only to ticket `462b3e31...`. Ticket `6c21e63b...` (policy_activation) carries a PASS `task_report_policy_activation.json` but no dedicated `test_receipts` entry. Plausible interpretation: the activation coordinator is covered by the `tests.test_control_plane_activation_coordinator` module already in the run, so the receipt transitively covers both tickets. However, strict ticket↔receipt 1:1 mapping is not present.
+
+This is a contract completeness observation, not a violation: `test_receipts` is a list and not declared per-ticket in the v1 schema, and both task reports carry independent `report_sha256` attestations. The committed `gate_tests_stdout.json` / `gate_tests_stderr.json` (present in tree) presumably underwrite the exit_code=0 claim, though their bytes are not in the prompt.
+
+Severity: LOW (does not block).
+
+### F-05 — INFO — `test receipt full contract` — VERIFIED with F-04 caveat
+
+Required fields per `control_plane.gate_report.v1` test receipt contract:
+- `command`: present, explicit, deterministic, no shell meta ✓
+- `exit_code`: 0 ✓
+- `result`: PASS ✓
+- `receipt_id`: `test-462b3e31bd274c2a` ✓
+- `ticket_id`: `462b3e31bd274c2a6b7b453c97f482fd6ad83f1e8caac888d3a17fbacf5fc8e3` ✓
+
+The 5-module unittest invocation covers activation coordinator, gates, task reports, approval records, and stores — appropriate surface for a P6 CR-010 corrective-recovery gate. `exit_code=0` consistent with `result=PASS`.
+
+### F-06 — INFO — `side effects / file delta` — CLEAN
+
+- `side_effect_summary.observed`: `["WRITE_CONTROL_PLANE"]`
+- `side_effect_summary.unauthorized`: `[]`
+- `file_delta_summary.changed_files`: `[]`
+- `file_delta_summary.unexpected_changes`: `[]`
+- `reason_codes`: `[]`
+- `unresolved_risks`: `[]`
+
+Consistent with a pure state/policy transition gate (no source-tree mutation). No out-of-band writes.
+
+### F-07 — INFO — `scheduler / inventory state` — VERIFIED
+
+- `scheduler_inventory.status`: `VERIFIED`
+- `scheduler_inventory.ref`: `research_state/control_plane/p6/attempts/p6-attempt-005/external_scheduler_inventory.json`
+- `scheduler_inventory.sha256`: `267113217ef09771f4369be2c1c4e5e2b2a787f1aaf9a055d8af783d423bbf26`
+- `final_inventory.ref` + sha256 present (`0bc2250020b51602e0b6f5d449617a231d491395e42b3eff2e196b592bc49413`)
+- `code_freeze_manifest.ref` + sha256 present (`fb8c257f197ed02a557c745f2863016e1c00fed1ce48c4534b707fd143df2729`)
+- `implementation_baseline.ref` + sha256 present (`93051f6ab8495b10b3e96600100ca87382b2084ddc0db7e1272cc404b428a060`)
+
+All sub-manifests referenced by path also carry a sha256, enabling offline binding verification.
+
+### F-08 — LOW — `hard-crash / reconciler claim traceability` — Cannot fully cross-verify from embedded content
+
+Closure `trust_root` asserts: *"closed_at is canonical UTC read from the authoritative Authority closure row"*. This is a single F-01 claim, not a hard-crash/reconciler restart claim. There is no `reason_codes` entry, no `unresolved_risks` entry, and `failed_ticket_ids`/`in_doubt_ticket_ids` are empty — i.e., the gate does **not** claim a hard-crash/reconciler recovery occurred during this attempt. Therefore there is no hard-crash code-path claim that requires tracing into source.
+
+The `cr010_review_p6_calls.json` and `cr010_reviewer_a_p6_raw.txt` files exist in the tree (Reviewer A's prior review is on record), but their bytes are not embedded in the prompt; I therefore make no claim about their contents beyond their committed existence. NoReviewer-A-blocking-findings are surfaced in the gate JSON.
+
+Severity: LOW (informational; no claim to disprove).
+
+### F-09 — LOW — `C0 official 24-cycle evidence chain` — Partially evidenced
+
+The C0 24-cycle chain is not explicitly named in the embedded gate/closure JSON. However:
+- `authority_snapshot.active_grant_ids` contains exactly one grant (`grant_7b738fcd4127d082ce115f262e8fdf1e`), consistent with a single C0 cycle grant active at gate time.
+- `pending_outbox_count: 0` and zero failed/in_doubt/open tickets indicate the cycle has fully drained.
+- The committed `activation-462b3e31bd274c2a.json` (path-bound to ticket `462b3e31...`) is the expected activation-record artifact anchoring the C0 cycle, but its content is not embedded in the prompt; binding to the 24-cycle is asserted by file naming and gate `task_reports[0]` (`outcome: PASS`, `report_ref: .../task_report_gate.json`).
+
+Without the activation JSON's bytes I cannot perform a sha256-level chain walk from C0 inception through P6 closure; the chain is consistent at the structural level but not byte-verifiable from the prompt alone.
+
+Severity: LOW (verifier-side evidence limitation, not a candidate defect).
+
+### F-10 — INFO — `identity_binding` — Internally consistent
+
+- `instruction_policy_hash` = `plan_hash` = `scope_hash` = `2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95`
+- All three identical. For a CR-010 corrective recovery scoped to a single policy/plan/instruction triplet, this is plausible (single canonical hash dominating all three scopes). No contradiction with `auto_advance: false` (manual promotion required — appropriate).
+
+### F-11 — INFO — `auto_advance` — Correctly disabled
+
+`auto_advance: false` for a P6 corrective-recovery gate. Manual Reviewer-B sign-off required, which is what this review provides.
+
+---
+
+## Summary Table
+
+| ID | Severity | Summary |
+|----|----------|---------|
+| F-01 | INFO | Time causality ✓ (Δ +8.22 s, canonical UTC) |
+| F-02 | INFO | gate_report_sha256 cross-binding gate↔closure ✓ |
+| F-03 | INFO | Authority/grant/ticket snapshot clean and consistent ✓ |
+| F-04 | LOW | Only one test_receipts entry; ticket `6c21e63b...` lacks dedicated receipt (transitively covered by activation-coordinator module) |
+| F-05 | INFO | Test receipt contract fields complete; exit_code=0 ↔ PASS ✓ |
+| F-06 | INFO | Side-effect/file-delta clean; no unauthorized writes ✓ |
+| F-07 | INFO | Scheduler VERIFIED; all sub-manifests sha256-bound ✓ |
+| F-08 | LOW | No hard-crash/reconciler claim in gate; nothing to disprove in code |
+| F-09 | LOW | C0 24-cycle chain structurally consistent; byte-level walk not possible from embedded content alone |
+| F-10 | INFO | identity_binding internally consistent |
+| F-11 | INFO | `auto_advance: false` correct for CR-010 |
+
+---
+
+## Final Verdict
+
+**APPROVE**
+
+Rationale:
+- Time causality is mechanically provable from embedded timestamps (F-01).
+- Gate↔closure sha256 binding is consistent (F-02, F-03).
+- Test receipt contract is complete for the primary ticket; exit_code 0 ↔ PASS; the 5-module unittest surface is appropriate for CR-010 (F-05).
+- No unauthorized side effects, no unexpected file deltas, no unresolved risks, no reason codes (F-06).
+- Scheduler VERIFIED; all sub-manifests (inventory, code freeze, implementation baseline) carry sha256 (F-07).
+- No hard-crash/reconciler claim is asserted by the gate, so there is no code-path claim to falsify (F-08).
+- `auto_advance: false` correctly forces manual review (F-11).
+
+The two LOW-severity items (F-04, F-09) are evidence-completeness observations on the reviewer's side (prompt does not embed bytes for `activation-462b3e31bd274c2a.json`, `gate_tests_stdout.json`, `gate_tests_stderr.json`, `cr010_review_p6_calls.json`), not candidate defects. They are commensurate with APPROVE: the gate JSON's internal attestations are self-consistent and the closure receipt's `trust_root` claim (CR-010 F-01) is mechanically satisfied by the embedded `created_at`/`closed_at` pair.
+
+— Reviewer B

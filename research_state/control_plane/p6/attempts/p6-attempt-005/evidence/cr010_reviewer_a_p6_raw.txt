@@ -1,0 +1,54 @@
+Reviewer A — P6 gate V3.4.2-CR010, attempt p6-attempt-005
+
+Inspected committed evidence files:
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/activation-462b3e31bd274c2a.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/official_p6_closure_receipt_v342_cr010.json`
+- plus the embedded gate report / closure receipt content supplied verbatim.
+
+## Verified items
+
+1. **Gate/closure time causality — PASS**  
+   Gate `created_at`: `2026-08-14T07:41:32.546935Z`  
+   Closure `closed_at`: `2026-08-14T07:41:40.770007Z`  
+   `closed_at > created_at` by approximately 8.22 seconds. The trust-root statement in `official_p6_closure_receipt_v342_cr010.json` is consistent with the embedded timestamps.
+
+2. **Gate-report hash binding — PASS**  
+   The closure receipt’s `gate_report_sha256` is `16ce2e29fdf15fd9595bdceac83dd75be74d34133666183256767a873e682f79`, matching the embedded gate report’s `gate_report_sha256`.
+
+3. **Ticket/evidence semantics — PARTIAL**  
+   The activation evidence filename `activation-462b3e31bd274c2a.json` matches the first succeeded ticket prefix `462b3e31bd274c2a...`, and that ticket appears in the gate’s `succeeded_ticket_ids`, the closure `tickets`, and the gate `task_reports`. However, the activation evidence blob is not explicitly hash-referenced inside the gate report, so its binding is weaker than the gate-report-to-closure binding.
+
+4. **Test receipt full contract — PARTIAL / NOT FULLY BOUND**  
+   The embedded test receipt contains:
+   - command
+   - `exit_code: 0`
+   - `receipt_id`
+   - `result: "PASS"`
+   - `ticket_id`
+
+   But the receipt does **not** reference `gate_tests_stdout.json` or `gate_tests_stderr.json` by path or hash, so the committed stdout/stderr evidence is not cryptographically bound to the receipt. I cannot independently confirm from the committed evidence that the reported `exit_code: 0` corresponds to those output blobs.
+
+5. **Hard-crash/reconciler claims — N/A**  
+   No hard-crash or reconciler claims appear in the committed gate/closure evidence, so there is no claim to match against code.
+
+## Findings / blocking issues
+
+- **[HOLD] F-001 — C0 official 24-cycle evidence chain missing from committed evidence**  
+  **Summary:** The committed evidence set contains no C0 official 24-cycle evidence chain, no cycle-chain file, and no embedded cycle-chain field or reference. The gate/closure content mentions only `CR-010 F-01` in the closure trust-root, not a 24-cycle/C0 chain.  
+  **Code refs:** `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/official_p6_closure_receipt_v342_cr010.json`; embedded gate JSON `official_p6_gate_v342_cr010.json`.
+
+- **[HOLD] F-002 — Test-receipt stdout/stderr blobs are not bound to the receipt**  
+  **Summary:** The test receipt is missing explicit `stdout_ref` / `stderr_ref` or hash bindings to `gate_tests_stdout.json` / `gate_tests_stderr.json`. Therefore the `exit_code: 0` and `result: "PASS"` are not independently verifiable from the committed evidence.  
+  **Code refs:** `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stdout.json`; `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/gate_tests_stderr.json`; embedded gate JSON `test_receipts`.
+
+- **[LOW] F-003 — Activation evidence is present but not hash-bound in the gate report**  
+  **Summary:** The file `activation-462b3e31bd274c2a.json` exists and semantically corresponds to the first ticket, but the gate report does not include a SHA-256 reference for that evidence blob. This weakens evidence-chain traceability.  
+  **Code refs:** `research_state/control_plane/p6/attempts/p6-attempt-005/evidence/activation-462b3e31bd274c2a.json`.
+
+## Final verdict
+
+**HOLD**
+
+The submitted gate and closure are internally timestamp-consistent and share a matching gate-report hash. However, the committed evidence does not satisfy the requested C0 official 24-cycle evidence chain, and the test-receipt output/stderr blobs are not explicitly bound to the receipt. These gaps prevent full approval under the stated gate requirements.
