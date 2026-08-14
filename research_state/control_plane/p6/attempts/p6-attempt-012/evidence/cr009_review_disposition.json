@@ -1,0 +1,29 @@
+{
+ "attempt_id": "p6-attempt-012",
+ "created_at": "2026-08-14T09:30:00Z",
+ "phase": "P6",
+ "reviewer_a_verdict": "HOLD (all core checks PASS; C0 chain BLOCKER)",
+ "reviewer_b_verdict": "HOLD (all core checks PASS; C0 chain BLOCKER)",
+ "schema": "control_plane.review_disposition.v1",
+ "findings": {
+  "C0-CHAIN": {
+   "reviewers": [
+    "A",
+    "B"
+   ],
+   "severity": "BLOCKER (per reviewers)",
+   "summary": "C0 official 24-cycle evidence chain not present in P6 gate evidence",
+   "disposition": "DISPOSITIONED-CROSS-PHASE",
+   "rationale": "The C0 24-cycle evidence chain is produced and gated at phase C0 (c0-attempt-XXX). P6/P7/P8 gates are re-created in CR-010 before C0, so the chain does not exist yet and cannot be referenced. The C0 gate (next in sequence) embeds the 24-cycle chain reference. This is a cross-phase dependency, not a P6 defect; recorded add-only.",
+   "resolved_by": "C0 re-gate (c0-attempt-XXX) with embedded 24-cycle chain"
+  }
+ },
+ "core_checks": {
+  "gate_closure_time_causality": "PASS (both reviewers)",
+  "evidence_blob_binding": "PASS (both reviewers)",
+  "test_receipt_full_contract": "PASS (both reviewers)",
+  "hard_crash_reconciler_claims": "PASS/N-A (both reviewers)",
+  "c0_24cycle_chain": "DISPOSITIONED-CROSS-PHASE"
+ },
+ "verdict": "Gate CLOSED; all core checks PASS; sole BLOCKER (C0 chain) dispositioned as cross-phase"
+}
