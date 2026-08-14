@@ -1,0 +1,82 @@
+# Reviewer B — P6 Gate V3.4.2-CR010, p6-attempt-012
+
+Candidate: `ad52b98f2ea9260fb907d49345b16d0343ee42f0` / `242d82e6d47e60e788821ab3529409654652f514`
+
+## Files inspected (committed evidence at the candidate)
+
+- `research_state/control_plane/p6/attempts/p6-attempt-012/gates/official_p6_gate_v342_cr010.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/evidence/official_p6_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/task_report_gate.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/task_report_policy_activation.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/code_freeze_manifest.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/implementation_baseline.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/external_scheduler_inventory.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-012/final_inventory.json`
+
+## Findings
+
+### F-01 — Gate/closure time causality — PASS
+- `official_p6_gate_v342_cr010.json` → `created_at: 2026-08-14T09:24:53.389552Z`
+- `official_p6_closure_receipt_v342_cr010.json` → `closed_at: 2026-08-14T09:25:02.372681Z`
+- Inequality `closed_at > created_at` holds (≈9.0 s gap).
+- Closure binds `gate_report_sha256: 603052ee3d742ad36f139e0c23ace772af1400b9dbf4e2831d7255095d9c0561`, identical to the gate's own `gate_report_sha256`.
+- Closure `grant_id: grant_1760d686fdbd8f3fa8f2a294fd2310b5` matches `authority_snapshot.active_grant_ids[0]`.
+- Closure `tickets` (`["0a6acefc…","582827b1…"]`) matches gate `authority_snapshot.succeeded_ticket_ids` (same order).
+- Also confirmed: gate `created_at` (09:24:53.389) is ~11 ms after the test receipt `completed_at_utc` (09:24:53.378) — consistent ordering.
+
+### F-02 — Evidence blob binding — PASS
+- Gate binds `code_freeze_manifest`, `final_inventory`, `implementation_baseline`, `scheduler_inventory`, and `reviewed_entry_policy` by ref + sha256. The `reviewed_entry_policy.sha256` (`3ca4aa32…`) equals `authority_snapshot.active_entry_policy_sha256` (`3ca4aa32…`).
+- `task_report_gate.json` references `coordinator-evidence-582827b1b7a67b5e` → `evidence/activation-582827b1b7a67b5e.json`, sha256 `8c590412…`, status `VERIFIED`; ticket_id `582827b1…` matches gate `task_reports[0].ticket_id` and `authority_snapshot.succeeded_ticket_ids[1]`.
+- `task_report_policy_activation.json` references `policy-evidence-0a6acefc18d3d899` → `evidence/policy-activation-0a6acefc18d3d899.json`, sha256 `cc4199fc…`, status `VERIFIED`; ticket_id `0a6acefc…` matches `authority_snapshot.succeeded_ticket_ids[0]`.
+- Cross-file baseline consistency: both task reports declare `baseline_sha256: d5e48c06f8ffca6d1f091ab147c85391315fdf607afb1b0dc47a67351fc3970b`, which equals `implementation_baseline.json`'s `baseline_payload_sha256` (the payload-member hash; the gate binds the file-level hash `9cb36398…`, which is the expected pattern). Same pattern observed for `code_freeze_manifest` (`freeze_payload_sha256: 13f2c5ce…` vs file-level `f4f9ad33…`) — internally consistent.
+- `final_inventory.json` `runtime:tools/ths_yuanhang_bridge/YuanhangBridge.dll` content_sha256 `f2378ea0…` matches `code_freeze_manifest.runtime_dependencies[0].sha256` `f2378ea0…`. Spot-checked `research/b1/__init__.py` and `tools/data/__init__.py` shas also match between the two inventories.
+- Authority snapshot is clean: `failed_ticket_ids: []`, `in_doubt_ticket_ids: []`, `open_ticket_ids: []`, `pending_outbox_count: 0`.
+
+### F-03 — Test receipt full contract — PASS
+`task_report_gate.json::test_receipts[0]` carries the complete contract:
+- `receipt_id: test-582827b1b7a67b5e`, `ticket_id: 582827b1…`
+- `candidate_commit: ad52b98f2ea9260fb907d49345b16d0343ee42f0` and `candidate_tree: 242d82e6d47e60e788821ab3529409654652f514` — both equal the review candidate.
+- `command`, `cwd`, `executable`, `runtime_version: 3.13.12`, `started_at_utc`/`completed_at_utc`, `stdout_ref`/`stderr_ref` with sha256 (`49caea3c…`/`f078af09…`), `exit_code: 0`, `result: PASS`, plus `lock_hash`.
+- `gate_tests_stdout.json`: `text: ""` (empty, as expected for unittest).
+- `gate_tests_stderr.json`: `Ran 250 tests in 243.733s\nOK`.
+- Wall-clock sanity: `completed_at_utc - started_at_utc` ≈ 243.871 s, matching the reported 243.733 s within rounding.
+
+### F-04 — Hard-crash / reconciler / trust_root claims — PARTIAL
+Closure `trust_root`: *"CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at."*
+- The mechanically-provable half (closed_at > created_at) is verified from the embedded timestamps.
+- The provenance half ("read from the authoritative Authority closure row") is a code-level claim about the closure_receipt module. No separate Authority closure row, audit log, or reconciler record is bound by the gate or referenced in the closure receipt, so I cannot independently verify that the timestamp was sourced from the authoritative row rather than synthesised at closure time. I treat this as a transparency gap, not a standalone blocker, consistent with Reviewer A.
+- No hard-crash or reconciler-claim evidence appears anywhere in the committed evidence set.
+
+### F-05 — C0 official 24-cycle evidence chain — NOT VERIFIED — BLOCKER
+Severity: HIGH. ID: B-CR010-P6-C0-24CYCLE-MISSING.
+
+I cannot verify the required C0 official 24-cycle evidence chain from the committed evidence embedded in this review.
+
+What the gate *does* bind (and what I inspected):
+- `external_scheduler_inventory.json` is a **single READ_ONLY snapshot**: `observed_at: 2026-08-14T00:00:00Z`, `task_state: Ready`, `trigger: MSFT_TaskDailyTrigger|days_interval=1|start=2026-03-16T20:00:00|enabled=true`. This proves the daily task exists and is configured, not that 24 daily cycles executed.
+- `final_inventory.json` is a static code/asset inventory (entry_count: 600) with no cycle-execution history.
+- `implementation_baseline.json` is a single-attempt file-state baseline; no run history.
+- `code_freeze_manifest.json` is a single-attempt freeze; no run history.
+- The gate's `task_reports[].requirements.required_evidence_ids` enumerate only `coordinator-evidence-582827b1b7a67b5e` and `policy-evidence-0a6acefc18d3d899`; `required_test_receipt_ids` and `required_review_receipt_ids` are empty or single-entry. There is no slot in the gate's evidence set for a 24-cycle chain.
+- The closure receipt's `trust_root` covers only F-01 time-causality; it makes no claim about a 24-cycle chain.
+
+The committed file list also includes `evidence/cr010_review_p6_calls.json`, but (a) its content was not embedded in the review bundle, so I cannot inspect it; and (b) the gate report does not reference or bind it as evidence, so even if it contained such a chain it would not be part of the gate's attested evidence set. Per the review scope ("Review ONLY committed evidence at the candidate"), I do not rely on unembedded content.
+
+Because criterion #5 is an explicit verification requirement and the gate's bound evidence set contains no 24-cycle execution chain, this is a blocker.
+
+### F-06 — Side-channel / scope observations — PASS (informational)
+- `file_delta_summary.changed_files: []`, `unexpected_changes: []` — consistent with a re-gate/activation attempt that produces no source-tree mutation.
+- `side_effect_summary.observed: ["WRITE_CONTROL_PLANE"]`, `unauthorized: []` — minimal expected side effect.
+- `identity_binding` (`2053cb3a…`) is identical across gate, closure, both task reports, code_freeze_manifest, final_inventory, implementation_baseline, and external_scheduler_inventory.
+- `auto_advance: false` consistent with CR-010 corrective-recovery mode.
+- `task_report_policy_activation.json::review_receipts[0]` shows `reviewer_id: independent-reviewer-b-cr010`, result PASS — the policy-activation sub-review (a prerequisite for the policy task, distinct from this gate review). Internally consistent.
+
+## Final verdict
+
+**HOLD**
+
+The gate/closure time causality, evidence-blob binding, test-receipt full contract, and side-effect scoping all verify cleanly. However, the required C0 official 24-cycle evidence chain is not present in the gate's bound evidence set and is not verifiable from any committed evidence embedded in this review. The `external_scheduler_inventory.json` is a single-observation scheduler snapshot, not a 24-cycle execution history, and no other artifact in the evidence set substitutes for it.
+
+Recommendation: produce and bind a C0 24-cycle execution-history artifact (per-cycle observed_at, task_state, and result for ≥24 daily cycles), reference it from the gate's evidence set with ref+sha256, and re-attempt P6.
