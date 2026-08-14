@@ -1,6 +1,6 @@
 """CR-010 P0 re-gate STAGE 2: freeze/inventory/policy/scheduler/baseline.
 
-Builds the gate input chain for p0-attempt-016 using the production
+Builds the gate input chain for p0-attempt-017 using the production
 builders, commits every artifact add-only, and prints the refs/hashes the
 gate build stage needs.
 
@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-016"
+ATTEMPT = "p0-attempt-017"
 PHASE = "P0"
 PLAN_VERSION = "V3.4.2-CR010"
 
