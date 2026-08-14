@@ -54,8 +54,8 @@ PHASES = {
         ),
     },
     "P8": {
-        "attempt": "p8-attempt-004",
-        "task": "P8-GATE-004",
+        "attempt": "p8-attempt-005",
+        "task": "P8-GATE-005",
         "dir": "research_state/control_plane/p8/attempts",
         "identity": {
             "plan_hash": "974406ea06ca9f7e3070f21c190bfd8fdefc7ab5b4afc48793315b3ccaed2c9b",
