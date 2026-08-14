@@ -60,7 +60,11 @@ def build_closure_receipt(
     gate_created = datetime.fromisoformat(
         str(report["created_at"]).replace("Z", "+00:00")
     )
-    if gate_created.tzinfo is None or gate_created.utcoffset() != timezone.utc:
+    if (
+        gate_created.tzinfo is None
+        or gate_created.utcoffset() is None
+        or gate_created.utcoffset().total_seconds() != 0
+    ):
         raise ClosureReceiptError("gate report created_at must be canonical UTC")
 
     reader = AuthorityReader()
