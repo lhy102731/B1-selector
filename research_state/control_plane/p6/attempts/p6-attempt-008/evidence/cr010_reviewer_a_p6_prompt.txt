@@ -1,14 +1,9 @@
 You are an independent reviewer (Reviewer A) for the P6 gate of the V3.4.2 control plane (CR-010 corrective recovery).
-CANDIDATE (commit/tree): c35893fbfdc30aad99ed921a5182cc39b4ef8da2 / 332670f5f6abbfec88e39de72730b05512142c75
+CANDIDATE (commit/tree): 510c4793aaf778bc94f6cc586059b6a32553698b / f960ca307a9a76736feccf5b1571716936acfd9c
 ATTEMPT: p6-attempt-008
 
 COMMITTED EVIDENCE FILES at the candidate:
   - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/activation-1f2c77992711bdbc.json
-  - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_review_p6_calls.json
-  - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_reviewer_a_p6_prompt.txt
-  - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_reviewer_a_p6_raw.txt
-  - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_reviewer_b_p6_prompt.txt
-  - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_reviewer_b_p6_raw.txt
   - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/gate_tests_stderr.json
   - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/gate_tests_stdout.json
   - research_state/control_plane/p6/attempts/p6-attempt-008/evidence/official_p6_closure_receipt_v342_cr010.json
@@ -39,87 +34,5 @@ EMBEDDED GATE / CLOSURE CONTENT (verbatim from the committed JSON):
 
 === INPUT external_scheduler_inventory.json ===
 {"acl":{"owner":"BUILTIN\\Administrators","sddl":"O:BA"},"action":{"arguments":null,"content_sha256":"f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890","execute":"D:/workspace/run_select.bat","working_directory":null},"altered_by_p0":false,"collection_mode":"READ_ONLY","observed_at":"2026-08-14T00:00:00Z","operational_classification":"PRODUCTION_DAILY","phase":"P6","principal":{"logon_type":"Interactive","run_level":"Limited","user_id":"Administrator"},"schema_version":"control_plane.external_scheduler_inventory.v1","task_path":"/A股选股","task_state":"Ready","task_xml":{"path":"C:/Windows/System32/Tasks/A股选股","sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"trigger":{"days_interval":1,"enabled":true,"start_boundary":"2026-03-16T20:00:00","type":"MSFT_TaskDailyTrigger"},"unresolved_risk":"none observed at p6-attempt-008 snapshot"}
-
-=== REVIEWER B RAW VERDICT ===
-# Reviewer B — P6 Gate Independent Review
-**Candidate:** d5fd6768fc6e4fcd01b48e6b23577d2180f96cd6 / tree 185fb5fd9b5435ebce537fe87382146382cdef2c
-**Attempt:** p6-attempt-008 (V3.4.2-CR010 corrective recovery)
-
-## Files Inspected
-Embedded verbatim content reviewed:
-- `official_p6_gate_v342_cr010.json` (embedded; canonical path per closure's `gate_ref` = `research_state/control_plane/p6/attempts/p6-attempt-008/gates/official_p6_gate_v342_cr010.json`)
-- `research_state/control_plane/p6/attempts/p6-attempt-008/evidence/official_p6_closure_receipt_v342_cr010.json` (committed + embedded)
-
-Committed evidence files confirmed in tree but **contents not embedded** for independent inspection (existence acknowledged, content not verifiable in this review pass):
-- `…/evidence/activation-1f2c77992711bdbc.json`
-- `…/evidence/policy-activation-c8d59d328f4bbf7d.json`
-- `…/evidence/cr010_review_p6_calls.json`
-- `…/evidence/cr010_reviewer_a_p6_prompt.txt`
-- `…/evidence/cr010_reviewer_a_p6_raw.txt`
-- `…/evidence/gate_tests_stdout.json`
-- `…/evidence/gate_tests_stderr.json`
-
-## Findings
-
-### F-01 — TIME CAUSALITY (VERIFIED, PASS)
-- Gate `created_at` = `2026-08-14T08:11:51.481628Z`
-- Closure `closed_at` = `2026-08-14T08:12:00.248272Z`
-- Δ = +8.766644 s → `closed_at > created_at`. ✓
-- Closure `trust_root` explicitly anchors to this property ("mechanically provable closed_at > gate.created_at").
-- Severity: INFO.
-
-### F-02 — BLOB BINDING (VERIFIED, PASS)
-- Gate `gate_report_sha256` = `b10f775d8ccc9094a8e59be42639fcf57133c1351cf28eaf3f0b27384aa9c11f7`
-- Closure `gate_report_sha256` = `b10f775d8ccc9094a8e59be42639fcf57133c1351cf28eaf3f0b27384aa9c11f7` → match ✓
-- Closure `grant_id` = `grant_d9af6699c8e505d73c4f1442a53281cf` matches gate `authority_snapshot.active_grant_ids[0]` ✓
-- Closure `tickets[]` set-equals gate `authority_snapshot.succeeded_ticket_ids[]` (both IDs, both directions) ✓
-- Ticket ID prefixes (`1f2c77992711bdbc`, `c8d59d328f4bbf7d`) match the two committed `evidence/activation-*` and `evidence/policy-activation-*` filenames. ✓
-- Severity: INFO.
-
-### F-03 — TEST RECEIPT CONTRACT (PARTIAL; content not embedded)
-- Receipt fields present: `command`, `exit_code=0`, `result=PASS`, `receipt_id=test-1f2c77992711bdbc`, `ticket_id=1f2c77992711bdbc…`.
-- Command surface: `tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`.
-- **Gap (YELLOW):** Only ONE test receipt is recorded despite TWO succeeded tickets. The second ticket (`c8d59d…`, `policy_activation`) has no dedicated test receipt; `task_reports[]` lists a separate `task_report_policy_activation.json` (sha256 `6d3f290f…`) but no corresponding test_receipt entry. Plausible if policy-activation is policy-only, but the contract is asymmetric.
-- **Gap (YELLOW):** `gate_tests_stdout.json` and `gate_tests_stderr.json` are committed in tree but their contents were not embedded for independent cross-check against the receipt's `exit_code=0`/`PASS`. Cannot confirm receipt ≠ fabricated.
-- Severity: MEDIUM ( Yellow ).
-
-### F-04 — AUTHORITY / RECONCILER CLAIMS vs. CODE (NOT VERIFIABLE)
-- Gate claims: `failed_ticket_ids=[]`, `in_doubt_ticket_ids=[]`, `open_ticket_ids=[]`, `pending_outbox_count=0`, `scheduler_inventory.status=VERIFIED`, `side_effect_summary.unauthorized=[]`, `file_delta_summary.changed_files=[]`.
-- Internally consistent (no contradictions in embedded JSON).
-- **Concern (YELLOW):** `file_delta_summary.changed_files=[]` and `unexpected_changes=[]` for a *corrective recovery* attempt is unusual — either the recovery was metadata/policy-only (consistent with the policy-activation ticket) or the delta detector did not run. Cannot disambiguate from embedded content; `implementation_baseline.json`/`final_inventory.json`/`code_freeze_manifest.json` are referenced by sha256 but **not in the committed evidence list and not embedded** — their existence outside `evidence/` cannot be confirmed under "review only committed evidence at the candidate."
-- **Concern (YELLOW):** Reconciler/scheduler `VERIFIED` claim cannot be matched to actual code at commit `d5fd6768…` without tree traversal beyond the embedded JSONs. Per instructions, no external branches may be referenced; therefore this claim is taken on trust.
-- Severity: MEDIUM ( Yellow ).
-
-### F-05 — IDENTITY BINDING ANOMALY (YELLOW)
-- `identity_binding`: `instruction_policy_hash` = `plan_hash` = `scope_hash` = `2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95`.
-- Three distinct semantic roles collapsed to a single hash. Either the plan/instruction/scope are literally the same document (unusual for a corrective recovery) or this is a binding shortcut. Not provably wrong, but warrants a one-line justification from the implementer.
-- Severity: LOW ( Yellow ).
-
-### F-06 — C0 24-CYCLE EVIDENCE CHAIN (NOT VERIFIABLE)
-- No embedded content references a C0 phase, a 24-cycle chain, or a continuity hash back to C0.
-- Committed evidence list for p6-attempt-008 contains no C0-cycle artifact; the closure's `trust_root` references only "CR-010 F-01" (closure-time canonicality), not a C0 chain anchor.
-- Cannot confirm continuity from C0 → P6 within this review scope.
-- Severity: MEDIUM ( Yellow ) — blocks full assurance for a recovery attempt.
-
-### F-07 — REVIEWER-A EVIDENCE PRESENT BUT NOT EMBEDDED
-- `cr010_reviewer_a_p6_prompt.txt` and `cr010_reviewer_a_p6_raw.txt` are committed in tree. As Reviewer B I cannot independently cross-check Reviewer A's findings without their embedded content. No discrepancy can be asserted, but no agreement can be confirmed either.
-- Severity: LOW ( Yellow ).
-
-## Summary
-- **Verifiable and sound:** time causality (F-01), gate↔closure blob binding (F-02).
-- **Internal consistency sound, external verification blocked:** authority snapshot, scheduler claim, side-effect summary (F-04).
-- **Contract gaps / unembedded evidence:** test stdout/stderr not embedded (F-03), second ticket lacks a test receipt (F-03), C0 chain not visible (F-06), Reviewer-A raw not embedded (F-07).
-- **Anomaly worth one-line justification:** triple-identical identity_binding hash (F-05).
-
-No contradiction in the *embedded* evidence contradicts a PASS verdict; however, three of the five required verification points (3, 4, 5) cannot be completed from the embedded content alone, and the candidate is a *corrective recovery* where independent rigor is the entire point of P6.
-
-## Final Verdict: **HOLD**
-
-Conditions to clear HOLD:
-1. Embed (or surface for Reviewer B inspection) the contents of `gate_tests_stdout.json` and `gate_tests_stderr.json` to confirm `exit_code=0`/`PASS` and reconcile with the single test receipt; explain the missing second test receipt for ticket `c8d59d…`.
-2. Surface `implementation_baseline.json`, `final_inventory.json`, `code_freeze_manifest.json`, and `external_scheduler_inventory.json` (or their sha256-pinned content) so the `changed_files=[]` and `scheduler_inventory.status=VERIFIED` claims are independently checkable against commit `d5fd6768…`.
-3. Provide the C0 → P6 24-cycle evidence chain reference (or confirm CR-010 corrective recovery is explicitly scoped to exclude C0 chain continuity, with the scoping decision recorded).
-4. One-line justification for `instruction_policy_hash == plan_hash == scope_hash`.
-5. Embed Reviewer A's raw verdict for cross-reviewer consistency (optional but recommended for a recovery attempt).
 
 Review ONLY committed evidence at the candidate above. Never reference files or code branches that do not exist in the committed tree. Verify: (1) gate/closure time causality (closure closed_at UTC > gate created_at; use the embedded created_at/closed_at); (2) evidence blob binding (sha256 + ticket/evidence semantics); (3) test receipt full contract; (4) any hard-crash/reconciler claims match real code; (5) the C0 official 24-cycle evidence chain. Cite the exact file paths you inspected. Reply with findings (severity, id, summary, code refs) and a final verdict (APPROVE / HOLD / REJECT).
