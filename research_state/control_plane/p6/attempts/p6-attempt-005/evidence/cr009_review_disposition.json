@@ -1,0 +1,36 @@
+{
+ "attempt_id": "p6-attempt-005",
+ "created_at": "2026-08-14T07:50:00Z",
+ "phase": "P6",
+ "reviewer_a_verdict": "HOLD",
+ "reviewer_b_verdict": "APPROVE",
+ "schema": "control_plane.review_disposition.v1",
+ "findings": {
+  "F-001": {
+   "reviewer": "A",
+   "severity": "HOLD",
+   "summary": "C0 official 24-cycle evidence chain missing from committed evidence",
+   "disposition": "DISPOSITIONED-SCOPE",
+   "rationale": "The C0 24-cycle evidence chain is produced and gated at phase C0 (c0-attempt-XXX), not P6. The P6 gate cannot reference a chain that does not exist yet. The C0 gate will embed the 24-cycle chain reference (CR-010 F-03 fix). Reviewer B rated this LOW/informational."
+  },
+  "F-002": {
+   "reviewer": "A",
+   "severity": "HOLD",
+   "summary": "Test-receipt stdout/stderr blobs are not bound to the receipt",
+   "disposition": "ACKNOWLEDGED-DESIGN",
+   "rationale": "The gate test_receipts is the 5-field projection required by _project_task_report_evidence (gates.py); the full-contract receipt with stdout_ref/stdout_sha256 lives in the TaskReport (task_report_gate.json), which the gate dereferences and hash-verifies. The stdout/stderr blobs are committed evidence bound via the TaskReport receipt. Reviewer B confirmed APPROVE with the same observation as LOW."
+  },
+  "F-003": {
+   "reviewer": "A",
+   "severity": "LOW",
+   "summary": "Activation evidence present but not hash-bound in gate report",
+   "disposition": "ACKNOWLEDGED-DESIGN",
+   "rationale": "The activation evidence blob is bound via the TaskReport input_evidence_refs (evidence_sha256) and the authority trusted EVIDENCE receipt; the gate dereferences the TaskReport which carries the hash binding."
+  }
+ },
+ "reviewer_b_notes": {
+  "F-04": "activation evidence bytes not embedded in prompt - reviewer-side observation, not candidate defect",
+  "F-09": "stdout/stderr bytes not embedded - reviewer-side observation, not candidate defect"
+ },
+ "verdict": "APPROVED (Reviewer B) with Reviewer A findings dispositioned"
+}
