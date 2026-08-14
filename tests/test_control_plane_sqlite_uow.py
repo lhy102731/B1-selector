@@ -186,7 +186,7 @@ class SqliteUnitOfWorkTests(unittest.TestCase):
                 stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
             connection = sqlite3.connect(authority_path)
             try:
-                connection.execute("PRAGMA user_version = 3")
+                connection.execute("PRAGMA user_version = 99")
                 connection.commit()
             finally:
                 connection.close()
@@ -472,7 +472,7 @@ class OperationalDurabilityTests(unittest.TestCase):
                         path=authority_path,
                         store_kind="AUTHORITY_STORE",
                         metadata_table="authority_meta",
-                        schema_version=2,
+                        schema_version=3,
                     ),
                     busy_timeout_ms=50,
                 )
