@@ -150,6 +150,27 @@ class NetworkGuard:
         }
 
     @classmethod
+    def uninstall(cls) -> None:
+        """Restore the intercepted stdlib surface (process-local guard).
+
+        CR-010 final verification: the worker guard must be restorable so a
+        test process that installs it (to prove the interception) does not
+        leak the denied socket/Popen surface into every later test in the
+        same unittest process (git/ffprobe subprocesses etc.).
+        """
+        originals = getattr(cls, "_originals", None)
+        if not isinstance(originals, Mapping):
+            return
+        socket.socket.connect = originals["connect"]  # type: ignore[method-assign]
+        socket.socket.connect_ex = originals["connect_ex"]  # type: ignore[method-assign]
+        socket.create_connection = originals["create_connection"]  # type: ignore[assignment]
+        socket.getaddrinfo = originals["getaddrinfo"]  # type: ignore[assignment]
+        subprocess.Popen = originals["popen"]  # type: ignore[assignment]
+        cls._originals = None
+        cls._installed = False
+        cls.attempts = 0
+
+    @classmethod
     def deny_probe(cls) -> None:
         """Prove denial: any socket attempt must fail closed."""
         try:

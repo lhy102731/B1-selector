@@ -17,6 +17,10 @@ from research_automation.control_plane.rollout_chaos_worker import (
 
 class NetworkGuardTests(unittest.TestCase):
     def tearDown(self) -> None:
+        # CR-010 final verification: restore the intercepted stdlib surface
+        # so the guard never leaks into later tests in the same process
+        # (denied socket/Popen would break git/ffprobe subprocesses).
+        NetworkGuard.uninstall()
         NetworkGuard._installed = False
         NetworkGuard.attempts = 0
 
