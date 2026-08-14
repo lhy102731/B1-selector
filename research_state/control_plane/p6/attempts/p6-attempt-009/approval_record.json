@@ -1,0 +1,1 @@
+{"actor":"user","approval":"APPROVE","candidate_tree":"103634055cf131d383c62e89661d82b025ae2d0c","envelope_commit":"46bb6a22ddfc9a73fe3101977b110358c9e36f79","manifest_sha256":"d6c67563f8679c298a0d461d423ce1f90508ea77f6329e88a61d315182b1e80a","note":"CR-010 re-gate p6-attempt-009 approval (candidate f5213989e55a)","schema_version":"control_plane.approval_record.v1"}
