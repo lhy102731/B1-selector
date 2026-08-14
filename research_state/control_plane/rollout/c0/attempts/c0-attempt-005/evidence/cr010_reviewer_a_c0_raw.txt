@@ -1,0 +1,91 @@
+**Reviewer verdict: HOLD**  
+The committed evidence chain is mostly present and internally consistent, but I found a binding/integrity issue in the central C0 rollout task report and a manifest-binding inconsistency in the policy-activation mirror evidence. These must be resolved before this gate can be approved.
+
+---
+
+## Findings
+
+### 1. [HIGH] C0-005-RUN-TIME-001 — Rollout test receipt is not temporally bound to the C0-ROLLOUT-005 task report
+**Evidence refs:**  
+`research_state/control_plane/rollout/c0/attempts/c0-attempt-005/task_report_rollout.json`
+
+**Summary:**  
+The test receipt `test-ed8f4f633bd5722d` inside the rollout task report has:
+
+- `started_at_utc`: `2026-08-14T11:31:53.018754Z`
+- `completed_at_utc`: `2026-08-14T11:32:44.158290Z`
+
+But the enclosing task report has:
+
+- `started_at`: `2026-08-14T11:33:33.421533Z`
+
+This means the official 24-cycle run completed **before** the task that claims to have run it started. The receipt is therefore not bound to the C0-ROLLOUT-005 task. Since the gate report incorporates this receipt as `test-receipts[1]`, the official C0 evidence chain is not fully trustworthy as committed.
+
+---
+
+### 2. [MEDIUM] C0-005-POLICY-BINDING-001 — Policy-activation mirror evidence manifest hash cannot be dereferenced to the policy task spec
+**Evidence refs:**  
+`research_state/control_plane/c0/attempts/c0-attempt-005/evidence/policy-activation-8d390ce21eab4e0f.json`  
+`research_state/control_plane/rollout/c0/attempts/c0-attempt-005/task_report_policy_activation.json`
+
+**Summary:**  
+The policy-activation mirror file declares:
+
+- `manifest_sha256`: `b731550010f24b604d7a33ea95af2f7b0bd84d3487166ee497ee65f60e70f168`
+
+But the policy-activation task report has:
+
+- `task_spec_ref`: `research_state/control_plane/policies/f0be108d27a22070f9d3eb43e1c6cb1b2f3bb1651569cbdedbfcc9362a24a593.json`
+- `task_spec_sha256`: `f0be108d27a22070f9d3eb43e1c6cb1b2f3bb1651569cbdedbfcc9362a24a593`
+
+No committed artifact in the provided evidence list identifies `b731550...` as its SHA-256. The equivalent gate-activation mirror file does bind correctly to `bdb6ca...` via the gate task spec, which makes this policy mirror inconsistency notable.
+
+---
+
+### 3. [MEDIUM] C0-005-PLANVERSION-001 — C0 report object plan version is inconsistent with the gate plan version
+**Evidence refs:**  
+`research_state/control_plane/rollout/c0/attempts/c0-attempt-005/evidence/objects/28c835afb2119874ef0f70414f32639a36bcf274e441562eb71aaa8216708e8b.json`
+
+**Summary:**  
+The content-addressed C0 report object has:
+
+- `plan_version`: `V3.4.2-P0R2`
+
+But the gate, task reports, and attempt are labeled:
+
+- `plan_version`: `V3.4.2-CR010`
+
+If this C0 evidence chain is intended to support CR-010, the report object should identify the CR-010 plan version. As committed, the report object identifies a different plan lineage. This needs explanation or correction.
+
+---
+
+## Checks that did pass
+
+- **Gate/closure time causality:**  
+  Gate `created_at` = `2026-08-14T12:14:58.756744Z`  
+  Closure `closed_at` = `2026-08-14T12:15:11.149692Z`  
+  Causality holds.
+
+- **Official 24-cycle chain artifacts:**  
+  The 24-cycle report object claims 24/24 completed, seed `20260811`, and digest `da0cb48ac10cd67a4f33a184e2bd7baac9acc740f0a733d1691bbfb58bd556bd`.  
+  The second-root replay receipt reports the same digest and equal scenario log.
+
+- **No unintended side effects:**  
+  `c0_no_side_effect_receipt.json` reports `git_status_delta_count: 0` and `unexpected_changes: []`.
+
+- **Claim/object binding:**  
+  The fixed claim points to object SHA-256 `28c835afb2119874ef0f70414f32639a36bcf274e441562eb71aaa8216708e8b`, matching the content-addressed object path.
+
+- **Gate test receipt contract:**  
+  The gate unit-test receipt includes candidate commit/tree, command, executable, cwd, runtime version, lock hash, stdout/stderr refs and hashes, and its timestamps align with the gate task report start/end.
+
+- **Mirror evidence presence:**  
+  Both required `c0/attempts/c0-attempt-005/evidence/` mirror files are present and their `evidence_id` / `ticket_id` fields match the corresponding task reports.
+
+---
+
+## Final verdict
+
+**HOLD**  
+
+The C0 gate cannot be approved as-is because the rollout task report’s official test receipt is not temporally bound to the task, and the policy-activation mirror evidence has an unresolved manifest-hash binding mismatch. The evidence chain should be corrected and re-reviewed.

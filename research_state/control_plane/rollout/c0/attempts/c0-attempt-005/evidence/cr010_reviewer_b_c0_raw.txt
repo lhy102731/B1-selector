@@ -1,0 +1,25 @@
+### Reviewer Findings
+
+**Finding 1**
+- **Severity**: FATAL
+- **ID**: REVIEWER-001
+- **Summary**: Temporal causality violation in the C0-ROLLOUT-005 task report. The task report's `started_at` timestamp is `2026-08-14T11:33:33.421533Z`, but the embedded test receipt indicates the test started at `2026-08-14T11:31:53.018754Z` and completed at `2026-08-14T11:32:44.158290Z`. The test completed approximately 49 seconds *before* the task claiming to execute it officially started. This breaks the mechanical provability of the task boundary and the UTC start/end bounds contract for the test receipt. (By contrast, the Gate task report exhibits perfectly matching `started_at` and test receipt times).
+- **Code refs**: `research_state/control_plane/rollout/c0/attempts/c0-attempt-005/task_report_rollout.json`
+
+**Finding 2**
+- **Severity**: LOW
+- **ID**: REVIEWER-002
+- **Summary**: Path separator inconsistency in the fixed claim. The `report_ref` field uses a Windows-style backslash path (`objects\\28c835...`), whereas the chain manifest correctly uses forward slashes. The SHA-256 blob hashes match perfectly, so the binding is secure, but the path string itself is malformed for a POSIX-style tree reference.
+- **Code refs**: `research_state/control_plane/rollout/c0/attempts/c0-attempt-005/evidence/c0_chaos_simulation_report_v2.json`
+
+**Finding 3**
+- **Severity**: INFO
+- **ID**: REVIEWER-003
+- **Summary**: All other evidence contracts pass verification.
+  - (1) Gate/Closure Causality: Gate `created_at` (`12:14:58Z`) is strictly before closure `closed_at` (`12:15:11Z`).
+  - (2) Evidence Blob Binding: The `input_evidence_refs` in both the gate and policy activation task reports correctly dereference to the committed mirror files with matching evidence IDs.
+  - (4) Hard-crash/reconciler claims: The `report_object` validates 5 negative scenarios (PID reuse, lease fencing, budget exhaustion, mid-call doubt, invalid JSON) as `FAIL_CLOSED`, matching the run summary.
+  - (5) 24-cycle chain: `cycles_completed=24`, `seed=20260811`, `final_state_digest` matches exactly in both the primary run and the second-root replay (`da0cb48...`), `git_status_delta_count=0` (no side effects), and the official run ticket (`ed8f4f6...`) is correctly bound to the gate's `task_reports`.
+
+### Final Verdict
+**REJECT**
