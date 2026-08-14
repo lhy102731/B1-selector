@@ -354,7 +354,17 @@ def main() -> int:
                 "report_sha256": file_sha256(report_ref),
             }
         ],
-        "test_receipts": [receipt],
+        # The gate's test_receipts must equal the PROJECTED TaskReport
+        # evidence (5 fields: ticket_id/receipt_id/command/exit_code/result).
+        "test_receipts": [
+            {
+                "ticket_id": ticket_id,
+                "receipt_id": receipt["receipt_id"],
+                "command": receipt["command"],
+                "exit_code": receipt["exit_code"],
+                "result": receipt["result"],
+            }
+        ],
         "file_delta_summary": {"changed_files": [], "unexpected_changes": []},
         "side_effect_summary": {
             "observed": ["WRITE_CONTROL_PLANE"],
