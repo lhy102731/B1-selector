@@ -156,9 +156,12 @@ def main(argv: list[str] | None = None) -> int:
     repository_root = Path(__file__).resolve().parents[2]
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    # Candidate binding: the evidence baseline is the HEAD at review time
-    # (the gate evidence commit), or the explicit --candidate.  Reviewer A
-    # and B MUST use the same candidate so their verdicts are comparable.
+    # Candidate binding: the evidence baseline is the gate's freeze commit
+    # (the git state the freeze/inventory/policy were built on).  The gate
+    # and closure are appended evidence commits whose legitimacy is proven
+    # by the gate verifier's immutable-evidence check; Reviewer A and B
+    # bind to the SAME freeze commit so their verdicts are comparable and
+    # the freeze git_commit/baseline.git_head match the candidate.
     if args.candidate:
         commit = args.candidate
         tree = subprocess.run(
@@ -168,6 +171,35 @@ def main(argv: list[str] | None = None) -> int:
         ).stdout.strip()
     else:
         commit, tree = _repo_head(repository_root)
+        gate_files = sorted(out_dir.parent.glob("gates/*.json"))
+        if gate_files:
+            try:
+                gate_doc = json.loads(
+                    gate_files[0].read_text(encoding="utf-8")
+                )
+                freeze_ref = gate_doc.get("code_freeze_manifest", {}).get(
+                    "ref"
+                )
+                if freeze_ref:
+                    freeze_doc = json.loads(
+                        (repository_root / freeze_ref).read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                    frozen = str(freeze_doc.get("git_commit", ""))
+                    if len(frozen) == 40:
+                        commit = frozen
+                        tree = subprocess.run(
+                            ["git", "-C", str(repository_root), "rev-parse",
+                             frozen + "^{tree}"],
+                            capture_output=True, text=True,
+                        ).stdout.strip()
+            except Exception as error:  # noqa: BLE001
+                print(
+                    "CANDIDATE_FALLBACK",
+                    type(error).__name__,
+                    file=sys.stderr,
+                )
     base_url, api_key, default_model = _provider_spec(args.provider)
     model = args.model or default_model
 
