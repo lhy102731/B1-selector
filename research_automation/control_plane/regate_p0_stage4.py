@@ -349,8 +349,9 @@ def main() -> int:
                 "scope_hash": policy_grant[2],
                 "instruction_policy_hash": policy_grant[3],
             },
-            "objective": (
-                f"CR-010 P0 policy activation for {ATTEMPT}"
+            "objective": policy_spec.get(
+                "objective",
+                f"CR-010 P0 policy activation for {ATTEMPT}",
             ),
             "dependencies": [],
             "idempotency_key": policy_ticket[2],
