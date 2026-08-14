@@ -351,6 +351,10 @@ def main() -> int:
         "required_review_receipt_ids": [policy_review_receipt_id],
         "required_evidence_ids": [],
     }
+    policy_spec["baseline_ref"] = gate_baseline_ref
+    policy_spec["baseline_sha256"] = str(
+        gate_baseline_doc["baseline_payload_sha256"]
+    )
     policy_spec_json = json.dumps(
         policy_spec, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
@@ -399,8 +403,10 @@ def main() -> int:
             },
             "allowed_files": policy_spec.get("allowed_files", []),
             "forbidden_files": policy_spec.get("forbidden_files", []),
-            "baseline_ref": policy_spec.get("baseline_ref", "manifest.json"),
-            "baseline_sha256": policy_spec.get("baseline_sha256", "1" * 64),
+            "baseline_ref": gate_baseline_ref,
+            "baseline_sha256": str(
+                gate_baseline_doc["baseline_payload_sha256"]
+            ),
             "input_evidence_refs": policy_spec.get("input_evidence_refs", []),
             "test_receipts": [],
             "review_receipts": [
