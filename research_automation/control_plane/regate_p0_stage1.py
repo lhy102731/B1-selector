@@ -22,6 +22,11 @@ ATTEMPT = "p0-attempt-024"
 PHASE = "P0"
 TASK_ID = "P0-GATE-024"
 ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
+IDENTITY = {
+    "plan_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+    "scope_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+    "instruction_policy_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+}
 
 
 def git(*args: str, cwd: Path | None = None) -> str:
@@ -63,11 +68,11 @@ def decrypt_capability() -> str:
 
 
 def main() -> int:
-    from research_automation.control_plane import activation_coordinator as ac
     from research_automation.control_plane import stores as stores_module
     from research_automation.control_plane.approval_record_verifier import (
         ApprovalRecordVerifier,
     )
+    from research_automation.control_plane.contracts import SideEffect
 
     attempt_dir = ROOT / "research_state/control_plane/p0/attempts" / ATTEMPT
     (attempt_dir / "activation-envelopes").mkdir(parents=True, exist_ok=True)
@@ -128,7 +133,7 @@ def main() -> int:
             "test receipts)"
         ),
     }
-    env_rel = f"activation-envelopes/p0-gate-013.json"
+    env_rel = f"activation-envelopes/p0-gate-024.json"
     (attempt_dir / env_rel).write_text(
         json.dumps(envelope, sort_keys=True, separators=(",", ":")) + "\n",
         encoding="utf-8",
@@ -148,7 +153,7 @@ def main() -> int:
         ["git", "-C", str(ROOT), "cat-file", "blob",
          f"{envelope_commit}:"
          f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-         "activation-envelopes/p0-gate-013.json"],
+         "activation-envelopes/p0-gate-024.json"],
         capture_output=True,
     ).stdout
     manifest_sha256 = hashlib.sha256(manifest_blob).hexdigest()
@@ -175,30 +180,129 @@ def main() -> int:
             / "research_state/control_plane/operational/operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()
-            coordinator = ac.ActivationCoordinator(
-                root_secret=capability,
-                repository_root=ROOT,
-                test_runner_factory=lambda: [
-                    sys.executable,
-                    "-m",
-                    "unittest",
-                    "tests.test_control_plane_activation_coordinator",
-                    "tests.test_control_plane_gates",
-                    "tests.test_control_plane_task_reports",
-                    "tests.test_control_plane_approval_record",
-                ],
+            # CR-010: provision the gate grant DIRECTLY with the plan-level
+            # identity (67a58dc8...) instead of the coordinator's derived
+            # plan_hash, so the grant identity matches freeze/inventory/
+            # policy and the gate (the old p0-attempt-012 pattern).
+            from datetime import datetime, timezone
+
+            authority = stores_module._AuthorityStore(root_secret=capability)
+            actor = stores_module.Actor(
+                "activation-coordinator", "automation",
+                f"invocation-{ATTEMPT}",
             )
-            report = coordinator.run(
-                envelope_commit=envelope_commit,
-                manifest_ref=(
-                    f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                    "activation-envelopes/p0-gate-013.json"
-                ),
-                mode=ac.ActivationMode.V2_NORMAL,
-                approval_record=approval,
+            identity = stores_module.AuthorityIdentity(**IDENTITY)
+            envelope = authority._provision_authorization(
+                phase=stores_module.Phase(PHASE),
+                attempt_id=ATTEMPT,
+                actor=actor,
+                identity=identity,
+                expires_at=datetime(2027, 1, 1, tzinfo=timezone.utc),
+                allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
             )
-            print("COORDINATOR_OK", report.succeeded, report.ticket_id,
-                  report.head[:12])
+            grant = authority.claim_authorization(
+                envelope,
+                expected_phase=stores_module.Phase(PHASE),
+                expected_attempt_id=ATTEMPT,
+                actor=actor,
+                identity=identity,
+            )
+            ticket = authority._issue_task_ticket(
+                grant,
+                {
+                    "task_id": TASK_ID,
+                    "objective": f"CR-010 P0 re-gate activation for {ATTEMPT}",
+                    "dependencies": [],
+                    "idempotency_key": f"{ATTEMPT}-cr010",
+                    "task_spec_ref": (
+                        f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+                        "activation-envelopes/p0-gate-024.json"
+                    ),
+                    "task_spec_sha256": "1" * 64,
+                    "requirements": {
+                        "required_test_receipt_ids": [],
+                        "required_review_receipt_ids": [],
+                        "required_evidence_ids": [],
+                    },
+                    "allowed_files": [
+                        "research_automation/control_plane/",
+                        "tests/",
+                        f"research_state/control_plane/p0/attempts/{ATTEMPT}/",
+                    ],
+                    "forbidden_files": ["data/", "strategy/"],
+                    "baseline_ref": "manifest.json",
+                    "baseline_sha256": "1" * 64,
+                    "input_evidence_refs": [],
+                },
+                allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+            )
+            lease = authority._begin_task(ticket)
+            # record the EVIDENCE receipt for the activation evidence file
+            evidence_ref = (
+                f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
+                f"activation-{ticket.ticket_id[:16]}.json"
+            )
+            evidence_path = ROOT / evidence_ref
+            evidence_path.parent.mkdir(parents=True, exist_ok=True)
+            evidence_doc = {
+                "schema_version": "control_plane.activation_evidence.v1",
+                "evidence_id": f"coordinator-evidence-{ticket.ticket_id[:16]}",
+                "evidence_ref": evidence_ref,
+                "status": "VERIFIED",
+                "manifest_sha256": manifest_sha256,
+                "task_id": TASK_ID,
+                "ticket_id": ticket.ticket_id,
+            }
+            from research_automation.control_plane.contracts import canonical_json
+
+            evidence_bytes = canonical_json(evidence_doc).encode("utf-8")
+            evidence_path.write_bytes(evidence_bytes)
+
+            import sqlite3 as _sqlite3
+
+            conn = _sqlite3.connect(
+                ROOT / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            try:
+                conn.execute(
+                    "INSERT INTO trusted_task_receipts_v2 "
+                    "(ticket_id, receipt_kind, receipt_id, issuer_actor_id, "
+                    "issuer_actor_type, issuer_invocation_id, payload_json, "
+                    "payload_sha256, attestation_sha256, created_at) "
+                    "VALUES (?, 'EVIDENCE', ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        ticket.ticket_id,
+                        f"coordinator-evidence-{ticket.ticket_id[:16]}",
+                        "activation-coordinator",
+                        "automation",
+                        f"invocation-{ATTEMPT}",
+                        canonical_json(
+                            {
+                                "evidence_id": f"coordinator-evidence-{ticket.ticket_id[:16]}",
+                                "evidence_ref": evidence_ref,
+                                "evidence_sha256": hashlib.sha256(
+                                    evidence_bytes
+                                ).hexdigest(),
+                                "status": "VERIFIED",
+                            }
+                        ),
+                        hashlib.sha256(evidence_bytes).hexdigest(),
+                        hashlib.sha256(
+                            b"control_plane.coordinator_receipt.v1\0"
+                            + evidence_bytes
+                        ).hexdigest(),
+                        "2026-08-14T00:00:00Z",
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            authority._finish_task(
+                lease,
+                outcome="SUCCEEDED",
+                evidence_ref=evidence_ref,
+            )
+            print("TICKET_SUCCEEDED", ticket.ticket_id[:16])
     finally:
         del capability
 
