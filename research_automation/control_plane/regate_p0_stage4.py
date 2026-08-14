@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-029"
+ATTEMPT = "p0-attempt-030"
 PHASE = "P0"
 PLAN_VERSION = "V3.4.2-CR010"
 IDENTITY = {
@@ -230,7 +230,7 @@ def main() -> int:
             "issuer_actor_type, issuer_invocation_id, payload_json, "
             "payload_sha256, attestation_sha256, created_at) "
             "VALUES (?, 'TEST', ?, 'gate-builder', 'automation', "
-            "'gate-build-029', ?, ?, ?, '2026-08-14T00:00:00Z')",
+            "'gate-build-030', ?, ?, ?, '2026-08-14T00:00:00Z')",
             (
                 ticket_id,
                 test_payload["receipt_id"],
