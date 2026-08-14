@@ -40,8 +40,8 @@ PHASES = {
         ),
     },
     "P7": {
-        "attempt": "p7-attempt-005",
-        "task": "P7-GATE-005",
+        "attempt": "p7-attempt-006",
+        "task": "P7-GATE-006",
         "dir": "research_state/control_plane/p7/attempts",
         "identity": {
             "plan_hash": "5285d6e9c05c0048dc844a4d2fd3b4408dad287ea0d4c4256cde54db849b2b0b",
