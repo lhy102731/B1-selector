@@ -119,6 +119,20 @@ def main() -> int:
     ticket_spec["requirements"]["required_evidence_ids"] = [
         f"coordinator-evidence-{ticket_id[:16]}"
     ]
+    # The TaskReport baseline must equal the gate baseline (the committed
+    # implementation_baseline.json payload hash); bind it into the ticket
+    # spec so the authority task-spec check also passes.
+    gate_baseline_ref = (
+        f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+        "implementation_baseline.json"
+    )
+    gate_baseline_doc = json.loads(
+        (ROOT / gate_baseline_ref).read_text(encoding="utf-8")
+    )
+    ticket_spec["baseline_ref"] = gate_baseline_ref
+    ticket_spec["baseline_sha256"] = str(
+        gate_baseline_doc["baseline_payload_sha256"]
+    )
     import sqlite3 as _sqlite3
 
     spec_json = json.dumps(
