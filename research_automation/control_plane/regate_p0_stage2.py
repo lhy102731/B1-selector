@@ -155,7 +155,9 @@ def main() -> int:
         "plan_version": PLAN_VERSION,
         "phase": PHASE,
         "baseline_payload_hash_algorithm": (
-            "sha256(canonical UTF-8 JSON of baseline)"
+            "sha256(canonical UTF-8 JSON of the baseline member; sorted "
+            "object keys; semantic array order preserved; compact "
+            "separators)"
         ),
         "baseline_payload_sha256": baseline_payload_sha256,
         "baseline": baseline_payload,
