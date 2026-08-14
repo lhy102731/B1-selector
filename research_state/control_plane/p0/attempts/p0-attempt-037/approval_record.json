@@ -1,0 +1,1 @@
+{"actor":"user","approval":"APPROVE","candidate_tree":"98266ec587874a4ae3201740121093318b05ea2a","envelope_commit":"323709d6f7ecd7b35362a977f7334906e5650ba8","manifest_sha256":"924ec06f4009c69a4cca0021ef4cb7e2859605c71cb419e457de3c97b96f565a","note":"CR-010 re-gate p0-attempt-037 approval (candidate 84db5f3f92af)","schema_version":"control_plane.approval_record.v1"}
