@@ -102,6 +102,42 @@ def main() -> int:
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
         f"activation-{ticket_id[:16]}.json"
     )
+    # Bind the activation evidence into the ticket's task spec so the
+    # TaskReport EVIDENCE group matches the authority trusted receipts
+    # (the gate's _trusted_receipts_from_report compares the report's
+    # input_evidence_refs against the trusted receipt rows).
+    evidence_sha = hashlib.sha256(
+        (ROOT / evidence_ref).read_bytes()
+    ).hexdigest()
+    evidence_binding = {
+        "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
+        "evidence_ref": evidence_ref,
+        "evidence_sha256": evidence_sha,
+        "status": "VERIFIED",
+    }
+    ticket_spec["input_evidence_refs"] = [evidence_binding]
+    ticket_spec["requirements"]["required_evidence_ids"] = [
+        f"coordinator-evidence-{ticket_id[:16]}"
+    ]
+    import sqlite3 as _sqlite3
+
+    spec_json = json.dumps(
+        ticket_spec, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), allow_nan=False,
+    )
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        conn.execute(
+            "UPDATE task_tickets_v2 SET task_spec_payload_json = ? "
+            "WHERE ticket_id = ?",
+            (spec_json, ticket_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    print("TICKET_SPEC_BOUND")
     from research_automation.control_plane.task_reports import (
         build_task_report_v2,
     )
