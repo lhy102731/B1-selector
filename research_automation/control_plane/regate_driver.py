@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-011",
-        "task": "P6-GATE-011",
+        "attempt": "p6-attempt-012",
+        "task": "P6-GATE-012",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -872,13 +872,19 @@ def stage3b(cfg: dict[str, object]) -> None:
 
 def stage4(cfg: dict[str, object]) -> None:
     """Gate build/verify/commit + close + UTC closure receipt."""
+    # real verification-runtime lock hash (no placeholder in the receipt)
+    _lock_path = ROOT / "requirements/verification-runtime.lock"
+    _verification_lock_sha256 = (
+        hashlib.sha256(_lock_path.read_bytes()).hexdigest()
+        if _lock_path.exists()
+        else "0" * 64
+    )
     from research_automation.control_plane import stores as stores_module
     from research_automation.control_plane.contracts import (
         Phase,
         canonical_json,
     )
-    from research_automation.control_plane.gates import (
-        PhaseGateBuilder,
+    from research_automation.control_plane.gates import (        PhaseGateBuilder,
         PhaseGateCloser,
         PhaseGateVerifier,
         parse_gate_report_v1_bytes,
@@ -1019,7 +1025,7 @@ def stage4(cfg: dict[str, object]) -> None:
         "executable": sys.executable,
         "cwd": str(ROOT),
         "runtime_version": sys.version.split()[0],
-        "lock_hash": "0" * 64,
+        "lock_hash": _verification_lock_sha256,
         # the candidate is the FROZEN baseline commit (the git state the
         # freeze/inventory/policy were built on), not the review-time HEAD
         "candidate_commit": freeze_git_commit,
