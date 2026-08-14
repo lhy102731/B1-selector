@@ -1,0 +1,56 @@
+Reviewer A — P0 Gate Findings  
+Candidate: `bda930ffa383d4fefe00e7ff28dea9f2c02143e8` / `e2642bd13c1c3b38ac0b1b242b31229645bb4675`  
+Attempt: `p0-attempt-041`
+
+Inspected paths:  
+- `research_state/control_plane/p0/attempts/p0-attempt-041/gates/official_p0_gate_v342_cr010.json` (embedded content)  
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/official_p0_closure_receipt_v342_cr010.json` (embedded content)  
+- Committed evidence list: `activation-dc50e58d5a55d2ca.json`, `cr010_review_p0_calls.json`, `cr010_reviewer_a_p0_prompt.txt`, `cr010_reviewer_a_p0_raw.txt`, `gate_tests_stderr.json`, `gate_tests_stdout.json`, `official_p0_closure_receipt_v342_cr010.json`
+
+## Verification results
+
+### 1. Gate/closure time causality — PASS
+Gate `created_at`: `2026-08-14T05:50:14.853557Z`  
+Closure `closed_at`: `2026-08-14T05:50:39.271873Z`  
+`closed_at > created_at` holds.
+
+### 2. Evidence blob binding — FAIL
+The gate report references task report blobs that are not among the committed evidence files:
+
+- `task_reports[0].report_ref`: `research_state/control_plane/p0/attempts/p0-attempt-041/task_report_gate.json`  
+- `task_reports[1].report_ref`: `research_state/control_plane/p0/attempts/p0-attempt-041/task_report_policy_activation.json`  
+
+Neither of these files is present in the supplied committed evidence file list. The only activation-like blob is `activation-dc50e58d5a55d2ca.json`, but that file is not hash-referenced by the gate JSON, and its name corresponds to the gate ticket `dc50...`, not the policy-activation ticket `21b2...` referenced by `task_report_policy_activation.json`.
+
+### 3. Test receipt full contract — FAIL
+The `test_receipts` entry contains:
+
+- command, `exit_code: 0`, `receipt_id`, `result: "PASS"`, `ticket_id`
+
+However, it does not bind the committed stdout/stderr evidence blobs:
+
+- `gate_tests_stdout.json`
+- `gate_tests_stderr.json`
+
+There is no hash reference or receipt linkage proving those blobs correspond to the stated test receipt.
+
+### 4. Hard-crash/reconciler claims — NOT PRESENT
+No hard-crash or reconciler claims appear in the gate/closure JSON. I do not flag this as a failure, but the committed evidence does not support any such claim either.
+
+### 5. C0 official 24-cycle evidence chain — FAIL
+The gate JSON has no field or reference proving the C0 official 24-cycle evidence chain. The committed file `cr010_review_p0_calls.json` might contain relevant data, but it is not bound by hash or referenced in the gate report. Therefore the gate closure cannot be independently verified against the C0 chain requirement.
+
+## Findings
+
+| ID | Severity | Summary | Code/ref |
+|---|---|---|---|
+| F-01 | High | Referenced task report evidence files are absent from committed evidence and are not verifiable. | `task_reports` in `official_p0_gate_v342_cr010.json` |
+| F-02 | High | No C0 24-cycle evidence chain is referenced or hash-bound in gate/closure. | gate JSON root; `cr010_review_p0_calls.json` unbound |
+| F-03 | High | `identity_binding.instruction_policy_hash == plan_hash == scope_hash`; this is not a meaningful three-artifact binding. | `identity_binding` in `official_p0_gate_v342_cr010.json` |
+| F-04 | Medium | Test receipt has no binding to `gate_tests_stdout.json` / `gate_tests_stderr.json`. | `test_receipts` in `official_p0_gate_v342_cr010.json` |
+
+## Final Verdict
+
+**REJECT**
+
+The gate fails evidence-binding requirements, lacks a verifiable C0 24-cycle evidence chain, and contains an invalid identity binding.
