@@ -92,5 +92,68 @@ class C0RolloutChaosTests(unittest.TestCase):
             self.assertEqual(negative["expected_outcome"], "FAIL_CLOSED")
 
 
+
+
+class C0ExactInvariantFailClosedTests(unittest.TestCase):
+    """CR010-R06/C0-3: the exact invariant set must FAIL CLOSED."""
+
+    def test_require_exact_invariant_set_rejects_missing_invariant(self) -> None:
+        from research_automation.control_plane.rollout_chaos import (
+            EXACT_CHAOS_INVARIANTS,
+            require_exact_invariant_set,
+        )
+
+        incomplete = {
+            name: {"name": name}
+            for name in EXACT_CHAOS_INVARIANTS
+            if name != "network_denied"
+        }
+        with self.assertRaises(ValueError):
+            require_exact_invariant_set(incomplete)
+
+    def test_require_exact_invariant_set_rejects_extra_invariant(self) -> None:
+        from research_automation.control_plane.rollout_chaos import (
+            EXACT_CHAOS_INVARIANTS,
+            require_exact_invariant_set,
+        )
+
+        extra = {
+            name: {"name": name}
+            for name in EXACT_CHAOS_INVARIANTS
+        }
+        extra["unexpected_invariant"] = {"name": "unexpected_invariant"}
+        with self.assertRaises(ValueError):
+            require_exact_invariant_set(extra)
+
+    def test_require_exact_invariant_set_rejects_non_mapping(self) -> None:
+        from research_automation.control_plane.rollout_chaos import (
+            require_exact_invariant_set,
+        )
+
+        with self.assertRaises(ValueError):
+            require_exact_invariant_set(["not-a-mapping"])
+
+    def test_official_simulation_produces_exactly_the_mandated_set(self) -> None:
+        from research_automation.control_plane import rollout_chaos
+
+        payload = rollout_chaos.run_c0_simulation(
+            seed=20260811, cycles=20
+        ).to_payload()
+        produced = {item["name"] for item in payload["invariants"]}
+        self.assertEqual(
+            produced, rollout_chaos.EXACT_CHAOS_INVARIANTS
+        )
+        self.assertTrue(payload["pass"])
+        for name in (
+            "durable_pause_resume",
+            "fresh_process_identity",
+            "network_denied",
+        ):
+            item = next(
+                item for item in payload["invariants"] if item["name"] == name
+            )
+            self.assertTrue(item["passed"], item["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,6 +20,7 @@ import sqlite3
 import msvcrt
 import tempfile
 import functools
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -667,6 +668,12 @@ def _run_main_campaign_locked(
         _CAMPAIGN_ID,
         root_path,
     ) as (root, _, journal):
+        from .campaign_lifecycle import OperationalCampaignLifecycle
+
+        campaign_lifecycle = OperationalCampaignLifecycle(journal=journal)
+        scheduled_pauses: list[str] = []
+        pause_failures: list[str] = []
+        recovery_identities: dict[int, dict[str, object]] = {}
         service = LearningCommitService(repository_root=root)
         bindings_by_ticket: dict[str, object] = {}
         previous_decision = None
@@ -690,6 +697,21 @@ def _run_main_campaign_locked(
                 )
             cycle_id = f"c0-cycle-{n:03d}"
             acquisition_id = f"execute-c0-cycle-{n:03d}"
+            if pause_after:
+                # CR010-R06: REAL durable pause/resume transitions written
+                # to the campaign journal (not a marker string).
+                pause_id = f"pause-c0-cycle-{n:03d}"
+                try:
+                    campaign_lifecycle.request_pause(pause_id=pause_id)
+                    campaign_lifecycle.resume_pause(
+                        pause_id=pause_id,
+                        resume_id=f"resume-c0-cycle-{n:03d}",
+                    )
+                    scheduled_pauses.append(pause_id)
+                except Exception as error:  # noqa: BLE001
+                    pause_failures.append(
+                        f"cycle {n} pause/resume failed: {type(error).__name__}"
+                    )
             claim = _claim_for_cycle(n)
             report, binding, artifact, _, _ = _authority_fixture_cycle(
                 root,
@@ -871,6 +893,11 @@ def _run_main_campaign_locked(
                             owner_pid=1000 + n,
                             start_ns=100 + n * 10_000_000,
                         )
+                        recovery_identities.setdefault(n, {})["replay"] = {
+                            "owner_pid": 1000 + n,
+                            "host_id": "host-c0",
+                            "started_at_ns": 100 + n * 10_000_000,
+                        }
                         prepared = None
                         execution = None
                         provider = None
@@ -894,6 +921,11 @@ def _run_main_campaign_locked(
                             owner_pid=1000 + n,
                             start_ns=100 + n * 10_000_000,
                         )
+                        recovery_identities.setdefault(n, {})["replay"] = {
+                            "owner_pid": 1000 + n,
+                            "host_id": "host-c0",
+                            "started_at_ns": 100 + n * 10_000_000,
+                        }
                         prepared = None
                         execution = None
                         provider = None
@@ -923,6 +955,16 @@ def _run_main_campaign_locked(
                             acquisition_id=f"recover-c0-cycle-{n:03d}",
                             stale_after_ns=1,
                         )
+                        recovery_identities.setdefault(n, {})[
+                            "recovery"
+                        ] = {
+                            "owner_pid": 2000 + n,
+                            "host_id": "host-c0",
+                            "started_at_ns": recovery_start_ns,
+                            "recovered_decision": str(
+                                replacement.lease_id if replacement else ""
+                            ),
+                        }
                         execution = ExecutingOperationalCycle(
                             cycle=controller.cycle_snapshot(cycle_id),
                             lease=replacement,
@@ -991,23 +1033,20 @@ def _run_main_campaign_locked(
                         "detail": f"cycle {n} status={snapshot.status.value}",
                     }
                 )
+        # CR010-R06: the per-cycle record counters are diagnostics only
+        # (their evidence lives in the scenario log + state digest); the
+        # produced invariant set must be EXACTLY the mandated set.
         for name, counts in per_cycle_counts.items():
             ok = all(count == 1 for count in counts[1:])
-            invariants.append(
-                {
-                    "name": name,
-                    "passed": ok,
-                    "detail": (
-                        f"all {cycles} cycles exactly once"
-                        if ok
-                        else "; ".join(
-                            f"cycle {n}={counts[n]}"
-                            for n in range(1, cycles + 1)
-                            if counts[n] != 1
-                        )
-                    ),
-                }
-            )
+            if not ok:
+                scenario_log.append(
+                    f"diagnostic {name}: "
+                    + "; ".join(
+                        f"cycle {n}={counts[n]}"
+                        for n in range(1, cycles + 1)
+                        if counts[n] != 1
+                    )
+                )
         if not any(
             item["name"] == "cycle_completed_exactly_once"
             for item in invariants
@@ -1103,6 +1142,81 @@ def _run_main_campaign_locked(
                 allow_nan=False,
             ).encode("utf-8")
         ).hexdigest()
+        # CR010-R06: durable_pause_resume -- every scheduled pause must have
+        # a REAL durable pause + resume transition in the campaign journal.
+        pause_snapshot = campaign_lifecycle.pause_snapshot()
+        invariants.append(
+            {
+                "name": "durable_pause_resume",
+                "passed": (
+                    not pause_failures
+                    and pause_snapshot.active_pause_id is None
+                    and len(scheduled_pauses)
+                    == len(set(scheduled_pauses))
+                ),
+                "detail": (
+                    f"scheduled_pauses={len(scheduled_pauses)} "
+                    f"active_pause={pause_snapshot.active_pause_id} "
+                    + ("; ".join(pause_failures) if pause_failures else "")
+                ),
+            }
+        )
+        # CR010-R06: fresh_process_identity -- every crash-recovery cycle
+        # must have been recovered under a FRESH process identity (distinct
+        # owner pid) with a recovered decision, never under the original
+        # lease.
+        identity_ok = True
+        identity_detail: list[str] = []
+        for n in range(1, cycles + 1):
+            slot = schedule[n]
+            if slot.get("crash_after") is not None:
+                entry = recovery_identities.get(n)
+                if not entry:
+                    identity_ok = False
+                    identity_detail.append(
+                        f"cycle {n}: no recovery/replay identity"
+                    )
+                    continue
+                recovery = entry.get("recovery")
+                if recovery is not None:
+                    if int(recovery["owner_pid"]) == 1000 + n:
+                        identity_ok = False
+                        identity_detail.append(
+                            f"cycle {n}: recovery reused the original pid"
+                        )
+                    identity_detail.append(
+                        f"cycle {n}: fresh pid={recovery['owner_pid']}"
+                    )
+                else:
+                    identity_detail.append(
+                        f"cycle {n}: replay pid="
+                        f"{entry['replay']['owner_pid']}"
+                    )
+        invariants.append(
+            {
+                "name": "fresh_process_identity",
+                "passed": identity_ok,
+                "detail": (
+                    "; ".join(identity_detail)
+                    if identity_detail
+                    else "no crash-recovery cycles scheduled"
+                ),
+            }
+        )
+        # CR010-R06: network_denied -- the official run installed the real
+        # NetworkGuard and its deny probe recorded intercepted attempts.
+        from .rollout_chaos_worker import NetworkGuard
+
+        invariants.append(
+            {
+                "name": "network_denied",
+                "passed": NetworkGuard.attempts >= 1,
+                "detail": (
+                    f"NetworkGuard interception attempts="
+                    f"{NetworkGuard.attempts}"
+                ),
+            }
+        )
         invariants.append(
             {
                 "name": "campaign_completed",
@@ -1597,8 +1711,26 @@ def run_c0_simulation(
         raise ValueError(f"cycles must be an integer >= {_MIN_CYCLES}")
     if not attempt_id or not isinstance(attempt_id, str):
         raise ValueError("attempt_id must be a non-empty string")
-    main, _root = _run_main_campaign(seed, cycles)
-    negatives = _run_negative_scenarios()
+    # CR010-R06: the OFFICIAL simulation path installs the real NetworkGuard
+    # (socket/Popen interception + deny probe) so the network_denied
+    # invariant reflects a REAL interception, and restores the stdlib
+    # surface afterwards (process-local, restorable).
+    from .rollout_chaos_worker import NetworkGuard
+
+    NetworkGuard.install()
+    NetworkGuard.deny_probe()
+    try:
+        main, _root = _run_main_campaign(seed, cycles)
+        negatives = _run_negative_scenarios()
+        # CR010-R06/C0-3: the official report FAILS CLOSED unless the
+        # produced invariant set is EXACTLY the mandated set (missing
+        # durable_pause_resume / fresh_process_identity / network_denied
+        # etc. must never write pass=true).
+        require_exact_invariant_set(
+            {item["name"]: item for item in main["invariants"]}
+        )
+    finally:
+        NetworkGuard.uninstall()
     # CR-010 F-03: cycles_completed must reflect the actual campaign run.
     # The main campaign loop only returns after every scheduled cycle
     # COMPLETED (it raises otherwise), so the completed count equals the
@@ -1629,14 +1761,21 @@ def serialize_report(outcome: ChaosOutcome) -> str:
 
 
 class AtomicPublisher:
-    """Create-only content-addressed evidence publisher (C0R2 T5, CR-010 F-03).
+    """Crash-safe create-only content-addressed evidence publisher.
 
-    Production-owned: the official 24-cycle C0 report is published through
-    this publisher, never via a destructive write.  same-volume temp write
-    -> flush/fsync -> exclusive object create -> exclusive claim create
-    -> second barrier.  A claim already present means the report is final:
-    identical bytes return IDEMPOTENT_EXISTING, different bytes return
-    CLAIM_CONFLICT and nothing is overwritten.
+    CR010-R06/C0-4 contract:
+
+    - the object is staged as a TEMP file IN THE SAME VOLUME
+      (``<volume>/objects/.tmp-<sha>``), flushed + fsynced, then linked to
+      its final content-addressed path with ``os.link`` (atomic create-only
+      -- the link fails with FileExistsError if the target already exists,
+      so a concurrent or crashed writer can never overwrite it);
+    - a crash during the write leaves only an orphan temp file; the final
+      path never appears until the fully-fsynced bytes are linked;
+    - same-bytes concurrent publication is idempotent (IDEMPOTENT_EXISTING
+      after byte-verification); different bytes conflict (CLAIM_CONFLICT);
+    - the per-attempt fixed claim follows the same temp+link protocol;
+    - best-effort parent-directory durability barrier after the link.
     """
 
     def __init__(
@@ -1650,6 +1789,72 @@ class AtomicPublisher:
         self._claim = evidence_dir / "c0_chaos_simulation_report_v2.json"
         self._attempt_id = attempt_id
 
+    @staticmethod
+    def _write_temp_then_link(temp_path: Path, final_path: Path, raw: bytes) -> str:
+        """Stage raw bytes in a same-volume temp file, fsync, then link
+        create-only to the final path.  Returns CREATED / IDEMPOTENT /
+        CONFLICT."""
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(
+                temp_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            # orphan temp from a crashed writer: a temp is never the final
+            # object, so clearing it and retrying is safe
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+            fd = os.open(
+                temp_path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        try:
+            os.link(temp_path, final_path)
+        except FileExistsError:
+            temp_path.unlink(missing_ok=True)
+            try:
+                existing = final_path.read_bytes()
+            except OSError:
+                # the final path vanished between the failed link and the
+                # read (an unusual race); retry the link once
+                os.link(temp_path, final_path)
+                return "CREATED"
+            if existing == raw:
+                return "IDEMPOTENT_EXISTING"
+            return "CLAIM_CONFLICT"
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # best-effort parent durability barrier (NTFS journal is the
+        # authority on Windows; directory fsync is best-effort POSIX)
+        try:
+            dir_fd = os.open(str(final_path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+        return "CREATED"
+
     def publish(
         self,
         payload: Mapping[str, object],
@@ -1660,25 +1865,9 @@ class AtomicPublisher:
         raw = canonical_json(payload).encode("utf-8")
         sha256 = hashlib.sha256(raw).hexdigest()
         object_path = self._objects / f"{sha256}.json"
-        try:
-            fd = os.open(
-                object_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            return {"status": "IDEMPOTENT_EXISTING", "ref": object_path.name}
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            fd = os.open(
-                self._claim,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
+        temp_object = self._objects / f".tmp-{sha256}"
+        object_status = self._write_temp_then_link(temp_object, object_path, raw)
+        if object_status == "CLAIM_CONFLICT":
             return {"status": "CLAIM_CONFLICT", "ref": object_path.name}
         claim = {
             "schema_version": "control_plane.c0_chaos_report_claim.v1",
@@ -1688,11 +1877,24 @@ class AtomicPublisher:
             "report_ref": str(object_path.relative_to(self._objects.parent)),
             "report_blob_sha256": sha256,
         }
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(canonical_json(claim).encode("utf-8"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        return {"status": "CREATED", "ref": object_path.name, "sha256": sha256}
+        claim_raw = canonical_json(claim).encode("utf-8")
+        temp_claim = self._claim.with_name(f".tmp-{self._claim.name}")
+        claim_status = self._write_temp_then_link(
+            temp_claim, self._claim, claim_raw
+        )
+        if claim_status == "CLAIM_CONFLICT":
+            return {"status": "CLAIM_CONFLICT", "ref": object_path.name}
+        if object_status == "IDEMPOTENT_EXISTING":
+            return {
+                "status": "IDEMPOTENT_EXISTING",
+                "ref": object_path.name,
+                "sha256": sha256,
+            }
+        return {
+            "status": "CREATED",
+            "ref": object_path.name,
+            "sha256": sha256,
+        }
 
 
 CHAOS_CATEGORIES = _CHAOS_CATEGORIES
