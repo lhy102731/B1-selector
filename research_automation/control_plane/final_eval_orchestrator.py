@@ -47,6 +47,8 @@ CRASH_POINTS = (
     "CRASH_AFTER.CLAIM_WRITTEN",     # sink wrote the claim, not yet staged
     "CRASH_AFTER.RESULT_STAGED",     # claim staged durably
     "CRASH_AFTER.RECOVERY_LEASE",    # recovery lease issued, recover not run
+    "CRASH_AFTER.CLOSED",            # RESULT_STAGED -> CLOSED committed,
+                                     # Authority finish not yet applied
     "CRASH_AFTER.AUTHORITY_TERMINAL",  # recover committed terminal state
 )
 

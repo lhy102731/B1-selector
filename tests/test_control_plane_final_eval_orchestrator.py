@@ -580,6 +580,7 @@ class FinalEvalHardCrashHarnessTests(unittest.TestCase):
         ("CRASH_AFTER.CLAIM_WRITTEN", "EVALUATING", False),
         ("CRASH_AFTER.RESULT_STAGED", "RESULT_STAGED", True),
         ("CRASH_AFTER.RECOVERY_LEASE", "RESULT_STAGED", False),
+        ("CRASH_AFTER.CLOSED", "CLOSED", True),
         ("CRASH_AFTER.AUTHORITY_TERMINAL", "AUTHORITY_TERMINAL", True),
     )
 
@@ -667,6 +668,7 @@ try:
     )
     if crash_point in (
         "CRASH_AFTER.RECOVERY_LEASE",
+        "CRASH_AFTER.CLOSED",
         "CRASH_AFTER.AUTHORITY_TERMINAL",
     ):
         from research_automation.control_plane.final_eval_reconciler import (
@@ -827,6 +829,7 @@ print("|".join([snapshot.saga_state, str(snapshot.saga_version),
 
         if crash_point in (
             "CRASH_AFTER.RECOVERY_LEASE",
+            "CRASH_AFTER.CLOSED",
             "CRASH_AFTER.AUTHORITY_TERMINAL",
         ):
             # Re-run the reconciler (bounded, no crash hook): recover the
@@ -902,8 +905,8 @@ ticket = authority._issue_task_ticket(
 )
 maintenance_lease = authority._begin_task(ticket)
 claim_ref = ("research_state/control_plane/p8/attempts/"
-             "p8-attempt-003/evidence/worker_result_"
-             + binding_id[:16] + ".json")
+             "p8-attempt-003/evidence/final_eval_cr010/claims/"
+             + binding_id + ".json")
 report = reconcile(
     authority,
     maintenance_lease,
@@ -1087,6 +1090,7 @@ print("|".join([final.saga_state, str(final.saga_version),
                     )
                     if crash_point in (
                         "CRASH_AFTER.RECOVERY_LEASE",
+                        "CRASH_AFTER.CLOSED",
                         "CRASH_AFTER.AUTHORITY_TERMINAL",
                     ):
                         if crash_point == "CRASH_AFTER.RECOVERY_LEASE":

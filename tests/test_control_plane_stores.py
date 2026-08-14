@@ -1965,8 +1965,10 @@ class FinalEvalAuthorityMigrationTests(unittest.TestCase):
                     ).fetchone()
                 finally:
                     connection.close()
-                self.assertEqual(version, 2)
-                self.assertEqual(metadata_version, "2")
+                # CR010-R03: the authority schema advanced to v3 with the
+                # durable final-eval recovery-lease table.
+                self.assertEqual(version, 3)
+                self.assertEqual(metadata_version, "3")
                 self.assertIsNotNone(table)
                 self.assertEqual(tuple(after), tuple(before))
 
@@ -2466,6 +2468,176 @@ class FinalEvalBindingContractTests(unittest.TestCase):
         observed = self.authority.final_eval_binding_snapshot(binding_id)
         self.assertEqual(observed.saga_state, "EVALUATING")
 
+    def _recovery_lease_for(self, binding_id, authority=None):
+        """Issue a durable recovery lease for a staged binding."""
+        authority = authority or self.authority
+        maintenance_grant = self._grant("fe-maintenance-attempt-r03")
+        task_spec = {
+            "task_id": "P8-MAINTENANCE-RECOVERY-R03",
+            "objective": "recover a staged final-eval binding",
+            "dependencies": [],
+            "idempotency_key": "fe-recovery-ticket-r03-001",
+            "task_spec_ref": (
+                "research_state/control_plane/p8/task_specs/recovery.json"
+            ),
+            "task_spec_sha256": "d" * 64,
+            "requirements": {
+                "required_test_receipt_ids": [],
+                "required_review_receipt_ids": [],
+                "required_evidence_ids": [],
+            },
+            "allowed_files": ["research_state/control_plane/p8/"],
+            "forbidden_files": ["data/"],
+            "baseline_ref": (
+                "research_state/control_plane/p8/baselines/recovery.json"
+            ),
+            "baseline_sha256": "c" * 64,
+            "input_evidence_refs": [],
+        }
+        maintenance_ticket = authority._issue_task_ticket(
+            maintenance_grant,
+            task_spec,
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        maintenance_lease = authority._begin_task(maintenance_ticket)
+        claim_ref = (
+            "research_state/control_plane/p8/evidence/"
+            "final_eval_cr010_test/claims/" + binding_id + ".json"
+        )
+        return authority._issue_final_eval_recovery_lease(
+            maintenance_lease,
+            binding_id=binding_id,
+            evidence_ref=claim_ref,
+        )
+
+    def test_recovery_lease_is_durable_and_fresh_authority_can_continue(
+        self,
+    ) -> None:
+        """CR010-R03: the recovery lease is a COMMITTED row; a fresh
+        authority (new process view) can observe and continue it."""
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self._stage_verified(binding_id)
+        recovery = self._recovery_lease_for(binding_id)
+        # durable row exists
+        connection = sqlite3.connect(self.authority_path)
+        try:
+            row = connection.execute(
+                "SELECT state, binding_id, maintenance_ticket_id, "
+                "phase, attempt_id, evidence_ref FROM "
+                "final_eval_recovery_leases_v1 WHERE lease_id = ?",
+                (recovery.lease_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertIsNotNone(row)
+        self.assertEqual(row[0], "ISSUED")
+        self.assertEqual(row[1], binding_id)
+        # a FRESH authority (simulating a new process) continues the lease
+        fresh = stores_module._AuthorityStore(
+            root_secret=ROOT_SECRET, clock=lambda: self.now
+        )
+        closed = fresh._close_final_eval_binding(recovery)
+        self.assertEqual(closed.saga_state, "CLOSED")
+        self.assertIsNone(closed.terminal_binding)
+        terminal = fresh._finalize_final_eval_binding(
+            recovery,
+            terminal_state="SUCCEEDED",
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json"
+            ),
+        )
+        self.assertEqual(terminal.saga_state, "AUTHORITY_TERMINAL")
+        connection = sqlite3.connect(self.authority_path)
+        try:
+            state = connection.execute(
+                "SELECT state, terminal_state FROM "
+                "final_eval_recovery_leases_v1 WHERE lease_id = ?",
+                (recovery.lease_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(state[0], "COMPLETED")
+        self.assertEqual(state[1], "SUCCEEDED")
+
+    def test_recovery_lease_binding_mismatch_fails_closed(self) -> None:
+        """CR010-R03: a lease for the WRONG binding/phase/attempt must be
+        rejected by close/finalize."""
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self._stage_verified(binding_id)
+        recovery = self._recovery_lease_for(binding_id)
+        # tamper with the in-memory lease identity: different binding
+        from research_automation.control_plane.stores import (
+            FinalEvalRecoveryLease,
+        )
+
+        forged = FinalEvalRecoveryLease(
+            _authority=self.authority,
+            lease_id=recovery.lease_id,
+            binding_id="f" * 64,
+            maintenance_ticket_id=recovery.maintenance_ticket_id,
+            phase=recovery.phase,
+            attempt_id=recovery.attempt_id,
+            evidence_ref=recovery.evidence_ref,
+        )
+        with self.assertRaises(stores_module.FinalEvalRecoveryError):
+            self.authority._close_final_eval_binding(forged)
+
+    def test_finalize_after_completed_lease_fails_closed(self) -> None:
+        """CR010-R03: a completed recovery lease cannot finalize again
+        (no reopen / no reissue / no double terminal)."""
+        receipt = self._begin(self.grant)
+        binding_id = receipt.binding.ticket_id
+        self.authority._advance_final_eval_binding(
+            binding_id,
+            expected_state="CONSUMED",
+            next_state="EVALUATING",
+            expected_version=2,
+        )
+        self._stage_verified(binding_id)
+        recovery = self._recovery_lease_for(binding_id)
+        self.authority._recover_final_eval_binding(
+            recovery,
+            terminal_state="SUCCEEDED",
+            evidence_ref=(
+                "research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json"
+            ),
+        )
+        with self.assertRaises(stores_module.FinalEvalRecoveryError):
+            self.authority._finalize_final_eval_binding(
+                recovery,
+                terminal_state="SUCCEEDED",
+                evidence_ref=(
+                    "research_state/control_plane/p8/evidence/"
+                    "final_eval_cr010_test/claims/" + binding_id + ".json"
+                ),
+            )
+        # the ticket was finished exactly once
+        connection = sqlite3.connect(self.authority_path)
+        try:
+            state = connection.execute(
+                "SELECT state FROM task_tickets_v2 WHERE ticket_id = ?",
+                (binding_id,),
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        self.assertEqual(state, "SUCCEEDED")
+
     def test_recovery_scan_returns_safe_bindings_without_secret_or_holdout_path(
         self,
     ) -> None:
@@ -2542,14 +2714,16 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             maintenance_lease,
             binding_id=binding_id,
             evidence_ref=(
-                "research_state/control_plane/p8/evidence/recovery.json"
+                ("research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json")
             ),
         )
         terminal = self.authority._recover_final_eval_binding(
             recovery,
             terminal_state="SUCCEEDED",
             evidence_ref=(
-                "research_state/control_plane/p8/evidence/closure.json"
+                ("research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json")
             ),
         )
         self.assertEqual(terminal.saga_state, "AUTHORITY_TERMINAL")
@@ -2574,7 +2748,8 @@ class FinalEvalBindingContractTests(unittest.TestCase):
                 recovery,
                 terminal_state="SUCCEEDED",
                 evidence_ref=(
-                    "research_state/control_plane/p8/evidence/closure.json"
+                    ("research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json")
                 ),
             )
         with self.assertRaisesRegex(
@@ -2635,14 +2810,16 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             maintenance_lease,
             binding_id=binding_id,
             evidence_ref=(
-                "research_state/control_plane/p8/evidence/recovery.json"
+                ("research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json")
             ),
         )
         terminal = fresh_authority._recover_final_eval_binding(
             recovery,
             terminal_state="IN_DOUBT",
             evidence_ref=(
-                "research_state/control_plane/p8/evidence/closure.json"
+                ("research_state/control_plane/p8/evidence/"
+                "final_eval_cr010_test/claims/" + binding_id + ".json")
             ),
         )
         self.assertEqual(terminal.saga_state, "AUTHORITY_TERMINAL")

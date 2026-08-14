@@ -64,7 +64,7 @@ _TASK_SPEC_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_AUTHORITY_SCHEMA_VERSION = 2
+_AUTHORITY_SCHEMA_VERSION = 3
 _AUTHORITY_SCHEMA_VERSION_V1 = 1
 _OPERATIONAL_SCHEMA_VERSION = 4
 _OPERATIONAL_SCHEMA_VERSION_V3 = 3
@@ -244,7 +244,28 @@ _FINAL_EVAL_AUTHORIZATIONS_DDL = """
         CHECK(created_at <= updated_at)
     ) WITHOUT ROWID
     """
-_AUTHORITY_SCHEMA = _AUTHORITY_SCHEMA_V1 + (_FINAL_EVAL_AUTHORIZATIONS_DDL,)
+_FINAL_EVAL_RECOVERY_LEASES_DDL = """
+    CREATE TABLE final_eval_recovery_leases_v1 (
+        lease_id TEXT PRIMARY KEY,
+        binding_id TEXT NOT NULL REFERENCES final_eval_authorizations_v1(ticket_id),
+        maintenance_ticket_id TEXT NOT NULL REFERENCES task_tickets_v2(ticket_id),
+        phase TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+            state IN ('ISSUED', 'COMPLETED', 'FAILED')
+        ),
+        evidence_ref TEXT NOT NULL,
+        terminal_state TEXT,
+        created_at TEXT NOT NULL,
+        completed_at TEXT
+    ) WITHOUT ROWID
+    """
+_AUTHORITY_SCHEMA_V2 = (
+    _AUTHORITY_SCHEMA_V1 + (_FINAL_EVAL_AUTHORIZATIONS_DDL,)
+)
+_AUTHORITY_SCHEMA = (
+    _AUTHORITY_SCHEMA_V2 + (_FINAL_EVAL_RECOVERY_LEASES_DDL,)
+)
 _OPERATIONAL_SCHEMA_V1 = (
     """
     CREATE TABLE journal_events (
@@ -1869,6 +1890,19 @@ class OperationalReader:
         return _SqliteUnitOfWork(_operational_spec())._read(verify)
 
 
+def _authority_v2_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_AUTHORITY_STORE_PATH,
+        store_kind="AUTHORITY_STORE",
+        metadata_table="authority_meta",
+        schema_version=2,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("authority_meta"),)
+            + _AUTHORITY_SCHEMA_V2
+        ),
+    )
+
+
 def _authority_v1_spec() -> _StoreSpec:
     return _StoreSpec(
         path=_AUTHORITY_STORE_PATH,
@@ -2311,6 +2345,7 @@ def _migrate_authority_v2(
             return False
         prior_specs = {
             1: (_authority_v1_spec(), len(_AUTHORITY_SCHEMA_V1)),
+            2: (_authority_v2_spec(), len(_AUTHORITY_SCHEMA_V2)),
         }
         prior = prior_specs.get(user_version)
         if prior is None:
@@ -5195,10 +5230,26 @@ class _AuthorityStore:
             evidence_ref, "evidence_ref"
         )
 
-        def verify(connection: sqlite3.Connection) -> str:
+        now = self._now()
+
+        def issue(connection: sqlite3.Connection) -> FinalEvalRecoveryLease:
             row = self._require_final_eval_binding(
                 connection, trusted_binding
             )
+            if row["saga_state"] not in ("RESULT_STAGED", "CLOSED"):
+                raise FinalEvalRecoveryError(
+                    "binding is not recoverable in its current state"
+                )
+            if row["result_claim_ref"] is None:
+                raise FinalEvalRecoveryError(
+                    "binding has no fixed result claim"
+                )
+            # CR010-R03: the recovery evidence MUST be the binding's fixed
+            # claim (evidence/outcome binding fails closed).
+            if str(row["result_claim_ref"]) != evidence:
+                raise FinalEvalRecoveryError(
+                    "recovery evidence must be the binding's fixed claim"
+                )
             lease_row = connection.execute(
                 "SELECT state, lease_secret_sha256 FROM task_tickets_v2 "
                 "WHERE ticket_id = ?",
@@ -5218,26 +5269,108 @@ class _AuthorityStore:
                 )
             ):
                 raise TaskTicketError("maintenance task lease is invalid")
-            return str(row["saga_state"])
-
-        state = _SqliteUnitOfWork(_authority_spec())._read(verify)
-        if state not in ("RESULT_STAGED", "CLOSED"):
-            raise FinalEvalRecoveryError(
-                "binding is not recoverable in its current state"
+            lease_id = "recovery_" + secrets.token_hex(16)
+            connection.execute(
+                """INSERT INTO final_eval_recovery_leases_v1
+                (lease_id, binding_id, maintenance_ticket_id, phase,
+                 attempt_id, state, evidence_ref, terminal_state,
+                 created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, 'ISSUED', ?, NULL, ?, NULL)""",
+                (
+                    lease_id,
+                    trusted_binding,
+                    maintenance_lease.ticket_id,
+                    maintenance_lease.phase.value,
+                    maintenance_lease.attempt_id,
+                    evidence,
+                    _utc_text(now),
+                ),
             )
-        return FinalEvalRecoveryLease(
-            _authority=self,
-            binding_id=trusted_binding,
-            evidence_ref=evidence,
-        )
+            return FinalEvalRecoveryLease(
+                _authority=self,
+                lease_id=lease_id,
+                binding_id=trusted_binding,
+                maintenance_ticket_id=maintenance_lease.ticket_id,
+                phase=maintenance_lease.phase,
+                attempt_id=maintenance_lease.attempt_id,
+                evidence_ref=evidence,
+            )
 
-    def _recover_final_eval_binding(
+        return _SqliteUnitOfWork(_authority_spec())._write(issue)
+
+    def _close_final_eval_binding(
+        self,
+        recovery_lease: FinalEvalRecoveryLease,
+    ) -> FinalEvalBindingSnapshot:
+        """CR010-R03: durable RESULT_STAGED -> CLOSED transition.
+
+        One separate, committed transaction: a crash AFTER this step leaves
+        the binding durably CLOSED (claim fixed, terminal still empty) and a
+        fresh process can finalize it -- the CLOSED boundary exists between
+        close and the Authority finish.
+        """
+        if not isinstance(recovery_lease, FinalEvalRecoveryLease):
+            raise FinalEvalRecoveryError(
+                "a FinalEvalRecoveryLease is required"
+            )
+        trusted_binding = recovery_lease.binding_id
+        now = self._now()
+
+        def close(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalBindingSnapshot:
+            lease_row = self._require_recovery_lease(
+                connection, recovery_lease
+            )
+            if lease_row["state"] != "ISSUED":
+                raise FinalEvalRecoveryError(
+                    "recovery lease is not ISSUED"
+                )
+            row = self._require_final_eval_binding(
+                connection, trusted_binding
+            )
+            if row["result_claim_ref"] is None:
+                raise FinalEvalRecoveryError(
+                    "binding has no fixed result claim"
+                )
+            if row["saga_state"] == "CLOSED":
+                # crash-replay: a fresh pass after CRASH_AFTER.CLOSED sees
+                # the binding already durably CLOSED; closing again is a
+                # no-op, the finalize step owns the terminal transition.
+                return _final_eval_snapshot_from_row(connection, trusted_binding)
+            if row["saga_state"] != "RESULT_STAGED":
+                raise FinalEvalRecoveryError(
+                    "binding is not RESULT_STAGED"
+                )
+            update = connection.execute(
+                """UPDATE final_eval_authorizations_v1
+                SET saga_state = 'CLOSED', saga_version = ?, updated_at = ?
+                WHERE ticket_id = ? AND saga_state = 'RESULT_STAGED'""",
+                (
+                    int(row["saga_version"]) + 1,
+                    _utc_text(now),
+                    trusted_binding,
+                ),
+            )
+            if update.rowcount != 1:
+                raise FinalEvalRecoveryError(
+                    "recovery close lost a concurrent race"
+                )
+            return _final_eval_snapshot_from_row(connection, trusted_binding)
+
+        return _SqliteUnitOfWork(_authority_spec())._write(close)
+
+    def _finalize_final_eval_binding(
         self,
         recovery_lease: FinalEvalRecoveryLease,
         *,
         terminal_state: str,
         evidence_ref: str,
     ) -> FinalEvalBindingSnapshot:
+        """CR010-R03: durable CLOSED -> AUTHORITY_TERMINAL + Authority
+        finish + lease COMPLETED transition (separate transaction from
+        close, so a crash between them is recoverable by a fresh process).
+        """
         if not isinstance(recovery_lease, FinalEvalRecoveryLease):
             raise FinalEvalRecoveryError(
                 "a FinalEvalRecoveryLease is required"
@@ -5253,42 +5386,27 @@ class _AuthorityStore:
         trusted_binding = recovery_lease.binding_id
         now = self._now()
 
-        def recover(
+        def finalize(
             connection: sqlite3.Connection,
         ) -> FinalEvalBindingSnapshot:
+            lease_row = self._require_recovery_lease(
+                connection, recovery_lease
+            )
+            if lease_row["state"] != "ISSUED":
+                raise FinalEvalRecoveryError(
+                    "recovery lease is not ISSUED"
+                )
             row = self._require_final_eval_binding(
                 connection, trusted_binding
             )
-            if row["saga_state"] not in ("RESULT_STAGED", "CLOSED"):
+            if row["saga_state"] != "CLOSED":
                 raise FinalEvalRecoveryError(
-                    "binding is not recoverable in its current state"
+                    "binding is not CLOSED"
                 )
-            if row["result_claim_ref"] is None:
+            if str(lease_row["evidence_ref"]) != evidence:
                 raise FinalEvalRecoveryError(
-                    "binding has no fixed result claim"
+                    "recovery evidence does not match the lease"
                 )
-            staged_update = connection.execute(
-                """UPDATE final_eval_authorizations_v1
-                SET saga_state = 'CLOSED', saga_version = ?, updated_at = ?
-                WHERE ticket_id = ? AND saga_state = 'RESULT_STAGED'""",
-                (
-                    int(row["saga_version"]) + 1,
-                    _utc_text(now),
-                    trusted_binding,
-                ),
-            )
-            if staged_update.rowcount not in (0, 1):
-                raise FinalEvalRecoveryError(
-                    "recovery closure lost a concurrent race"
-                )
-            if staged_update.rowcount == 0:
-                row = self._require_final_eval_binding(
-                    connection, trusted_binding
-                )
-                if row["saga_state"] != "CLOSED":
-                    raise FinalEvalRecoveryError(
-                        "recovery closure lost a concurrent race"
-                    )
             terminal_update = connection.execute(
                 """UPDATE final_eval_authorizations_v1
                 SET saga_state = 'AUTHORITY_TERMINAL', saga_version = ?,
@@ -5296,11 +5414,11 @@ class _AuthorityStore:
                 WHERE ticket_id = ? AND saga_state = 'CLOSED'
                       AND saga_version = ?""",
                 (
-                    int(row["saga_version"]) + 2,
+                    int(row["saga_version"]) + 1,
                     terminal,
                     _utc_text(now),
                     trusted_binding,
-                    int(row["saga_version"]) + 1,
+                    int(row["saga_version"]),
                 ),
             )
             if terminal_update.rowcount != 1:
@@ -5317,34 +5435,86 @@ class _AuthorityStore:
                 raise FinalEvalRecoveryError(
                     "final-eval ticket is not IN_PROGRESS"
                 )
+            connection.execute(
+                """UPDATE final_eval_recovery_leases_v1
+                SET state = 'COMPLETED', terminal_state = ?,
+                    completed_at = ?
+                WHERE lease_id = ? AND state = 'ISSUED'""",
+                (terminal, _utc_text(now), recovery_lease.lease_id),
+            )
             _insert_authority_outbox(
                 connection,
                 event_type="FINAL_EVAL_RECOVERED",
                 aggregate_id=trusted_binding,
                 payload={
-                    "ticket_id": trusted_binding,
-                    "terminal_binding": terminal,
+                    "binding_id": trusted_binding,
+                    "recovery_lease_id": recovery_lease.lease_id,
+                    "terminal_state": terminal,
                     "evidence_ref": evidence,
-                    "recovery_evidence_ref": recovery_lease.evidence_ref,
-                    "completed_at": _utc_text(now),
-                },
-                created_at=now,
-            )
-            _insert_authority_outbox(
-                connection,
-                event_type=f"TASK_{terminal}",
-                aggregate_id=trusted_binding,
-                payload={
-                    "ticket_id": trusted_binding,
-                    "state": terminal,
-                    "evidence_ref": evidence,
-                    "completed_at": _utc_text(now),
                 },
                 created_at=now,
             )
             return _final_eval_snapshot_from_row(connection, trusted_binding)
 
-        return _SqliteUnitOfWork(_authority_spec())._write(recover)
+        return _SqliteUnitOfWork(_authority_spec())._write(finalize)
+
+    def _recover_final_eval_binding(
+        self,
+        recovery_lease: FinalEvalRecoveryLease,
+        *,
+        terminal_state: str,
+        evidence_ref: str,
+    ) -> FinalEvalBindingSnapshot:
+        """Convenience: close then finalize in one call (two durable
+        transactions).  The reconciler uses the two steps separately with a
+        crash boundary between them."""
+        self._close_final_eval_binding(recovery_lease)
+        return self._finalize_final_eval_binding(
+            recovery_lease,
+            terminal_state=terminal_state,
+            evidence_ref=evidence_ref,
+        )
+
+    def _require_recovery_lease(
+        self,
+        connection: sqlite3.Connection,
+        recovery_lease: FinalEvalRecoveryLease,
+    ) -> sqlite3.Row:
+        """Validate the durable lease row against the in-memory lease:
+        identity, phase, attempt, maintenance ticket and binding must all
+        match (CR010-R03 fail-closed binding)."""
+        if not isinstance(recovery_lease, FinalEvalRecoveryLease):
+            raise FinalEvalRecoveryError(
+                "a FinalEvalRecoveryLease is required"
+            )
+        row = connection.execute(
+            "SELECT * FROM final_eval_recovery_leases_v1 "
+            "WHERE lease_id = ?",
+            (recovery_lease.lease_id,),
+        ).fetchone()
+        if row is None:
+            raise FinalEvalRecoveryError(
+                "recovery lease row is missing"
+            )
+        supplied_binding = (
+            recovery_lease.binding_id,
+            recovery_lease.maintenance_ticket_id,
+            recovery_lease.phase.value,
+            recovery_lease.attempt_id,
+            recovery_lease.evidence_ref,
+        )
+        stored_binding = (
+            str(row["binding_id"]),
+            str(row["maintenance_ticket_id"]),
+            str(row["phase"]),
+            str(row["attempt_id"]),
+            str(row["evidence_ref"]),
+        )
+        if supplied_binding != stored_binding:
+            raise FinalEvalRecoveryError(
+                "recovery lease identity binding mismatch"
+            )
+        return row
 
 
 @dataclass(frozen=True)
@@ -5377,24 +5547,66 @@ class FinalEvalBindingReceipt:
 
 
 class FinalEvalRecoveryLease:
-    """Bounded in-memory recovery capability with no OPEN_HOLDOUT effect."""
+    """Bounded recovery capability backed by a DURABLE lease row.
 
-    __slots__ = ("_authority", "_binding_id", "_evidence_ref")
+    CR010-R03: the lease is committed in final_eval_recovery_leases_v1 at
+    issue time (state ISSUED) and completed by the finalize transition, so
+    a fresh process can observe and continue a recovery after any crash.
+    It carries no OPEN_HOLDOUT effect.
+    """
+
+    __slots__ = (
+        "_authority",
+        "_lease_id",
+        "_binding_id",
+        "_maintenance_ticket_id",
+        "_phase",
+        "_attempt_id",
+        "_evidence_ref",
+    )
 
     def __init__(
         self,
         *,
         _authority: _AuthorityStore,
+        lease_id: str,
         binding_id: str,
+        maintenance_ticket_id: str,
+        phase: Phase,
+        attempt_id: str,
         evidence_ref: str,
     ) -> None:
         self._authority = _authority
+        self._lease_id = lease_id
         self._binding_id = binding_id
+        self._maintenance_ticket_id = maintenance_ticket_id
+        self._phase = phase
+        self._attempt_id = attempt_id
         self._evidence_ref = evidence_ref
+
+    @property
+    def lease_id(self) -> str:
+        return self._lease_id
 
     @property
     def binding_id(self) -> str:
         return self._binding_id
+
+    @property
+    def maintenance_ticket_id(self) -> str:
+        return self._maintenance_ticket_id
+
+    @property
+    def phase(self) -> Phase:
+        return self._phase
+
+    @property
+    def attempt_id(self) -> str:
+        return self._attempt_id
+
+    @property
+    def evidence_ref(self) -> str:
+        return self._evidence_ref
 
     @property
     def evidence_ref(self) -> str:

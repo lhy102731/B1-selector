@@ -180,7 +180,13 @@ def reconcile(
             # and recover the same binding (never reopened).
             if crash_hook is not None:
                 crash_hook("CRASH_AFTER.RECOVERY_LEASE")
-            authority._recover_final_eval_binding(
+            # CR010-R03: RESULT_STAGED -> CLOSED is ONE committed
+            # transaction; a crash here leaves the binding durably CLOSED
+            # (claim fixed, terminal empty) for a fresh process to finalize.
+            authority._close_final_eval_binding(recovery_lease)
+            if crash_hook is not None:
+                crash_hook("CRASH_AFTER.CLOSED")
+            authority._finalize_final_eval_binding(
                 recovery_lease,
                 terminal_state=terminal_state,
                 evidence_ref=evidence_ref,
