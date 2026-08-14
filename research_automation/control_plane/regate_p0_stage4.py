@@ -72,7 +72,8 @@ def main() -> int:
     try:
         ticket = conn.execute(
             "SELECT ticket_id, task_id, idempotency_key, task_spec_ref, "
-            "task_spec_sha256, state, grant_id FROM task_tickets_v2 "
+            "task_spec_sha256, state, grant_id, started_at, completed_at "
+            "FROM task_tickets_v2 "
             "WHERE attempt_id = ? AND task_id = ? AND state = 'SUCCEEDED' "
             "ORDER BY created_at DESC LIMIT 1",
             (ATTEMPT, f"P0-GATE-{ATTEMPT[-3:]}"),
@@ -91,6 +92,9 @@ def main() -> int:
         "scope_hash": grant[2],
         "instruction_policy_hash": grant[3],
     }
+    # TaskReport timestamps must EXACTLY match the authority ticket row.
+    ticket_started_at = str(ticket[7])
+    ticket_completed_at = str(ticket[8])
     evidence_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
         f"activation-{ticket_id[:16]}.json"
@@ -218,8 +222,8 @@ def main() -> int:
             "review_findings": [],
             "changed_files": [],
             "external_invocations": [],
-            "started_at": started.isoformat().replace("+00:00", "Z"),
-            "completed_at": completed.isoformat().replace("+00:00", "Z"),
+            "started_at": ticket_started_at,
+            "completed_at": ticket_completed_at,
             "side_effect_summary": {
                 "observed": ["WRITE_CONTROL_PLANE"],
                 "unauthorized": [],
