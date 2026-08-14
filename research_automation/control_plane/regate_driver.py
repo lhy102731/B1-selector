@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-009",
-        "task": "P6-GATE-009",
+        "attempt": "p6-attempt-010",
+        "task": "P6-GATE-010",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -266,7 +266,9 @@ def stage1(cfg: dict[str, object]) -> str:
                     "task_spec_ref": (
                         f"{cfg['dir']}/{attempt}/{env_rel}"
                     ),
-                    "task_spec_sha256": "1" * 64,
+                    "task_spec_sha256": hashlib.sha256(
+                        (ROOT / f"{cfg['dir']}/{attempt}/{env_rel}").read_bytes()
+                    ).hexdigest(),
                     "requirements": {
                         "required_test_receipt_ids": [],
                         "required_review_receipt_ids": [],
@@ -688,8 +690,12 @@ def stage3b(cfg: dict[str, object]) -> None:
                     "idempotency_key": (
                         f"{phase.lower()}-policy-activation-{attempt[-3:]}-{run_suffix}"
                     ),
-                    "task_spec_ref": "manifest.json",
-                    "task_spec_sha256": "1" * 64,
+                    "task_spec_ref": str(policy_path.relative_to(ROOT)).replace(
+                        "\\", "/"
+                    ),
+                    "task_spec_sha256": hashlib.sha256(
+                        policy_path.read_bytes()
+                    ).hexdigest(),
                     "requirements": {
                         "required_test_receipt_ids": [],
                         "required_review_receipt_ids": [],
@@ -941,6 +947,13 @@ def stage4(cfg: dict[str, object]) -> None:
     gate_baseline_doc = json.loads(
         (ROOT / gate_baseline_ref).read_text(encoding="utf-8")
     )
+    # task_spec_sha256 must be the REAL envelope blob hash (no placeholder
+    # in official evidence); the envelope is the activation manifest.
+    gate_spec_ref = str(ticket_spec.get("task_spec_ref", ""))
+    if gate_spec_ref:
+        ticket_spec["task_spec_sha256"] = hashlib.sha256(
+            (ROOT / gate_spec_ref).read_bytes()
+        ).hexdigest()
     ticket_spec["baseline_ref"] = gate_baseline_ref
     ticket_spec["baseline_sha256"] = str(
         gate_baseline_doc["baseline_payload_sha256"]
@@ -954,9 +967,11 @@ def stage4(cfg: dict[str, object]) -> None:
     )
     try:
         conn.execute(
-            "UPDATE task_tickets_v2 SET task_spec_payload_json = ? "
+            "UPDATE task_tickets_v2 SET task_spec_payload_json = ?, "
+            "task_spec_ref = ?, task_spec_sha256 = ? "
             "WHERE ticket_id = ?",
-            (spec_json, ticket_id),
+            (spec_json, ticket_spec["task_spec_ref"],
+             ticket_spec["task_spec_sha256"], ticket_id),
         )
         conn.commit()
     finally:
@@ -1061,8 +1076,10 @@ def stage4(cfg: dict[str, object]) -> None:
             ),
             "dependencies": [],
             "idempotency_key": ticket[2],
-            "task_spec_ref": ticket[3],
-            "task_spec_sha256": ticket[4],
+            "task_spec_ref": ticket_spec.get("task_spec_ref", ticket[3]),
+            "task_spec_sha256": ticket_spec.get(
+                "task_spec_sha256", ticket[4]
+            ),
             "requirements": ticket_spec.get("requirements", {}),
             "allowed_files": ticket_spec.get("allowed_files", []),
             "forbidden_files": ticket_spec.get("forbidden_files", []),
