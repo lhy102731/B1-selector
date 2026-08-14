@@ -1,0 +1,117 @@
+# Reviewer B — P8 Gate Review (CR-010, p8-attempt-005)
+
+## Files inspected (embedded committed evidence)
+
+- `research_state/control_plane/p8/attempts/p8-attempt-005/gates/official_p8_gate_v342_cr010.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/evidence/official_p8_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/task_report_gate.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/task_report_policy_activation.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/code_freeze_manifest.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/implementation_baseline.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/final_inventory.json`
+- `research_state/control_plane/p8/attempts/p8-attempt-005/external_scheduler_inventory.json`
+
+Also listed as committed but **not embedded** in the review material (cannot independently inspect):
+- `activation-envelopes/p8-gate-005.json`
+- `approval_record.json`
+- `evidence/activation-862838b3add5af94.json`
+- `evidence/policy-activation-d525fbdfe9b89045.json`
+- `evidence/cr010_review_p8_calls.json`
+- `evidence/cr010_reviewer_a_p8_prompt.txt`
+- `evidence/cr010_reviewer_a_p8_raw.txt`
+
+---
+
+## Findings
+
+### FIND-001 — Time causality: PASS
+**Severity:** Info / non-blocking
+**Refs:** `gates/official_p8_gate_v342_cr010.json`, `evidence/official_p8_closure_receipt_v342_cr010.json`
+
+- Gate `created_at`: `2026-08-14T09:50:33.733892Z`
+- Closure `closed_at`: `2026-08-14T09:50:42.624120Z`
+- `closed_at > created_at`: holds (Δ ≈ 8.89 s).
+- Closure `gate_report_sha256` = `8707b6c8a0b9b613e98ad9769e2f94884e5ae636290affe8fd378137d641671f`, matching the gate report's `gate_report_sha256`.
+- Closure `grant_id` = `grant_6aecffec269dab973a9e7cff480121e4`, matching the gate's `authority_snapshot.active_grant_ids[0]`.
+- Closure `tickets` array matches `authority_snapshot.succeeded_ticket_ids` exactly (both ticket IDs).
+
+### FIND-002 — Evidence blob / ticket binding: PASS
+**Severity:** Info / non-blocking
+**Refs:** all embedded files
+
+- Gate report references `final_inventory`, `code_freeze_manifest`, `implementation_baseline`, `scheduler_inventory`, and `reviewed_entry_policy` by path + SHA-256.
+- `task_report_gate.json` ticket `862838b3add5af94...` matches evidence file `evidence/activation-862838b3add5af94.json` (and receipt_id `test-862838b3add5af94`).
+- `task_report_policy_activation.json` ticket `d525fbdfe9b89045...` matches evidence file `evidence/policy-activation-d525fbdfe9b89045.json` (and review receipt `review-policy-d525fbdfe9b89045`).
+- `authority_snapshot.succeeded_ticket_ids` = both task ticket IDs; `failed_ticket_ids`, `in_doubt_ticket_ids`, `open_ticket_ids` all empty; `pending_outbox_count` = 0.
+- `reviewed_entry_policy.sha256` = `dbe4e2fd...` matches `authority_snapshot.active_entry_policy_sha256` and `task_report_policy_activation.task_spec_sha256`.
+- `external_scheduler_inventory.json` `task_xml.path` SHA-256 `200c98df8867e503a33634383bd699a84b8c691e2a16f0352d33b106b35930cd` matches `final_inventory.json` external scheduler entry `content_sha256`.
+- `code_freeze_manifest.json` `git_commit` = `4b213a4c5fce404d8fcdfed1288091136ecf222b`, `git_tree` = `adab51cc6ff038fbbfb2b5dae2482b2632a74f9d` — both match the candidate.
+- Identity binding (`instruction_policy_hash`/`plan_hash`/`scope_hash` = `974406ea...`) is consistent across gate, task reports, code freeze manifest, final inventory, and implementation baseline.
+- `implementation_baseline.json` `baseline_payload_sha256` = `3f0fc6ab...` matches `baseline_sha256` in both task reports.
+
+### FIND-003 — Test receipt full contract: PASS
+**Severity:** Info / non-blocking
+**Refs:** `task_report_gate.json`, `evidence/gate_tests_stderr.json`, `evidence/gate_tests_stdout.json`, `gates/official_p8_gate_v342_cr010.json`
+
+- Command: `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`
+- `exit_code`: 0; `result`: PASS.
+- stderr: `Ran 250 tests in 240.427s` / `OK`.
+- stdout: empty (consistent with `text: ""`).
+- `candidate_commit` / `candidate_tree` in test receipt match the candidate.
+- `started_at_utc` `2026-08-14T09:46:33.156859Z` → `completed_at_utc` `2026-08-14T09:50:33.722779Z` (Δ ≈ 240.566 s, consistent with the reported 240.427 s test runtime).
+- `executable` Python 3.13.12, `cwd` `D:\workspace\a-share-quant-selector-main`, `lock_hash` recorded.
+- `stderr_ref` / `stdout_ref` paths and SHA-256 hashes recorded in the task report.
+- `task_report_policy_activation.json` has `required_test_receipt_ids: []` and `test_receipts: []` — correct, policy activation does not require test receipts.
+
+### FIND-004 — Hard-crash / reconciler / side-effect claims: PASS
+**Severity:** Info / non-blocking
+**Refs:** all embedded files
+
+- `reason_codes`: `[]` in gate report and both task reports.
+- `unresolved_risks`: `[]` in gate report.
+- `unexpected_changes`: `[]` in gate report, `task_report_gate.json`, and `task_report_policy_activation.json`.
+- `side_effect_summary.observed`: `["WRITE_CONTROL_PLANE"]` in gate and both task reports; `unauthorized`: `[]` everywhere.
+- `file_delta_summary.changed_files`: `[]`; `unexpected_changes`: `[]` in gate report.
+- `code_freeze_manifest.json` `active_tracked_dirty_paths`: `[]`; `nonblocking_tracked_dirty_paths`: `[]`.
+- `implementation_baseline.json` `file_state_count`: 0; `protected_tracked_changes`: `[]`; `large_data_scanned`: false; `production_or_research_task_started`: false.
+- stderr terminates with `OK`; no traceback, no reconciler error strings.
+- `scheduler_inventory.status`: `VERIFIED`; `external_scheduler_inventory.json` `unresolved_risk`: `"none observed at p8-attempt-005 snapshot"`.
+
+### FIND-005 — C0 official 24-cycle evidence chain: NOT VERIFIED / BLOCKING
+**Severity:** High
+**Refs:** all embedded gate/closure evidence, especially `gates/official_p8_gate_v342_cr010.json`, `evidence/official_p8_closure_receipt_v342_cr010.json`, `final_inventory.json`, `external_scheduler_inventory.json`
+
+Required verification item (5) asks me to confirm the C0 official 24-cycle evidence chain. I searched every embedded committed artifact for any of the following:
+
+- the literal token `C0`;
+- any `cycle` / `24-cycle` / `evidence_chain` field;
+- any reference to a canonical-origin (C0) chain binding this P8 gate to a 24-cycle authority ledger.
+
+**None of these appear in any embedded file.** Concretely:
+
+- `official_p8_gate_v342_cr010.json` contains `authority_snapshot`, `task_reports`, `test_receipts`, `side_effect_summary`, `identity_binding`, `reviewed_entry_policy`, `code_freeze_manifest`, `final_inventory`, `scheduler_inventory`, `implementation_baseline` — **no C0 / 24-cycle field**.
+- `official_p8_closure_receipt_v342_cr010.json` `trust_root` asserts only:
+  > `CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at.`
+  
+  This is sufficient for time causality (FIND-001) but does **not** constitute or reference a C0 24-cycle evidence chain.
+- `final_inventory.json` (600 entries) contains no `C0` or `24-cycle` tagged entry.
+- `external_scheduler_inventory.json` records the Windows Task Scheduler entry `/A股选股` with `unresolved_risk: "none observed"` but no C0 chain.
+- `code_freeze_manifest.json`, `implementation_baseline.json`, `task_report_gate.json`, `task_report_policy_activation.json`, `gate_tests_stderr.json`, `gate_tests_stdout.json` — none reference C0 or a 24-cycle chain.
+
+The four committed files that could plausibly carry the C0 chain — `activation-envelopes/p8-gate-005.json`, `approval_record.json`, `evidence/activation-862838b3add5af94.json`, `evidence/policy-activation-d525fbdfe9b89045.json` — are listed in the candidate tree but **were not embedded** in the review material, so I cannot independently inspect them. The `evidence/cr010_review_p8_calls.json` file (also committed, not embedded) might document the review calls that established the C0 chain, but I likewise cannot verify it.
+
+The authority snapshot is internally clean (1 active grant, 2 succeeded tickets, 0 failed / in-doubt / open / pending-outbox), and the closure receipt binds the same grant and tickets — but a clean authority state is not, by itself, an explicit C0 24-cycle evidence chain. The chain must be either produced in committed evidence that I can inspect or mechanically derivable from the embedded artifacts; neither condition is met.
+
+---
+
+## Final verdict
+
+**HOLD**
+
+Mechanical gate mechanics — closure causality (FIND-001), blob/ticket binding (FIND-002), test receipt contract (FIND-003), and absence of crashes / unauthorized side effects (FIND-004) — are all internally consistent and PASS.
+
+However, required verification item (5), the C0 official 24-cycle evidence chain, is **not demonstrated in any embedded committed artifact**, and the four committed files most likely to carry it (`activation-envelopes/p8-gate-005.json`, `approval_record.json`, `evidence/activation-862838b3add5af94.json`, `evidence/policy-activation-d525fbdfe9b89045.json`) were not made available for independent inspection. The closure receipt's `trust_root` covers only CR-010 F-01 (canonical UTC time causality), not the C0 24-cycle chain.
+
+I cannot approve P8 closure for p8-attempt-005 until the C0 official 24-cycle evidence chain is either (a) produced in committed evidence that is independently inspectable at the candidate tree, or (b) mechanically derivable from the embedded artifacts in a way that is explicitly named (not inferred). This HOLD is consistent with Reviewer A's blocking finding on the same item.

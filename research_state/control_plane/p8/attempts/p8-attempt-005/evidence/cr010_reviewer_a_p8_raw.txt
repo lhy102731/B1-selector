@@ -1,0 +1,88 @@
+## Review basis
+
+I reviewed the following committed evidence paths under `research_state/control_plane/p8/attempts/p8-attempt-005/`:
+
+- `gates/official_p8_gate_v342_cr010.json`
+- `evidence/official_p8_closure_receipt_v342_cr010.json`
+- `evidence/gate_tests_stdout.json`
+- `evidence/gate_tests_stderr.json`
+- `task_report_gate.json`
+- `task_report_policy_activation.json`
+- `code_freeze_manifest.json`
+- `implementation_baseline.json`
+- `final_inventory.json`
+- `external_scheduler_inventory.json`
+
+I also noted that `activation-envelopes/p8-gate-005.json` and `approval_record.json` are listed as committed files but were not embedded in the review material, so I could not independently inspect their contents.
+
+---
+
+## Findings
+
+### FIND-001 — Time causality: PASS
+**Severity:** Info / non-blocking  
+**Ref:** `official_p8_gate_v342_cr010.json`, `official_p8_closure_receipt_v342_cr010.json`
+
+- Gate `created_at`: `2026-08-14T09:50:33.733892Z`
+- Closure `closed_at`: `2026-08-14T09:50:42.624120Z`
+- `closed_at > created_at` holds.
+- The closure receipt references the same `gate_report_sha256`: `8707b6c8a0b9b613e98ad9769e2f94884e5ae636290affe8fd378137d641671f`.
+
+### FIND-002 — Evidence/blob cross-binding: PASS with caveat
+**Severity:** Info / non-blocking  
+**Ref:** `official_p8_gate_v342_cr010.json`, `task_report_gate.json`, `task_report_policy_activation.json`
+
+- The gate report references `final_inventory` and `code_freeze_manifest` by path and SHA-256.
+- `task_report_gate` uses ticket ID `862838b3add5af94...`, matching the activation evidence filename `activation-862838b3add5af94.json`.
+- `task_report_policy_activation` uses ticket ID `d525fbdfe9b89045...`, matching `policy-activation-d525fbdfe9b89045.json`.
+- The external scheduler inventory hash `200c98...` is also reflected in `final_inventory.json` for the external scheduler entry.
+- I cannot recompute all SHA-256 values from the files not embedded in the prompt, but the internal metadata cross-references are consistent.
+
+### FIND-003 — Test receipt full contract: PASS
+**Severity:** Info / non-blocking  
+**Ref:** `task_report_gate.json`, `evidence/gate_tests_stderr.json`
+
+- Command:
+  `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`
+- `exit_code`: `0`
+- Result: `PASS`
+- Runtime reported: `250 tests in 240.427s`, with `OK` in stderr.
+- Candidate commit/tree in test receipt match the candidate:
+  - commit `4b213a4c5fce404d8fcdfed1288091136ecf222b`
+  - tree `adab51cc6ff038fbbfb2b5dae2482b2632a74f9d`
+- `started_at_utc` and `completed_at_utc` are consistent with the elapsed test duration.
+
+### FIND-004 — Hard-crash / reconciler claims: PASS
+**Severity:** Info / non-blocking  
+**Ref:** `evidence/gate_tests_stderr.json`, `task_report_gate.json`
+
+- No crash or reconciler failure is indicated.
+- Stderr ends with `OK`.
+- `unexpected_changes` is empty in both task reports and gate report.
+- `side_effect_summary` records only `WRITE_CONTROL_PLANE`, with no unauthorized side effects.
+
+### FIND-005 — C0 official 24-cycle evidence chain: NOT VERIFIED / BLOCKING
+**Severity:** High  
+**Ref:** all embedded gate evidence, especially `official_p8_gate_v342_cr010.json`, `official_p8_closure_receipt_v342_cr010.json`, `final_inventory.json`, `external_scheduler_inventory.json`
+
+The required verification item asks me to confirm the C0 official 24-cycle evidence chain. In the embedded committed evidence, I found:
+
+- no `C0` artifact;
+- no `24-cycle` field or evidence chain;
+- no explicit evidence-chain record linking the P8 gate to a C0 24-cycle official chain.
+
+The closure receipt’s `trust_root` only asserts:
+
+> `closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at.`
+
+That is sufficient for time causality but not for the C0 24-cycle evidence chain.
+
+I also could not inspect `activation-envelopes/p8-gate-005.json` or `approval_record.json` because their contents were not provided in the review material. If the C0 chain is supposed to be recorded in either of those files, it is not independently verifiable from the evidence supplied.
+
+---
+
+## Final verdict
+
+**HOLD**
+
+The verifiable gate mechanics — closure causality, task report binding, test receipt, and absence of crash/reconciler failure — are internally consistent. However, the C0 official 24-cycle evidence chain required by the review checklist is not demonstrated in the embedded evidence, and the two likely locations for it were not available for inspection. I cannot approve P8 closure until that chain is either produced in the committed evidence or otherwise independently verifiable.
