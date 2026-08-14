@@ -189,6 +189,18 @@ def main() -> int:
     (ROOT / baseline_ref).write_text(
         canonical_json(baseline), encoding="utf-8", newline="\n"
     )
+    # action content hash is the run_select.bat FILE hash from the final
+    # inventory (must match its file:run_select.bat entry); the task_xml
+    # sha (dddd...) is the scheduler entry content hash.
+    run_select_sha = "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890"
+    for entry in inventory.get("entries", []):
+        if (
+            isinstance(entry, dict)
+            and entry.get("entry_id") == "file:run_select.bat"
+            and entry.get("content_sha256")
+        ):
+            run_select_sha = str(entry["content_sha256"])
+            break
     scheduler_doc = {
         "schema_version": "control_plane.external_scheduler_inventory.v1",
         "phase": PHASE,
@@ -205,7 +217,10 @@ def main() -> int:
             "execute": scheduler_records[0]["action"] if scheduler_records else "D:/workspace/run_select.bat",
             "arguments": None,
             "working_directory": None,
-            "content_sha256": scheduler_records[0]["content_sha256"] if scheduler_records else "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
+            # action content hash is the run_select.bat FILE hash (must
+            # match the final inventory's file:run_select.bat entry); the
+            # task_xml sha (dddd...) is the scheduler entry content hash.
+            "content_sha256": run_select_sha,
         },
         "principal": {
             "logon_type": "Interactive",
