@@ -164,12 +164,19 @@ def main() -> int:
             # fail the gate).
             import hashlib as _hl
 
+            from research_automation.control_plane.task_reports import (
+                review_findings_sha256,
+            )
+
+            review_receipt_id = f"review-policy-{ticket.ticket_id[:16]}"
             review_payload = {
-                "receipt_id": f"review-policy-{ticket.ticket_id[:16]}",
+                "receipt_id": review_receipt_id,
                 "reviewer_id": reviewer.actor_id,
                 "exit_code": 0,
                 "result": "PASS",
-                "findings_sha256": policy["review_receipt_sha256"],
+                "findings_sha256": review_findings_sha256(
+                    review_receipt_id, []
+                ),
             }
             review_json = json.dumps(
                 review_payload, ensure_ascii=False, sort_keys=True,

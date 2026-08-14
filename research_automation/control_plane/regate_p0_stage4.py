@@ -154,6 +154,7 @@ def main() -> int:
     print("TICKET_SPEC_BOUND")
     from research_automation.control_plane.task_reports import (
         build_task_report_v2,
+        review_findings_sha256,
     )
 
     # full-contract test receipt (F-05): real command + stdout/stderr hashes
@@ -335,21 +336,14 @@ def main() -> int:
         "task_report_policy_activation.json"
     )
     policy_spec = json.loads(str(policy_ticket[9]))
-    # findings_sha256 for the policy review receipt is the policy document's
-    # review_receipt_sha256 (the independent reviewer binding).
-    policy_review_hash = "0" * 64
-    for candidate in (
-        ROOT / "research_state/control_plane/policies"
-    ).glob("*.json"):
-        try:
-            doc = json.loads(candidate.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        if doc.get("attempt_id") == ATTEMPT and doc.get(
-            "review_receipt_sha256"
-        ):
-            policy_review_hash = str(doc["review_receipt_sha256"])
-            break
+    # findings_sha256 for the policy review receipt is derived from the
+    # report's review_findings (empty list => hash of no findings), which
+    # must match the authority REVIEW receipt payload (stage3b writes the
+    # same derived value).
+    policy_review_receipt_id = f"review-policy-{policy_ticket[0][:16]}"
+    policy_review_hash = review_findings_sha256(
+        policy_review_receipt_id, []
+    )
     policy_report = build_task_report_v2(
         {
             "plan_version": PLAN_VERSION,
