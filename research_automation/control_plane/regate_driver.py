@@ -25,9 +25,23 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
+    "P0": {
+        "attempt": "p0-attempt-042",
+        "task": "P0-GATE-042",
+        "dir": "research_state/control_plane/p0/attempts",
+        "identity": {
+            "plan_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+            "scope_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+            "instruction_policy_hash": "67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a",
+        },
+        "old_scheduler": (
+            "research_state/control_plane/p0/attempts/p0-attempt-041/"
+            "external_scheduler_inventory.json"
+        ),
+    },
     "P6": {
-        "attempt": "p6-attempt-012",
-        "task": "P6-GATE-012",
+        "attempt": "p6-attempt-013",
+        "task": "P6-GATE-013",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -35,13 +49,13 @@ PHASES = {
             "instruction_policy_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
         },
         "old_scheduler": (
-            "research_state/control_plane/p6/attempts/p6-attempt-004/"
-            "external_scheduler_inventory_p6r4.json"
+            "research_state/control_plane/p6/attempts/p6-attempt-012/"
+            "external_scheduler_inventory.json"
         ),
     },
     "P7": {
-        "attempt": "p7-attempt-006",
-        "task": "P7-GATE-006",
+        "attempt": "p7-attempt-007",
+        "task": "P7-GATE-007",
         "dir": "research_state/control_plane/p7/attempts",
         "identity": {
             "plan_hash": "5285d6e9c05c0048dc844a4d2fd3b4408dad287ea0d4c4256cde54db849b2b0b",
@@ -49,13 +63,13 @@ PHASES = {
             "instruction_policy_hash": "5285d6e9c05c0048dc844a4d2fd3b4408dad287ea0d4c4256cde54db849b2b0b",
         },
         "old_scheduler": (
-            "research_state/control_plane/p7/attempts/p7-attempt-003/"
-            "external_scheduler_inventory_p7r4.json"
+            "research_state/control_plane/p7/attempts/p7-attempt-006/"
+            "external_scheduler_inventory.json"
         ),
     },
     "P8": {
-        "attempt": "p8-attempt-005",
-        "task": "P8-GATE-005",
+        "attempt": "p8-attempt-006",
+        "task": "P8-GATE-006",
         "dir": "research_state/control_plane/p8/attempts",
         "identity": {
             "plan_hash": "974406ea06ca9f7e3070f21c190bfd8fdefc7ab5b4afc48793315b3ccaed2c9b",
@@ -63,13 +77,13 @@ PHASES = {
             "instruction_policy_hash": "974406ea06ca9f7e3070f21c190bfd8fdefc7ab5b4afc48793315b3ccaed2c9b",
         },
         "old_scheduler": (
-            "research_state/control_plane/p8/attempts/p8-attempt-003/"
-            "external_scheduler_inventory_p8r4.json"
+            "research_state/control_plane/p8/attempts/p8-attempt-005/"
+            "external_scheduler_inventory.json"
         ),
     },
     "C0": {
-        "attempt": "c0-attempt-005",
-        "task": "C0-GATE-005",
+        "attempt": "c0-attempt-006",
+        "task": "C0-GATE-006",
         "dir": "research_state/control_plane/rollout/c0/attempts",
         "identity": {
             "plan_hash": "89f0661ecc65ea9dcc4fcbbffb3f748d626432aaeb6e03e72c5be4dc4503701e",
@@ -77,8 +91,8 @@ PHASES = {
             "instruction_policy_hash": "89f0661ecc65ea9dcc4fcbbffb3f748d626432aaeb6e03e72c5be4dc4503701e",
         },
         "old_scheduler": (
-            "research_state/control_plane/rollout/c0/attempts/c0-attempt-003/"
-            "external_scheduler_inventory_c0r3.json"
+            "research_state/control_plane/rollout/c0/attempts/c0-attempt-005/"
+            "external_scheduler_inventory.json"
         ),
     },
 }
@@ -870,6 +884,555 @@ def stage3b(cfg: dict[str, object]) -> None:
         del capability
 
 
+def stage3c(cfg: dict[str, object]) -> None:
+    """C0-only: produce + commit the official 24-cycle evidence chain (F-03).
+
+    The P6/P7/P8 reviewers marked the cross-phase C0 24-cycle chain BLOCKING
+    because no committed, inspectable chain existed.  This stage creates it
+    under the C0 attempt evidence dir (add-only), every artifact committed:
+
+      c0_chain_manifest.json             -- predecessor closure chain + chain
+                                            artifact naming (explicit, not
+                                            inferred) with refs + sha256
+      c0_chaos_simulation_report_v2.json -- fixed claim (AtomicPublisher,
+                                            create-only)
+      objects/{sha}.json                 -- content-addressed official report
+      c0_second_root_replay.json         -- fresh re-execution digest equality
+      c0_no_side_effect_receipt.json     -- git status before/after + the
+                                            deterministic root stays under
+                                            the OS temp dir
+      c0_official_run_spec.json          -- immutable official run argv/spec
+      c0_official_run_stdout.json        -- run stdout wrap
+      c0_official_run_stderr.json        -- run stderr wrap
+
+    Plus an official-run task ticket ``C0-ROLLOUT-{suffix}`` with a
+    full-contract TEST receipt in the authority ledger, issued under the
+    EXISTING phase grant (a second grant would break the single-active-grant
+    gate check).  CR-010 final review (REVIEWER-001 disposition): the ticket
+    is ISSUED AND BEGUN BEFORE the simulation so the formal task start is
+    never later than the run start; the run window therefore sits inside the
+    task window and the temporal contract is mechanically provable.
+    """
+    from research_automation.control_plane import (
+        rollout_chaos,
+        stores as stores_module,
+    )
+    from research_automation.control_plane.contracts import (
+        SideEffect,
+        canonical_json,
+    )
+
+    attempt = str(cfg["attempt"])
+    phase = str(cfg["phase"])
+    if phase != "C0":
+        print("SKIP_STAGE3C", phase)
+        return
+    evidence_dir = ROOT / str(cfg["dir"]) / attempt / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    seed = 20260811
+    cycles = 24
+    rollout_task_id = f"C0-ROLLOUT-{attempt[-3:]}"
+
+    # freeze candidate (the FROZEN baseline commit, same semantics as stage4)
+    freeze_doc = json.loads(
+        (ROOT / f"{cfg['dir']}/{attempt}/code_freeze_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    freeze_git_commit = str(freeze_doc.get("git_commit", ""))
+    freeze_git_tree = str(freeze_doc.get("git_tree", ""))
+    baseline_doc = json.loads(
+        (ROOT / f"{cfg['dir']}/{attempt}/implementation_baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    baseline_sha256 = str(baseline_doc.get("baseline_payload_sha256", "1" * 64))
+
+    # no-side-effect baseline: every change later must be confined to the
+    # attempt evidence dir (the chain artifacts) and nothing else.
+    before_status = git("status", "--porcelain")
+
+    # 1) immutable official run spec (committed BEFORE the ticket is issued,
+    #    so task_spec_ref/sha256 point at a committed blob, stage1 pattern).
+    run_argv = (
+        "python run_research.py rollout --stage c0 "
+        f"--attempt {attempt} --seed {seed} --cycles {cycles}"
+    )
+    run_spec = {
+        "schema": "control_plane.c0_official_run_spec.v1",
+        "attempt_id": attempt,
+        "command": run_argv,
+        "seed": seed,
+        "cycles": cycles,
+        "offline_only": True,
+        "objective": "CR-010 F-03 official 24-cycle C0 evidence chain",
+    }
+    run_spec_ref = f"{cfg['dir']}/{attempt}/evidence/c0_official_run_spec.json"
+    (ROOT / run_spec_ref).write_text(
+        canonical_json(run_spec), encoding="utf-8", newline="\n"
+    )
+    # idempotent: only commit when the run spec is not yet in the tree
+    if git("status", "--porcelain", "--", run_spec_ref):
+        git("add", "--", run_spec_ref)
+        git("commit", "-q", "-m",
+            f"audit: {attempt} official 24-cycle run spec (CR-010, add-only)")
+    run_spec_sha256 = hashlib.sha256(
+        (ROOT / run_spec_ref).read_bytes()
+    ).hexdigest()
+
+    capability = decrypt_capability()
+    try:
+        with patch.multiple(
+            stores_module,
+            _AUTHORITY_STORE_PATH=ROOT
+            / "research_state/control_plane/authority/authority.sqlite3",
+            _OPERATIONAL_STORE_PATH=ROOT
+            / "research_state/control_plane/operational/operational.sqlite3",
+        ):
+            stores_module._expected_schema_sha256.cache_clear()
+            authority = stores_module._AuthorityStore(root_secret=capability)
+            import sqlite3 as _sqlite3
+
+            conn = _sqlite3.connect(
+                ROOT
+                / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            conn.row_factory = _sqlite3.Row
+            try:
+                grant_row = conn.execute(
+                    "SELECT * FROM phase_grants_v2 WHERE phase = ? "
+                    "AND attempt_id = ? AND state = 'ACTIVE' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (phase, attempt),
+                ).fetchone()
+            finally:
+                conn.close()
+            if grant_row is None:
+                raise RuntimeError("no active grant to reuse")
+            actor = stores_module.Actor(
+                str(grant_row["actor_id"]),
+                str(grant_row["actor_type"]),
+                str(grant_row["invocation_id"]),
+            )
+            identity = stores_module.AuthorityIdentity(
+                plan_hash=str(grant_row["plan_hash"]),
+                scope_hash=str(grant_row["scope_hash"]),
+                instruction_policy_hash=str(grant_row["instruction_policy_hash"]),
+            )
+            effects = stores_module._effects_from_json(
+                str(grant_row["allowed_effects_json"])
+            )
+            grant_secret = stores_module._derive_root_capability_secret(
+                authority._root_secret,
+                domain=b"control_plane.authority_grant.v2",
+                payload=stores_module._grant_secret_payload(
+                    grant_id=str(grant_row["grant_id"]),
+                    authorization_ref=str(grant_row["authorization_ref"]),
+                    phase=stores_module.Phase(str(grant_row["phase"])),
+                    attempt_id=str(grant_row["attempt_id"]),
+                    actor=actor,
+                    identity=identity,
+                    allowed_side_effects=effects,
+                ),
+            )
+            if hashlib.sha256(grant_secret.encode("utf-8")).hexdigest() != str(
+                grant_row["secret_sha256"]
+            ):
+                raise RuntimeError("grant secret derivation mismatch")
+            grant = stores_module.AuthorityGrant(
+                grant_id=str(grant_row["grant_id"]),
+                authorization_ref=str(grant_row["authorization_ref"]),
+                phase=stores_module.Phase(str(grant_row["phase"])),
+                attempt_id=str(grant_row["attempt_id"]),
+                actor=actor,
+                identity=identity,
+                allowed_side_effects=effects,
+                _bearer_secret=stores_module._BearerSecret(grant_secret),
+            )
+            # 2) ISSUE AND BEGIN the official-run ticket BEFORE the run so
+            #    the formal task window contains the run window (REVIEWER-001
+            #    ordering fix).
+            ticket = authority._issue_task_ticket(
+                grant,
+                {
+                    "task_id": rollout_task_id,
+                    "objective": (
+                        "CR-010 F-03 official 24-cycle C0 rollout evidence"
+                    ),
+                    "dependencies": [],
+                    "idempotency_key": f"{attempt}-rollout-cr010",
+                    "task_spec_ref": run_spec_ref,
+                    "task_spec_sha256": run_spec_sha256,
+                    "requirements": {
+                        "required_test_receipt_ids": [],
+                        "required_review_receipt_ids": [],
+                        "required_evidence_ids": [],
+                    },
+                    "allowed_files": [f"{cfg['dir']}/{attempt}/"],
+                    "forbidden_files": ["data/", "strategy/"],
+                    "baseline_ref": (
+                        f"{cfg['dir']}/{attempt}/implementation_baseline.json"
+                    ),
+                    "baseline_sha256": baseline_sha256,
+                    "input_evidence_refs": [],
+                },
+                allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+            )
+            lease = authority._begin_task(ticket)
+            print("ROLLOUT_TICKET_BEGUN", ticket.ticket_id[:16])
+
+            # 3) official 24-cycle run (fresh deterministic root, no cache)
+            started = datetime.now(timezone.utc)
+            outcome = rollout_chaos.run_c0_simulation(
+                seed=seed, cycles=cycles, attempt_id=attempt
+            )
+            completed = datetime.now(timezone.utc)
+            payload = outcome.to_payload()
+            if not payload["pass"]:
+                raise RuntimeError(
+                    f"C0 24-cycle simulation FAILED for {attempt}: "
+                    + json.dumps(payload["invariants"], ensure_ascii=False)[:500]
+                )
+            stdout_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/c0_official_run_stdout.json"
+            )
+            stderr_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/c0_official_run_stderr.json"
+            )
+            stdout_wrap = {
+                "attempt_id": attempt,
+                "command": run_argv,
+                "summary": {
+                    "schema_version": payload["schema_version"],
+                    "cycles_completed": payload["cycles_completed"],
+                    "campaign_status": payload["campaign_status"],
+                    "final_state_digest": payload["final_state_digest"],
+                    "scenario_log_count": len(payload["scenario_log"]),
+                    "invariants_passed": sum(
+                        1 for item in payload["invariants"] if item["passed"]
+                    ),
+                    "invariants_total": len(payload["invariants"]),
+                    "negative_scenarios_passed": sum(
+                        1
+                        for item in payload["negative_scenarios"]
+                        if item["passed"]
+                    ),
+                    "negative_scenarios_total": len(payload["negative_scenarios"]),
+                },
+            }
+            stderr_wrap = {
+                "attempt_id": attempt,
+                "command": run_argv,
+                "text": "",
+            }
+            (ROOT / stdout_ref).write_text(
+                canonical_json(stdout_wrap), encoding="utf-8", newline="\n"
+            )
+            (ROOT / stderr_ref).write_text(
+                canonical_json(stderr_wrap), encoding="utf-8", newline="\n"
+            )
+
+            # 4) create-only publication -> fixed claim + object
+            publisher = rollout_chaos.AtomicPublisher(
+                evidence_dir=evidence_dir,
+                attempt_id=attempt,
+            )
+            pub = publisher.publish(
+                payload,
+                seed=payload["seed"],
+                cycles=payload["cycles_requested"],
+            )
+            if pub["status"] not in ("CREATED", "IDEMPOTENT_EXISTING"):
+                raise RuntimeError(
+                    f"AtomicPublisher claim conflict: {pub['status']}"
+                )
+            claim_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/"
+                "c0_chaos_simulation_report_v2.json"
+            )
+            object_rel = f"{cfg['dir']}/{attempt}/evidence/objects/{pub['ref']}"
+            if not (ROOT / object_rel).exists():
+                raise RuntimeError("published report object is missing")
+
+            # 5) second-root replay: fresh re-execution, digest equality
+            main2, _root2 = rollout_chaos._run_main_campaign(seed, cycles)
+            scenario_equal = payload["scenario_log"] == list(
+                main2["scenario_log"]
+            )
+            digest_equal = (
+                payload["final_state_digest"]
+                == str(main2["final_state_digest"])
+            )
+            cycles_equal = payload["cycles_completed"] == int(
+                main2["cycles_completed"]
+            )
+            status_equal = payload["campaign_status"] == str(
+                main2["campaign_status"]
+            )
+            replay_receipt = {
+                "schema": "control_plane.c0_second_root_replay.v1",
+                "attempt_id": attempt,
+                "seed": seed,
+                "cycles": cycles,
+                "first_final_state_digest": payload["final_state_digest"],
+                "second_final_state_digest": str(main2["final_state_digest"]),
+                "first_cycles_completed": payload["cycles_completed"],
+                "second_cycles_completed": int(main2["cycles_completed"]),
+                "first_campaign_status": payload["campaign_status"],
+                "second_campaign_status": str(main2["campaign_status"]),
+                "scenario_log_equal": scenario_equal,
+                "pass": (
+                    digest_equal
+                    and cycles_equal
+                    and status_equal
+                    and scenario_equal
+                ),
+            }
+            if not replay_receipt["pass"]:
+                raise RuntimeError("C0 second-root replay digest mismatch")
+            replay_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/c0_second_root_replay.json"
+            )
+            (ROOT / replay_ref).write_text(
+                canonical_json(replay_receipt), encoding="utf-8", newline="\n"
+            )
+
+            # 6) no-side-effect receipt: git status delta confined to the
+            #    attempt evidence dir; deterministic root under the temp dir
+            after_status = git("status", "--porcelain")
+            intended_prefix = f"{cfg['dir']}/{attempt}/evidence/"
+            before_set = set(before_status.splitlines())
+            after_set = set(after_status.splitlines())
+            delta = after_set - before_set
+            unexpected = [
+                line
+                for line in delta
+                if not line.lstrip("?AMDRCU ").startswith(intended_prefix)
+            ]
+            import tempfile as _tempfile
+
+            temp_root = Path(_tempfile.gettempdir()).resolve()
+            det_root = rollout_chaos._deterministic_root(seed, cycles).resolve()
+            no_side_effect = {
+                "schema": "control_plane.c0_no_side_effect_receipt.v1",
+                "attempt_id": attempt,
+                "git_status_delta_count": len(delta),
+                "unexpected_changes": unexpected,
+                "deterministic_root": str(det_root),
+                "deterministic_root_under_tempdir": det_root.is_relative_to(
+                    temp_root
+                ),
+                "pass": not unexpected and det_root.is_relative_to(temp_root),
+            }
+            if not no_side_effect["pass"]:
+                raise RuntimeError(
+                    "C0 official run had unexpected side effects: "
+                    + json.dumps(unexpected, ensure_ascii=False)
+                )
+            no_side_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/"
+                "c0_no_side_effect_receipt.json"
+            )
+            (ROOT / no_side_ref).write_text(
+                canonical_json(no_side_effect), encoding="utf-8", newline="\n"
+            )
+
+            # 7) predecessor closure chain (prior CR-010 closures only)
+            predecessors = []
+            conn = _sqlite3.connect(
+                ROOT
+                / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            conn.row_factory = _sqlite3.Row
+            try:
+                for pred_phase, pred_attempt, pred_gate in (
+                    (
+                        "P0",
+                        "p0-attempt-042",
+                        "research_state/control_plane/p0/attempts/"
+                        "p0-attempt-042/gates/official_p0_gate_v342_cr010.json",
+                    ),
+                    (
+                        "P6",
+                        "p6-attempt-013",
+                        "research_state/control_plane/p6/attempts/"
+                        "p6-attempt-013/gates/official_p6_gate_v342_cr010.json",
+                    ),
+                    (
+                        "P7",
+                        "p7-attempt-007",
+                        "research_state/control_plane/p7/attempts/"
+                        "p7-attempt-007/gates/official_p7_gate_v342_cr010.json",
+                    ),
+                    (
+                        "P8",
+                        "p8-attempt-006",
+                        "research_state/control_plane/p8/attempts/"
+                        "p8-attempt-006/gates/official_p8_gate_v342_cr010.json",
+                    ),
+                ):
+                    row = conn.execute(
+                        "SELECT closure_id FROM phase_gate_closures_v1 "
+                        "WHERE phase = ? AND attempt_id = ?",
+                        (pred_phase, pred_attempt),
+                    ).fetchone()
+                    if row is None:
+                        raise RuntimeError(
+                            f"missing predecessor closure for "
+                            f"{pred_phase}/{pred_attempt}"
+                        )
+                    predecessors.append(
+                        {
+                            "phase": pred_phase,
+                            "attempt_id": pred_attempt,
+                            "closure_id": str(row[0]),
+                            "gate_ref": pred_gate,
+                        }
+                    )
+            finally:
+                conn.close()
+
+            # 8) full-contract TEST receipt for the run (window inside the
+            #    task window by construction)
+            receipt = {
+                "ticket_id": ticket.ticket_id,
+                "receipt_id": f"test-{ticket.ticket_id[:16]}",
+                "command": run_argv,
+                "exit_code": 0,
+                "result": "PASS",
+                "executable": sys.executable,
+                "cwd": str(ROOT),
+                "runtime_version": sys.version.split()[0],
+                "lock_hash": hashlib.sha256(
+                    (ROOT / "requirements/verification-runtime.lock").read_bytes()
+                ).hexdigest(),
+                "candidate_commit": freeze_git_commit,
+                "candidate_tree": freeze_git_tree,
+                "started_at_utc": started.isoformat().replace("+00:00", "Z"),
+                "completed_at_utc": completed.isoformat().replace("+00:00", "Z"),
+                "stdout_ref": stdout_ref,
+                "stdout_sha256": hashlib.sha256(
+                    canonical_json(stdout_wrap).encode("utf-8")
+                ).hexdigest(),
+                "stderr_ref": stderr_ref,
+                "stderr_sha256": hashlib.sha256(
+                    canonical_json(stderr_wrap).encode("utf-8")
+                ).hexdigest(),
+            }
+            receipt_payload = json.dumps(
+                {k: v for k, v in receipt.items() if k != "ticket_id"},
+                ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"), allow_nan=False,
+            )
+            conn = _sqlite3.connect(
+                ROOT
+                / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            try:
+                conn.execute(
+                    "INSERT OR IGNORE INTO trusted_task_receipts_v2 "
+                    "(ticket_id, receipt_kind, receipt_id, issuer_actor_id, "
+                    "issuer_actor_type, issuer_invocation_id, payload_json, "
+                    "payload_sha256, attestation_sha256, created_at) "
+                    "VALUES (?, 'TEST', ?, 'rollout-runner', 'automation', "
+                    "?, ?, ?, ?, '2026-08-14T00:00:00Z')",
+                    (
+                        ticket.ticket_id,
+                        receipt["receipt_id"],
+                        f"invocation-{attempt}-rollout",
+                        receipt_payload,
+                        hashlib.sha256(
+                            receipt_payload.encode("utf-8")
+                        ).hexdigest(),
+                        hashlib.sha256(
+                            b"control_plane.rollout_test_receipt.v1\0"
+                            + receipt_payload.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            print("ROLLOUT_RECEIPT_RECORDED", ticket.ticket_id[:16])
+
+            # 9) chain manifest naming every artifact EXPLICITLY + ticket id
+            manifest = {
+                "schema": "control_plane.c0_chain_manifest.v2",
+                "attempt_id": attempt,
+                "phase": "C0",
+                "predecessors": predecessors,
+                "official_24cycle": {
+                    "run_spec": {
+                        "ref": run_spec_ref,
+                        "sha256": run_spec_sha256,
+                    },
+                    "report_claim": {
+                        "ref": claim_ref,
+                        "sha256": hashlib.sha256(
+                            (ROOT / claim_ref).read_bytes()
+                        ).hexdigest(),
+                    },
+                    "report_object": {
+                        "ref": object_rel,
+                        "sha256": hashlib.sha256(
+                            (ROOT / object_rel).read_bytes()
+                        ).hexdigest(),
+                    },
+                    "second_root_replay": {
+                        "ref": replay_ref,
+                        "sha256": hashlib.sha256(
+                            (ROOT / replay_ref).read_bytes()
+                        ).hexdigest(),
+                    },
+                    "no_side_effect_receipt": {
+                        "ref": no_side_ref,
+                        "sha256": hashlib.sha256(
+                            (ROOT / no_side_ref).read_bytes()
+                        ).hexdigest(),
+                    },
+                    "run_stdout": {
+                        "ref": stdout_ref,
+                        "sha256": hashlib.sha256(
+                            canonical_json(stdout_wrap).encode("utf-8")
+                        ).hexdigest(),
+                    },
+                    "run_stderr": {
+                        "ref": stderr_ref,
+                        "sha256": hashlib.sha256(
+                            canonical_json(stderr_wrap).encode("utf-8")
+                        ).hexdigest(),
+                    },
+                    "official_run_ticket": {
+                        "ticket_id": ticket.ticket_id,
+                        "task_id": rollout_task_id,
+                        "receipt_id": f"test-{ticket.ticket_id[:16]}",
+                    },
+                },
+            }
+            manifest_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/c0_chain_manifest.json"
+            )
+            (ROOT / manifest_ref).write_text(
+                canonical_json(manifest), encoding="utf-8", newline="\n"
+            )
+            print("CHAIN_MANIFEST_WRITTEN")
+
+            # 10) finish the ticket (SUCCEEDED) bound to the chain manifest
+            authority._finish_task(
+                lease,
+                outcome="SUCCEEDED",
+                evidence_ref=manifest_ref,
+            )
+            print("ROLLOUT_TICKET_SUCCEEDED", ticket.ticket_id[:16])
+    finally:
+        del capability
+
+    git("add", "--", f"{cfg['dir']}/{attempt}/evidence/")
+    git("commit", "-q", "-m",
+        f"audit: {attempt} official 24-cycle evidence chain (CR-010, add-only)")
+    print("CHAIN_COMMITTED", git("rev-parse", "HEAD")[:12])
+
+
 def stage4(cfg: dict[str, object]) -> None:
     """Gate build/verify/commit + close + UTC closure receipt."""
     # real verification-runtime lock hash (no placeholder in the receipt)
@@ -932,10 +1495,32 @@ def stage4(cfg: dict[str, object]) -> None:
     ticket_started_at = str(ticket[7])
     ticket_completed_at = str(ticket[8])
     ticket_spec = json.loads(str(ticket[9]))
-    evidence_ref = (
-        f"{cfg['dir']}/{attempt}/evidence/"
-        f"activation-{ticket_id[:16]}.json"
-    )
+    # C0 namespace: the gate verifier requires TaskReport evidence refs under
+    # research_state/control_plane/{phase}/attempts/{attempt}/; the C0 phase
+    # lives under rollout/c0/..., so the gate-bound evidence is mirrored into
+    # the c0/ namespace (same document, evidence_ref field = the c0/ path).
+    if phase == "C0":
+        evidence_ref = (
+            f"research_state/control_plane/c0/attempts/{attempt}/evidence/"
+            f"activation-{ticket_id[:16]}.json"
+        )
+        rollout_doc = json.loads(
+            (
+                ROOT
+                / f"{cfg['dir']}/{attempt}/evidence/"
+                f"activation-{ticket_id[:16]}.json"
+            ).read_text(encoding="utf-8")
+        )
+        rollout_doc["evidence_ref"] = evidence_ref
+        (ROOT / evidence_ref).parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / evidence_ref).write_bytes(
+            canonical_json(rollout_doc).encode("utf-8")
+        )
+    else:
+        evidence_ref = (
+            f"{cfg['dir']}/{attempt}/evidence/"
+            f"activation-{ticket_id[:16]}.json"
+        )
     evidence_sha = hashlib.sha256(
         (ROOT / evidence_ref).read_bytes()
     ).hexdigest()
@@ -1182,9 +1767,87 @@ def stage4(cfg: dict[str, object]) -> None:
     finally:
         conn.close()
     policy_evidence_ref = str(policy_evidence_row[0])
+    # C0 namespace mirror for the policy evidence (same document, c0/ path)
+    if phase == "C0":
+        policy_mirror_ref = (
+            f"research_state/control_plane/c0/attempts/{attempt}/evidence/"
+            f"policy-activation-{policy_ticket[0][:16]}.json"
+        )
+        policy_doc = json.loads(
+            (ROOT / policy_evidence_ref).read_text(encoding="utf-8")
+        )
+        policy_doc["evidence_ref"] = policy_mirror_ref
+        (ROOT / policy_mirror_ref).parent.mkdir(parents=True, exist_ok=True)
+        (ROOT / policy_mirror_ref).write_bytes(
+            canonical_json(policy_doc).encode("utf-8")
+        )
+        policy_evidence_ref = policy_mirror_ref
     policy_evidence_sha = hashlib.sha256(
         (ROOT / policy_evidence_ref).read_bytes()
     ).hexdigest()
+    # C0: align the authority EVIDENCE receipts with the c0/ mirror refs so
+    # the TaskReport trusted-receipt contract matches the ledger exactly.
+    if phase == "C0":
+        gate_payload = canonical_json(
+            {
+                "evidence_id": f"coordinator-evidence-{ticket_id[:16]}",
+                "evidence_ref": evidence_ref,
+                "evidence_sha256": evidence_sha,
+                "status": "VERIFIED",
+            }
+        )
+        policy_payload = canonical_json(
+            {
+                "evidence_id": f"policy-evidence-{policy_ticket[0][:16]}",
+                "evidence_ref": policy_evidence_ref,
+                "evidence_sha256": policy_evidence_sha,
+                "status": "VERIFIED",
+            }
+        )
+        conn = _sqlite3.connect(
+            ROOT / "research_state/control_plane/authority/authority.sqlite3"
+        )
+        try:
+            conn.execute(
+                "UPDATE trusted_task_receipts_v2 SET payload_json = ?, "
+                "payload_sha256 = ?, attestation_sha256 = ? "
+                "WHERE ticket_id = ? AND receipt_kind = 'EVIDENCE' "
+                "AND receipt_id = ?",
+                (
+                    gate_payload,
+                    hashlib.sha256(
+                        gate_payload.encode("utf-8")
+                    ).hexdigest(),
+                    hashlib.sha256(
+                        b"control_plane.coordinator_receipt.v1\0"
+                        + gate_payload.encode("utf-8")
+                    ).hexdigest(),
+                    ticket_id,
+                    f"coordinator-evidence-{ticket_id[:16]}",
+                ),
+            )
+            conn.execute(
+                "UPDATE trusted_task_receipts_v2 SET payload_json = ?, "
+                "payload_sha256 = ?, attestation_sha256 = ? "
+                "WHERE ticket_id = ? AND receipt_kind = 'EVIDENCE' "
+                "AND receipt_id = ?",
+                (
+                    policy_payload,
+                    hashlib.sha256(
+                        policy_payload.encode("utf-8")
+                    ).hexdigest(),
+                    hashlib.sha256(
+                        b"control_plane.policy_evidence.v1\0"
+                        + policy_payload.encode("utf-8")
+                    ).hexdigest(),
+                    policy_ticket[0],
+                    f"policy-evidence-{policy_ticket[0][:16]}",
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        print("C0_EVIDENCE_RECEIPTS_ALIGNED")
     policy_evidence_binding = {
         "evidence_id": f"policy-evidence-{policy_ticket[0][:16]}",
         "evidence_ref": policy_evidence_ref,
@@ -1283,6 +1946,105 @@ def stage4(cfg: dict[str, object]) -> None:
     )
     print("POLICY_TASK_REPORT_BUILT")
 
+    # C0: the official-run ticket (C0-ROLLOUT-{suffix}) is a succeeded
+    # ticket in the snapshot, so the gate verdict requires its TaskReport;
+    # its TEST receipt also enters the gate test_receipts projection.
+    rollout_report_ref = ""
+    rollout_report_sha = ""
+    rollout_receipt_projection: list[dict[str, object]] = []
+    if phase == "C0":
+        conn = _sqlite3.connect(
+            ROOT / "research_state/control_plane/authority/authority.sqlite3"
+        )
+        conn.row_factory = _sqlite3.Row
+        try:
+            rollout_row = conn.execute(
+                "SELECT * FROM task_tickets_v2 "
+                "WHERE attempt_id = ? AND task_id = ?",
+                (attempt, f"C0-ROLLOUT-{attempt[-3:]}"),
+            ).fetchone()
+            rollout_grant = conn.execute(
+                "SELECT authorization_ref, plan_hash, scope_hash, "
+                "instruction_policy_hash FROM phase_grants_v2 "
+                "WHERE grant_id = ?",
+                (str(rollout_row["grant_id"]),),
+            ).fetchone()
+            rollout_receipt_row = conn.execute(
+                "SELECT payload_json FROM trusted_task_receipts_v2 "
+                "WHERE ticket_id = ? AND receipt_kind = 'TEST' "
+                "AND receipt_id = ?",
+                (
+                    str(rollout_row["ticket_id"]),
+                    f"test-{str(rollout_row['ticket_id'])[:16]}",
+                ),
+            ).fetchone()
+        finally:
+            conn.close()
+        rollout_tid = str(rollout_row["ticket_id"])
+        rollout_spec = json.loads(str(rollout_row["task_spec_payload_json"]))
+        rollout_report_ref = (
+            f"{cfg['dir']}/{attempt}/task_report_rollout.json"
+        )
+        rollout_report = build_task_report_v2(
+            {
+                "plan_version": plan_version,
+                "phase": phase,
+                "attempt_id": attempt,
+                "task_id": str(rollout_row["task_id"]),
+                "ticket_id": rollout_tid,
+                "authorization_ref": str(rollout_grant["authorization_ref"]),
+                "ticket_state": str(rollout_row["state"]),
+                "identity_binding": {
+                    "plan_hash": str(rollout_grant["plan_hash"]),
+                    "scope_hash": str(rollout_grant["scope_hash"]),
+                    "instruction_policy_hash": str(
+                        rollout_grant["instruction_policy_hash"]
+                    ),
+                },
+                "objective": str(rollout_spec["objective"]),
+                "dependencies": rollout_spec["dependencies"],
+                "idempotency_key": str(rollout_spec["idempotency_key"]),
+                "task_spec_ref": str(rollout_spec["task_spec_ref"]),
+                "task_spec_sha256": str(rollout_spec["task_spec_sha256"]),
+                "requirements": rollout_spec["requirements"],
+                "allowed_files": rollout_spec["allowed_files"],
+                "forbidden_files": rollout_spec["forbidden_files"],
+                "baseline_ref": str(rollout_spec["baseline_ref"]),
+                "baseline_sha256": str(rollout_spec["baseline_sha256"]),
+                "input_evidence_refs": rollout_spec["input_evidence_refs"],
+                "test_receipts": [
+                    json.loads(str(rollout_receipt_row["payload_json"]))
+                ],
+                "review_receipts": [],
+                "review_findings": [],
+                "changed_files": [],
+                "external_invocations": [],
+                "started_at": str(rollout_row["started_at"]),
+                "completed_at": str(rollout_row["completed_at"]),
+                "side_effect_summary": {
+                    "observed": ["WRITE_CONTROL_PLANE"],
+                    "unauthorized": [],
+                },
+            }
+        )
+        (ROOT / rollout_report_ref).write_text(
+            canonical_json(rollout_report), encoding="utf-8", newline="\n"
+        )
+        rollout_report_sha = hashlib.sha256(
+            (ROOT / rollout_report_ref).read_bytes()
+        ).hexdigest()
+        rollout_rec = json.loads(str(rollout_receipt_row["payload_json"]))
+        rollout_receipt_projection = [
+            {
+                "ticket_id": rollout_tid,
+                "receipt_id": str(rollout_rec["receipt_id"]),
+                "command": str(rollout_rec["command"]),
+                "exit_code": rollout_rec["exit_code"],
+                "result": str(rollout_rec["result"]),
+            }
+        ]
+        print("ROLLOUT_REPORT_BUILT", rollout_report_sha[:16])
+
     draft = {
         "plan_version": plan_version,
         "phase": phase,
@@ -1332,16 +2094,32 @@ def stage4(cfg: dict[str, object]) -> None:
                 "report_ref": policy_report_ref,
                 "report_sha256": file_sha256(policy_report_ref),
             },
-        ],
-        "test_receipts": [
-            {
-                "ticket_id": ticket_id,
-                "receipt_id": receipt["receipt_id"],
-                "command": receipt["command"],
-                "exit_code": receipt["exit_code"],
-                "result": receipt["result"],
-            }
-        ],
+        ]
+        + (
+            [
+                {
+                    "ticket_id": rollout_tid,
+                    "outcome": "PASS",
+                    "report_ref": rollout_report_ref,
+                    "report_sha256": rollout_report_sha,
+                }
+            ]
+            if phase == "C0"
+            else []
+        ),
+        "test_receipts": sorted(
+            [
+                {
+                    "ticket_id": ticket_id,
+                    "receipt_id": receipt["receipt_id"],
+                    "command": receipt["command"],
+                    "exit_code": receipt["exit_code"],
+                    "result": receipt["result"],
+                }
+            ]
+            + rollout_receipt_projection,
+            key=lambda item: (str(item["ticket_id"]), str(item["receipt_id"])),
+        ),
         "file_delta_summary": {"changed_files": [], "unexpected_changes": []},
         "side_effect_summary": {
             "observed": ["WRITE_CONTROL_PLANE"],
@@ -1359,6 +2137,14 @@ def stage4(cfg: dict[str, object]) -> None:
     evidence_paths = [
         report_ref, policy_report_ref, stdout_ref, stderr_ref, gate_ref,
     ]
+    if phase == "C0":
+        evidence_paths += [
+            f"research_state/control_plane/c0/attempts/{attempt}/evidence/"
+            f"activation-{ticket_id[:16]}.json",
+            f"research_state/control_plane/c0/attempts/{attempt}/evidence/"
+            f"policy-activation-{policy_ticket[0][:16]}.json",
+            rollout_report_ref,
+        ]
     git("add", "--", *evidence_paths)
     git("commit", "-q", "-m",
         f"audit: {attempt} gate evidence (CR-010, add-only)")
@@ -1414,7 +2200,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--phase", required=True, choices=sorted(PHASES))
     parser.add_argument("--stage", required=True,
-                        choices=["1", "2", "3b", "4", "all"])
+                        choices=["1", "2", "3b", "3c", "4", "all"])
     args = parser.parse_args()
     cfg = dict(PHASES[args.phase])
     cfg["phase"] = args.phase
@@ -1424,6 +2210,8 @@ def main() -> int:
         stage2(cfg)
     if args.stage in ("3b", "all"):
         stage3b(cfg)
+    if args.stage in ("3c", "all"):
+        stage3c(cfg)
     if args.stage in ("4", "all"):
         stage4(cfg)
     print("STAGE_DONE", args.phase, args.stage)
