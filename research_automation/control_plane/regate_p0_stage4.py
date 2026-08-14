@@ -127,11 +127,15 @@ def main() -> int:
     )
     (ROOT / stdout_ref).parent.mkdir(parents=True, exist_ok=True)
     (ROOT / stderr_ref).parent.mkdir(parents=True, exist_ok=True)
+    # attempt id makes the blob unique across attempts (post-freeze
+    # evidence must not reuse an existing blob)
+    stdout_wrap = {"attempt_id": ATTEMPT, "text": result.stdout}
+    stderr_wrap = {"attempt_id": ATTEMPT, "text": result.stderr}
     (ROOT / stdout_ref).write_text(
-        canonical_json({"text": result.stdout}), encoding="utf-8", newline="\n"
+        canonical_json(stdout_wrap), encoding="utf-8", newline="\n"
     )
     (ROOT / stderr_ref).write_text(
-        canonical_json({"text": result.stderr}), encoding="utf-8", newline="\n"
+        canonical_json(stderr_wrap), encoding="utf-8", newline="\n"
     )
     receipt = {
         "ticket_id": ticket_id,
@@ -149,11 +153,11 @@ def main() -> int:
         "completed_at_utc": completed.isoformat().replace("+00:00", "Z"),
         "stdout_ref": stdout_ref,
         "stdout_sha256": hashlib.sha256(
-            canonical_json({"text": result.stdout}).encode("utf-8")
+            canonical_json(stdout_wrap).encode("utf-8")
         ).hexdigest(),
         "stderr_ref": stderr_ref,
         "stderr_sha256": hashlib.sha256(
-            canonical_json({"text": result.stderr}).encode("utf-8")
+            canonical_json(stderr_wrap).encode("utf-8")
         ).hexdigest(),
     }
     if result.returncode != 0:
