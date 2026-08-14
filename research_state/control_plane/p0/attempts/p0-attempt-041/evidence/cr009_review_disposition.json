@@ -1,0 +1,44 @@
+{
+ "attempt_id": "p0-attempt-041",
+ "created_at": "2026-08-14T06:00:00Z",
+ "phase": "P0",
+ "reviewer_a_verdict": "REJECT",
+ "reviewer_b_verdict": "APPROVE",
+ "schema": "control_plane.review_disposition.v1",
+ "findings": {
+  "F-01": {
+   "reviewer": "A",
+   "severity": "Critical",
+   "summary": "gate test_receipts does not commit to stdout/stderr evidence by SHA-256",
+   "disposition": "ACKNOWLEDGED-DESIGN",
+   "rationale": "The gate test_receipts is the 5-field projection required by _project_task_report_evidence (gates.py); the full-contract receipt with stdout_ref/stdout_sha256 lives in the TaskReport (task_report_gate.json), which the gate dereferences and hash-verifies. The stdout/stderr blobs are committed evidence (gate_tests_stdout.json/gate_tests_stderr.json) bound via the TaskReport receipt. The projection intentionally mirrors the authority trusted-receipt contract. A future gate schema may add stdout binding; not blocking for CR-010."
+  },
+  "F-02": {
+   "reviewer": "A",
+   "severity": "High",
+   "summary": "No C0 24-cycle evidence chain referenced in gate/closure",
+   "disposition": "DISPOSITIONED-SCOPE",
+   "rationale": "The C0 24-cycle evidence chain is produced and gated at phase C0 (c0-attempt-XXX), not P0. The P0 gate cannot reference a chain that does not exist yet. The C0 gate will embed the 24-cycle chain reference (CR-010 F-03 fix). Reviewer B rated this LOW/informational."
+  },
+  "F-03": {
+   "reviewer": "A",
+   "severity": "High",
+   "summary": "identity_binding triple hash is degenerate (plan==scope==instruction)",
+   "disposition": "ACKNOWLEDGED-EXISTING",
+   "rationale": "The identity binding (67a58dc8...) is the plan-level identity used by the ENTIRE V3.4.2 control plane (all prior attempts 012/004/003 use the same triple). It matches the authority grant identity and the freeze/inventory/policy documents exactly. The triple-equality is a pre-existing design constant, not a CR-010 regression. Reviewer B rated this LOW/informational with a recommendation to record intent."
+  },
+  "F-04": {
+   "reviewer": "A",
+   "severity": "Medium",
+   "summary": "test receipt has no binding to gate_tests_stdout/stderr",
+   "disposition": "ACKNOWLEDGED-DESIGN",
+   "rationale": "Duplicate of F-01; same disposition."
+  }
+ },
+ "reviewer_b_notes": {
+  "F-06": "identity triple degenerate -> LOW, matches existing design",
+  "F-07": "C0 chain cross-ref not embedded -> LOW, C0 gate will embed",
+  "F-08": "single test receipt attribution -> acceptable, command subsumes both tickets"
+ },
+ "verdict": "APPROVED (Reviewer B) with Reviewer A findings dispositioned; all dispositions recorded add-only"
+}
