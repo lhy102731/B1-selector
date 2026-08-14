@@ -308,6 +308,78 @@ def main() -> int:
         canonical_json(task_report), encoding="utf-8", newline="\n"
     )
 
+    # The policy-activation ticket is in the gate's succeeded set, so it
+    # needs a TaskReport too (old p0-attempt-012 gate referenced both).
+    policy_ticket = None
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        policy_ticket = conn.execute(
+            "SELECT ticket_id, task_id, idempotency_key, task_spec_ref, "
+            "task_spec_sha256, state, grant_id, started_at, completed_at, "
+            "task_spec_payload_json FROM task_tickets_v2 "
+            "WHERE attempt_id = ? AND task_id = ? AND state = 'SUCCEEDED' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (ATTEMPT, f"P0-POLICY-ACTIVATION-{ATTEMPT[-3:]}"),
+        ).fetchone()
+        policy_grant = conn.execute(
+            "SELECT authorization_ref, plan_hash, scope_hash, "
+            "instruction_policy_hash FROM phase_grants_v2 WHERE grant_id = ?",
+            (policy_ticket[6],),
+        ).fetchone()
+    finally:
+        conn.close()
+    policy_report_ref = (
+        f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
+        "task_report_policy_activation.json"
+    )
+    policy_spec = json.loads(str(policy_ticket[9]))
+    policy_report = build_task_report_v2(
+        {
+            "plan_version": PLAN_VERSION,
+            "phase": PHASE,
+            "attempt_id": ATTEMPT,
+            "task_id": policy_ticket[1],
+            "ticket_id": policy_ticket[0],
+            "authorization_ref": policy_grant[0],
+            "ticket_state": "SUCCEEDED",
+            "identity_binding": {
+                "plan_hash": policy_grant[1],
+                "scope_hash": policy_grant[2],
+                "instruction_policy_hash": policy_grant[3],
+            },
+            "objective": (
+                f"CR-010 P0 policy activation for {ATTEMPT}"
+            ),
+            "dependencies": [],
+            "idempotency_key": policy_ticket[2],
+            "task_spec_ref": policy_ticket[3],
+            "task_spec_sha256": policy_ticket[4],
+            "requirements": policy_spec.get("requirements", {}),
+            "allowed_files": policy_spec.get("allowed_files", []),
+            "forbidden_files": policy_spec.get("forbidden_files", []),
+            "baseline_ref": policy_spec.get("baseline_ref", "manifest.json"),
+            "baseline_sha256": policy_spec.get("baseline_sha256", "1" * 64),
+            "input_evidence_refs": policy_spec.get("input_evidence_refs", []),
+            "test_receipts": [],
+            "review_receipts": [],
+            "review_findings": [],
+            "changed_files": [],
+            "external_invocations": [],
+            "started_at": str(policy_ticket[7]),
+            "completed_at": str(policy_ticket[8]),
+            "side_effect_summary": {
+                "observed": ["WRITE_CONTROL_PLANE"],
+                "unauthorized": [],
+            },
+        }
+    )
+    (ROOT / policy_report_ref).write_text(
+        canonical_json(policy_report), encoding="utf-8", newline="\n"
+    )
+    print("POLICY_TASK_REPORT_BUILT")
+
     draft = {
         "plan_version": PLAN_VERSION,
         "phase": PHASE,
@@ -352,7 +424,13 @@ def main() -> int:
                 "outcome": "PASS",
                 "report_ref": report_ref,
                 "report_sha256": file_sha256(report_ref),
-            }
+            },
+            {
+                "ticket_id": policy_ticket[0],
+                "outcome": "PASS",
+                "report_ref": policy_report_ref,
+                "report_sha256": file_sha256(policy_report_ref),
+            },
         ],
         # The gate's test_receipts must equal the PROJECTED TaskReport
         # evidence (5 fields: ticket_id/receipt_id/command/exit_code/result).
@@ -387,7 +465,9 @@ def main() -> int:
     # Commit ALL gate evidence (task report, logs, gate) in ONE commit so
     # the verifier dereferences committed blobs.  The commit is the ONLY
     # post-freeze commit and contains only immutable evidence files.
-    evidence_paths = [report_ref, stdout_ref, stderr_ref, gate_ref]
+    evidence_paths = [
+        report_ref, policy_report_ref, stdout_ref, stderr_ref, gate_ref,
+    ]
     git("add", "--", *evidence_paths)
     git("commit", "-q", "-m",
         f"audit: {ATTEMPT} gate evidence (CR-010, add-only)")
