@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-006",
-        "task": "P6-GATE-006",
+        "attempt": "p6-attempt-007",
+        "task": "P6-GATE-007",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -1062,11 +1062,33 @@ def stage4(cfg: dict[str, object]) -> None:
     policy_spec = json.loads(str(policy_ticket[9]))
     policy_review_receipt_id = f"review-policy-{policy_ticket[0][:16]}"
     policy_review_hash = review_findings_sha256(policy_review_receipt_id, [])
+    # the policy evidence binding (the policy file itself)
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        policy_evidence_row = conn.execute(
+            "SELECT evidence_ref FROM task_tickets_v2 WHERE ticket_id = ?",
+            (policy_ticket[0],),
+        ).fetchone()
+    finally:
+        conn.close()
+    policy_evidence_ref = str(policy_evidence_row[0])
+    policy_evidence_sha = hashlib.sha256(
+        (ROOT / policy_evidence_ref).read_bytes()
+    ).hexdigest()
+    policy_evidence_binding = {
+        "evidence_id": f"policy-evidence-{policy_ticket[0][:16]}",
+        "evidence_ref": policy_evidence_ref,
+        "evidence_sha256": policy_evidence_sha,
+        "status": "VERIFIED",
+    }
     policy_spec["requirements"] = {
         "required_test_receipt_ids": [],
         "required_review_receipt_ids": [policy_review_receipt_id],
-        "required_evidence_ids": [],
+        "required_evidence_ids": [f"policy-evidence-{policy_ticket[0][:16]}"],
     }
+    policy_spec["input_evidence_refs"] = [policy_evidence_binding]
     policy_spec["baseline_ref"] = gate_baseline_ref
     policy_spec["baseline_sha256"] = str(
         gate_baseline_doc["baseline_payload_sha256"]
@@ -1088,22 +1110,6 @@ def stage4(cfg: dict[str, object]) -> None:
     finally:
         conn.close()
     print("POLICY_TICKET_SPEC_BOUND")
-    # the policy evidence binding (the policy file itself, from the
-    # authority ticket evidence_ref)
-    conn = _sqlite3.connect(
-        ROOT / "research_state/control_plane/authority/authority.sqlite3"
-    )
-    try:
-        policy_evidence_row = conn.execute(
-            "SELECT evidence_ref FROM task_tickets_v2 WHERE ticket_id = ?",
-            (policy_ticket[0],),
-        ).fetchone()
-    finally:
-        conn.close()
-    policy_evidence_ref = str(policy_evidence_row[0])
-    policy_evidence_sha = hashlib.sha256(
-        (ROOT / policy_evidence_ref).read_bytes()
-    ).hexdigest()
     policy_report = build_task_report_v2(
         {
             "plan_version": plan_version,
