@@ -1,0 +1,154 @@
+# Reviewer B — P0 Gate Review: p0-attempt-042 (V3.4.2-CR010)
+
+## Files Inspected (all from candidate ae8f25d / tree c130c03)
+
+1. `research_state/control_plane/p0/attempts/p0-attempt-042/gates/official_p0_gate_v342_cr010.json`
+2. `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/official_p0_closure_receipt_v342_cr010.json`
+3. `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/gate_tests_stdout.json`
+4. `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/gate_tests_stderr.json`
+5. `research_state/control_plane/p0/attempts/p0-attempt-042/task_report_gate.json`
+6. `research_state/control_plane/p0/attempts/p0-attempt-042/task_report_policy_activation.json`
+7. `research_state/control_plane/p0/attempts/p0-attempt-042/code_freeze_manifest.json`
+8. `research_state/control_plane/p0/attempts/p0-attempt-042/final_inventory.json`
+9. `research_state/control_plane/p0/attempts/p0-attempt-042/implementation_baseline.json`
+10. `research_state/control_plane/p0/attempts/p0-attempt-042/external_scheduler_inventory.json`
+
+---
+
+## Verification Results
+
+### 1. Gate/Closure Time Causality — **PASS**
+
+| Field | Value |
+|---|---|
+| Gate `created_at` | `2026-08-14T14:15:02.767437Z` |
+| Closure `closed_at` | `2026-08-14T14:17:05.481045Z` |
+| Delta | ~2 min 3 sec |
+
+`closed_at > created_at` is mechanically provable. The closure receipt's `trust_root` explicitly states: *"CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at."*
+
+Cross-bind: Closure `gate_report_sha256` = `5a35634f...` matches Gate `gate_report_sha256` = `5a35634f...` ✓
+
+### 2. Evidence Blob Binding — **PASS**
+
+**Ticket 6487aef3 (Gate task):**
+- Task report references evidence `activation-6487aef3aeff3f37.json` with sha256 `5d135aca...` — file is in committed evidence list ✓
+- Task report `baseline_sha256` = `23604348...` matches `implementation_baseline.json` `baseline_payload_sha256` = `23604348...` ✓
+- Task report `report_payload_sha256` = `c832b9f5...` (payload scope); Gate's `report_sha256` = `289fa62a...` (file scope) — different scopes, expected ✓
+
+**Ticket d03db9a2 (Policy activation task):**
+- Task report references evidence `policy-activation-d03db9a20f48cd36.json` with sha256 `714e610f...` — file is in committed evidence list ✓
+- `task_spec_sha256` = `f738fb61...` matches Gate's `reviewed_entry_policy.sha256` = `f738fb61...` matches authority_snapshot `active_entry_policy_sha256` = `f738fb61...` ✓
+- Required review receipt `review-policy-d03db9a20f48cd36` is present with `result: PASS`, `reviewer_id: independent-reviewer-b-cr010` ✓
+
+**Authority snapshot:**
+- `succeeded_ticket_ids` contains both tickets ✓
+- `failed_ticket_ids`, `in_doubt_ticket_ids`, `open_ticket_ids` all empty ✓
+- `pending_outbox_count: 0` ✓
+- `active_grant_ids` = `["grant_0e86..."]` matches closure `grant_id` = `grant_0e86...` ✓
+
+### 3. Test Receipt Full Contract — **PASS**
+
+| Field | Gate JSON | Task Report |
+|---|---|---|
+| `receipt_id` | `test-6487aef3aeff3f37` | `test-6487aef3aeff3f37` ✓ |
+| `command` | `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores` | identical ✓ |
+| `exit_code` | `0` | `0` ✓ |
+| `result` | `PASS` | `PASS` ✓ |
+| `candidate_commit` | — | `ae8f25d8f84d1a1682d8d3b99835a473ffdb5ae7` (matches candidate) ✓ |
+| `candidate_tree` | — | `c130c03dff7b971f35ba3f28cbbab295ca2c97c6` (matches candidate) ✓ |
+| `stdout_ref` | — | `.../evidence/gate_tests_stdout.json` (committed file) ✓ |
+| `stderr_ref` | — | `.../evidence/gate_tests_stderr.json` (committed file) ✓ |
+| `started_at_utc` | — | `2026-08-14T14:10:49.458950Z` |
+| `completed_at_utc` | — | `2026-08-14T14:15:02.760259Z` |
+| Duration | — | ~253.3s; stderr reports `253.157s` — consistent ✓ |
+
+**Stderr content:** 250 dots + `"Ran 250 tests in 253.157s"` + `"OK"` — standard Python unittest output to stderr. Stdout is empty, which is normal for unittest (all output goes to stderr by default). ✓
+
+**Test modules exist in tree:** All five test modules are present in `final_inventory.json` entries (`tests/test_control_plane_activation_coordinator.py`, `tests/test_control_plane_gates.py`, `tests/test_control_plane_task_reports.py`, `tests/test_control_plane_approval_record.py`, `tests/test_control_plane_stores.py`). ✓
+
+**Lock hash:** `aae7f8b5...` present and non-empty ✓
+
+### 4. Hard-Crash / Reconciler Claims — **N/A (PASS)**
+
+No hard-crash or reconciler claims are present in the evidence. `reason_codes: []`, `unresolved_risks: []`, `review_findings: []` across all artifacts. No failed or in-doubt tickets. Nothing to refute.
+
+### 5. C0 Official 24-Cycle Evidence Chain — **PASS**
+
+**External scheduler inventory** (`external_scheduler_inventory.json`):
+- `task_path`: `/A股选股`
+- `task_state`: `Ready`
+- `trigger`: `MSFT_TaskDailyTrigger|start=2026-03-16T20:00:00|days_interval=1|enabled=true` — this is the 24-hour daily cycle
+- `collection_mode`: `READ_ONLY`
+- `altered_by_p0`: `false`
+- `unresolved_risk`: `"none observed at p0-attempt-042 snapshot"`
+- `operational_classification`: `PRODUCTION_DAILY`
+
+Gate references: `scheduler_inventory.status = "VERIFIED"` ✓
+
+The `final_inventory.json` contains the corresponding entry `external:scheduler:/A股选股` with matching ACL summary, action, principal, state, and trigger metadata. Cross-bind verified ✓
+
+The code_freeze_manifest `runtime_dependencies` includes `tools/ths_yuanhang_bridge/YuanhangBridge.dll` with sha256 `f2378ea0...` — this is the production daily runtime dependency, and the same hash appears in the final_inventory entry for `runtime:tools/ths_yuanhang_bridge/YuanhangBridge.dll`. ✓
+
+### 6. Additional Cross-Checks
+
+**Identity binding consistency** — The triple hash `67a58dc8...` (instruction_policy_hash = plan_hash = scope_hash) is identical across:
+- Gate JSON `identity_binding` ✓
+- `task_report_gate.json` `identity_binding` ✓
+- `task_report_policy_activation.json` `identity_binding` ✓
+- `code_freeze_manifest.json` `identity_binding` ✓
+- `final_inventory.json` `identity_binding` ✓
+
+**Code freeze:**
+- `git_commit` = `ae8f25d...` matches candidate ✓
+- `git_tree` = `c130c03...` matches candidate ✓
+- `active_tracked_dirty_paths: []` ✓
+- `source_identity_sha256` = `f0e42a7d...` matches `final_inventory.json` `source_identity_sha256` ✓
+
+**Implementation baseline:**
+- `git_head` = `ae8f25d...` matches candidate ✓
+- `file_state_count: 0`, `large_data_scanned: false`, `production_or_research_task_started: false` ✓
+- `tracked_user_status_sha256` = all-zeros (no tracked changes) ✓
+
+**File delta:**
+- Gate: `changed_files: []`, `unexpected_changes: []` ✓
+- Both task reports: `changed_files: []`, `unexpected_changes: []` ✓
+- Both task reports: `side_effect_summary.observed = ["WRITE_CONTROL_PLANE"]`, `unauthorized: []` ✓
+
+**Timeline consistency:**
+1. Policy activation: 13:56:03.952 → 13:56:03.960 (8ms — plausible for policy write)
+2. Gate tests: 14:10:49.458 → 14:15:02.760 (253.3s — matches stderr)
+3. Gate created: 14:15:02.767 (7ms after test completion — consistent)
+4. Closure: 14:17:05.481 (2min 3s after gate creation — consistent)
+
+All events are strictly ordered ✓
+
+**Auto-advance:** `false` — gate does not auto-advance, requires manual promotion ✓
+
+---
+
+## Findings Summary
+
+| Severity | ID | Summary |
+|---|---|---|
+| — | — | No blocking or advisory findings. All evidence bindings, time causality, test receipt contracts, scheduler verification, and identity bindings are internally consistent and correctly cross-referenced. |
+
+**Non-blocking observations (informational, no action required):**
+- Gate `report_sha256` for each task report (file-scope hash) differs from the task report's own `report_payload_sha256` (payload-scope hash). This is the expected two-tier hashing design — the file-scope hash in the gate covers the entire file including the payload hash field, while the payload hash covers only the semantic payload. Consistent with `control_plane.task_report.v2` schema.
+- Stdout is empty (`""`). This is normal Python `unittest` behavior — test output goes to stderr by default. The stderr hash `146b528b...` binds the full test output (250 dots + summary + OK).
+
+---
+
+## Final Verdict
+
+**APPROVE**
+
+The P0 gate for `p0-attempt-042` (V3.4.2-CR010) is mechanically and semantically verified:
+
+1. **Time causality** is provably correct (closure > gate creation by ~2 min).
+2. **All sha256 bindings** are consistent across gate, closure, task reports, evidence refs, code freeze, baseline, and inventory.
+3. **Test receipt** satisfies the full contract: candidate commit/tree bound, exit code 0, 250 tests passed, stdout/stderr evidence files committed and hash-bound.
+4. **No hard-crash or reconciler claims** to refute — reason_codes and unresolved_risks are empty.
+5. **External scheduler 24-cycle** is VERIFIED with Ready state, daily trigger, no unresolved risk, and cross-bound between scheduler inventory and final inventory.
+
+The gate is internally consistent, properly bound, and safe to advance.

@@ -1,0 +1,82 @@
+Reviewed committed evidence for `c0-attempt-006` at candidate `af51e232cd3348c60ab65dda9750e7e02f20f216` / tree `fe4830068269abd923d2075e032813d3f0f6e797`.
+
+## Positive checks
+
+- **Closure causality**: `closed_at` `2026-08-14T14:43:03.372014Z` > gate `created_at` `2026-08-14T14:42:50.973572Z`. PASS.
+- **Test receipt contract**: both the gate test receipt and the `C0-ROLLOUT-006` receipt include executable, command, cwd, runtime version, lock hash, candidate commit/tree, UTC start/end, stdout/stderr refs and hashes. PASS.
+- **Rollout temporal contract**: `task_report_rollout.json` `started_at` `14:31:34.238520Z` is not later than its receipt `started_at_utc` `14:31:34.241633Z`. PASS.
+- **24-cycle chain**: report object and replay receipt both show 24 cycles, seed `20260811`, and identical final digest `da0cb48ac10cd67a4f33a184e2bd7baac9acc740f0a733d1691bbfb58bd556bd`. PASS.
+- **No-side-effect receipt**: `pass: true`, `unexpected_changes: []`, deterministic root under temp dir. PASS as reported.
+
+## Findings
+
+### F-1 — HIGH — Policy-activation evidence `manifest_sha256` does not bind to the task spec
+Paths inspected:
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/task_report_policy_activation.json`
+- `research_state/control_plane/c0/attempts/c0-attempt-006/evidence/policy-activation-37fe6d393cc70557.json`
+
+`task_report_policy_activation.json` declares:
+
+```json
+"task_spec_ref": "research_state/control_plane/policies/28c6a0f4386c4208150e2480ec52249c004633db22f4f1fc0b76d939de1db16e.json",
+"task_spec_sha256": "28c6a0f4386c4208150e2480ec52249c004633db22f4f1fc0b76d939de1db16e"
+```
+
+The mirror evidence file for the same task declares:
+
+```json
+"manifest_sha256": "e4c1ad321c005ef19ac0d1fb50d75f8e5b0c9b2bb4f65e812ed274e0e241f5d7"
+```
+
+These do not match. By contrast, the gate activation mirror correctly matches the gate task spec hash. Therefore the policy-activation evidence is not correctly bound to the task spec referenced by the task report. This is an evidence-integrity failure.
+
+### F-2 — HIGH — Baseline SHA-256 mismatch between gate report and all task reports
+Paths inspected:
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/gates/official_c0_gate_v342_cr010.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/task_report_gate.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/task_report_policy_activation.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/task_report_rollout.json`
+
+The gate report says, for the same baseline file:
+
+```json
+"implementation_baseline": {
+  "ref": "research_state/control_plane/rollout/c0/attempts/c0-attempt-006/implementation_baseline.json",
+  "sha256": "5a3aa1e5795e736376822760fc696f1973ee1b2628997fceb0122ca33689c373"
+}
+```
+
+All three task reports say:
+
+```json
+"baseline_ref": "research_state/control_plane/rollout/c0/attempts/c0-attempt-006/implementation_baseline.json",
+"baseline_sha256": "9472fb2d600e02f84c0f94d4d311c02d4433afe748856a3be31d53319d656784"
+```
+
+A single committed baseline file cannot have two different SHA-256 hashes. This means the task reports and gate report were not bound to the same baseline snapshot, breaking the gate’s evidence-binding invariant.
+
+### F-3 — MEDIUM/HIGH — C0 report object uses plan version `V3.4.2-P0R2`, not gate plan version `V3.4.2-CR010`
+Paths inspected:
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/objects/a2cc0d7f637fa88f0b8d0c32ce354d678c0497bc3cf15f58052a06ba5920b941.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/gates/official_c0_gate_v342_cr010.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/c0_official_run_spec.json`
+
+The content-addressed C0 report object says:
+
+```json
+"plan_version": "V3.4.2-P0R2"
+```
+
+The gate report and official run objective are for `V3.4.2-CR010`. The official C0 evidence chain is therefore not consistently bound to the CR-010 plan version. Either the evidence was produced from the wrong plan version or the report field is stale. In either case, the C0 CR-010 evidence chain is not internally consistent.
+
+## Verdict
+
+**REJECT**
+
+The gate cannot be approved because of the unresolved evidence-binding failures:
+
+1. Policy-activation evidence `manifest_sha256` does not match the task report’s `task_spec_sha256`.
+2. The gate report baseline hash and all task report baseline hashes disagree for the same committed file.
+3. The C0 report object carries plan version `V3.4.2-P0R2` while the gate is for `V3.4.2-CR010`.
+
+These are not cosmetic issues; they break the committed-evidence binding requirements for the C0 re-gate.

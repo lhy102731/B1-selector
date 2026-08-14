@@ -1,0 +1,54 @@
+# C0 Gate Review — c0-attempt-006 (V3.4.2-CR010, final re-gate)
+
+**Reviewer:** independent reviewer {REVIEWER} · **Candidate:** commit `af51e232cd3348c60ab65dda9750e7e02f20f216` / tree `fe4830068269abd923d2075e032813d3f0f6e797`
+
+## Files inspected (verbatim content reviewed)
+
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/gates/official_c0_gate_v342_cr010.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/official_c0_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/c0_chain_manifest.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/c0_chaos_simulation_report_v2.json` (fixed claim)
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/objects/a2cc0d7f….json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/evidence/c0_second_root_replay.json`, `c0_no_side_effect_receipt.json`, `c0_official_run_spec.json`, `c0_official_run_stdout.json`, `c0_official_run_stderr.json`
+- `research_state/control_plane/rollout/c0/attempts/c0-attempt-006/task_report_gate.json`, `task_report_policy_activation.json`, `task_report_rollout.json`
+- `research_state/control_plane/c0/attempts/c0-attempt-006/evidence/activation-6d09af55a92ead8e.json`, `policy-activation-37fe6d393cc70557.json`
+- Confirmed committed via blob listing (no verbatim in packet): `activation-envelopes/c0-gate-006.json`, `code_freeze_manifest.json`, `implementation_baseline.json`, `final_inventory.json`, `external_scheduler_inventory.json`, `approval_record.json`, `gate_tests_stdout/stderr.json`.
+
+## Mandated checks
+
+**(1) Time causality — PASS.** Gate `created_at` 2026-08-14T14:42:50.973572Z; closure `closed_at` 2026-08-14T14:43:03.372014Z (Δ +12.398 s). `closure.gate_report_sha256` = `304a2d31…bd83` = gate's self hash; `closure.gate_ref` points to the committed gate file (blob `de097b66…`). Full ordering is monotone: policy 14:31:22 → rollout 14:31:34–14:33:12 → gate tests 14:38:43–14:42:50.962979 → gate 14:42:50.973572 → closure 14:43:03.
+
+**(2) Evidence blob binding — PASS.**
+- Gate task report `input_evidence_refs[0]` → `research_state/control_plane/c0/attempts/c0-attempt-006/evidence/activation-6d09af55a92ead8e.json` (committed, blob `1d40351f…`); `evidence_id` matches `required_evidence_ids`; status VERIFIED; mirror `manifest_sha256` `1231f645…` == gate task report `task_spec_sha256` (activation envelope, blob `d448ed14…`). ✓
+- Policy task report `input_evidence_refs[0]` → `…/policy-activation-37fe6d393cc70557.json` (committed, blob `c066c9df…`); id matches requirement; VERIFIED. (See F02 on its `manifest_sha256`.)
+- Filenames use the ticket-16 prefixes (`6d09af55a92ead8e`, `37fe6d393cc70557`) as the verifier namespace requires.
+- Cross-artifact hash equalities all agree: run spec `d9eaccbc…`, stdout `80348b6e…`, stderr `0c47a0d0…` identical in `task_report_rollout.json` and `c0_chain_manifest.json`; object sha `a2cc0d7f…` == content-addressed filename == claim `report_blob_sha256` == manifest `report_object.sha256`; entry policy `28c6a0f4…` consistent across authority snapshot, `reviewed_entry_policy`, and policy task report `task_spec_sha256`; lock hash `aae7f8b5…` and candidate commit/tree identical in both receipts and equal to the candidate under review.
+
+**(3) Test receipt contract — PASS.**
+- Gate ticket `6d09af55…`: executable, command (5 test modules), cwd `D:\workspace\a-share-quant-selector-main`, runtime 3.13.12, lock hash, candidate commit/tree, UTC start/end (14:38:43.501756Z → 14:42:50.962979Z), stdout/stderr refs + hashes (`gate_tests_stdout.json` / `gate_tests_stderr.json`, both committed). Exit 0, PASS.
+- Rollout ticket `cb96cd16…`: full field set present; command == run spec == `gate.test_receipts[1].command`; 14:31:34.241633Z → 14:32:24.504045Z; stdout/stderr refs + hashes == chain-manifest values. Exit 0, PASS.
+- **Temporal contract:** `task_report_rollout.started_at` 14:31:34.**238520**Z ≤ receipt `started_at_utc` 14:31:34.**241633**Z (report opens 3.1 ms before subprocess spawn — correct direction); `completed_at` 14:33:12.419059Z ≥ receipt end. Gate report started_at == receipt started_at (equal, "not later" satisfied).
+
+**(4) Hard-crash/reconciler claims — PASS (dynamic evidence).** The committed crash matrix covers every lifecycle boundary (after prepare/start/invoke/evidence/commit/settle/info_gain/decide/complete, cycles 1–24), 4 provider-timeout recoveries (2/8/14/20), 3 safe-boundary pauses; all 5 negative scenarios returned FAIL_CLOSED as expected (PID reuse, lease-fencing identity drift, pre-execution budget exhaustion, mid-call doubt without second provider call, invalid JSON without replay). Behavior is bound to the candidate by receipt `test-6d09af55a92ead8e` (exit 0 at `af51e23…`/`fe48300…`). See F08 for the static-citation residual.
+
+**(5) 24-cycle chain — PASS.** 24/24 cycles COMPLETED, seed 20260811 consistent across run spec, stdout summary, claim, object, replay; second-root replay digest `da0cb48a…556bd` identical with `scenario_log_equal: true`; `offline_only: true` everywhere, fake provider only, deterministic root under tempdir, `unexpected_changes: []`; fixed claim (`control_plane.c0_chaos_report_claim.v1`) binds the content-addressed object separately from the object itself, consistent with create-only AtomicPublisher semantics; official-run ticket `cb96cd16…` bound via `gate.test_receipts[1]`, authority `succeeded_ticket_ids`, chain manifest `official_run_ticket`, and closure `tickets`. Authority snapshot clean (no failed/in-doubt/open tickets, outbox 0, single grant matches closure grant).
+
+## Findings
+
+| ID | Severity | Summary | Refs |
+|---|---|---|---|
+| C0-R6-F01 | LOW | Baseline hash divergence: all three task reports record `baseline_sha256` `9472fb2d…` for `implementation_baseline.json`, while the gate binds the same ref with `5a3aa1e5…`. Most plausibly payload-hash vs. finalized-file-hash semantics (divergence is systematic and stable across 14:31–14:42; file deltas empty, freeze intact). Confirm the dual semantics in writing. | `task_report_gate.json`, `task_report_policy_activation.json`, `task_report_rollout.json`, `gates/official_c0_gate_v342_cr010.json` |
+| C0-R6-F02 | LOW | Policy mirror evidence `manifest_sha256` `e4c1ad32…` matches no artifact in the reviewed set (policy file is `28c6a0f4…`, gate envelope is `1231f645…`). Identify the hashed manifest and ensure it is committed/bound. | `c0/attempts/c0-attempt-006/evidence/policy-activation-37fe6d393cc70557.json` |
+| C0-R6-F03 | LOW | Mirror duplicates across the two namespaces have differing git blob ids (`1d40351f` vs `f3b17940`; `c066c9df` vs `2f11eae6`), i.e., differing content. Gate-bound canonical copies are the `c0/` namespace ones. Confirm rollout-namespace copies are superseded; prune in a future attempt. | both `evidence/activation-…json` and `evidence/policy-activation-…json` pairs |
+| C0-R6-F04 | INFO | Fixed claim `report_ref` uses relative Windows path `objects\a2cc0d7f….json` (backslash) instead of the canonical forward-slash repo path used by the chain manifest. Hash binding intact; portability nit in the claim emitter. | `c0_chaos_simulation_report_v2.json` |
+| C0-R6-F05 | INFO | Stale `plan_version: "V3.4.2-P0R2"` inside the content-addressed chaos report object (all phase artifacts say `V3.4.2-CR010`). Baked into the hashed artifact; fix generator labeling going forward. | `evidence/objects/a2cc0d7f….json` |
+| C0-R6-F06 | INFO | `identity_binding` has instruction_policy_hash == plan_hash == scope_hash (`89f0661e…`) in the gate and all three task reports. Confirm this single-binding-document design is intended. | gate + all task reports |
+| C0-R6-F07 | INFO | No-side-effect receipt reports `git_status_delta_count: 5` with `unexpected_changes: []` but no itemization; confirm the committed receipt enumerates the 5 expected evidence-path deltas. | `c0_no_side_effect_receipt.json` |
+| C0-R6-F08 | INFO | Reconciler/hard-crash claims verified via the candidate-bound test receipt (exit 0 at `af51e23…`/`fe48300…`) and the committed crash matrix; static source-line citations under `research_automation/control_plane/` were not included in the review packet. Attach them to the gate notes. | `task_report_gate.json` test receipt |
+| C0-R6-F09 | INFO | Single-source hash bindings (mirror-file sha256s `8f4d4e1f…`/`ad52ae45…`; task-report file sha256s `65008c80…`/`5a1f8141…`/`1dd30fa2…`; `gate_tests_*` hashes `5c87572f…`/`584f3820…`; `code_freeze_manifest` `c8f1ba31…`; `final_inventory` `70e91807…`; `scheduler_inventory` `737e1ab7…`; chain sub-receipts `67a1bb5e…`/`b74f83ea…`/`4e43194f…`) verified for blob presence and cross-reference consistency; every hash that appears in ≥2 artifacts agrees. Predecessor P0/P6/P7/P8 closures, the entry-policy blob, and `approval_record.json` contents accepted on canonical-path reference. Retain a recomputation transcript in the ledger. | various, per above |
+
+## Verdict
+
+**APPROVE.**
+
+All five mandated checks pass on the committed evidence at `af51e23…`/`fe48300…`: causality holds, evidence bindings dereference to committed blobs with consistent hashes (including both `c0/` mirror files), both test receipts satisfy the full contract including the rollout temporal direction (report started 3.1 ms **before** receipt spawn), the reconciler claims are substantiated at the exact candidate commit, and the 24-cycle seed-20260811 chain is internally hash-locked end-to-end with deterministic replay equality and no unauthorized side effects. Findings F01–F09 are documentation/hygiene items (2 LOW, 7 INFO), none of which undermines a gate criterion; F01 and F02 should be closed out with written explanations before the next phase consumes this closure.

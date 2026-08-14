@@ -1,0 +1,74 @@
+# P8 Gate Review — Reviewer B (independent)
+
+**Candidate:** `dae642fb5d4db7d533f0712a330f3f67ba1d1734` / tree `7e424853b372d6f5791e0ca4922357ba04986305`
+**Attempt:** `p8-attempt-006` — Plan `V3.4.2-CR010`, Phase P8
+**Method:** Structured/semantic verification of committed evidence only. No file, path, or branch outside the committed set is cited. SHA-256 duality note: the control plane uses *file* hashes (gate `sha256` fields) and *payload* hashes (`baseline_payload_sha256`, `freeze_payload_sha256`, `inventory_payload_sha256`, `report_payload_sha256`, `gate_report_sha256`); both were checked against the correct counterpart, not against each other.
+
+## Files inspected (exact paths, all under `research_state/control_plane/p8/attempts/p8-attempt-006/`)
+
+1. `gates/official_p8_gate_v342_cr010.json`
+2. `evidence/official_p8_closure_receipt_v342_cr010.json`
+3. `evidence/gate_tests_stdout.json`
+4. `evidence/gate_tests_stderr.json`
+5. `task_report_gate.json`
+6. `task_report_policy_activation.json`
+7. `code_freeze_manifest.json`
+8. `final_inventory.json`
+9. `implementation_baseline.json`
+10. `external_scheduler_inventory.json`
+11. `approval_record.json` (committed; content not embedded in review packet — binding checked indirectly, see RB-F08)
+12. `activation-envelopes/p8-gate-006.json` (committed; bound via `task_spec_sha256` `117e0500…`)
+13. `evidence/activation-40874e41d73913ad.json` (committed; bound via `evidence_sha256` `f6ef9563…`)
+14. `evidence/policy-activation-c7e6b2e29d520458.json` (committed; bound via `evidence_sha256` `4c8be0c5…`)
+15. Cross-referenced (not among the 15): `research_state/control_plane/policies/d3126406….json` — referenced consistently by gate + task report; existence in tree not demonstrated by the provided file list (see RB-F08).
+
+## Checklist results
+
+### (1) Gate/closure time causality — VERIFIED
+- Gate `created_at` = `2026-08-14T14:30:55.982464Z`; closure `closed_at` = `2026-08-14T14:31:05.079575Z`. **closed_at > created_at** (Δ ≈ 9.10 s), both Z-suffixed UTC.
+- Full chain is monotonic: policy activation completed `14:26:47.761157Z` → gate tests `14:26:48.287889Z`–`14:30:55.970583Z` → gate created `14:30:55.982464Z` (12 ms after test completion) → closure `14:31:05.079575Z`. Tests ran **after** the reviewed policy `d3126406…` was active — correct ordering for a policy-activation + re-gate attempt.
+- Closure `gate_ref` and `gate_report_sha256` (`b85eb21a…`) match the gate's self-declared payload hash; `grant_6b759700…` and both tickets match `authority_snapshot`.
+
+### (2) Evidence blob binding — VERIFIED
+- Both tickets (`40874e41…`, `c7e6b2e29d…`) appear in `succeeded_ticket_ids`, in both task reports, in the closure `tickets`, and as the suffixes of their evidence/receipt IDs. Failed/in-doubt/open tickets empty; `pending_outbox_count: 0`.
+- `active_entry_policy_sha256` = `reviewed_entry_policy.sha256` = policy-activation task's `task_spec_sha256` = policy filename — four-way binding holds.
+- Freeze manifest `git_commit`/`git_tree` and baseline `git_head` all equal the candidate. Clean tree at freeze (`active_tracked_dirty_paths: []`, `tracked_user_status_sha256` all-zero, `changed_files: []`, `unexpected_changes: []`).
+- Sampled content-hash agreement between `code_freeze_manifest.json` and `final_inventory.json` (all match): `research/b1/__init__.py` `603c9da4…`, `strategy/ai_scorer_v4.py` `9299d0cd…`, `utils/eastmoney_minute_client.py` `0b54a33e…`, `tools/validate_valuation_migration.py` `74a4854e…`, `YuanhangBridge.dll` `f2378ea0…`.
+- Scheduler binding: `external_scheduler_inventory.json` `task_xml.sha256` `200c98df…` = inventory entry `external:scheduler:/A股选股` `content_sha256`; action hash `f1a6d56e…` = `file:run_select.bat`; trigger/principal/state/ACL fields agree across both artifacts.
+
+### (3) Test receipt full contract — VERIFIED (one observation)
+- Full field set present in `task_report_gate.json` `test_receipts[0]`: receipt_id, ticket_id, command, `exit_code: 0`, `result: PASS`, start/end UTC, cwd, executable, runtime 3.13.12, `candidate_commit`/`candidate_tree` = candidate, `lock_hash`, stdout/stderr refs + hashes. Command targets exactly the five CR-010-relevant control-plane test modules.
+- `gate_tests_stdout.json` text empty — consistent with unittest emitting dots/summary to stderr; `gate_tests_stderr.json` shows `Ran 250 tests in 247.541s / OK`.
+- Observation (RB-F03): receipt wall window is 407.68 s vs. unittest-reported 247.541 s (~160 s startup/import overhead). Plausible on this Windows host (≈1 s/test inside the run), no contract violation, but worth a one-line explanation in future receipts.
+
+### (4) Hard-crash / reconciler claims — VERIFIED (vacuously)
+No hard-crash, recovery, or reconciler claims exist in the gate, closure, or task reports (`reason_codes: []`, `unresolved_risks: []`, `unauthorized: []`, `auto_advance: false`). The closure `trust_root` claim (canonical UTC from the Authority closure row) maps to `research_automation/control_plane/closure_receipt.py` and `stores.py`, both present in the committed tree per `final_inventory.json`; `final_eval_reconciler.py` also exists in the inventory and no claims are made about it. No unsupported claims found.
+
+### (5) C0 official 24-cycle evidence chain — NOT VERIFIABLE at this candidate
+See RB-F05.
+
+## Findings
+
+| ID | Severity | Summary | Refs |
+|---|---|---|---|
+| RB-F01 | INFO (pass) | Time causality holds; full timestamp chain monotonic | `gates/official_p8_gate_v342_cr010.json`, `evidence/official_p8_closure_receipt_v342_cr010.json` |
+| RB-F02 | INFO (pass) | All blob/ticket/grant/policy bindings internally consistent; freeze↔inventory hashes agree on all sampled entries | all 14 embedded files |
+| RB-F03 | LOW (obs) | Test wall-clock window 407.68 s vs. reported 247.541 s unittest duration; explain overhead | `task_report_gate.json`, `evidence/gate_tests_stderr.json` |
+| RB-F04 | INFO (pass) | No hard-crash/reconciler claims made; referenced modules exist in committed inventory | `final_inventory.json` |
+| **RB-F05** | **MEDIUM (blocking)** | **C0 official 24-cycle evidence chain is absent.** No artifact among the 15 committed files references "C0", a 24-cycle campaign, or any cycle-count evidence; the inventory contains only `rollout_c1*` modules. Review-checklist item (5) therefore cannot be satisfied from committed evidence, and I decline to reconstruct it from memory or inference | entire committed set |
+| RB-F06 | LOW | Dual trust classification of identical bytes: `final_evaluator.py` file-level entry is `legacy_unaudited` while callable `TrustedEvaluator.evaluate_v2` is `reviewed_controlled` (declared_phase P8, `OPEN_HOLDOUT`); both carry content hash `a6503240…`. Document precedence (callable-level review vs. file-level legacy label), since P8 consumes this classification | `final_inventory.json` entries `file:research_automation/control_plane/final_evaluator.py` and `callable:…final_evaluator:TrustedEvaluator.evaluate_v2` |
+| RB-F07 | LOW | `instruction_policy_hash == plan_hash == scope_hash` (`974406ea…`) in every artifact. If three independent bindings were intended, they collapse to one; confirm this is the V3.4.2-CR010 plan format's design | gate, both task reports, freeze, final inventory |
+| RB-F08 | INFO | Four committed blobs not embedded in the packet (`approval_record.json`, activation envelope, both evidence blobs) plus the referenced policy file: bound by refs + declared SHA-256, but hashes not independently recomputed here; `authorization_ref` values (`auth_3a861fe4…`, `auth_fef73003…`) not cross-checked to approval-record content. Recommend a machine recompute before final archival sign-off | files 11–15 above |
+| RB-F09 | INFO | Production scheduler action executes `D:/workspace/run_select.bat`, outside the repo root (`D:\workspace\a-share-quant-selector-main`); the seam is content-hash-pinned (identical to repo `run_select.bat`, `f1a6d56e…`), `collection_mode: READ_ONLY`, `altered_by_p0: false` | `external_scheduler_inventory.json`, `final_inventory.json` |
+
+## Final verdict: **HOLD**
+
+Checklist items (1)–(4) verify cleanly: causality holds, bindings are internally consistent to the limit of the embedded material, the test receipt satisfies the full contract, and no unsupported code claims exist. There are **no grounds for REJECT** (no causality violation, hash contradiction, unauthorized side effect, or dirty-tree anomaly).
+
+The HOLD is solely on **RB-F05**: the mandated "C0 official 24-cycle evidence chain" is not present at this candidate and I will not attest to evidence I cannot inspect.
+
+**Conditions to clear the HOLD:**
+1. Provide the committed path(s) + SHA-256 list of the C0 official 24-cycle chain, verifiable at this candidate; **or** an Authority determination, committed to the tree, that C0 is out of scope for the P8 CR-010 re-gate.
+2. Non-blocking: attach a machine hash-recompute receipt for the four not-embedded blobs and the referenced policy file (RB-F08), and add precedence documentation for RB-F06/RB-F07.
+
+*Reviewer: independent-reviewer-b-cr010 (consistent with the `review-policy-c7e6b2e29d520458` PASS receipt recorded in `task_report_policy_activation.json`).*

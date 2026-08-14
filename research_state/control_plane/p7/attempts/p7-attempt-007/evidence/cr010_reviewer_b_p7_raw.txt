@@ -1,0 +1,54 @@
+# Reviewer B — P7 Gate Review, `p7-attempt-007` (CR-010, V3.4.2)
+
+**Candidate:** commit `58c63189ca4c6e43d5ca9214d89a29bdb8c9c00c` / tree `8041542a9675bc73acbe97b270216b190ad8b48a`
+
+## Files inspected (committed evidence, embedded verbatim)
+
+- `research_state/control_plane/p7/attempts/p7-attempt-007/gates/official_p7_gate_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/official_p7_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/task_report_gate.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/task_report_policy_activation.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/code_freeze_manifest.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/external_scheduler_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/final_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/implementation_baseline.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/cr010_reviewer_a_p7_raw.txt` (Reviewer A record only)
+
+Committed but **not embedded** (existence noted, contents not reviewed): `activation-envelopes/p7-gate-007.json` (hash-bound in `task_report_gate.json` as `task_spec_sha256: 31a1864b…`), `approval_record.json`, `evidence/activation-0761f0b64e2bebed.json`, `evidence/policy-activation-51079af8ace3c5ad.json`, `evidence/cr010_review_p7_calls.json`, `evidence/cr010_reviewer_a_p7_prompt.txt`.
+
+## Findings
+
+**B-01 — PASS — Gate/closure time causality.**
+Gate `created_at: 2026-08-14T14:26:24.543273Z` < closure `closed_at: 2026-08-14T14:26:33.670372Z` (Δ ≈ 9.127 s). Task completions precede gate creation (`task_report_gate.completed_at` 14:26:24.531764Z, −11.5 ms; policy activation completed 14:22:15.163951Z). The closure `trust_root` explicitly cites "CR-010 F-01", i.e., this closure construction targets the prior time-causality defect. Both timestamps are canonical Z-suffixed UTC.
+
+**B-02 — PASS (with limitation) — Evidence blob binding internally consistent.**
+- `closure.gate_report_sha256` = gate self-hash `ee186e3cb84b0fcd8387562746e2939f37bb01179fea9548aa97dd6bb3b5e08b` ✓
+- Gate → task reports: `report_sha256` `65f400f7…` / `b92f8ebc…`; task reports → evidence SHAs (`activation-0761…` → `6217f5ba…`, VERIFIED; `policy-activation-51079…` → `b5b726c4…`, VERIFIED) ✓; committed evidence paths match the referenced refs.
+- `identity_binding` uniform (`5285d6e9…`) across gate, both task reports, freeze manifest, final inventory ✓.
+- Candidate binding: freeze manifest `git_commit`/`git_tree` and baseline `git_head` all equal the candidate commit/tree; test receipt `candidate_commit`/`candidate_tree` also match ✓.
+- Cross-artifact hash coherence Reviewer A did not check: scheduler action content sha `f1a6d56e…` = `final_inventory` entry `file:run_select.bat` ✓; scheduler `task_xml.sha256` `200c98df…` = final-inventory external-scheduler entry `content_sha256` ✓; `runtime_dependencies` DLL sha `f2378ea0…` matches final-inventory runtime entry ✓; `implementation_baseline.baseline_payload_sha256` `272e3c1d…` = `baseline_sha256` in both task reports ✓; freeze-manifest untracked hashes spot-check equal to final-inventory entries (`research/b1/__init__.py`, `strategy/ai_b1_strategy.py`, `tools/data/__init__.py`, `utils/eastmoney_minute_client.py`) ✓.
+- Limitation: raw-byte SHA-256 recomputation was not possible from embedded text; verification is limited to internal reference consistency (no mismatch visible).
+
+**B-03 — PASS — Test receipt full contract.**
+`task_report_gate.json → test_receipts[0]` carries the complete contract: command, `exit_code: 0`, `result: PASS`, `receipt_id: test-0761f0b64e2bebed`, `ticket_id` match, runtime/executable/cwd, `runtime_version: 3.13.12`, UTC start/finish, stdout/stderr refs + SHAs, `lock_hash`. `gate_tests_stderr.json` shows `Ran 250 tests in 248.732s / OK`; timestamp delta is 248.876 s (≈0.14 s process overhead — consistent); empty stdout is normal for `unittest`. All five test modules in the command exist as committed files in `final_inventory.json` (`tests/test_control_plane_activation_coordinator.py`, `…_gates.py`, `…_task_reports.py`, `…_approval_record.py`, `…_stores.py`) — the test contract references real code in the tree.
+
+**B-04 — MEDIUM / UNVERIFIABLE-BUT-COHERENT — Hard-crash/reconciler-class claims.**
+The only claims of this class in the committed evidence are in `external_scheduler_inventory.json` (`altered_by_p0: false`, `task_state: Ready`, `unresolved_risk: "none observed…"`). They are mutually consistent with `final_inventory.json` (state, trigger, action, ACL, hashes all cross-match, see B-02) and with the gate (`scheduler_inventory.status: VERIFIED`, `unresolved_risks: []`). No reconciler log or code diff is committed, so the assertions rest on generator correctness; nothing in the evidence contradicts them, and no hard-crash claim is made anywhere in the chain. Not blocking on its own.
+
+**B-05 — HIGH / BLOCKING — C0 official 24-cycle evidence chain is absent.**
+No committed artifact at this candidate — gate, closure, task reports, inventories, freeze manifest — contains or references any "C0" chain, cycle count, or 24-cycle evidence series. `authority_snapshot` lists only the two succeeded tickets (`0761f0b6…`, `51079af8…`); `requirements` in both task reports enumerate only the coordinator/policy evidence and one review receipt. If the V3.4.2-CR010 P7 acceptance criteria require the C0 official 24-cycle evidence chain, the committed chain is incomplete and `verdict: PASS` is not supported by the submitted evidence. This independently confirms Reviewer A's F-04.
+
+**B-06 — LOW/MEDIUM — `approval_record.json` committed but unbound.**
+Present at `research_state/control_plane/p7/attempts/p7-attempt-007/approval_record.json` but referenced by no SHA in the gate report, closure receipt, or either task report (contrast: the activation envelope *is* bound via `task_spec_sha256`). The framework evidently treats approval records as significant (`research_automation/control_plane/approval_record_verifier.py`, `tests/test_control_plane_approval_record.py` exist in the inventory). If P7 closure requires approval-record binding, the chain is incomplete.
+
+**B-07 — INFO — Reviewer A citation defect (record-keeping only).**
+`evidence/cr010_reviewer_a_p7_raw.txt` cites the closure receipt at `…/p7-attempt-007/official_p7_closure_receipt_v342_cr010.json`; the actual committed path is `…/p7-attempt-007/evidence/official_p7_closure_receipt_v342_cr010.json`. Cosmetic; does not affect the gate artifacts.
+
+**B-08 — INFO — Coherence of a re-gate-only attempt.**
+`file_delta_summary.changed_files: []`, `side_effect_summary.observed: ["WRITE_CONTROL_PLANE"]` only, baseline `file_state_count: 0`, task `allowed_files` include the attempt directory — internally consistent with an evidence-only corrective re-gate (no code mutation). Freeze-manifest untracked list is a proper subset of the 600-entry final inventory, consistent with the tracked/untracked distinction.
+
+## Final verdict: **HOLD**
+
+Time causality (B-01), internal hash/evidence binding (B-02), and the test receipt contract (B-03) all check out, and nothing in the evidence indicates tampering — so REJECT is not warranted. However, the C0 official 24-cycle evidence chain (B-05) is entirely absent from the committed evidence, which is a checklist item for this gate; and the approval record is not bound into the chain (B-06). The gate cannot be approved until either (a) the C0 24-cycle chain (and approval-record binding) is committed and hash-bound into the gate/closure chain, or (b) the gating authority documents that these are out of scope for CR-010 P7 closure.

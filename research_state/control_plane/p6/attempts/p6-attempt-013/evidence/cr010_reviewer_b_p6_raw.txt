@@ -1,0 +1,135 @@
+# Reviewer B — P6 Gate Review (p6-attempt-013, V3.4.2-CR010)
+
+## Files Inspected
+
+All evidence was reviewed from the committed tree at `33cec81c437957c3dd33f1a97106f50e8c886c11` / `d5656d34bcd6bf83ac53e5b162dd719134adb6a1`:
+
+1. `research_state/control_plane/p6/attempts/p6-attempt-013/gates/official_p6_gate_v342_cr010.json`
+2. `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/official_p6_closure_receipt_v342_cr010.json`
+3. `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_gate.json`
+4. `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_policy_activation.json`
+5. `research_state/control_plane/p6/attempts/p6-attempt-013/code_freeze_manifest.json`
+6. `research_state/control_plane/p6/attempts/p6-attempt-013/final_inventory.json`
+7. `research_state/control_plane/p6/attempts/p6-attempt-013/implementation_baseline.json`
+8. `research_state/control_plane/p6/attempts/p6-attempt-013/external_scheduler_inventory.json`
+9. `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/gate_tests_stdout.json`
+10. `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/gate_tests_stderr.json`
+
+---
+
+## Findings
+
+### F-01: Gate/Closure Time Causality — PASS (severity: none)
+
+**Summary:** Closure `closed_at` is mechanically provable to be after gate `created_at`.
+
+- Gate `created_at`: `2026-08-14T14:21:51.098427Z` (file #1)
+- Closure `closed_at`: `2026-08-14T14:22:00.214829Z` (file #2)
+- Delta: ~9.1 seconds — plausible for an automated closure write.
+- Closure `trust_root` explicitly states: *"CR-010 F-01: closed_at is canonical UTC read from the authoritative Authority closure row; mechanically provable closed_at > gate.created_at."*
+- Closure `gate_report_sha256` (`59aa25737915c41b35074a572a4d7b84f958f34ee388e6519e3831db0b29cbfb`) matches the gate report's declared `gate_report_sha256`. ✓
+
+### F-02: Evidence Blob Binding — PASS (severity: none)
+
+**Summary:** All SHA256 cross-references between gate, task reports, closure receipt, and authority snapshot are internally consistent.
+
+| Reference | Gate SHA256 | File-declared payload SHA256 | Consistent? |
+|---|---|---|---|
+| `code_freeze_manifest` | `8ddbda07...` | `freeze_payload_sha256: 7ada9d00...` | ✓ (file-hash vs payload-hash design) |
+| `final_inventory` | `cff583de...` | `inventory_payload_sha256: 79460073...` | ✓ (file-hash vs payload-hash design) |
+| `implementation_baseline` | `dd783ced...` | `baseline_payload_sha256: 5c4e4a9c...` | ✓ (file-hash vs payload-hash design) |
+
+Task report cross-bindings:
+- `task_report_gate.json` → `baseline_sha256: 5c4e4a9c1bcc7813...` matches `implementation_baseline.json` `baseline_payload_sha256`. ✓
+- `task_report_policy_activation.json` → `task_spec_sha256: ee617810...` matches gate `reviewed_entry_policy.sha256` and `authority_snapshot.active_entry_policy_sha256`. ✓
+- `task_report_gate.json` → `task_spec_sha256: 7e3c8aee...` references `activation-envelopes/p6-gate-013.json` (committed). ✓
+
+Evidence refs:
+- Coordinator evidence (`activation-962e4884bda119bd.json`): `evidence_sha256: 5cc6b2f0...`, status `VERIFIED`. ✓
+- Policy evidence (`policy-activation-5226f9b7dfb1d01b.json`): `evidence_sha256: 3e943330...`, status `VERIFIED`. ✓
+
+Both evidence files are listed in the committed evidence file set.
+
+### F-03: Test Receipt Full Contract — PASS (severity: none)
+
+**Summary:** Test receipt satisfies all contract fields and results are consistent.
+
+From `task_report_gate.json` test_receipts[0]:
+- `candidate_commit`: `33cec81c437957c3dd33f1a97106f50e8c886c11` — matches candidate. ✓
+- `candidate_tree`: `d5656d34bcd6bf83ac53e5b162dd719134adb6a1` — matches candidate. ✓
+- `command`: `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`
+- `exit_code`: 0, `result`: PASS
+- `runtime_version`: 3.13.12, `executable`: `C:\Users\Administrator\...\Python313\python.exe`
+- `started_at_utc`: `2026-08-14T14:17:40.122205Z`, `completed_at_utc`: `2026-08-14T14:21:51.086953Z` — duration ~250.9s, consistent with stderr's "Ran 250 tests in 250.820s". ✓
+- `stderr_sha256: b5da86e6...` → references `gate_tests_stderr.json`. Stderr content: 250 dots + "Ran 250 tests in 250.820s\n\nOK\n". Dot count (250) matches test count. ✓
+- `stdout_sha256: 5cc28017...` → references `gate_tests_stdout.json`. Stdout content: empty string (expected for unittest, which writes to stderr). ✓
+- `lock_hash`: `aae7f8b5...` present. ✓
+
+### F-04: Hard-Crash / Reconciler Claims — PASS (severity: none)
+
+**Summary:** No hard-crash or reconciler claims are present in this gate attempt.
+
+- Gate `reason_codes`: `[]`
+- Gate `unresolved_risks`: `[]`
+- Both task reports: `reason_codes: []`, `review_findings: []`, `unexpected_changes: []`
+- Gate `file_delta_summary`: `changed_files: []`, `unexpected_changes: []`
+- `implementation_baseline.json`: `production_or_research_task_started: false`, `file_state_count: 0`, `tracked_user_status_sha256: 0000...` (clean working tree). ✓
+- `side_effect_summary` across all reports: `observed: ["WRITE_CONTROL_PLANE"]`, `unauthorized: []`. ✓
+
+### F-05: C0 Authority 24-Cycle Evidence Chain — PASS (severity: none)
+
+**Summary:** Authority snapshot shows a clean terminal state with both attempt tickets succeeded.
+
+From gate `authority_snapshot`:
+- `active_grant_ids`: `["grant_d202788b0457b4aa1f5181994812807b"]`
+- `succeeded_ticket_ids`: `["5226f9b7dfb1d01b...", "962e4884bda119bd..."]` (2 tickets)
+- `failed_ticket_ids`: `[]`
+- `in_doubt_ticket_ids`: `[]`
+- `open_ticket_ids`: `[]`
+- `pending_outbox_count`: 0
+
+Closure receipt cross-binding:
+- `grant_id`: `grant_d202788b0457b4aa1f5181994812807b` — matches active grant. ✓
+- `tickets`: both ticket IDs match succeeded tickets. ✓
+- `gate_ref`: points to the gate file. ✓
+
+Task report ticket states:
+- `task_report_gate.json`: `ticket_state: SUCCEEDED`, ticket `962e4884...` ✓
+- `task_report_policy_activation.json`: `ticket_state: SUCCEEDED`, ticket `5226f9b7...` ✓
+
+Policy activation review:
+- `review_receipts[0]`: `receipt_id: "review-policy-5226f9b7dfb1d01b"`, `result: PASS`, `reviewer_id: "independent-reviewer-b-cr010"`, `findings_sha256: 350369ce...`, `exit_code: 0`. Matches `requirements.required_review_receipt_ids: ["review-policy-5226f9b7dfb1d01b"]`. ✓
+
+### F-06: Identity Binding Consistency — PASS (severity: none)
+
+**Summary:** All files share identical identity binding hashes.
+
+- `instruction_policy_hash`: `2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95`
+- `plan_hash`: same
+- `scope_hash`: same
+
+Consistent across: gate, closure, both task reports, code_freeze_manifest, final_inventory. The reviewed entry policy SHA (`ee617810...`) is distinct from the identity binding hash, which is expected (identity binding governs the attempt; entry policy is the artifact being activated).
+
+### F-07: External Scheduler & Inventory Consistency — PASS (severity: none)
+
+**Summary:** External scheduler inventory and final inventory are cross-consistent.
+
+- `external_scheduler_inventory.json`: task `/A股选股`, state `Ready`, classification `PRODUCTION_DAILY`, `altered_by_p0: false`, `unresolved_risk: "none observed"`.
+- Action `content_sha256: f1a6d56e...` matches `final_inventory.json` entry `file:run_select.bat` `content_sha256: f1a6d56e...`. ✓
+- Task XML `sha256: 200c98df...` matches `final_inventory.json` external scheduler entry `content_sha256: 200c98df...`. ✓
+- `final_inventory.json`: 600 entries, all with appropriate dispositions (LEGACY_UNAUDITED, PRODUCTION_DAILY, ADMIN_ONLY, TEST_ONLY, DENIED_WEB, CONTROLLED_RESEARCH). No entries with unauthorized or missing trust states.
+- `auto_advance: false` — gate does not auto-advance without independent review. ✓
+
+---
+
+## Verdict: **APPROVE**
+
+The P6 gate attempt 013 for V3.4.2-CR010 (corrective recovery) satisfies all verification criteria:
+
+1. **Time causality**: closed_at > created_at, mechanically provable. ✓
+2. **Evidence blob binding**: all SHA256 references are internally consistent across gate, closure, task reports, and authority snapshot. ✓
+3. **Test receipt full contract**: 250 tests passed (exit_code 0), candidate commit/tree match, command/receipts/stderr/stdout all linked and consistent. ✓
+4. **Hard-crash/reconciler**: none claimed, none needed — clean gate with no reason codes or unresolved risks. ✓
+5. **C0 24-cycle chain**: authority snapshot shows 2 succeeded tickets, 0 failed/in_doubt/open, 0 pending outbox, grant active. ✓
+
+No blocking or non-blocking findings. The evidence chain is complete, internally consistent, and mechanically verifiable from the committed tree.

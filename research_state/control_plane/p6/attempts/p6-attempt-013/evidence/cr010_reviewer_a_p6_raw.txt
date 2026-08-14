@@ -1,0 +1,122 @@
+Reviewer A — P6 gate review, p6-attempt-013  
+Candidate: `33cec81c437957c3dd33f1a97106f50e8c886c11` / `d5656d34bcd6bf83ac53e5b162dd719134adb6a1`
+
+## Files inspected
+
+- `research_state/control_plane/p6/attempts/p6-attempt-013/gates/official_p6_gate_v342_cr010.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/official_p6_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_gate.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_policy_activation.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/code_freeze_manifest.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/implementation_baseline.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/external_scheduler_inventory.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/final_inventory.json`
+
+The activation-evidence blobs listed as committed were not embedded in the review payload, so I could not independently recompute their content hashes.
+
+---
+
+## Verification results
+
+### 1. Gate/closure time causality — PASS
+
+- Gate `created_at`: `2026-08-14T14:21:51.098427Z`
+- Closure `closed_at`: `2026-08-14T14:22:00.214829Z`
+- `closed_at > created_at` is satisfied.
+
+Also consistent:
+- `task_report_gate.completed_at`: `2026-08-14T14:21:51.086953Z`
+- `task_report_policy_activation.completed_at`: `2026-08-14T14:17:29.718643Z`
+- Test run completed before the gate report was created.
+
+### 2. Test receipt full contract — PASS
+
+The test receipt in `task_report_gate.json` contains the required contract fields:
+
+- `command`
+- `candidate_commit` / `candidate_tree`
+- `exit_code: 0`
+- `receipt_id`
+- `result: PASS`
+- `ticket_id`
+- `stdout_ref` / `stderr_ref`
+- `stdout_sha256` / `stderr_sha256`
+- `started_at_utc` / `completed_at_utc`
+- `runtime_version`
+- `cwd`
+- `executable`
+
+The stderr evidence shows:
+
+```text
+Ran 250 tests in 250.820s
+
+OK
+```
+
+and `exit_code` is consistent with `OK`.
+
+### 3. Policy/freeze/inventory consistency — PASS
+
+- `git_commit` / `git_tree` in `code_freeze_manifest.json` match the candidate commit/tree.
+- `implementation_baseline.git_head` matches the candidate commit.
+- `active_entry_policy_sha256` matches `reviewed_entry_policy.sha256`.
+- No dirty tracked paths in the freeze manifest.
+- `external_scheduler_inventory` is marked `VERIFIED` in the gate report.
+- `final_inventory.json` includes the scheduler entry and runtime dependency entries consistent with the freeze manifest.
+
+---
+
+## Findings
+
+### FINDING-01 — High — C0 official 24-cycle evidence chain is absent/unverifiable
+
+**Summary:**  
+No committed evidence artifact in the supplied review set establishes the “C0 official 24-cycle evidence chain.” The only “official” receipt present is the P6 closure receipt, which is not a C0/24-cycle evidence artifact.
+
+**Code refs:**  
+- `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/official_p6_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/final_inventory.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/code_freeze_manifest.json`
+
+This is a blocking gap for P6 gate approval unless the C0 chain is carried elsewhere in the committed tree and was omitted from the review payload.
+
+---
+
+### FINDING-02 — Medium — Input evidence blob binding is declared, not independently verified
+
+**Summary:**  
+The gate and policy-activation task reports assert `VERIFIED` evidence refs and SHA-256 values, but the actual evidence blobs were not embedded in the review payload:
+
+- `evidence/activation-962e4884bda119bd.json`
+- `evidence/policy-activation-5226f9b7dfb1d01b.json`
+
+I could verify that the refs and ticket IDs are internally consistent, but I could not recompute the SHA-256 hashes or confirm the semantic contents of those evidence blobs.
+
+**Code refs:**  
+- `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_gate.json`
+- `research_state/control_plane/p6/attempts/p6-attempt-013/task_report_policy_activation.json`
+
+---
+
+### FINDING-03 — Low — Closure authority claim is self-asserted only
+
+**Summary:**  
+The closure receipt’s `trust_root` claims:
+
+> `closed_at is canonical UTC read from the authoritative Authority closure row`
+
+The timestamp itself is consistent with the gate report, but no separate committed Authority closure-row artifact is included in the review payload, so the “authoritative” provenance cannot be independently verified.
+
+**Code refs:**  
+- `research_state/control_plane/p6/attempts/p6-attempt-013/evidence/official_p6_closure_receipt_v342_cr010.json`
+
+---
+
+## Final verdict
+
+**HOLD**
+
+The gate time causality, test receipt, freeze manifest, and policy activation records are internally consistent. However, the C0 official 24-cycle evidence chain is not verifiable from the supplied evidence set, and the underlying activation evidence blobs were not available for independent hash/content verification.

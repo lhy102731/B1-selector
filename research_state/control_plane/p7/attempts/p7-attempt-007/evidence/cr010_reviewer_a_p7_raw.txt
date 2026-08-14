@@ -1,0 +1,41 @@
+Reviewer A — P7 gate review for `p7-attempt-007`
+
+Inspected committed evidence paths:
+- `research_state/control_plane/p7/attempts/p7-attempt-007/gates/official_p7_gate_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/official_p7_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/task_report_gate.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/task_report_policy_activation.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/code_freeze_manifest.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/external_scheduler_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/final_inventory.json`
+- `research_state/control_plane/p7/attempts/p7-attempt-007/implementation_baseline.json`
+
+Findings:
+
+- **F-01 — PASS: Gate/closure time causality is satisfied.**  
+  `official_p7_gate_v342_cr010.json` has `created_at: 2026-08-14T14:26:24.543273Z`.  
+  `official_p7_closure_receipt_v342_cr010.json` has `closed_at: 2026-08-14T14:26:33.670372Z`.  
+  `closed_at > created_at` by approximately 9.13 seconds. Task completion timestamps also precede gate creation.
+
+- **F-02 — PASS with limitation: Internal evidence hash references are consistent.**  
+  The closure receipt’s `gate_report_sha256` matches the gate report’s `gate_report_sha256`:  
+  `ee186e3cb84b0fcd8387562746e2939f37bb01179fea9548aa97dd6bb3b5e08b`.  
+  The gate report references `task_report_gate.json` and `task_report_policy_activation.json` with SHAs, and the task reports reference activation/policy evidence SHAs. I did not independently recompute file-content hashes because raw file bytes were not embedded, but no internal hash mismatch is visible.
+
+- **F-03 — PASS: Test receipt contract is internally complete.**  
+  `task_report_gate.json` contains a test receipt with the expected command, `exit_code: 0`, `result: PASS`, `runtime_version`, commit/tree, started/completed UTC timestamps, and stdout/stderr SHAs. `gate_tests_stderr.json` reports `Ran 250 tests in 248.732s` with `OK`; `gate_tests_stdout.json` is empty. This is consistent with a successful unittest run.
+
+- **F-04 — HIGH / UNVERIFIED: No C0 official 24-cycle evidence chain is present in the committed evidence.**  
+  I found no committed evidence containing or referencing a “C0 official 24-cycle evidence chain.” The gate authority snapshot lists only two succeeded ticket IDs and no cycle-count/chain artifact. If CR-010 requires an official 24-cycle evidence chain for P7, this gate evidence is incomplete and the `verdict: PASS` is not supported by the submitted evidence.
+
+- **F-05 — MEDIUM / UNVERIFIED: Hard-crash/reconciler claims cannot be matched to real code from the supplied evidence.**  
+  `external_scheduler_inventory.json` states `altered_by_p0: false`, `task_state: Ready`, and `unresolved_risk: "none observed at p7-attempt-007 snapshot"`. These are assertions in the evidence, but no reconciler log, code diff, or code path is committed in the evidence set to independently substantiate the claim.
+
+- **F-06 — LOW: `approval_record.json` is committed but not bound into the gate/closure evidence chain.**  
+  The file exists in the candidate evidence list but is not referenced by the gate report, closure receipt, or task reports. No SHA for it is bound into the gate/closure chain. If an approval record is required for P7, its evidence chain is incomplete.
+
+Final verdict: **HOLD**
+
+The gate cannot be approved as-is because the C0 official 24-cycle evidence chain is not demonstrated in the committed evidence, and code-level reconciler claims are not independently verifiable from the supplied artifacts.

@@ -1,0 +1,91 @@
+Reviewer A — P0 gate / CR-010 corrective recovery  
+Candidate: `ae8f25d8f84d1a1682d8d3b99835a473ffdb5ae7` / `c130c03dff7b971f35ba3f28cbbab295ca2c97c6`  
+Attempt: `p0-attempt-042`
+
+## Files inspected
+
+I inspected the embedded committed evidence at these paths:
+
+- `research_state/control_plane/p0/attempts/p0-attempt-042/gates/official_p0_gate_v342_cr010.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/official_p0_closure_receipt_v342_cr010.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/task_report_gate.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/task_report_policy_activation.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/gate_tests_stdout.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/gate_tests_stderr.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/code_freeze_manifest.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/final_inventory.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/implementation_baseline.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/external_scheduler_inventory.json`
+
+The activation evidence files were listed but their contents were not supplied for independent content verification:
+
+- `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/activation-6487aef3aeff3f37.json`
+- `research_state/control_plane/p0/attempts/p0-attempt-042/evidence/policy-activation-d03db9a20f48cd36.json`
+
+## Verification results
+
+### 1. Gate/closure time causality — PASS
+
+From `gates/official_p0_gate_v342_cr010.json`:
+
+- `created_at`: `2026-08-14T14:15:02.767437Z`
+
+From `evidence/official_p0_closure_receipt_v342_cr010.json`:
+
+- `closed_at`: `2026-08-14T14:17:05.481045Z`
+
+`closed_at > created_at` holds. No causality violation found.
+
+### 2. Evidence blob binding — PARTIAL / NOT FULLY VERIFIABLE
+
+The task reports contain internally consistent evidence references:
+
+- `task_report_gate.json` references `coordinator-evidence-6487aef3aeff3f37` with `evidence_sha256: 5d135acac3c3c8f7910a289b3f24522d8ea17fdec82f71cc10708f44d9181866`.
+- `task_report_policy_activation.json` references `policy-evidence-d03db9a20f48cd36` with `evidence_sha256: 714e610faa80e4cc41e9cd1d7ca469536b18ae3af75c865a8897e799fcdab7be`.
+
+However, the content of the referenced evidence blobs was not embedded in the supplied review material, so I could not recompute those SHA-256 values or independently confirm the internal semantics of those evidence files. This is a verification limitation, not an observed hash mismatch.
+
+### 3. Test receipt contract — PASS
+
+From `task_report_gate.json` and `evidence/gate_tests_stderr.json`:
+
+- Command: `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`
+- Exit code: `0`
+- Result: `PASS`
+- Resolved: `Ran 250 tests in 253.157s` / `OK`
+- Candidate commit and tree match: `ae8f25d8f84d1a1682d8d3b99835a473ffdb5ae7` / `c130c03dff7b971f35ba3f28cbbab295ca2c97c6`
+
+The test receipt is internally consistent.
+
+### 4. Hard-crash / reconciler claims — PASS (no such claims present)
+
+No hard-crash or reconciler claims appear in the gate report, closure receipt, task reports, or evidence. The gate report contains:
+
+- `reason_codes: []`
+- `unresolved_risks: []`
+- `side_effect_summary.unauthorized: []`
+
+`implementation_baseline.json` also reports `production_or_research_task_started: false`. There is no hard-crash claim to reconcile against real code.
+
+### 5. C0 official 24-cycle evidence chain — FAIL / MISSING
+
+The gate and closure evidence contain no C0 official 24-cycle evidence chain. Specifically:
+
+- `gates/official_p0_gate_v342_cr010.json` contains no `C0`, `24-cycle`, or equivalent evidence-chain field.
+- `authority_snapshot` lists only two succeeded tickets, not a 24-cycle chain.
+- `evidence/official_p0_closure_receipt_v342_cr010.json` contains only a single trust-root statement: `CR-010 F-01: closed_at is canonical UTC ... closed_at > gate.created_at`.
+
+This does not establish the required C0 official 24-cycle evidence chain. This is a blocking gap for the P0 gate.
+
+## Findings
+
+| Severity | ID | Summary | Code refs |
+|---|---|---|---|
+| Blocker | B-001 | Missing required C0 official 24-cycle evidence chain. The gate and closure receipts do not contain or reference any 24-cycle chain. | `gates/official_p0_gate_v342_cr010.json` — `authority_snapshot`, `task_reports`, `unresolved_risks`; `evidence/official_p0_closure_receipt_v342_cr010.json` — `tickets`, `trust_root` |
+| Medium | M-001 | Evidence blob binding could not be fully independently verified because the referenced activation/policy evidence blob contents were not supplied. Internal references are consistent, but SHA-256 recomputation was not possible from the provided material. | `task_report_gate.json` — `input_evidence_refs`; `task_report_policy_activation.json` — `input_evidence_refs`; referenced but not supplied: `evidence/activation-6487aef3aeff3f37.json`, `evidence/policy-activation-d03db9a20f48cd36.json` |
+
+## Final verdict
+
+**REJECT**
+
+The gate/closure time causality and test receipt appear sound, but the commitment does not demonstrate the required C0 official 24-cycle evidence chain. Because that is a blocking P0-gate requirement in the review scope, I cannot approve this candidate.
