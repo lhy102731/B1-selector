@@ -202,10 +202,10 @@ def main() -> int:
             "sha256": "d" * 64,
         },
         "action": {
-            "execute": "D:\\\\run_select.bat",
+            "execute": scheduler_records[0]["action"] if scheduler_records else "D:/workspace/run_select.bat",
             "arguments": None,
-            "working_directory": "D:\\\\",
-            "content_sha256": "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
+            "working_directory": None,
+            "content_sha256": scheduler_records[0]["content_sha256"] if scheduler_records else "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
         },
         "principal": {
             "logon_type": "Interactive",
