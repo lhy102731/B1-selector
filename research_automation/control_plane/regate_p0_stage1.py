@@ -1,4 +1,4 @@
-"""CR-010 P0 re-gate STAGE 1: activate p0-attempt-018 (coordinator only).
+"""CR-010 P0 re-gate STAGE 1: activate p0-attempt-019 (coordinator only).
 
 Creates the activation envelope (committed), builds the approval record
 (committed), runs the coordinator with the approval record, and prints the
@@ -18,9 +18,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-ATTEMPT = "p0-attempt-018"
+ATTEMPT = "p0-attempt-019"
 PHASE = "P0"
-TASK_ID = "P0-GATE-018"
+TASK_ID = "P0-GATE-019"
 ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 
 
