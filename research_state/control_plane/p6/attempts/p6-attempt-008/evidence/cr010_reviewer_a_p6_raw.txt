@@ -1,0 +1,156 @@
+## Reviewer A — P6 Gate Independent Review
+
+**Candidate:** `c35893fbfdc30aad99ed921a5182cc39b4ef8da2` / `332670f5f6abbfec88e39de72730b05512142c75`  
+**Attempt:** `p6-attempt-008`  
+**Plan:** `V3.4.2-CR010`  
+**Verdict:** **HOLD**
+
+---
+
+### Files inspected
+
+- `research_state/control_plane/p6/attempts/p6-attempt-008/gates/official_p6_gate_v342_cr010.json` (embedded)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/evidence/official_p6_closure_receipt_v342_cr010.json` (embedded)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/evidence/gate_tests_stdout.json` (embedded)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/evidence/gate_tests_stderr.json` (embedded)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/evidence/cr010_reviewer_b_p6_raw.txt` (embedded)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/code_freeze_manifest.json` (input)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/implementation_baseline.json` (input)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/final_inventory.json` (input)
+- `research_state/control_plane/p6/attempts/p6-attempt-008/external_scheduler_inventory.json` (input)
+
+---
+
+### Findings
+
+#### F-01 — Gate/closure time causality — PASS
+- Gate `created_at`: `2026-08-14T08:11:51.481628Z`
+- Closure `closed_at`: `2026-08-14T08:12:00.248272Z`
+- `closed_at > created_at` by `+8.766644s`.
+
+This satisfies the first required verification.
+
+**Refs:** embedded gate JSON; `evidence/official_p6_closure_receipt_v342_cr010.json`.
+
+---
+
+#### F-02 — Gate/closure blob binding — PASS
+- Gate `gate_report_sha256`: `b10f775d8ccc9094a9823814dc6fd8709758470251e2d1f5b0e12e537b9f840a`
+- Closure `gate_report_sha256`: `b10f775d8ccc9094a9823814dc6fd8709758470251e2d1f5b0e12e537b9f840a`
+- Match confirmed.
+- Closure `grant_id` matches gate `authority_snapshot.active_grant_ids[0]`.
+- Closure `tickets[]` set-equals gate `authority_snapshot.succeeded_ticket_ids[]`.
+- Ticket-id prefixes match committed activation evidence filenames.
+
+However, the contents of `activation-1f2c77992711bdbc.json` and `policy-activation-c8d59d328f4bbf7d.json` are not embedded here, so I could not verify their internal payloads independently.
+
+**Refs:** `gates/official_p6_gate_v342_cr010.json`; `evidence/official_p6_closure_receipt_v342_cr010.json`.
+
+---
+
+#### F-03 — Test receipt contract is incomplete — MEDIUM
+The gate report contains exactly **one** test receipt:
+
+- `test-1f2c77992711bdbc`, exit code `0`, result `PASS`.
+
+But there are **two** succeeded tickets:
+
+1. `1f2c77992711bdbc2bb7955dec2266d91c4dba75ab30927e9248bfb88cea80d2`
+2. `c8d59d328f4bbf7dac879912c85fb5596d97ba0d634dc3050c5c94c11f9f2b73`
+
+The second ticket has no `test_receipts[]` entry. `task_reports[]` lists a separate `task_report_policy_activation.json`, but no corresponding test receipt is present for that ticket.
+
+The embedded test output is internally consistent:  
+`gate_tests_stderr.json` shows `Ran 250 tests ... OK`; `gate_tests_stdout.json` is empty.
+
+But the per-ticket test-receipt contract is asymmetric and not fully explained.
+
+**Refs:** `gates/official_p6_gate_v342_cr010.json` → `test_receipts[]`, `task_reports[]`.
+
+---
+
+#### F-04 — Independent-reviewer evidence is misbound to a different candidate — HIGH
+`cr010_reviewer_b_p6_raw.txt` states:
+
+- Candidate: `d5fd6768fc6e4fcd01b48e6b23577d2180f96cd6`
+- Tree: `185fb5fd9b5435ebce537fe87382146382cdef2c`
+
+The candidate under review is:
+
+- Commit: `c35893fbfdc30aad99ed921a5182cc39b4ef8da2`
+- Tree: `332670f5f6abbfec88e39de72730b05512142c75`
+
+These do **not** match. This means the committed Reviewer B evidence cannot be bound to the candidate under review without further reconciliation.
+
+Additionally, `code_freeze_manifest.json` and `implementation_baseline.json` reference git commit `510c4793aaf778bc94f6cc586059b6a32553698b`, which is also different from the candidate commit. This may be intended as a frozen baseline, but it is not explained in the embedded evidence.
+
+For an independent P6 gate, evidence files must be bound to the exact candidate under review. At present, that binding is inconsistent.
+
+**Refs:** `evidence/cr010_reviewer_b_p6_raw.txt`; `code_freeze_manifest.json`; `implementation_baseline.json`.
+
+---
+
+#### F-05 — Authority/reconciler claims not independently verifiable — MEDIUM
+The gate asserts:
+
+- `failed_ticket_ids=[]`
+- `in_doubt_ticket_ids=[]`
+- `open_ticket_ids=[]`
+- `pending_outbox_count=0`
+- `scheduler_inventory.status=VERIFIED`
+- `side_effect_summary.unauthorized=[]`
+- `file_delta_summary.changed_files=[]`
+
+These are internally consistent, but no embedded reconciler trace, hard-crash report, or executable-code excerpt is available to verify that the claims match the actual code at the candidate commit.
+
+For a corrective-recovery gate, I would expect explicit evidence that the reconciler / authority state was mechanically checked against the committed code.
+
+**Refs:** `gates/official_p6_gate_v342_cr010.json` → `authority_snapshot`, `scheduler_inventory`, `file_delta_summary`, `side_effect_summary`.
+
+---
+
+#### F-06 — C0 → P6 evidence chain is absent — MEDIUM
+No embedded content references a C0 phase, a 24-cycle chain, or a continuity hash from C0 to P6.
+
+The closure `trust_root` only references `CR-010 F-01` closure-time canonicality. It does not anchor the attempt to a C0 chain.
+
+If CR-010 corrective recovery is intended to be exempt from C0 chain continuity, that scoping decision is not recorded in the embedded gate/closure evidence.
+
+**Refs:** `gates/official_p6_gate_v342_cr010.json`; `evidence/official_p6_closure_receipt_v342_cr010.json`.
+
+---
+
+#### F-07 — Triple-identical identity binding hash — LOW
+`instruction_policy_hash`, `plan_hash`, and `scope_hash` are all:
+
+`2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95`
+
+This may be correct if the instruction, plan, and scope are the same document, but no justification is provided. For a corrective recovery, collapsing all three roles into one hash is unexpected and should be explained.
+
+**Refs:** `gates/official_p6_gate_v342_cr010.json` → `identity_binding`; `code_freeze_manifest.json` → `identity_binding`; `final_inventory.json` → `identity_binding`.
+
+---
+
+### Final verdict
+
+The embedded gate/closure content is internally consistent regarding time causality and hash binding. The test output is consistent with `exit_code=0`.
+
+However, the P6 evidence chain is not fully verifiable from the committed evidence at this candidate:
+
+1. Only one test receipt exists for two succeeded tickets.
+2. Reviewer B raw evidence references a different candidate commit/tree.
+3. Several manifest and identity artifacts are not clearly bound to the reviewed candidate.
+4. No C0 → P6 continuity evidence is present.
+5. The reconciler/scheduler and delta claims cannot be checked against real code from the embedded evidence.
+
+Because this is a corrective-recovery gate, these gaps are material.
+
+**Final Verdict: HOLD**
+
+Conditions to clear:
+
+1. Bind or regenerate all evidence files to candidate `c35893fbfdc30aad99ed921a5182cc39b4ef8da2` / tree `332670f5f6abbfec88e39de72730b05512142c75`.
+2. Provide a test receipt for ticket `c8d59d328f4bbf7dac879912c85fb5596d97ba0d634dc3050c5c94c11f9f2b73`, or explicitly document why policy activation is exempt.
+3. Provide C0 chain continuity evidence, or record the scoping decision that exempts this CR-010 recovery from C0 chain continuity.
+4. Provide a one-line justification for the triple-identical `identity_binding` hash.
+5. Provide reconciler/scheduler verification traces that can be matched to the candidate code.
