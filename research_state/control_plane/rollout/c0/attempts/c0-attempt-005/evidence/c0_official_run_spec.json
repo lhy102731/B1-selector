@@ -1,0 +1,1 @@
+{"attempt_id":"c0-attempt-005","command":"python run_research.py rollout --stage c0 --attempt c0-attempt-005 --seed 20260811 --cycles 24","cycles":24,"objective":"CR-010 F-03 official 24-cycle C0 evidence chain","offline_only":true,"schema":"control_plane.c0_official_run_spec.v1","seed":20260811}
