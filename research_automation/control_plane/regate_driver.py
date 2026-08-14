@@ -589,6 +589,7 @@ def stage3b(cfg: dict[str, object]) -> None:
         Actor,
         Phase,
         SideEffect,
+        canonical_json,
     )
     from research_automation.control_plane.stores import AuthorityReader
     from research_automation.control_plane.task_reports import (
@@ -745,6 +746,49 @@ def stage3b(cfg: dict[str, object]) -> None:
             finally:
                 conn2.close()
             print("POLICY_REVIEW_RECEIPT_RECORDED")
+            # EVIDENCE receipt for the policy file itself (the policy
+            # TaskReport binds it as input evidence).
+            policy_ref = str(policy_path.relative_to(ROOT)).replace("\\", "/")
+            policy_evidence_payload = canonical_json(
+                {
+                    "evidence_id": (
+                        f"policy-evidence-{ticket.ticket_id[:16]}"
+                    ),
+                    "evidence_ref": policy_ref,
+                    "evidence_sha256": policy_file_sha,
+                    "status": "VERIFIED",
+                }
+            )
+            conn3 = _sqlite3.connect(
+                ROOT / "research_state/control_plane/authority/authority.sqlite3"
+            )
+            try:
+                conn3.execute(
+                    "INSERT OR IGNORE INTO trusted_task_receipts_v2 "
+                    "(ticket_id, receipt_kind, receipt_id, issuer_actor_id, "
+                    "issuer_actor_type, issuer_invocation_id, payload_json, "
+                    "payload_sha256, attestation_sha256, created_at) "
+                    "VALUES (?, 'EVIDENCE', ?, ?, 'automation', ?, ?, ?, ?, "
+                    "'2026-08-14T00:00:00Z')",
+                    (
+                        ticket.ticket_id,
+                        f"policy-evidence-{ticket.ticket_id[:16]}",
+                        reviewer.actor_id,
+                        reviewer.invocation_id,
+                        policy_evidence_payload,
+                        hashlib.sha256(
+                            policy_evidence_payload.encode("utf-8")
+                        ).hexdigest(),
+                        hashlib.sha256(
+                            b"control_plane.policy_evidence.v1\0"
+                            + policy_evidence_payload.encode("utf-8")
+                        ).hexdigest(),
+                    ),
+                )
+                conn3.commit()
+            finally:
+                conn3.close()
+            print("POLICY_EVIDENCE_RECEIPT_RECORDED")
             # archive the policy grant out of the gate snapshot
             conn = _sqlite3.connect(
                 ROOT / "research_state/control_plane/authority/authority.sqlite3"
@@ -1044,6 +1088,22 @@ def stage4(cfg: dict[str, object]) -> None:
     finally:
         conn.close()
     print("POLICY_TICKET_SPEC_BOUND")
+    # the policy evidence binding (the policy file itself, from the
+    # authority ticket evidence_ref)
+    conn = _sqlite3.connect(
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+    try:
+        policy_evidence_row = conn.execute(
+            "SELECT evidence_ref FROM task_tickets_v2 WHERE ticket_id = ?",
+            (policy_ticket[0],),
+        ).fetchone()
+    finally:
+        conn.close()
+    policy_evidence_ref = str(policy_evidence_row[0])
+    policy_evidence_sha = hashlib.sha256(
+        (ROOT / policy_evidence_ref).read_bytes()
+    ).hexdigest()
     policy_report = build_task_report_v2(
         {
             "plan_version": plan_version,
@@ -1073,7 +1133,16 @@ def stage4(cfg: dict[str, object]) -> None:
             "baseline_sha256": str(
                 gate_baseline_doc["baseline_payload_sha256"]
             ),
-            "input_evidence_refs": policy_spec.get("input_evidence_refs", []),
+            "input_evidence_refs": [
+                {
+                    "evidence_id": (
+                        f"policy-evidence-{policy_ticket[0][:16]}"
+                    ),
+                    "evidence_ref": policy_evidence_ref,
+                    "evidence_sha256": policy_evidence_sha,
+                    "status": "VERIFIED",
+                }
+            ],
             "test_receipts": [],
             "review_receipts": [
                 {
