@@ -61,7 +61,9 @@ def main() -> int:
     reader = AuthorityReader()
     snapshot = reader.phase_gate_snapshot(Phase(PHASE), ATTEMPT)
 
-    # TaskReport for the coordinator ticket: rebuild from the DB row.
+    # TaskReport for the coordinator ticket: rebuild from the DB row so the
+    # authority binding matches exactly (authorization_ref/idempotency_key/
+    # task_spec_sha256/identity come from the grant, not placeholders).
     import sqlite3
 
     conn = sqlite3.connect(
@@ -69,14 +71,26 @@ def main() -> int:
     )
     try:
         ticket = conn.execute(
-            "SELECT ticket_id, task_id, state FROM task_tickets_v2 "
+            "SELECT ticket_id, task_id, idempotency_key, task_spec_ref, "
+            "task_spec_sha256, state, grant_id FROM task_tickets_v2 "
             "WHERE attempt_id = ? AND task_id = ? AND state = 'SUCCEEDED' "
             "ORDER BY created_at DESC LIMIT 1",
-            (ATTEMPT, "P0-GATE-023"),
+            (ATTEMPT, f"P0-GATE-{ATTEMPT[-3:]}"),
+        ).fetchone()
+        grant = conn.execute(
+            "SELECT authorization_ref, plan_hash, scope_hash, "
+            "instruction_policy_hash FROM phase_grants_v2 WHERE grant_id = ?",
+            (ticket[6],),
         ).fetchone()
     finally:
         conn.close()
     ticket_id = ticket[0]
+    grant_auth_ref = grant[0]
+    grant_identity = {
+        "plan_hash": grant[1],
+        "scope_hash": grant[2],
+        "instruction_policy_hash": grant[3],
+    }
     evidence_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
         f"activation-{ticket_id[:16]}.json"
@@ -158,17 +172,14 @@ def main() -> int:
             "attempt_id": ATTEMPT,
             "task_id": ticket[1],
             "ticket_id": ticket_id,
-            "authorization_ref": f"coordinator-auth-{ticket_id[:24]}",
+            "authorization_ref": grant_auth_ref,
             "ticket_state": "SUCCEEDED",
-            "identity_binding": IDENTITY,
+            "identity_binding": grant_identity,
             "objective": f"CR-010 P0 re-gate activation for {ATTEMPT}",
             "dependencies": [],
-            "idempotency_key": f"{ATTEMPT}-cr010",
-            "task_spec_ref": (
-                f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-                "activation-envelopes/p0-gate-013.json"
-            ),
-            "task_spec_sha256": "1" * 64,
+            "idempotency_key": ticket[2],
+            "task_spec_ref": ticket[3],
+            "task_spec_sha256": ticket[4],
             "requirements": {
                 "required_test_receipt_ids": [receipt["receipt_id"]],
                 "required_review_receipt_ids": [],
@@ -223,7 +234,7 @@ def main() -> int:
         "plan_version": PLAN_VERSION,
         "phase": PHASE,
         "attempt_id": ATTEMPT,
-        "identity_binding": IDENTITY,
+        "identity_binding": grant_identity,
         "authority_snapshot": snapshot.to_report_dict(),
         "code_freeze_manifest": {
             "ref": f"research_state/control_plane/p0/attempts/{ATTEMPT}/code_freeze_manifest.json",
