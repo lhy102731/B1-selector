@@ -203,7 +203,7 @@ def main() -> int:
     )
     report_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/"
-        "task_report_gate_013.json"
+        "task_report_gate.json"
     )
     (ROOT / report_ref).write_text(
         canonical_json(task_report), encoding="utf-8", newline="\n"
@@ -274,6 +274,14 @@ def main() -> int:
         canonical_json(report), encoding="utf-8", newline="\n"
     )
     print("GATE_BUILT", report["verdict"], report["gate_report_sha256"][:16])
+
+    # Commit ALL gate evidence (task report, logs, gate) in ONE commit so
+    # the verifier dereferences committed blobs.  The commit is the ONLY
+    # post-freeze commit and contains only immutable evidence files.
+    evidence_paths = [report_ref, stdout_ref, stderr_ref, gate_ref]
+    git("add", "--", *evidence_paths)
+    git("commit", "-q", "-m",
+        f"audit: {ATTEMPT} gate evidence (CR-010, add-only)")
 
     # fresh verify from committed bytes
     raw = gate_path.read_bytes()
