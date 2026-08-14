@@ -394,6 +394,7 @@ def main() -> int:
                     "findings_sha256": policy_review_hash,
                 }
             ],
+            "review_findings": [],
             "changed_files": [],
             "external_invocations": [],
             "started_at": str(policy_ticket[7]),
