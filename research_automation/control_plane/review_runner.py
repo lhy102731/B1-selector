@@ -141,12 +141,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt-file", default=None,
                         help="read prompt from this file instead of building")
     parser.add_argument("--max-tokens", type=int, default=8000)
+    parser.add_argument(
+        "--candidate",
+        default=None,
+        help=(
+            "Explicit candidate commit to bind the review to (defaults to "
+            "current HEAD).  Use the gate evidence commit so Reviewer A and "
+            "B share one candidate."
+        ),
+    )
     args = parser.parse_args(argv)
 
     repository_root = Path(__file__).resolve().parents[2]
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    commit, tree = _repo_head(repository_root)
+    # Candidate binding: the evidence baseline is the HEAD at review time
+    # (the gate evidence commit), or the explicit --candidate.  Reviewer A
+    # and B MUST use the same candidate so their verdicts are comparable.
+    if args.candidate:
+        commit = args.candidate
+        tree = subprocess.run(
+            ["git", "-C", str(repository_root), "rev-parse",
+             commit + "^{tree}"],
+            capture_output=True, text=True,
+        ).stdout.strip()
+    else:
+        commit, tree = _repo_head(repository_root)
     base_url, api_key, default_model = _provider_spec(args.provider)
     model = args.model or default_model
 
