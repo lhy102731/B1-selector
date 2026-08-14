@@ -101,18 +101,24 @@ def main() -> int:
         timeout=900,
     )
     completed = datetime.now(timezone.utc)
+    # stdout/stderr must be canonical JSON files (post-freeze evidence is
+    # only allowed to be canonical JSON), so wrap the raw text.
     stdout_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
-        "gate_tests_stdout.log"
+        "gate_tests_stdout.json"
     )
     stderr_ref = (
         f"research_state/control_plane/p0/attempts/{ATTEMPT}/evidence/"
-        "gate_tests_stderr.log"
+        "gate_tests_stderr.json"
     )
     (ROOT / stdout_ref).parent.mkdir(parents=True, exist_ok=True)
     (ROOT / stderr_ref).parent.mkdir(parents=True, exist_ok=True)
-    (ROOT / stdout_ref).write_text(result.stdout, encoding="utf-8", newline="\n")
-    (ROOT / stderr_ref).write_text(result.stderr, encoding="utf-8", newline="\n")
+    (ROOT / stdout_ref).write_text(
+        canonical_json({"text": result.stdout}), encoding="utf-8", newline="\n"
+    )
+    (ROOT / stderr_ref).write_text(
+        canonical_json({"text": result.stderr}), encoding="utf-8", newline="\n"
+    )
     receipt = {
         "ticket_id": ticket_id,
         "receipt_id": f"test-{ticket_id[:16]}",
@@ -128,9 +134,13 @@ def main() -> int:
         "started_at_utc": started.isoformat().replace("+00:00", "Z"),
         "completed_at_utc": completed.isoformat().replace("+00:00", "Z"),
         "stdout_ref": stdout_ref,
-        "stdout_sha256": hashlib.sha256(result.stdout.encode("utf-8")).hexdigest(),
+        "stdout_sha256": hashlib.sha256(
+            canonical_json({"text": result.stdout}).encode("utf-8")
+        ).hexdigest(),
         "stderr_ref": stderr_ref,
-        "stderr_sha256": hashlib.sha256(result.stderr.encode("utf-8")).hexdigest(),
+        "stderr_sha256": hashlib.sha256(
+            canonical_json({"text": result.stderr}).encode("utf-8")
+        ).hexdigest(),
     }
     if result.returncode != 0:
         print("TESTS_FAILED", result.returncode)
