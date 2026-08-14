@@ -1,0 +1,87 @@
+# Reviewer B — P0 Gate Review (CR-010 Corrective Recovery)
+**Candidate:** 5749e9aef7b72ddc5fd077ee03b9771ccef5e2c8 / 86af0cd818b83f99f0e1b69b5af4f141c525fd5e
+**Attempt:** p0-attempt-041
+
+## Files Inspected (committed tree only)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/gates/official_p0_gate_v342_cr010.json` (embedded)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/official_p0_closure_receipt_v342_cr010.json` (committed + embedded)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/activation-dc50e58d5a55d2ca.json` (path/name binding only)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/gate_tests_stdout.json` (path only)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/gate_tests_stderr.json` (path only)
+- `research_state/control_plane/p0/attempts/p0-attempt-041/evidence/cr010_reviewer_a_p0_raw.txt`, `cr010_reviewer_b_p0_raw.txt`, `cr010_review_p0_calls.json` (path only — reviewer process trail)
+
+## Findings
+
+### [INFO] F-01 — Time causality satisfied (CR-010 F-01)
+- Gate `created_at` = `2026-08-14T05:50:14.853557Z`
+- Closure `closed_at` = `2026-08-14T05:50:39.271873Z`
+- Δ = **24.418316 s**, closed_at strictly > created_at ✓
+- Trust-root claim ("mechanically provable closed_at > gate.created_at") holds against the embedded UTC stamps.
+- Refs: `official_p0_gate_v342_cr010.json::created_at`; `official_p0_closure_receipt_v342_cr010.json::closed_at, trust_root`.
+
+### [INFO] F-02 — Blob / receipt SHA-256 binding consistent
+- Closure `gate_report_sha256` = `a876c1dc9f258c515168ffc93c9f2be6becad254d5713205b6038528b3d68006` ⇔ matches gate's self-declared `gate_report_sha256` ✓
+- Closure `gate_ref` resolves to the same path under `gates/` ✓
+- Closure `grant_id` = `grant_78126d752ae75c9b9e32e41ee01a104b` ⇔ matches `authority_snapshot.active_grant_ids[0]` ✓
+- Closure `tickets` set `{21b2ebb0…, dc50e58d…}` ⇔ matches `authority_snapshot.succeeded_ticket_ids` ✓
+- `reviewed_entry_policy.sha256` = `d978a7b1…` ⇔ matches `authority_snapshot.active_entry_policy_sha256` ✓
+- Task reports: `task_report_gate.json` → `dc50e58d…` (PASS); `task_report_policy_activation.json` → `21b2ebb0…` (PASS); both `report_sha256` populated ✓
+- Refs: `official_p0_gate_v342_cr010.json::{authority_snapshot, reviewed_entry_policy, task_reports, gate_report_sha256}`; `official_p0_closure_receipt_v342_cr010.json::{gate_report_sha256, gate_ref, grant_id, tickets}`.
+
+### [INFO] F-03 — Test receipt full contract satisfied
+- `command`: `python -m unittest tests.test_control_plane_activation_coordinator tests.test_control_plane_gates tests.test_control_plane_task_reports tests.test_control_plane_approval_record tests.test_control_plane_stores`
+- `exit_code`: 0; `result`: PASS; `receipt_id`: `test-dc50e58d5a55d2ca`
+- `ticket_id`: `dc50e58d5a55d2ca0a3c5d4a705b80929bc72bed99c410aad7b3ae87bc933cb4` ✓
+- Covers all five control-plane modules required by the gate scope (activation_coordinator, gates, task_reports, approval_record, stores). Receipt fields form a complete contract (command, exit_code, receipt_id, result, ticket_id).
+- Refs: `official_p0_gate_v342_cr010.json::test_receipts[0]`.
+
+### [INFO] F-04 — No hard-crash / reconciler over-claim
+- `scheduler_inventory.status` = `VERIFIED` ✓
+- `side_effect_summary.unauthorized` = `[]` ✓
+- `side_effect_summary.observed` = `["WRITE_CONTROL_PLANE"]` (authorized scope only) ✓
+- `reason_codes` = `[]`; `unresolved_risks` = `[]` ✓
+- `failed_ticket_ids`, `in_doubt_ticket_ids`, `open_ticket_ids` all `[]`; `pending_outbox_count` = 0 ✓
+- No reconciler / hard-crash narrative asserted in embedded gate/closure content, so there is no claim to dispute.
+- Refs: `official_p0_gate_v342_cr010.json::{authority_snapshot, scheduler_inventory, side_effect_summary, reason_codes, unresolved_risks}`.
+
+### [INFO] F-05 — Activation evidence filename ↔ ticket binding
+- Committed evidence file `activation-dc50e58d5a55d2ca.json` encodes the activation ticket prefix `dc50e58d5a55d2ca`, which is the gate ticket `dc50e58d5a55d2ca0a3c5d4a705b80929bc72bed99c410aad7b3ae87bc933cb4` ✓
+- Refs: committed evidence list; `official_p0_gate_v342_cr010.json::task_reports[ticket_id=dc50e58d…]`.
+
+### [LOW] F-06 — Identity-binding triple hash is degenerate
+- `identity_binding.instruction_policy_hash` = `identity_binding.plan_hash` = `identity_binding.scope_hash` = `67a58dc8f6f237c7e2bea299d13b0e7dbcaf9f7520c5d559bf3ec87876989b3a`.
+- Three identical digests can be legitimate when plan/policy/scope are intentionally unified for a single-scope P0 corrective pass, but the binding is weaker than the typical distinct-hash pattern. No discrepancy in binding *targets* (all reference the same canonical artifact), only in hash diversity.
+- Severity LOW: not a contract violation; recommend a follow-up note in P1 confirming intent.
+- Refs: `official_p0_gate_v342_cr010.json::identity_binding`.
+
+### [LOW] F-07 — C0 official 24-cycle evidence chain cross-reference not embedded
+- The closure `trust_root` asserts canonical-UTC provenance and mechanical provability of `closed_at > created_at`; this holds (F-01).
+- The Δ≈24.418316 s is suggestive of a 24-cycle cadence but the embedded gate/closure content does not itself cite a C0 24-cycle chain artifact or its hash. The C0 chain is therefore not directly verifiable from the embedded content alone; reliance is on the committed `cr010_review_p0_calls.json` / reviewer raw trail (path-only inspection here).
+- Severity LOW: causal proof at the P0 boundary is intact; the C0 cross-reference is an audit-trail concern rather than a gate-blocking contract.
+- Refs: `official_p0_closure_receipt_v342_cr010.json::trust_root`; committed paths `cr010_review_p0_calls.json`, `cr010_reviewer_a_p0_raw.txt`, `cr010_reviewer_b_p0_raw.txt`.
+
+### [LOW] F-08 — Single test_receipt attribution
+- Only one `test_receipts` entry is present, bound to ticket `dc50e58d…`. The policy-activation ticket `21b2ebb0…` carries a task_report but no separate test_receipt row.
+- The single test command does exercise `tests.test_control_plane_activation_coordinator`, so activation logic is covered; however attribution is asymmetric. Acceptable for P0 since the same command subsumes both tickets' covered modules.
+- Refs: `official_p0_gate_v342_cr010.json::test_receipts`, `task_reports`.
+
+## Contract Checklist
+| Item | Status |
+|---|---|
+| closure.closed_at > gate.created_at (UTC) | ✓ PASS |
+| closure.gate_report_sha256 ⇔ gate.gate_report_sha256 | ✓ PASS |
+| closure.gate_ref resolves to committed gate path | ✓ PASS |
+| closure.grant_id ⇔ authority_snapshot.active_grant_ids | ✓ PASS |
+| closure.tickets ⇔ succeeded_ticket_ids | ✓ PASS |
+| reviewed_entry_policy.sha256 ⇔ active_entry_policy_sha256 | ✓ PASS |
+| Test receipt: command/exit_code/receipt_id/result/ticket_id complete | ✓ PASS |
+| No failed/in_doubt/open tickets; pending_outbox_count=0 | ✓ PASS |
+| Scheduler inventory VERIFIED; no unauthorized side effects | ✓ PASS |
+| Reason codes / unresolved risks empty | ✓ PASS |
+| Auto-advance=false (review-gated) | ✓ PASS |
+| C0 24-cycle chain cross-reference in embedded content | △ partial (LOW) |
+| Identity-binding hash diversity | △ degenerate (LOW) |
+
+## Final Verdict: **APPROVE**
+
+All P0-gate hard contracts are satisfied: time causality is mechanically provable from the embedded UTC stamps (Δ≈24.418316 s), SHA-256 bindings are consistent across gate↔closure↔entry-policy↔grant↔tickets, the test receipt is a complete contract and exercises every required control-plane module, and there are no failed/in-doubt/open tickets, no unauthorized side effects, and no unresolved risks or reason codes. The two LOW-severity notes (degenerate identity-binding triple hash; C0 24-cycle cross-reference not embedded in the gate/closure content) are informational and do not block closure. Recommend P1 follow-up to record the C0 24-cycle chain artifact reference explicitly and to confirm the unified identity-binding hashes are intentional for this CR-010 corrective pass.
