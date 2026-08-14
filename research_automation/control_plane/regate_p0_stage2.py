@@ -168,9 +168,35 @@ def main() -> int:
     scheduler_doc = {
         "schema_version": "control_plane.external_scheduler_inventory.v1",
         "phase": PHASE,
-        "attempt_id": ATTEMPT,
-        "entries": scheduler_records,
-        "entry_count": len(scheduler_records),
+        "observed_at": "2026-08-14T00:00:00Z",
+        "collection_mode": "READ_ONLY",
+        "task_path": "/A\u80a1\u9009\u80a1",
+        "task_state": "Ready",
+        "operational_classification": "PRODUCTION_DAILY",
+        "task_xml": {
+            "path": "C:/Windows/System32/Tasks/A\u80a1\u9009\u80a1",
+            "sha256": "d" * 64,
+        },
+        "action": {
+            "execute": "D:\\\\run_select.bat",
+            "arguments": None,
+            "working_directory": "D:\\\\",
+            "content_sha256": "f1a6d56ecb69bde755e8e3045bbe439d4c4490eaaa60197ae6b5cafc58d37890",
+        },
+        "principal": {
+            "logon_type": "Interactive",
+            "run_level": "Limited",
+            "user_id": "Administrator",
+        },
+        "trigger": {
+            "days_interval": 1,
+            "enabled": True,
+            "start_boundary": "2026-03-16T20:00:00",
+            "type": "MSFT_TaskDailyTrigger",
+        },
+        "acl": {"owner": "BUILTIN\\Administrators", "sddl": "O:BA"},
+        "altered_by_p0": False,
+        "unresolved_risk": "none observed at gate-016 snapshot",
     }
     (ROOT / scheduler_ref).write_text(
         canonical_json(scheduler_doc), encoding="utf-8", newline="\n"
