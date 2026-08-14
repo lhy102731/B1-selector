@@ -26,8 +26,8 @@ ENTROPY = b"a-share-control-plane-v342-p0r2-v1"
 # phase -> (attempt, task id, identity, attempt dir relative root)
 PHASES = {
     "P6": {
-        "attempt": "p6-attempt-005",
-        "task": "P6-GATE-005",
+        "attempt": "p6-attempt-006",
+        "task": "P6-GATE-006",
         "dir": "research_state/control_plane/p6/attempts",
         "identity": {
             "plan_hash": "2053cb3a28d0138d55d080b5b3024096e5554b2c078fa2b259333e59a97cdf95",
@@ -40,8 +40,8 @@ PHASES = {
         ),
     },
     "P7": {
-        "attempt": "p7-attempt-004",
-        "task": "P7-GATE-004",
+        "attempt": "p7-attempt-005",
+        "task": "P7-GATE-005",
         "dir": "research_state/control_plane/p7/attempts",
         "identity": {
             "plan_hash": "5285d6e9c05c0048dc844a4d2fd3b4408dad287ea0d4c4256cde54db849b2b0b",
