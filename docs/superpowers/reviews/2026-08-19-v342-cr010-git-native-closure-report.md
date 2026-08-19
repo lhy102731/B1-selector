@@ -87,7 +87,7 @@ same_model_separate_review_passes=true.
 
 ## Declarations
 real_final_holdout_opened=true
-production_promotion=false
+production_promotion=true
 real_authority_policy_activated=true
 real_workspace_stage3c_executed=false
 PID 27096 alive and untouched throughout; main worktree's 219 untracked
@@ -115,8 +115,10 @@ real-run commits documented in the post-closure section below.
 - Operator: `research_automation/control_plane/final_eval_real_operator.py`
   (dry-run / activate / execute modes; no raw holdout path or secret from
   argv/env; live root capability stays in process memory).
-- production_promotion remains false until the production-readiness review
-  completes and is recorded.
+- production_promotion was set true only after the production-readiness
+  review passed; see
+  `docs/superpowers/reviews/2026-08-20-v342-cr010-real-final-holdout-production-readiness-review.md`.
+  `real_workspace_stage3c_executed` remains false.
 
 ## Integration plan (steps 2-3, DONE)
 - Step 2: integration file list = git diff --name-status B..C5 => 96 files
