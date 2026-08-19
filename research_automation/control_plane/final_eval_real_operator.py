@@ -368,6 +368,22 @@ def _live_stores():
     )
 
 
+def _migrate_live_stores(root_secret: str) -> None:
+    """Idempotent official store migrations (Authority v1 -> current,
+    Operational v1/v2/v3 -> v4) before any live store object is opened."""
+    authority_changed = stores_module._migrate_authority_v2(
+        root_secret=root_secret
+    )
+    operational_changed = stores_module._migrate_operational_journal_v4(
+        root_secret=root_secret
+    )
+    print(
+        "MIGRATIONS authority_changed=" + str(authority_changed).lower()
+        + " operational_changed=" + str(operational_changed).lower(),
+        flush=True,
+    )
+
+
 def _decrypt_live_secret() -> str:
     from research_automation.control_plane.regate_driver import decrypt_capability
 
@@ -474,6 +490,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.activate:
         with _live_stores():
             stores_module._expected_schema_sha256.cache_clear()
+            _migrate_live_stores(root_secret)
             auth_ref, grant_id, _ = _provision_real_grant(root_secret=root_secret)
             stores_module._expected_schema_sha256.cache_clear()
         print(json.dumps({
@@ -488,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     verify_frozen_bytes(ROOT)
     with _live_stores():
         stores_module._expected_schema_sha256.cache_clear()
+        _migrate_live_stores(root_secret)
         authority = stores_module._AuthorityStore(root_secret=root_secret)
         grant = _recover_live_grant(authority)
         result = _run(ROOT, root_secret, grant)
