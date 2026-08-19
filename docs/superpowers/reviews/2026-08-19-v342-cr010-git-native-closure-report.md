@@ -74,11 +74,11 @@ swap rejected.  REVIEW_B_STATUS APPROVE.
 - research_state/control_plane and the bridge DLL are external
   operational/runtime data pinned by the manifest, not part of the
   96-file B..C5 diff.
-- Merge target is NOT yet fixed: C5 descends from refs/heads/main
-  (0b7e0fd) but NOT from origin/main (ca87c350; local/remote diverge
-  1/2, merge-base 6b51c68; origin/main's tree lacks ag2_research/kbase).
-  Any merge into main is PENDING user authorization AND a fixed target
-  trunk.  No push/merge/rebase/amend/force ran.
+- Merge target was later FIXED and executed with user authorization:
+  local main merged origin/main in `03d9b32b` (parents `57fe9049` +
+  `ca87c350`) and pushed as a normal fast-forward, so
+  `origin/main = refs/heads/main = 03d9b32b`.  See the post-closure real
+  run section below.
 
 ## Reviews
 Review A: APPROVE (run003/review/review-a.md, candidate 7ecb534d).
@@ -86,12 +86,37 @@ Review B: APPROVE (run003/review/review-b.out, exit 0).
 same_model_separate_review_passes=true.
 
 ## Declarations
-real_final_holdout_opened=false
+real_final_holdout_opened=true
 production_promotion=false
-real_authority_policy_activated=false
+real_authority_policy_activated=true
 real_workspace_stage3c_executed=false
-PID 27096 untouched; main worktree never mutated (only read, for the
-runtime-data copy); no push/merge/rebase/amend/force.
+PID 27096 alive and untouched throughout; main worktree's 219 untracked
+runtime files preserved; no force/reset/clean/amend ran.  Authorized main
+mutations are limited to the origin-sync merge+push and the add-only
+real-run commits documented in the post-closure section below.
+
+## Post-closure real run (2026-08-20, user-authorized)
+
+- Real Authority activation: live Authority store migrated atomically v1 ->
+  current schema; new ACTIVE CLAIMED P8 grant for attempt
+  `final-eval-attempt-001` with allowed effects
+  `WRITE_CONTROL_PLANE, OPEN_HOLDOUT`; Authority outbox drained (0 pending).
+  Pre-run store backups: `C:\Users\Administrator\AppData\Local\Temp\
+  cr010-live-store-backup-2026-08-20\`.
+- Real Final Holdout: frozen materials + operator committed add-only in
+  `2b19573` / `acf4b60` / `5bd2154` / `fb00992`; dry-run of the production
+  entry passed in a disposable root; live `--execute` passed preflight and
+  drove the durable saga to terminal state:
+  ticket/binding `4f6d438f...`, request `83361f91...`, terminal
+  `SUCCEEDED`, saga `AUTHORITY_TERMINAL`; result object/claim committed in
+  `6444a6f` under
+  `research_state/control_plane/final_eval/attempts/final-eval-attempt-001/
+  evidence/`.
+- Operator: `research_automation/control_plane/final_eval_real_operator.py`
+  (dry-run / activate / execute modes; no raw holdout path or secret from
+  argv/env; live root capability stays in process memory).
+- production_promotion remains false until the production-readiness review
+  completes and is recorded.
 
 ## Integration plan (steps 2-3, DONE)
 - Step 2: integration file list = git diff --name-status B..C5 => 96 files
