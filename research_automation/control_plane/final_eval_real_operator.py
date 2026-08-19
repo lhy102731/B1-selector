@@ -368,6 +368,23 @@ def _live_stores():
     )
 
 
+def _drain_outbox(authority: stores_module._AuthorityStore, root_secret: str) -> None:
+    """Mirror every pending Authority outbox event into the Operational
+    journal and acknowledge it (official store pair discipline)."""
+    journal = stores_module._OperationalJournal(root_secret=root_secret)
+    result = stores_module._mirror_authority_outbox(
+        authority,
+        journal,
+        limit=1000,
+    )
+    print(
+        "OUTBOX scanned=" + str(result.scanned_events)
+        + " inserted=" + str(result.inserted_events)
+        + " acknowledged=" + str(result.acknowledged_events),
+        flush=True,
+    )
+
+
 def _migrate_live_stores(root_secret: str) -> None:
     """Idempotent official store migrations (Authority v1 -> current,
     Operational v1/v2/v3 -> v4) before any live store object is opened."""
@@ -492,6 +509,10 @@ def main(argv: list[str] | None = None) -> int:
             stores_module._expected_schema_sha256.cache_clear()
             _migrate_live_stores(root_secret)
             auth_ref, grant_id, _ = _provision_real_grant(root_secret=root_secret)
+            _drain_outbox(
+                stores_module._AuthorityStore(root_secret=root_secret),
+                root_secret,
+            )
             stores_module._expected_schema_sha256.cache_clear()
         print(json.dumps({
             "activated": True,
@@ -509,6 +530,10 @@ def main(argv: list[str] | None = None) -> int:
         authority = stores_module._AuthorityStore(root_secret=root_secret)
         grant = _recover_live_grant(authority)
         result = _run(ROOT, root_secret, grant)
+        _drain_outbox(
+            stores_module._AuthorityStore(root_secret=root_secret),
+            root_secret,
+        )
         stores_module._expected_schema_sha256.cache_clear()
     print(json.dumps({"executed": True, "result": _redact_result(result)}, indent=2, sort_keys=True))
     return 0
