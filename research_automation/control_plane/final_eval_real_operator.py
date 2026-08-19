@@ -358,6 +358,16 @@ def _recover_live_grant(authority: stores_module._AuthorityStore):
     return authority._recover_claimed_grant(str(row[0]))
 
 
+def _live_stores():
+    """Route store constructors to the OFFICIAL live store pair."""
+    return stores_module.store_path_override(
+        authority=ROOT
+        / "research_state/control_plane/authority/authority.sqlite3",
+        operational=ROOT
+        / "research_state/control_plane/operational/operational.sqlite3",
+    )
+
+
 def _decrypt_live_secret() -> str:
     from research_automation.control_plane.regate_driver import decrypt_capability
 
@@ -462,7 +472,10 @@ def main(argv: list[str] | None = None) -> int:
 
     root_secret = _decrypt_live_secret()
     if args.activate:
-        auth_ref, grant_id, _ = _provision_real_grant(root_secret=root_secret)
+        with _live_stores():
+            stores_module._expected_schema_sha256.cache_clear()
+            auth_ref, grant_id, _ = _provision_real_grant(root_secret=root_secret)
+            stores_module._expected_schema_sha256.cache_clear()
         print(json.dumps({
             "activated": True,
             "attempt_id": ATTEMPT_ID,
@@ -473,9 +486,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     verify_frozen_bytes(ROOT)
-    authority = stores_module._AuthorityStore(root_secret=root_secret)
-    grant = _recover_live_grant(authority)
-    result = _run(ROOT, root_secret, grant)
+    with _live_stores():
+        stores_module._expected_schema_sha256.cache_clear()
+        authority = stores_module._AuthorityStore(root_secret=root_secret)
+        grant = _recover_live_grant(authority)
+        result = _run(ROOT, root_secret, grant)
+        stores_module._expected_schema_sha256.cache_clear()
     print(json.dumps({"executed": True, "result": _redact_result(result)}, indent=2, sort_keys=True))
     return 0
 
