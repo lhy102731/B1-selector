@@ -41,7 +41,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research_automation.control_plane import stores as stores_module
-from research_automation.control_plane.contracts import Actor, SideEffect
+from research_automation.control_plane.campaign_roster import RosterMember
+from research_automation.control_plane.contracts import (
+    Actor,
+    SideEffect,
+    canonical_sha256,
+)
 from research_automation.control_plane.final_eval_authority import (
     FINAL_EVAL_REQUEST_V2,
     FinalEvalRequestV2,
@@ -65,12 +70,7 @@ from research_automation.control_plane.final_evaluator import (
     RosterManifest,
     seal_trusted_data_root,
 )
-from tests.test_control_plane_campaign_store import ROOT_SECRET as TEST_ROOT_SECRET
-from tests.test_control_plane_final_evaluator import (
-    _candidate,
-    _execution_spec,
-    _roster,
-)
+from research_automation.foundations.protocols import ExecutionSpec
 
 # ---------------------------------------------------------------------------
 # Frozen real-run identity.  Every hash below is the SHA-256 of the bytes of
@@ -121,9 +121,14 @@ EXPECTED_BYTES_SHA256 = {
 CAMPAIGN_SHA256 = hashlib.sha256(CAMPAIGN_ID.encode("utf-8")).hexdigest()
 MODEL_SHA256 = hashlib.sha256(MODEL_ID.encode("utf-8")).hexdigest()
 GENERATION_SHA256 = hashlib.sha256(GENERATION_ID.encode("utf-8")).hexdigest()
-CANDIDATE = _candidate("b1-final-eval-candidate-live-001")
+CANDIDATE_ID = "b1-final-eval-candidate-live-001"
+CANDIDATE = CandidateBinding(
+    candidate_id=CANDIDATE_ID,
+    candidate_sha256=hashlib.sha256(CANDIDATE_ID.encode("utf-8")).hexdigest(),
+)
 CANDIDATE_SET_SHA256 = _candidate_set_sha256((CANDIDATE,))
 THRESHOLD = "0.8"
+DRY_RUN_ROOT_SECRET = "dry-run-only-authority-root-capability-0123456789abcdef"
 
 
 def _sha_bytes(raw: bytes) -> str:
@@ -152,6 +157,40 @@ def _committed_bytes(repository_root: Path, ref: str) -> bytes:
     return result.stdout
 
 
+def _strict_tuple_document(value: object, *, key: str | None = None) -> object:
+    """Convert canonical-JSON lists back to the tuple/typed model inputs the
+    protocol models require; actor dictionaries and SideEffect strings are
+    the only non-tuple JSON loss in this frozen artifact."""
+    if isinstance(value, dict):
+        if set(value) == {"actor_id", "actor_type", "invocation_id"}:
+            return Actor(str(value["actor_id"]), str(value["actor_type"]), str(value["invocation_id"]))
+        return {
+            item_key: _strict_tuple_document(item_value, key=item_key)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        if key == "allowed_side_effects":
+            return tuple(SideEffect(str(item)) for item in value)
+        return tuple(_strict_tuple_document(item) for item in value)
+    return value
+
+
+def _material_objects(committed: dict[str, bytes]):
+    spec_document = json.loads(
+        committed[EXECUTION_SPEC_REF].decode("utf-8")
+    )
+    spec = ExecutionSpec.model_validate(
+        _strict_tuple_document(spec_document)
+    )
+    roster_document = json.loads(committed[ROSTER_REF].decode("utf-8"))
+    roster = RosterManifest(
+        cycle_id=str(roster_document["cycle_id"]),
+        members=tuple(RosterMember(**member) for member in roster_document["members"]),
+        manifest_sha256=EXPECTED_BYTES_SHA256[ROSTER_REF],
+    )
+    return spec, roster
+
+
 def verify_frozen_bytes(repository_root: Path) -> dict[str, bytes]:
     """Verify every frozen ref against its committed HEAD bytes."""
     committed: dict[str, bytes] = {}
@@ -164,10 +203,7 @@ def verify_frozen_bytes(repository_root: Path) -> dict[str, bytes]:
             )
         committed[ref] = raw
     # ExecutionSpec + roster object identities must match the frozen bytes.
-    spec = _execution_spec()
-    roster = _roster()
-    from research_automation.control_plane.contracts import canonical_sha256
-
+    spec, roster = _material_objects(committed)
     if canonical_sha256(spec.model_dump(mode="json")) != EXPECTED_BYTES_SHA256[EXECUTION_SPEC_REF]:
         raise RuntimeError("execution-spec object digest drift")
     if roster.manifest_sha256 != EXPECTED_BYTES_SHA256[ROSTER_REF]:
@@ -219,8 +255,12 @@ def _request(root_secret: str) -> FinalEvalRequestV2:
     )
 
 
-def _material_bundle(root_secret: str) -> FinalEvalMaterialBundle:
+def _material_bundle(
+    root_secret: str,
+    repository_root: Path,
+) -> FinalEvalMaterialBundle:
     request = _request(root_secret)
+    spec, roster = _material_objects(verify_frozen_bytes(repository_root))
     return FinalEvalMaterialBundle(
         campaign_id=request.campaign_id,
         campaign_sha256=request.campaign_sha256,
@@ -231,7 +271,7 @@ def _material_bundle(root_secret: str) -> FinalEvalMaterialBundle:
         candidate_set=(CANDIDATE,),
         code_ref=request.code_ref,
         code_sha256=request.code_sha256,
-        execution_spec=_execution_spec(),
+        execution_spec=spec,
         execution_spec_ref=request.execution_spec_ref,
         execution_spec_sha256=request.execution_spec_sha256,
         features_ref=request.features_ref,
@@ -240,7 +280,7 @@ def _material_bundle(root_secret: str) -> FinalEvalMaterialBundle:
         model_sha256=request.model_sha256,
         threshold_ref=request.threshold_ref,
         threshold_sha256=request.threshold_sha256,
-        roster=_roster(),
+        roster=roster,
         roster_ref=request.roster_ref,
         roster_sha256=request.roster_sha256,
         generation_id=request.generation,
@@ -258,7 +298,7 @@ def _build_context(
     grant: object,
 ) -> AuthorizedFinalEvalContext:
     request = _request(root_secret)
-    bundle = _material_bundle(root_secret)
+    bundle = _material_bundle(root_secret, repository_root)
     resolver = build_sealed_material_resolver(
         request=request,
         bundle=bundle,
@@ -441,12 +481,12 @@ def _dry_run() -> int:
             operational=root / "operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()
-            stores_module._trusted_bootstrap(root_secret=TEST_ROOT_SECRET)
+            stores_module._trusted_bootstrap(root_secret=DRY_RUN_ROOT_SECRET)
             auth_ref, grant_id, grant = _provision_real_grant(
-                root_secret=TEST_ROOT_SECRET,
+                root_secret=DRY_RUN_ROOT_SECRET,
                 clock=lambda: datetime(2026, 8, 20, tzinfo=timezone.utc),
             )
-            result = _run(root, TEST_ROOT_SECRET, grant)
+            result = _run(root, DRY_RUN_ROOT_SECRET, grant)
             stores_module._expected_schema_sha256.cache_clear()
         print(json.dumps({
             "dry_run": True,
