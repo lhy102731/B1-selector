@@ -1,0 +1,23 @@
+{
+    "p8_acceptance_exit0":  true,
+    "review_a_approved":  true,
+    "review_b_approved":  true,
+    "c0_acceptance_exit0":  true,
+    "protected_files_byte_identical":  true,
+    "run":  "run003",
+    "skip_not_above_baseline":  true,
+    "generated_at":  "2026-08-20T02:40:00Z",
+    "candidate_commit":  "7ecb534d0602c53cc9e708a86892e44a644048ee",
+    "p8_focused_exit0":  true,
+    "node_id_superset":  true,
+    "full_suite_exit0":  true,
+    "c0_focused_exit0":  true,
+    "official_24cycle_exit0":  true,
+    "integration_full_suite_exit0":  true,
+    "integration_full_suite_cwd":  "D:\\workspace\\a-share-quant-selector-cr010-integ",
+    "integration_baseline_note":  "run003/focused/integration-baseline-note.txt",
+    "report_absent_before_gate":  false,
+    "final_report_generated":  true,
+    "evidence_committed":  true,
+    "base_commit":  "35f33711d554012ab9293b59e202054ece019a28"
+}

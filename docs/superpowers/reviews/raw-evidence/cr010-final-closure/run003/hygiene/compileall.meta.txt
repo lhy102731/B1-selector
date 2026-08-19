@@ -1,0 +1,7 @@
+command=python -B -m compileall -q research_automation tests
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-19 23:01:49
+python=Python 3.13.12
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+end=2026-08-19 23:01:50
+exit=0

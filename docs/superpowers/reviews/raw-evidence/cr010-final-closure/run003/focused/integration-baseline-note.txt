@@ -1,0 +1,70 @@
+# CR-010 integration baseline note (F6, 2026-08-20)
+
+Bound to candidate C5 = 7ecb534d, closure chain E5/F5, and the step-3
+integration full suite.  Written as part of F6 to answer the integration
+review: (1) which trunk is the merge target, (2) whether the integration
+run is a "pure Git tree" run, and (3) which runtime inputs are external.
+
+## 1. Merge target trunk (verified on 2026-08-20, read-only)
+
+- refs/heads/main        = 0b7e0fdeac7060c1ce99999731c116157d1ddfbd
+  ("B1 V3: 6-factor selector v0.3 - 429.5% baseline").
+- review base B (35f33711) is a DESCENDANT of refs/heads/main (0b7e0fd),
+  sitting a few commits above it (that segment adds ag2_research/kbase,
+  +35 files / +7906 lines in 0b7e0fd..35f33711).
+- Candidate C5 is a descendant of B, therefore a descendant of
+  refs/heads/main (0b7e0fd) as well -> C5 CAN fast-forward the local
+  main branch once authorized.
+- origin/main           = ca87c3503107027606c48e7a470f7618e017908d
+  ("Add MIT License").  LOCAL main branch and origin/main DIVERGE:
+  rev-list --left-right --count 0b7e0fd...ca87c350 => 1 (local-only) /
+  2 (remote-only); merge-base = 6b51c68 (v0.2).
+- origin/main's tree does NOT contain ag2_research/kbase (path absent at
+  ca87c350); the v342 control-plane stack (P7/P8/F-04/CR-010) and kbase
+  were added on the LOCAL lineage, so a merge against origin/main would
+  carry a far larger delta than the 96-file B..C5 diff.
+- CONCLUSION: C5 is NOT a descendant of origin/main.  The merge target
+  must be fixed by the user before any merge: candidates are
+  (a) refs/heads/main = 0b7e0fd (small, C5 is its descendant),
+  (b) review base B = 35f33711 (the B..C5 96-file diff basis), or
+  (c) a rebased/forwarded origin/main (requires an explicit sync plan;
+  no fetch/push/merge ran in this closure).
+
+## 2. Integration full suite <> pure Git tree (verified)
+
+The step-3 full suite ran in the disposable integration worktree
+D:\workspace\a-share-quant-selector-cr010-integ, detached at F5 (candidate
+C5 code + run002..run005 evidence in the tree).  Runtime inputs were
+copied from the main working tree BEFORE the run and hash-verified against
+run003/runtime-data-manifest.txt (2002 files, 0 mismatch).
+
+Tree equivalence (Git content level):
+- ag2_research/kbase is TRACKED source.  Tree id at B, at C5 tree and at
+  F5 tree are identical (933f42e8..).  The main working tree reports 0
+  dirty kbase files, so main's kbase == committed kbase == F5 tree kbase.
+  The integration worktree shows 35 kbase files as 'M' but `git diff`
+  content is EMPTY for them: those are line-ending/stat-cache artifacts of
+  the robocopy overwrite, NOT source-content differences.  => the full
+  suite exercised the SAME kbase source that the F5 tree contains.
+- research_state/control_plane (committed in part) and
+  tools/ths_yuanhang_bridge/YuanhangBridge.dll are runtime/operational
+  data, not part of the B..C5 diff; they are pinned by the manifest (as in
+  run004's earlier runs).
+
+Honest attribution: the integration result stands as
+"candidate C5 change set x (baseline = F5-tree kbase + main-sourced
+operational data)", exit 0.  The Git-source plane is pure-tree for the
+changed surface; the run environment includes non-committed operational
+data pinned by the manifest.  It is NOT a claim that a pristine `git
+checkout F5 && pytest tests/` passes by itself (that needs the pinned
+runtime data, as with every prior CR-010 full-suite run).
+
+## 3. What F6 changes vs F5
+
+- full_suite_exit0  : false -> true (integration full suite exit 0)
+- evidence_committed: false -> true (the full-suite receipt now exists in
+  run003 and is validated by the gate at the evidence stage)
+- full-suite-final.meta.txt/.out: replaced by the INTEGRATION run receipts
+  (cwd = cr010-integ worktree; candidate bound to F5/C5).
+- report: acceptance section reframed with the integration result; trunk
+  note added.

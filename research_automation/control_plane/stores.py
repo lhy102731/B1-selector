@@ -7,6 +7,7 @@ import hmac
 import json
 import sqlite3
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -47,6 +48,32 @@ _OPERATIONAL_STORE_PATH = (
     / "operational"
     / "operational.sqlite3"
 )
+
+
+@contextmanager
+def store_path_override(
+    *,
+    authority: str | os.PathLike[str],
+    operational: str | os.PathLike[str],
+):
+    """Production-owned store path redirection for offline fixture roots.
+
+    CR-010 F-10: the C0 campaign/fixture paths redirect the module store
+    globals WITHOUT ``unittest.mock`` -- this is the explicit dependency
+    injection seam the offline simulation and its fixtures share.
+    """
+    global _AUTHORITY_STORE_PATH, _OPERATIONAL_STORE_PATH
+    previous_authority = _AUTHORITY_STORE_PATH
+    previous_operational = _OPERATIONAL_STORE_PATH
+    _AUTHORITY_STORE_PATH = str(Path(authority).resolve())
+    _OPERATIONAL_STORE_PATH = str(Path(operational).resolve())
+    try:
+        _expected_schema_sha256.cache_clear()
+        yield
+    finally:
+        _AUTHORITY_STORE_PATH = previous_authority
+        _OPERATIONAL_STORE_PATH = previous_operational
+        _expected_schema_sha256.cache_clear()
 _TASK_SPEC_FIELDS = frozenset(
     {
         "task_id",
@@ -64,7 +91,7 @@ _TASK_SPEC_FIELDS = frozenset(
     }
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_AUTHORITY_SCHEMA_VERSION = 3
+_AUTHORITY_SCHEMA_VERSION = 4
 _AUTHORITY_SCHEMA_VERSION_V1 = 1
 _OPERATIONAL_SCHEMA_VERSION = 4
 _OPERATIONAL_SCHEMA_VERSION_V3 = 3
@@ -260,11 +287,36 @@ _FINAL_EVAL_RECOVERY_LEASES_DDL = """
         completed_at TEXT
     ) WITHOUT ROWID
     """
+# CR-010 C0 (Phase B): the immutable BEGIN-TIME holdout consume record.
+# One row per binding, written in the SAME transaction as the
+# ticket/binding/outbox rows; it never carries the terminal outcome (the
+# verified worker outcome belongs to the later fixed result claim) and it
+# never stores the raw nonce.  Downgrading to a schema without this table
+# is rejected.
+_FINAL_EVAL_HOLDOUT_CONSUMPTIONS_DDL = """
+    CREATE TABLE final_eval_holdout_consumptions_v1 (
+        ticket_id TEXT PRIMARY KEY
+            REFERENCES task_tickets_v2(ticket_id),
+        request_sha256 TEXT NOT NULL UNIQUE,
+        nonce_fingerprint TEXT NOT NULL UNIQUE,
+        holdout_id TEXT NOT NULL,
+        holdout_sha256 TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        actor_id TEXT NOT NULL,
+        actor_type TEXT NOT NULL,
+        invocation_id TEXT NOT NULL,
+        consumed_at_utc TEXT NOT NULL,
+        receipt_sha256 TEXT NOT NULL
+    ) WITHOUT ROWID
+    """
 _AUTHORITY_SCHEMA_V2 = (
     _AUTHORITY_SCHEMA_V1 + (_FINAL_EVAL_AUTHORIZATIONS_DDL,)
 )
-_AUTHORITY_SCHEMA = (
+_AUTHORITY_SCHEMA_V3 = (
     _AUTHORITY_SCHEMA_V2 + (_FINAL_EVAL_RECOVERY_LEASES_DDL,)
+)
+_AUTHORITY_SCHEMA = (
+    _AUTHORITY_SCHEMA_V3 + (_FINAL_EVAL_HOLDOUT_CONSUMPTIONS_DDL,)
 )
 _OPERATIONAL_SCHEMA_V1 = (
     """
@@ -1916,6 +1968,19 @@ def _authority_v1_spec() -> _StoreSpec:
     )
 
 
+def _authority_v3_spec() -> _StoreSpec:
+    return _StoreSpec(
+        path=_AUTHORITY_STORE_PATH,
+        store_kind="AUTHORITY_STORE",
+        metadata_table="authority_meta",
+        schema_version=3,
+        expected_schema_sha256=_schema_sha256_for_statements(
+            (_metadata_schema_statement("authority_meta"),)
+            + _AUTHORITY_SCHEMA_V3
+        ),
+    )
+
+
 def _authority_spec() -> _StoreSpec:
     return _StoreSpec(
         path=_AUTHORITY_STORE_PATH,
@@ -2346,6 +2411,7 @@ def _migrate_authority_v2(
         prior_specs = {
             1: (_authority_v1_spec(), len(_AUTHORITY_SCHEMA_V1)),
             2: (_authority_v2_spec(), len(_AUTHORITY_SCHEMA_V2)),
+            3: (_authority_v3_spec(), len(_AUTHORITY_SCHEMA_V3)),
         }
         prior = prior_specs.get(user_version)
         if prior is None:
@@ -4816,6 +4882,30 @@ class _AuthorityStore:
         idempotency_key: str,
         task_spec_ref: str,
         task_spec_sha256: str,
+        candidate_freeze_sha256: str | None = None,
+        candidate_freeze_ref: str | None = None,
+        code_sha256: str | None = None,
+        code_ref: str | None = None,
+        execution_spec_sha256: str | None = None,
+        execution_spec_ref: str | None = None,
+        features_sha256: str | None = None,
+        features_ref: str | None = None,
+        model: str | None = None,
+        model_sha256: str | None = None,
+        threshold: str | None = None,
+        threshold_ref: str | None = None,
+        threshold_sha256: str | None = None,
+        roster_sha256: str | None = None,
+        roster_ref: str | None = None,
+        generation: str | None = None,
+        generation_sha256: str | None = None,
+        actor_id: str | None = None,
+        actor_type: str | None = None,
+        invocation_id: str | None = None,
+        identity_scope_hash: str | None = None,
+        identity_instruction_policy_hash: str | None = None,
+        request_schema: str | None = None,
+        request_digest: str | None = None,
     ) -> FinalEvalBindingReceipt:
         research_plan = _require_sha256(
             research_plan_sha256, "research_plan_sha256"
@@ -4830,11 +4920,22 @@ class _AuthorityStore:
             task_spec_ref, "task_spec_ref"
         )
         spec_sha = _require_sha256(task_spec_sha256, "task_spec_sha256")
+        # CR-010 B-03: the FinalEval bind requires a STRICT P8 lineage --
+        # a P6/P7/C0 grant can never create a FinalEval binding.
+        if grant.phase is not Phase.P8:
+            raise FinalEvalBindingError(
+                "FinalEval binding requires a P8 grant, got "
+                + grant.phase.value
+            )
         fingerprint = _final_eval_nonce_fingerprint(
             self._root_secret._reveal_for_authority_check(), nonce_value
         )
         request_sha256 = _final_eval_request_sha256(
             authority_plan_hash=grant.identity.plan_hash,
+            identity_scope_hash=identity_scope_hash or "",
+            identity_instruction_policy_hash=(
+                identity_instruction_policy_hash or ""
+            ),
             research_plan_sha256=research_plan,
             campaign_id=campaign,
             campaign_sha256=campaign_sha,
@@ -4843,6 +4944,28 @@ class _AuthorityStore:
             nonce_fingerprint=fingerprint,
             task_spec_ref=spec_ref,
             task_spec_sha256=spec_sha,
+            candidate_freeze_ref=candidate_freeze_ref or "",
+            candidate_freeze_sha256=candidate_freeze_sha256 or "",
+            code_ref=code_ref or "",
+            code_sha256=code_sha256 or "",
+            execution_spec_ref=execution_spec_ref or "",
+            execution_spec_sha256=execution_spec_sha256 or "",
+            features_ref=features_ref or "",
+            features_sha256=features_sha256 or "",
+            model_id=model or "",
+            model_sha256=model_sha256 or "",
+            threshold_ref=threshold_ref or "",
+            threshold_sha256=threshold_sha256 or "",
+            roster_ref=roster_ref or "",
+            roster_sha256=roster_sha256 or "",
+            generation_id=generation or "",
+            generation_sha256=generation_sha256 or "",
+            actor_id=actor_id or "",
+            actor_type=actor_type or "",
+            invocation_id=invocation_id or "",
+            attempt_id=grant.attempt_id,
+            request_schema=request_schema or "",
+            request_digest=request_digest or "",
         )
         ticket_id = hashlib.sha256(
             b"control_plane.final_eval_ticket.v1\0"
@@ -4856,6 +4979,30 @@ class _AuthorityStore:
         lease_secret_value = secrets.token_urlsafe(32)
         lease_secret_sha256 = hashlib.sha256(
             lease_secret_value.encode("utf-8")
+        ).hexdigest()
+        # CR-010 C0 (Phase B): the immutable begin-time consume receipt
+        # payload/hash are computed ONCE (durable identifiers only) and
+        # committed in the SAME transaction as the ticket/binding rows.
+        consumption_payload = {
+            "ticket_id": ticket_id,
+            "request_sha256": request_sha256,
+            "nonce_fingerprint": fingerprint,
+            "holdout_id": holdout,
+            "holdout_sha256": holdout_sha,
+            "attempt_id": grant.attempt_id,
+            "actor_id": grant.actor.actor_id,
+            "actor_type": grant.actor.actor_type,
+            "invocation_id": grant.actor.invocation_id,
+            "consumed_at_utc": _utc_text(now),
+        }
+        consumption_receipt_sha256 = hashlib.sha256(
+            json.dumps(
+                consumption_payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
         ).hexdigest()
 
         def bind(
@@ -4940,6 +5087,31 @@ class _AuthorityStore:
                     raise FinalEvalBindingStateError(
                         "final-eval binding consume lost a concurrent race"
                     )
+                # CR-010 C0 (Phase B): the ONE immutable begin-time consume
+                # receipt is committed in the SAME transaction -- a crash
+                # before commit leaves no receipt and no consume; a crash
+                # after commit leaves the receipt bound to the binding.
+                connection.execute(
+                    """INSERT INTO final_eval_holdout_consumptions_v1
+                    (ticket_id, request_sha256, nonce_fingerprint,
+                     holdout_id, holdout_sha256, attempt_id, actor_id,
+                     actor_type, invocation_id, consumed_at_utc,
+                     receipt_sha256)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        ticket_id,
+                        request_sha256,
+                        fingerprint,
+                        holdout,
+                        holdout_sha,
+                        grant.attempt_id,
+                        grant.actor.actor_id,
+                        grant.actor.actor_type,
+                        grant.actor.invocation_id,
+                        _utc_text(now),
+                        consumption_receipt_sha256,
+                    ),
+                )
             except sqlite3.IntegrityError as error:
                 raise FinalEvalBindingConflictError(str(error)) from error
             _insert_authority_outbox(
@@ -4983,6 +5155,24 @@ class _AuthorityStore:
                     "holdout_sha256": holdout_sha,
                     "saga_state": "CONSUMED",
                     "saga_version": 2,
+                },
+                created_at=now,
+            )
+            _insert_authority_outbox(
+                connection,
+                event_type="FINAL_EVAL_CONSUMED",
+                aggregate_id=ticket_id,
+                payload={
+                    "ticket_id": ticket_id,
+                    "request_sha256": request_sha256,
+                    "nonce_fingerprint": fingerprint,
+                    "holdout_id": holdout,
+                    "holdout_sha256": holdout_sha,
+                    "attempt_id": grant.attempt_id,
+                    "actor_id": grant.actor.actor_id,
+                    "actor_type": grant.actor.actor_type,
+                    "invocation_id": grant.actor.invocation_id,
+                    "consumed_at_utc": _utc_text(now),
                 },
                 created_at=now,
             )
@@ -5031,7 +5221,77 @@ class _AuthorityStore:
             binding=snapshot,
             ticket=ticket,
             lease=lease,
+            consumption=FinalEvalHoldoutConsumption(
+                ticket_id=ticket_id,
+                request_sha256=request_sha256,
+                nonce_fingerprint=fingerprint,
+                holdout_id=holdout,
+                holdout_sha256=holdout_sha,
+                attempt_id=grant.attempt_id,
+                actor_id=grant.actor.actor_id,
+                actor_type=grant.actor.actor_type,
+                invocation_id=grant.actor.invocation_id,
+                consumed_at_utc=_utc_text(now),
+                receipt_sha256=consumption_receipt_sha256,
+            ),
         )
+
+    def final_eval_holdout_consumption(
+        self,
+        ticket_id: str,
+    ) -> FinalEvalHoldoutConsumption:
+        """Read the committed immutable holdout consumption receipt.
+
+        Runtime replay reads THIS receipt (never reopening the holdout and
+        never calling the backend again); a missing receipt fails closed.
+        """
+
+        def read(
+            connection: sqlite3.Connection,
+        ) -> FinalEvalHoldoutConsumption:
+            row = connection.execute(
+                "SELECT * FROM final_eval_holdout_consumptions_v1 "
+                "WHERE ticket_id = ?",
+                (ticket_id,),
+            ).fetchone()
+            if row is None:
+                raise FinalEvalBindingError(
+                    "no holdout consumption receipt for the binding"
+                )
+            return FinalEvalHoldoutConsumption(
+                ticket_id=str(row["ticket_id"]),
+                request_sha256=str(row["request_sha256"]),
+                nonce_fingerprint=str(row["nonce_fingerprint"]),
+                holdout_id=str(row["holdout_id"]),
+                holdout_sha256=str(row["holdout_sha256"]),
+                attempt_id=str(row["attempt_id"]),
+                actor_id=str(row["actor_id"]),
+                actor_type=str(row["actor_type"]),
+                invocation_id=str(row["invocation_id"]),
+                consumed_at_utc=str(row["consumed_at_utc"]),
+                receipt_sha256=str(row["receipt_sha256"]),
+            )
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read)
+
+    def final_eval_holdout_consumption_count(
+        self,
+        request_sha256: str,
+    ) -> int:
+        """The durable consume count for one request digest (Phase B).
+
+        A second consume attempt must never increase this count.
+        """
+
+        def read(connection: sqlite3.Connection) -> int:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM final_eval_holdout_consumptions_v1 "
+                "WHERE request_sha256 = ?",
+                (request_sha256,),
+            ).fetchone()
+            return int(row[0])
+
+        return _SqliteUnitOfWork(_authority_spec())._read(read)
 
     def _advance_final_eval_binding(
         self,
@@ -5089,6 +5349,7 @@ class _AuthorityStore:
         result_claim_ref: str,
         result_claim_sha256: str,
         repository_root: str | os.PathLike[str] | None = None,
+        expected_outcome: str | None = None,
     ) -> FinalEvalBindingSnapshot:
         trusted_binding = _require_nonempty(binding_id, "binding_id")
         object_ref = _require_canonical_evidence_ref(
@@ -5103,6 +5364,16 @@ class _AuthorityStore:
         claim_sha = _require_sha256(result_claim_sha256, "result_claim_sha256")
         if type(expected_version) is not int or expected_version < 1:
             raise ValueError("expected_version must be a positive integer")
+        # CR-010 F-01: the worker-derived outcome must also be checked by the
+        # Authority CAS itself (a sink that publishes a conflicting outcome
+        # can never stage the result here either).
+        if expected_outcome is not None and expected_outcome not in {
+            "SUCCEEDED",
+            "FAILED",
+            "TIMEOUT",
+            "CRASHED",
+        }:
+            raise ValueError("expected_outcome must be a terminal outcome")
         # CR010-R02: staging without a repository root to verify the
         # committed object/claim fails closed; a dangling ref or a wrong
         # content hash must never enter RESULT_STAGED.
@@ -5129,7 +5400,8 @@ class _AuthorityStore:
                     "final-eval binding is not EVALUATING at the expected version"
                 )
             # fail closed BEFORE the CAS write: committed object/claim must
-            # exist, hash correctly and bind this ticket (R02).
+            # exist, hash correctly and bind this ticket (R02), and the
+            # claim outcome must match the worker-derived outcome (F-01).
             verify_result_evidence(
                 trusted_binding,
                 ticket_id=trusted_binding,
@@ -5138,6 +5410,7 @@ class _AuthorityStore:
                 claim_ref=claim_ref,
                 claim_sha256=claim_sha,
                 repository_root=repository_root,
+                expected_outcome=expected_outcome,
             )
             try:
                 update = connection.execute(
@@ -5250,6 +5523,9 @@ class _AuthorityStore:
                 raise FinalEvalRecoveryError(
                     "recovery evidence must be the binding's fixed claim"
                 )
+            # CR-010 B-06: the CURRENT maintenance lease is verified FIRST
+            # -- a completed/invalid/foreign maintenance task can never
+            # reuse an old recovery lease to continue recovery.
             lease_row = connection.execute(
                 "SELECT state, lease_secret_sha256 FROM task_tickets_v2 "
                 "WHERE ticket_id = ?",
@@ -5269,6 +5545,32 @@ class _AuthorityStore:
                 )
             ):
                 raise TaskTicketError("maintenance task lease is invalid")
+            # CR-010 F-04: idempotent recovery -- a binding that already has
+            # an ISSUED or COMPLETED recovery lease must REUSE it (AFTER the
+            # current maintenance lease was verified above), never issue an
+            # orphan duplicate.  This makes a fresh reconciler pass after
+            # CRASH_AFTER.RECOVERY_LEASE (or a repeated run) safe.
+            existing = connection.execute(
+                "SELECT * FROM final_eval_recovery_leases_v1 "
+                "WHERE binding_id = ? "
+                "ORDER BY created_at, lease_id LIMIT 1",
+                (trusted_binding,),
+            ).fetchone()
+            if existing is not None and existing["state"] in (
+                "ISSUED",
+                "COMPLETED",
+            ):
+                return FinalEvalRecoveryLease(
+                    _authority=self,
+                    lease_id=str(existing["lease_id"]),
+                    binding_id=str(existing["binding_id"]),
+                    maintenance_ticket_id=str(
+                        existing["maintenance_ticket_id"]
+                    ),
+                    phase=Phase(existing["phase"]),
+                    attempt_id=str(existing["attempt_id"]),
+                    evidence_ref=str(existing["evidence_ref"]),
+                )
             lease_id = "recovery_" + secrets.token_hex(16)
             connection.execute(
                 """INSERT INTO final_eval_recovery_leases_v1
@@ -5475,6 +5777,195 @@ class _AuthorityStore:
             evidence_ref=evidence_ref,
         )
 
+    def _fail_final_eval_binding(
+        self,
+        failure_lease: FinalEvalFailureLease,
+        *,
+        binding_id: str,
+        expected_version: int,
+        failure_reason: str,
+    ) -> FinalEvalBindingSnapshot:
+        """CR-010 A2 (functional closure): durable failed-maintenance
+        tombstone for a binding stuck in an intermediate crash state.
+
+        ONLY a typed one-shot ``FinalEvalFailureLease`` can terminalize
+        the binding: the store atomically verifies (ONE transaction) the
+        lease type, the exact binding/version binding (durable idempotency
+        key), the operation, the task id, the P0 grant lineage, the
+        WRITE_CONTROL_PLANE side effect, the bearer hash, the un-consumed
+        ticket state and the grant EXPIRY against the STORE clock --
+        any mismatch writes nothing.  A READ lease, a recovery lease, a
+        lease for another binding, an expired lease, a stale version or a
+        replay of an already-consumed lease is rejected and the binding
+        state stays untouched.
+        """
+        if not isinstance(failure_lease, FinalEvalFailureLease):
+            raise TaskTicketError(
+                "a typed FinalEvalFailureLease is required to terminalize "
+                "a final-eval binding as FAILED"
+            )
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        if type(expected_version) is not int or expected_version < 1:
+            raise ValueError("expected_version must be a positive integer")
+        # the caller must target EXACTLY the lease's bound binding/version
+        if (
+            failure_lease.binding_id != trusted_binding
+            or failure_lease.expected_saga_version != expected_version
+        ):
+            raise TaskTicketError(
+                "failure lease does not bind this binding/version"
+            )
+        if failure_lease.operation != FINAL_EVAL_FAILURE_OPERATION:
+            raise TaskTicketError("failure lease operation is invalid")
+        if failure_lease.task_id != FINAL_EVAL_FAILURE_TASK_ID:
+            raise TaskTicketError("failure lease task id is invalid")
+        if failure_lease.phase is not Phase.P0:
+            raise TaskTicketError("failure lease requires the P0 phase")
+        if (
+            SideEffect.WRITE_CONTROL_PLANE
+            not in failure_lease.allowed_side_effects
+        ):
+            raise TaskTicketError(
+                "failure lease requires WRITE_CONTROL_PLANE"
+            )
+        reason = _require_nonempty(failure_reason, "failure_reason")
+        now = self._now()
+
+        def fail(connection: sqlite3.Connection) -> FinalEvalBindingSnapshot:
+            # -- lease/task/grant/expiry verification in the SAME
+            # transaction (expiry joined from the grant row, compared with
+            # the STORE clock -- never a caller-supplied time) ----------
+            lease_row = connection.execute(
+                """
+                SELECT ticket.*, grant.phase AS grant_phase,
+                       grant.state AS grant_state,
+                       auth.expires_at AS grant_expires_at
+                FROM task_tickets_v2 AS ticket
+                JOIN phase_grants_v2 AS grant
+                  ON grant.grant_id = ticket.grant_id
+                JOIN authorizations_v2 AS auth
+                  ON auth.authorization_ref = grant.authorization_ref
+                WHERE ticket.ticket_id = ?
+                """,
+                (failure_lease.ticket_id,),
+            ).fetchone()
+            supplied_secret_sha256 = hashlib.sha256(
+                failure_lease._bearer_secret._reveal_for_authority_check().encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            if lease_row is None or lease_row["state"] != "IN_PROGRESS":
+                raise TaskTicketError(
+                    "failure lease ticket is not IN_PROGRESS (one-shot)"
+                )
+            if not hmac.compare_digest(
+                str(lease_row["lease_secret_sha256"]),
+                supplied_secret_sha256,
+            ):
+                raise TaskTicketError("failure lease bearer is invalid")
+            if str(lease_row["task_id"]) != FINAL_EVAL_FAILURE_TASK_ID:
+                raise TaskTicketError("failure lease task id mismatch")
+            if str(lease_row["grant_phase"]) != Phase.P0.value:
+                raise TaskTicketError("failure lease grant phase mismatch")
+            if str(lease_row["grant_state"]) != "ACTIVE":
+                raise TaskTicketError("failure lease grant is not ACTIVE")
+            stored_expiry = _parse_utc_text(str(lease_row["grant_expires_at"]))
+            if now >= stored_expiry:
+                raise TaskTicketError(
+                    "failure lease expired per the store clock"
+                )
+            expected_idempotency = (
+                f"final-eval-failure:{trusted_binding}:{expected_version}"
+            )
+            if str(lease_row["idempotency_key"]) != expected_idempotency:
+                raise TaskTicketError(
+                    "failure lease does not mechanically bind this "
+                    "binding/version"
+                )
+            stored_effects = _effects_from_json(
+                str(lease_row["allowed_effects_json"])
+            )
+            if SideEffect.WRITE_CONTROL_PLANE not in stored_effects:
+                raise TaskTicketError(
+                    "failure lease ticket lacks WRITE_CONTROL_PLANE"
+                )
+            if SideEffect.READ in stored_effects:
+                raise TaskTicketError(
+                    "a READ-bearing lease can never mutate the Authority"
+                )
+            row = self._require_final_eval_binding(
+                connection, trusted_binding
+            )
+            if (
+                row["saga_state"] not in ("CONSUMED", "EVALUATING")
+                or int(row["saga_version"]) != expected_version
+            ):
+                raise FinalEvalBindingStateError(
+                    "binding is not in an intermediate state at the "
+                    "expected version"
+                )
+            failure_evidence = f"{trusted_binding}/failed-maintenance"
+            binding_update = connection.execute(
+                """UPDATE final_eval_authorizations_v1
+                SET saga_state = 'AUTHORITY_TERMINAL', saga_version = ?,
+                    terminal_binding = 'FAILED', updated_at = ?
+                WHERE ticket_id = ? AND saga_state = ?
+                      AND saga_version = ?""",
+                (
+                    expected_version + 1,
+                    _utc_text(now),
+                    trusted_binding,
+                    row["saga_state"],
+                    expected_version,
+                ),
+            )
+            if binding_update.rowcount != 1:
+                raise FinalEvalBindingStateError(
+                    "failed-maintenance tombstone lost a concurrent race"
+                )
+            ticket_update = connection.execute(
+                """UPDATE task_tickets_v2
+                SET state = 'FAILED', completed_at = ?, evidence_ref = ?
+                WHERE ticket_id = ? AND state = 'IN_PROGRESS'""",
+                (_utc_text(now), failure_evidence, failure_lease.ticket_id),
+            )
+            if ticket_update.rowcount != 1:
+                raise FinalEvalBindingStateError(
+                    "final-eval failure lease is not IN_PROGRESS"
+                )
+            # the binding's OWN ticket is terminated FAILED too (the normal
+            # path terminates it in _finalize_final_eval_binding; the
+            # tombstone must leave NO IN_PROGRESS ticket behind)
+            binding_ticket_update = connection.execute(
+                """UPDATE task_tickets_v2
+                SET state = 'FAILED', completed_at = ?, evidence_ref = ?
+                WHERE ticket_id = ? AND state = 'IN_PROGRESS'""",
+                (_utc_text(now), failure_evidence, trusted_binding),
+            )
+            if binding_ticket_update.rowcount != 1:
+                raise FinalEvalBindingStateError(
+                    "final-eval binding ticket is not IN_PROGRESS"
+                )
+            _insert_authority_outbox(
+                connection,
+                event_type="FINAL_EVAL_FAILED_MAINTENANCE",
+                aggregate_id=trusted_binding,
+                payload={
+                    "binding_id": trusted_binding,
+                    "failure_lease_id": failure_lease.lease_id,
+                    "failure_ticket_id": failure_lease.ticket_id,
+                    "operation": FINAL_EVAL_FAILURE_OPERATION,
+                    "failure_reason": reason,
+                    "evidence_ref": failure_evidence,
+                    "saga_state": "AUTHORITY_TERMINAL",
+                    "terminal_binding": "FAILED",
+                },
+                created_at=now,
+            )
+            return _final_eval_snapshot_from_row(connection, trusted_binding)
+
+        return _SqliteUnitOfWork(_authority_spec())._write(fail)
+
     def _require_recovery_lease(
         self,
         connection: sqlite3.Connection,
@@ -5544,6 +6035,174 @@ class FinalEvalBindingReceipt:
     binding: FinalEvalBindingSnapshot
     ticket: TaskAuthorityTicket
     lease: TaskExecutionLease
+    consumption: "FinalEvalHoldoutConsumption"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalEvalHoldoutConsumption:
+    """The immutable BEGIN-TIME holdout consume receipt (CR-010 C0).
+
+    Written in the SAME Authority transaction as the ticket/binding/
+    outbox rows; carries ONLY durable identifiers -- never the terminal
+    outcome (the verified worker outcome belongs to the later fixed result
+    claim) and never the raw nonce.
+    """
+
+    ticket_id: str
+    request_sha256: str
+    nonce_fingerprint: str
+    holdout_id: str
+    holdout_sha256: str
+    attempt_id: str
+    actor_id: str
+    actor_type: str
+    invocation_id: str
+    consumed_at_utc: str
+    receipt_sha256: str
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": (
+                "control_plane.final_eval_holdout_consumption.v1"
+            ),
+            "ticket_id": self.ticket_id,
+            "request_sha256": self.request_sha256,
+            "nonce_fingerprint": self.nonce_fingerprint,
+            "holdout_id": self.holdout_id,
+            "holdout_sha256": self.holdout_sha256,
+            "attempt_id": self.attempt_id,
+            "actor_id": self.actor_id,
+            "actor_type": self.actor_type,
+            "invocation_id": self.invocation_id,
+            "consumed_at_utc": self.consumed_at_utc,
+            "receipt_sha256": self.receipt_sha256,
+        }
+
+
+FINAL_EVAL_FAILURE_OPERATION = "FINAL_EVAL_FAIL_BINDING"
+FINAL_EVAL_FAILURE_TASK_ID = "P8-FINAL-EVAL-FAILURE-MAINT"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalEvalFailureLease:
+    """One-shot typed failure lease (CR-010 A2).
+
+    The ONLY lease that may terminalize a P8 binding as FAILED.  It is
+    mechanically bound to the exact ``binding_id`` and
+    ``expected_saga_version`` (encoded in the durable ticket idempotency
+    key), the operation ``FINAL_EVAL_FAIL_BINDING``, the task id
+    ``P8-FINAL-EVAL-FAILURE-MAINT``, an exact P0 grant with
+    ``WRITE_CONTROL_PLANE``, the grant/attempt/actor/identity lineage and
+    an expiry validated by the STORE clock (never the caller).  A single
+    lease carries failure capability only -- it can never be used as a
+    recovery lease.
+    """
+
+    lease_id: str
+    ticket_id: str
+    grant_id: str
+    authorization_ref: str
+    phase: Phase
+    attempt_id: str
+    task_id: str
+    operation: str
+    binding_id: str
+    expected_saga_version: int
+    allowed_side_effects: tuple[SideEffect, ...]
+    actor: Actor
+    identity: AuthorityIdentity
+    expires_at: datetime
+    _bearer_secret: _BearerSecret = field(repr=False, compare=False)
+
+    @classmethod
+    def issue(
+        cls,
+        *,
+        authority: "_AuthorityStore",
+        binding_id: str,
+        expected_saga_version: int,
+        identity: AuthorityIdentity,
+        actor: Actor | None = None,
+        attempt_id: str | None = None,
+        expires_at: datetime | None = None,
+    ) -> "FinalEvalFailureLease":
+        """Issue the dedicated one-shot failure lease through the EXISTING
+        Authority grant/ticket/lease issuance (no parallel system)."""
+        trusted_binding = _require_nonempty(binding_id, "binding_id")
+        if type(expected_saga_version) is not int or expected_saga_version < 1:
+            raise ValueError("expected_saga_version must be a positive integer")
+        if not isinstance(identity, AuthorityIdentity):
+            raise TypeError("identity must be an AuthorityIdentity")
+        if not isinstance(authority, _AuthorityStore):
+            raise TypeError("authority must be an _AuthorityStore")
+        unique = secrets.token_hex(8)
+        failure_actor = actor or Actor(
+            "final-eval-failure-maint",
+            "automation",
+            f"final-eval-failure-inv-{unique}",
+        )
+        failure_attempt = attempt_id or f"final-eval-failure-maint-{unique}"
+        expiry = expires_at or datetime(2027, 1, 1, tzinfo=timezone.utc)
+        envelope = authority._provision_authorization(
+            phase=Phase.P0,
+            attempt_id=failure_attempt,
+            actor=failure_actor,
+            identity=identity,
+            expires_at=expiry,
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        grant = authority.claim_authorization(
+            envelope,
+            expected_phase=Phase.P0,
+            expected_attempt_id=failure_attempt,
+            actor=failure_actor,
+            identity=identity,
+        )
+        idempotency_key = (
+            f"final-eval-failure:{trusted_binding}:{expected_saga_version}"
+        )
+        ticket = authority._issue_task_ticket(
+            grant,
+            {
+                "task_id": FINAL_EVAL_FAILURE_TASK_ID,
+                "objective": (
+                    "exact FINAL_EVAL_FAIL_BINDING failure maintenance"
+                ),
+                "dependencies": [],
+                "idempotency_key": idempotency_key,
+                "task_spec_ref": "manifest.json",
+                "task_spec_sha256": "1" * 64,
+                "requirements": {
+                    "required_test_receipt_ids": [],
+                    "required_review_receipt_ids": [],
+                    "required_evidence_ids": [],
+                },
+                "allowed_files": [],
+                "forbidden_files": [],
+                "baseline_ref": "manifest.json",
+                "baseline_sha256": "1" * 64,
+                "input_evidence_refs": [],
+            },
+            allowed_side_effects=(SideEffect.WRITE_CONTROL_PLANE,),
+        )
+        lease = authority._begin_task(ticket)
+        return cls(
+            lease_id=lease.lease_id,
+            ticket_id=lease.ticket_id,
+            grant_id=lease.grant_id,
+            authorization_ref=lease.authorization_ref,
+            phase=lease.phase,
+            attempt_id=lease.attempt_id,
+            task_id=lease.task_id,
+            operation=FINAL_EVAL_FAILURE_OPERATION,
+            binding_id=trusted_binding,
+            expected_saga_version=expected_saga_version,
+            allowed_side_effects=lease.allowed_side_effects,
+            actor=lease.actor,
+            identity=lease.identity,
+            expires_at=expiry,
+            _bearer_secret=lease._bearer_secret,
+        )
 
 
 class FinalEvalRecoveryLease:
@@ -5629,7 +6288,12 @@ _FINAL_EVAL_TRANSITIONS = {
     "CLOSED": "AUTHORITY_TERMINAL",
 }
 _FINAL_EVAL_NONCE_DOMAIN = b"control_plane.final_eval_nonce.v1\0"
-_FINAL_EVAL_REQUEST_DOMAIN = b"control_plane.final_eval_request.v1\0"
+# CR-010 F-02 (functional closure): the durable request identity digest
+# domain is v2 -- the canonical payload covers the COMPLETE V2 request
+# identity (every declared material ref/hash, the identity/scope/policy
+# hashes, the attempt, the task spec, the actor/invocation lineage, the
+# nonce fingerprint, the request schema and the source V2 request digest).
+_FINAL_EVAL_REQUEST_DOMAIN = b"control_plane.final_eval_request.v2\0"
 
 
 def _require_canonical_evidence_ref(value: object, field_name: str) -> str:
@@ -5657,6 +6321,8 @@ def _final_eval_nonce_fingerprint(root_secret: str, nonce: str) -> str:
 def _final_eval_request_sha256(
     *,
     authority_plan_hash: str,
+    identity_scope_hash: str,
+    identity_instruction_policy_hash: str,
     research_plan_sha256: str,
     campaign_id: str,
     campaign_sha256: str,
@@ -5665,10 +6331,46 @@ def _final_eval_request_sha256(
     nonce_fingerprint: str,
     task_spec_ref: str,
     task_spec_sha256: str,
+    candidate_freeze_ref: str,
+    candidate_freeze_sha256: str,
+    code_ref: str,
+    code_sha256: str,
+    execution_spec_ref: str,
+    execution_spec_sha256: str,
+    features_ref: str,
+    features_sha256: str,
+    model_id: str,
+    model_sha256: str,
+    threshold_ref: str,
+    threshold_sha256: str,
+    roster_ref: str,
+    roster_sha256: str,
+    generation_id: str,
+    generation_sha256: str,
+    actor_id: str,
+    actor_type: str,
+    invocation_id: str,
+    attempt_id: str,
+    request_schema: str,
+    request_digest: str,
 ) -> str:
+    # CR-010 F-02 (functional closure): the durable request identity is the
+    # COMPLETE canonical V2 payload -- every declared material ref/hash,
+    # the identity/scope/policy hashes, the attempt, the task spec, the
+    # actor/invocation lineage, the nonce fingerprint, the request schema
+    # and the source V2 request digest.  Any single-field drift changes the
+    # digest, so a binding committed under one identity can never be
+    # continued or replayed under a different identity -- and a joint
+    # forgery that changes a request hash AND a caller-supplied material
+    # hash in the same direction still moves the durable identity, so the
+    # old terminal result is never reused.
     payload_json, _ = _canonical_payload(
         {
             "authority_plan_hash": authority_plan_hash,
+            "identity_scope_hash": identity_scope_hash,
+            "identity_instruction_policy_hash": (
+                identity_instruction_policy_hash
+            ),
             "research_plan_sha256": research_plan_sha256,
             "campaign_id": campaign_id,
             "campaign_sha256": campaign_sha256,
@@ -5677,6 +6379,28 @@ def _final_eval_request_sha256(
             "nonce_fingerprint": nonce_fingerprint,
             "task_spec_ref": task_spec_ref,
             "task_spec_sha256": task_spec_sha256,
+            "candidate_freeze_ref": candidate_freeze_ref,
+            "candidate_freeze_sha256": candidate_freeze_sha256,
+            "code_ref": code_ref,
+            "code_sha256": code_sha256,
+            "execution_spec_ref": execution_spec_ref,
+            "execution_spec_sha256": execution_spec_sha256,
+            "features_ref": features_ref,
+            "features_sha256": features_sha256,
+            "model_id": model_id,
+            "model_sha256": model_sha256,
+            "threshold_ref": threshold_ref,
+            "threshold_sha256": threshold_sha256,
+            "roster_ref": roster_ref,
+            "roster_sha256": roster_sha256,
+            "generation_id": generation_id,
+            "generation_sha256": generation_sha256,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "invocation_id": invocation_id,
+            "attempt_id": attempt_id,
+            "request_schema": request_schema,
+            "request_digest": request_digest,
         }
     )
     return hashlib.sha256(

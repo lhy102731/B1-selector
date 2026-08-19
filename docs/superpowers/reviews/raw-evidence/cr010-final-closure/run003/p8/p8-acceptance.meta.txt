@@ -1,0 +1,7 @@
+command=python -B -m pytest -p no:cacheprovider tests\test_control_plane_cr010_p8_acceptance.py -q
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-19 23:01:00
+python=Python 3.13.12
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+end=2026-08-19 23:01:19
+exit=0

@@ -1,0 +1,8 @@
+command=python -B -m pytest -p no:cacheprovider D:\workspace\a-share-quant-selector-cr010-run003/tests/ -q
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-19 05:23:08
+python=Python 3.13.12
+pytest=pytest 9.1.1
+candidate_commit=2d93c4485ccbb67b219c7068eda0e211556687e8
+end=2026-08-19 06:53:53
+exit=1

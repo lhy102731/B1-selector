@@ -44,7 +44,16 @@ class FinalEvalUniquenessRejected(FinalEvalAuthorityError):
 
 @dataclass(frozen=True, slots=True)
 class FinalEvalRequestV2:
-    """V2 request bound to Authority-issued identity (no raw nonce)."""
+    """V2 request bound to Authority-issued identity (no raw nonce).
+
+    CR-010 F-03: the declared identity covers the FULL evaluator lineage
+    -- material refs/hashes (candidate freeze, code, execution spec,
+    features, model, threshold, roster, generation) and the grant/binding
+    plan/scope/instruction-policy/attempt fields.  The new ref/hash and
+    identity fields default to empty so legacy constructions remain valid;
+    the projection entry point requires exact matches for every declared
+    field before any evaluator consume.
+    """
 
     schema_version: str
     research_plan_sha256: str
@@ -66,6 +75,17 @@ class FinalEvalRequestV2:
     actor_type: str
     invocation_id: str
     authority_plan_hash: str
+    code_ref: str = ""
+    execution_spec_ref: str = ""
+    features_ref: str = ""
+    model_sha256: str = ""
+    threshold_ref: str = ""
+    threshold_sha256: str = ""
+    roster_ref: str = ""
+    generation_sha256: str = ""
+    identity_scope_hash: str = ""
+    identity_instruction_policy_hash: str = ""
+    attempt_id: str = ""
 
     def __post_init__(self) -> None:
         if self.schema_version != FINAL_EVAL_REQUEST_V2:
@@ -83,6 +103,24 @@ class FinalEvalRequestV2:
             "authority_plan_hash",
         ):
             value = getattr(self, field_name)
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(char not in "0123456789abcdef" for char in value)
+            ):
+                raise FinalEvalRequestRejected(
+                    f"{field_name} must be a lowercase SHA-256 digest"
+                )
+        for field_name in (
+            "model_sha256",
+            "threshold_sha256",
+            "generation_sha256",
+            "identity_scope_hash",
+            "identity_instruction_policy_hash",
+        ):
+            value = getattr(self, field_name)
+            if value == "":
+                continue
             if (
                 not isinstance(value, str)
                 or len(value) != 64
@@ -110,17 +148,30 @@ class FinalEvalRequestV2:
             "nonce_fingerprint": self.nonce_fingerprint,
             "candidate_freeze_ref": self.candidate_freeze_ref,
             "candidate_freeze_sha256": self.candidate_freeze_sha256,
+            "code_ref": self.code_ref,
             "code_sha256": self.code_sha256,
+            "execution_spec_ref": self.execution_spec_ref,
             "execution_spec_sha256": self.execution_spec_sha256,
+            "features_ref": self.features_ref,
             "features_sha256": self.features_sha256,
             "model": self.model,
+            "model_sha256": self.model_sha256,
             "threshold": self.threshold,
+            "threshold_ref": self.threshold_ref,
+            "threshold_sha256": self.threshold_sha256,
+            "roster_ref": self.roster_ref,
             "roster_sha256": self.roster_sha256,
             "generation": self.generation,
+            "generation_sha256": self.generation_sha256,
             "actor_id": self.actor_id,
             "actor_type": self.actor_type,
             "invocation_id": self.invocation_id,
             "authority_plan_hash": self.authority_plan_hash,
+            "identity_scope_hash": self.identity_scope_hash,
+            "identity_instruction_policy_hash": (
+                self.identity_instruction_policy_hash
+            ),
+            "attempt_id": self.attempt_id,
         }
         return payload
 
@@ -146,7 +197,12 @@ def _nonce_fingerprint(root_secret: str, nonce: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class FinalEvalBindingV2:
-    """Durable binding receipt with real ticket/lease lineage."""
+    """Durable binding receipt with real ticket/lease lineage.
+
+    CR-010 C0 (Phase B): ``consumption`` carries the immutable begin-time
+    holdout consume receipt (durable identifiers only) committed in the
+    same Authority transaction as the binding.
+    """
 
     ticket_id: str
     request_sha256: str
@@ -157,9 +213,10 @@ class FinalEvalBindingV2:
     nonce_fingerprint: str
     saga_state: str
     saga_version: int
+    consumption: object | None = None
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema_version": FINAL_EVAL_BINDING_V2,
             "ticket_id": self.ticket_id,
             "request_sha256": self.request_sha256,
@@ -171,6 +228,9 @@ class FinalEvalBindingV2:
             "saga_state": self.saga_state,
             "saga_version": self.saga_version,
         }
+        if self.consumption is not None:
+            payload["consumption"] = self.consumption.to_payload()
+        return payload
 
 
 class AuthorityFinalEvalBroker:
@@ -218,6 +278,36 @@ class AuthorityFinalEvalBroker:
             raise FinalEvalRequestRejected(
                 "authority_plan_hash does not match grant lineage"
             )
+        if self._grant is None:
+            raise FinalEvalAuthorityError("no P8 grant is available for binding")
+        # CR-010 B-03: the FinalEval bind requires a STRICT P8 lineage.
+        grant = self._grant
+        if grant.phase is not Phase.P8:
+            raise FinalEvalRequestRejected(
+                "FinalEval binding requires a P8 grant, got "
+                + grant.phase.value
+            )
+        if (
+            grant.actor.actor_id != request.actor_id
+            or grant.actor.actor_type != request.actor_type
+            or grant.actor.invocation_id != request.invocation_id
+        ):
+            raise FinalEvalRequestRejected(
+                "grant actor does not match the request actor"
+            )
+        if (
+            grant.identity.plan_hash != request.authority_plan_hash
+            or grant.identity.scope_hash != self._identity.scope_hash
+            or grant.identity.instruction_policy_hash
+            != self._identity.instruction_policy_hash
+        ):
+            raise FinalEvalRequestRejected(
+                "grant identity does not match the broker identity"
+            )
+        if grant.attempt_id != self._attempt_id:
+            raise FinalEvalRequestRejected(
+                "grant attempt does not match the FinalEval attempt"
+            )
         fingerprint = _nonce_fingerprint(
             self._authority._root_secret._reveal_for_authority_check(),
             nonce,
@@ -227,8 +317,12 @@ class AuthorityFinalEvalBroker:
                 "nonce fingerprint does not match the request binding"
             )
         # Bind through the sealed Authority CAS using the injected grant.
-        if self._grant is None:
-            raise FinalEvalAuthorityError("no P8 grant is available for binding")
+        # CR-010 F-02 (functional closure): the COMPLETE V2 request identity
+        # (every material ref/hash, identity/scope/policy, attempt, schema
+        # and the source request digest) is committed into the binding's
+        # durable request identity, so the runtime can fail closed on ANY
+        # single-field drift -- a changed material hash can never replay an
+        # earlier terminal result.
         receipt = self._authority._begin_final_eval_binding(
             self._grant,
             research_plan_sha256=request.research_plan_sha256,
@@ -240,6 +334,32 @@ class AuthorityFinalEvalBroker:
             idempotency_key=idempotency_key,
             task_spec_ref=task_spec_ref,
             task_spec_sha256=task_spec_sha256,
+            candidate_freeze_sha256=request.candidate_freeze_sha256,
+            candidate_freeze_ref=request.candidate_freeze_ref,
+            code_sha256=request.code_sha256,
+            code_ref=request.code_ref,
+            execution_spec_sha256=request.execution_spec_sha256,
+            execution_spec_ref=request.execution_spec_ref,
+            features_sha256=request.features_sha256,
+            features_ref=request.features_ref,
+            model=request.model,
+            model_sha256=request.model_sha256,
+            threshold=request.threshold,
+            threshold_ref=request.threshold_ref,
+            threshold_sha256=request.threshold_sha256,
+            roster_sha256=request.roster_sha256,
+            roster_ref=request.roster_ref,
+            generation=request.generation,
+            generation_sha256=request.generation_sha256,
+            actor_id=request.actor_id,
+            actor_type=request.actor_type,
+            invocation_id=request.invocation_id,
+            identity_scope_hash=request.identity_scope_hash,
+            identity_instruction_policy_hash=(
+                request.identity_instruction_policy_hash
+            ),
+            request_schema=request.schema_version,
+            request_digest=request.request_sha256,
         )
         return FinalEvalBindingV2(
             ticket_id=receipt.binding.ticket_id,
@@ -251,6 +371,7 @@ class AuthorityFinalEvalBroker:
             nonce_fingerprint=receipt.binding.nonce_fingerprint,
             saga_state=receipt.binding.saga_state,
             saga_version=receipt.binding.saga_version,
+            consumption=receipt.consumption,
         )
 
 

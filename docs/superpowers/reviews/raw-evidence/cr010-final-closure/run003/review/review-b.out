@@ -1,0 +1,33 @@
+[
+  {
+    "detail": "absent=2",
+    "passed": true,
+    "probe": "probe1 no casting API (_create/_mint) on sealed resolver"
+  },
+  {
+    "detail": "rejected_fields=4",
+    "passed": true,
+    "probe": "probe2 resolver slot mutation rejected (immutable)"
+  },
+  {
+    "detail": "",
+    "passed": true,
+    "probe": "probe3 HEAD drift after freeze rejected"
+  },
+  {
+    "detail": "target_count=1",
+    "passed": true,
+    "probe": "probe4 same-grant OTHER_ATTEMPT excluded"
+  },
+  {
+    "detail": "missing=True full=True extra=True",
+    "passed": true,
+    "probe": "probe5 missing fails / full passes / extra fails"
+  },
+  {
+    "detail": "pre=True post-swap-rejected=2/2",
+    "passed": true,
+    "probe": "probe6 cross-root counter swap rejected"
+  }
+]
+REVIEW_B_STATUS APPROVE

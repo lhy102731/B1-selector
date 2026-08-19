@@ -1,0 +1,7 @@
+command=python -B -m pytest -p no:cacheprovider tests/ -q (INTEGRATION worktree, F5 tree, main-sourced runtime data)
+cwd=D:\workspace\a-share-quant-selector-cr010-integ
+start=2026-08-20 00:48:28
+python=Python 3.13.12
+candidate_commit=f8351c339f1bf0d09a2b77a013530d4f4bd99150
+end=2026-08-20 02:25:52
+exit=0

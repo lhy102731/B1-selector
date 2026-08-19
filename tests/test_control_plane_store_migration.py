@@ -78,7 +78,10 @@ class StoreMigrationCoordinatorTests(unittest.TestCase):
             receipt.installation_id,
             stores_module.AuthorityReader().read_identity().installation_id,
         )
-        self.assertEqual(receipt.schema_version, 3)
+        self.assertEqual(
+            receipt.schema_version,
+            stores_module._AUTHORITY_SCHEMA_VERSION,
+        )
         self.assertTrue(receipt.quick_check_ok)
         self.assertEqual(
             receipt.file_sha256,
@@ -93,7 +96,9 @@ class StoreMigrationCoordinatorTests(unittest.TestCase):
         finally:
             connection.close()
         self.assertEqual(integrity, "ok")
-        self.assertEqual(version, 3)
+        self.assertEqual(
+            version, stores_module._AUTHORITY_SCHEMA_VERSION
+        )
 
     def test_rehearsal_restores_backup_into_staging_without_touching_live(
         self,
@@ -112,7 +117,10 @@ class StoreMigrationCoordinatorTests(unittest.TestCase):
             staging_path=staging_path,
         )
         self.assertTrue(rehearsal.migrated)
-        self.assertEqual(rehearsal.staging_schema_version, 3)
+        self.assertEqual(
+            rehearsal.staging_schema_version,
+            stores_module._AUTHORITY_SCHEMA_VERSION,
+        )
         connection = sqlite3.connect(staging_path)
         try:
             table = connection.execute(
@@ -206,9 +214,15 @@ class StoreMigrationCoordinatorTests(unittest.TestCase):
         )
         self.assertEqual(receipt.target, "authority")
         self.assertEqual(receipt.from_schema_version, 1)
-        self.assertEqual(receipt.to_schema_version, 3)
+        self.assertEqual(
+            receipt.to_schema_version,
+            stores_module._AUTHORITY_SCHEMA_VERSION,
+        )
         self.assertTrue(receipt.migrated)
-        self.assertEqual(self._authority_user_version(), 3)
+        self.assertEqual(
+            self._authority_user_version(),
+            stores_module._AUTHORITY_SCHEMA_VERSION,
+        )
         connection = sqlite3.connect(self.authority_path)
         try:
             table = connection.execute(

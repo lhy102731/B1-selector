@@ -472,7 +472,9 @@ class OperationalDurabilityTests(unittest.TestCase):
                         path=authority_path,
                         store_kind="AUTHORITY_STORE",
                         metadata_table="authority_meta",
-                        schema_version=3,
+                        schema_version=(
+                            stores_module._AUTHORITY_SCHEMA_VERSION
+                        ),
                     ),
                     busy_timeout_ms=50,
                 )

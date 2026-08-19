@@ -456,12 +456,19 @@ class AuthorityBrokerConsumeOnceTests(unittest.TestCase):
         call_order: list[str] = []
 
         class TrackingStore(InMemoryHoldoutStore):
-            def consume(self, *, nonce, request_sha256, outcome):
+            def consume(
+                self, *, nonce, request_sha256, outcome,
+                durable_ticket_id=None, durable_request_sha256=None,
+                durable_nonce_fingerprint=None,
+            ):
                 call_order.append("store_consumed")
                 return super().consume(
                     nonce=nonce,
                     request_sha256=request_sha256,
                     outcome=outcome,
+                    durable_ticket_id=durable_ticket_id,
+                    durable_request_sha256=durable_request_sha256,
+                    durable_nonce_fingerprint=durable_nonce_fingerprint,
                 )
 
         broker = AuthorityBroker(store=TrackingStore())
@@ -1392,7 +1399,9 @@ class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
             self._request,
             data_root=self._data_root,
             worker_payload={"outcome": "SUCCEEDED"},
-        )
+            durable_ticket_id="durable-ticket-b03",
+            durable_request_sha256="b" * 64,
+            durable_nonce_fingerprint="c" * 64,        )
         self.assertEqual(result.outcome, "SUCCEEDED")
         self.assertEqual(result.request_sha256, self._request.request_sha256)
         # the nonce was consumed permanently with the derived outcome
@@ -1404,6 +1413,9 @@ class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
                 self._request,
                 data_root=self._data_root,
                 worker_payload={"outcome": "SUCCEEDED"},
+                durable_ticket_id="durable-ticket-b03",
+                durable_request_sha256="b" * 64,
+                durable_nonce_fingerprint="c" * 64,
             )
 
     def test_evaluate_v2_fails_closed_without_worker_payload(self) -> None:
@@ -1446,12 +1458,19 @@ class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
 
     def test_evaluate_v2_fails_when_broker_disagrees_with_derived_outcome(self) -> None:
         class WanderingStore(InMemoryHoldoutStore):
-            def consume(self, *, nonce, request_sha256, outcome):
+            def consume(
+                self, *, nonce, request_sha256, outcome,
+                durable_ticket_id=None, durable_request_sha256=None,
+                durable_nonce_fingerprint=None,
+            ):
                 # broker commits a DIFFERENT outcome than derived
                 return super().consume(
                     nonce=nonce,
                     request_sha256=request_sha256,
                     outcome="FAILED" if outcome == "SUCCEEDED" else outcome,
+                    durable_ticket_id=durable_ticket_id,
+                    durable_request_sha256=durable_request_sha256,
+                    durable_nonce_fingerprint=durable_nonce_fingerprint,
                 )
 
         evaluator = self._evaluator(store=WanderingStore())
@@ -1460,6 +1479,9 @@ class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
                 self._request,
                 data_root=self._data_root,
                 worker_payload={"outcome": "SUCCEEDED"},
+                durable_ticket_id="durable-ticket-b03",
+                durable_request_sha256="b" * 64,
+                durable_nonce_fingerprint="c" * 64,
             )
 
     def test_evaluate_v2_result_never_leaks_holdout_content(self) -> None:
@@ -1468,6 +1490,9 @@ class TrustedEvaluatorV2RealPathTests(unittest.TestCase):
             self._request,
             data_root=self._data_root,
             worker_payload={"outcome": "FAILED"},
+            durable_ticket_id="durable-ticket-b03",
+            durable_request_sha256="b" * 64,
+            durable_nonce_fingerprint="c" * 64,
         )
         serialized = canonical_json(result.to_payload())
         self.assertNotIn("CANARY_7f3a9c2b", serialized)

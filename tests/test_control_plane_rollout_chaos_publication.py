@@ -101,14 +101,8 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
             raw = b'{"report": "partial-write"}'
             sha = _hashlib.sha256(raw).hexdigest()
             final = objects / f"{sha}.json"
-            temp = objects / f".tmp-{sha}"
-            # simulate the write-then-crash: temp written + fsynced, link
-            # never happened
+            temp = AtomicPublisher._temp_path_for(final)
             publisher._write_temp_then_link(temp, final, raw)
-            # full publication succeeded in the happy path; simulate a
-            # crash DURING the write by checking the temp protocol: the
-            # final path must only appear via the link, and a partial temp
-            # is never mistaken for the object
             self.assertTrue(final.exists())
             self.assertFalse(temp.exists())
 
@@ -119,13 +113,17 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
             publisher = self._publisher(tmp)
             payload = {"report": "v2", "seed": 20260811}
             results: list[dict[str, object]] = []
+            errors: list[BaseException] = []
             barrier = threading.Barrier(4)
 
             def worker():
-                barrier.wait()
-                results.append(
-                    publisher.publish(payload, seed=20260811, cycles=24)
-                )
+                try:
+                    barrier.wait()
+                    results.append(
+                        publisher.publish(payload, seed=20260811, cycles=24)
+                    )
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
 
             threads = [
                 threading.Thread(target=worker) for _ in range(4)
@@ -134,7 +132,11 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
                 thread.start()
             for thread in threads:
                 thread.join()
+            # CR-010 F-11: thread failures are collected explicitly -- a
+            # silent worker exception can never fake a pass
+            self.assertEqual(errors, [])
             statuses = {str(r["status"]) for r in results}
+            self.assertEqual(len(results), 4)
             self.assertTrue(
                 statuses <= {"CREATED", "IDEMPOTENT_EXISTING"},
                 statuses,
@@ -151,17 +153,21 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             publisher = self._publisher(tmp)
             results: list[dict[str, object]] = []
+            errors: list[BaseException] = []
             barrier = threading.Barrier(4)
 
             def worker(index):
-                barrier.wait()
-                results.append(
-                    publisher.publish(
-                        {"report": "v2", "seed": 20260811, "worker": index},
-                        seed=20260811,
-                        cycles=24,
+                try:
+                    barrier.wait()
+                    results.append(
+                        publisher.publish(
+                            {"report": "v2", "seed": 20260811, "worker": index},
+                            seed=20260811,
+                            cycles=24,
+                        )
                     )
-                )
+                except BaseException as error:  # noqa: BLE001
+                    errors.append(error)
 
             threads = [
                 threading.Thread(target=worker, args=(index,))
@@ -171,6 +177,8 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
                 thread.start()
             for thread in threads:
                 thread.join()
+            # CR-010 F-11: thread failures are collected explicitly
+            self.assertEqual(errors, [])
             statuses = {str(r["status"]) for r in results}
             # at least one writer won; the others conflicted or were
             # idempotent -- nothing was overwritten
@@ -201,11 +209,11 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
             payload = {"report": "crash-mid-write"}
             raw = canonical_json(payload).encode("utf-8")
             sha = _hashlib.sha256(raw).hexdigest()
-            temp = objects / f".tmp-{sha}"
+            final = objects / f"{sha}.json"
+            temp = AtomicPublisher._temp_path_for(final)
             temp.parent.mkdir(parents=True, exist_ok=True)
             # crash after the temp write, before the link
             temp.write_bytes(raw[: len(raw) // 2])
-            final = objects / f"{sha}.json"
             self.assertFalse(final.exists())
             # a fresh publish writes its own temp and links atomically
             result = publisher.publish(
@@ -215,6 +223,117 @@ class AtomicPublisherCrashSafetyTests(unittest.TestCase):
             )
             self.assertEqual(result["status"], "CREATED")
             self.assertTrue(final.exists())
+
+    def test_real_child_crash_before_link_leaves_final_absent(self) -> None:
+        """CR-010 F-11: a REAL child process that hard-exits after staging
+        its temp (before the link) must leave the final object ABSENT; a
+        fresh publish of the same bytes then succeeds."""
+        import hashlib as _hashlib
+        import os as _os
+        import subprocess as _sp
+        import sys as _sys
+
+        from research_automation.control_plane.contracts import canonical_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            objects = Path(tmp) / "objects"
+            objects.mkdir(parents=True, exist_ok=True)
+            payload = {"report": "child-crash-before-link"}
+            raw = canonical_json(payload).encode("utf-8")
+            sha = _hashlib.sha256(raw).hexdigest()
+            final = objects / f"{sha}.json"
+            child = """
+import sys
+from pathlib import Path
+sys.path.insert(0, '.')
+from research_automation.control_plane.rollout_chaos import AtomicPublisher
+final = Path(sys.argv[1])
+temp = Path(sys.argv[2])
+raw = bytes.fromhex(sys.argv[3])
+# CR-010 C0: the crash happens INSIDE the PRODUCTION function at its
+# crash_before_link injection point -- never a hand-written copy of the
+# file algorithm in the test.
+AtomicPublisher._write_temp_then_link(
+    temp, final, raw, crash_before_link=True
+)
+"""
+            result = _sp.run(
+                [
+                    _sys.executable,
+                    "-c",
+                    child,
+                    str(final),
+                    str(AtomicPublisher._temp_path_for(final)),
+                    raw.hex(),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(result.returncode, 9)
+            self.assertFalse(final.exists())
+            # only an orphan temp remains, never a partial final object
+            temps = list(objects.glob(".tmp-*"))
+            self.assertEqual(len(temps), 1)
+            # a fresh publish of the SAME bytes succeeds
+            publisher = self._publisher(tmp)
+            pub = publisher.publish(payload, seed=2, cycles=20)
+            self.assertEqual(pub["status"], "CREATED")
+            self.assertTrue(final.exists())
+
+    def test_write_failure_cleans_temp_and_fails_closed(self) -> None:
+        """CR-010 F-11: a write failure mid-stream must clean up the temp
+        and raise -- the final path never appears."""
+        import hashlib as _hashlib
+        import subprocess as _sp
+        import sys as _sys
+        from unittest.mock import patch
+
+        from research_automation.control_plane.contracts import canonical_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            objects = Path(tmp) / "objects"
+            objects.mkdir(parents=True, exist_ok=True)
+            payload = {"report": "write-failure"}
+            raw = canonical_json(payload).encode("utf-8")
+            sha = _hashlib.sha256(raw).hexdigest()
+            final = objects / f"{sha}.json"
+            child = f"""
+import os, sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, ".")
+from research_automation.control_plane.rollout_chaos import AtomicPublisher
+final = Path(sys.argv[1])
+raw = bytes.fromhex(sys.argv[2])
+try:
+    with patch("os.fsync", side_effect=OSError("synthetic write failure")):
+        AtomicPublisher._write_temp_then_link(
+            AtomicPublisher._temp_path_for(final), final, raw
+        )
+except OSError:
+    print("WRITE_FAILED")
+    raise SystemExit(0)
+print("WRITE_SUCCEEDED")
+"""
+            result = _sp.run(
+                [
+                    _sys.executable,
+                    "-c",
+                    child,
+                    str(final),
+                    raw.hex(),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=Path(__file__).resolve().parents[1],
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertIn("WRITE_FAILED", result.stdout)
+            # the failed write left NO final object and NO temp residue
+            self.assertFalse(final.exists())
+            self.assertEqual(list(objects.glob(".tmp-*")), [])
 
 
 if __name__ == "__main__":

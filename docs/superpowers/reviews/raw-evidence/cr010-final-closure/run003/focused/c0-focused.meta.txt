@@ -1,0 +1,7 @@
+command=python -B -m pytest -p no:cacheprovider tests\test_control_plane_c0_no_side_effect.py tests\test_control_plane_rollout_chaos.py tests\test_control_plane_rollout_chaos_second_root.py tests\test_control_plane_rollout_chaos_fixtures.py tests\test_control_plane_rollout_chaos_publication.py tests\test_control_plane_rollout_chaos_supervisor.py tests\test_control_plane_rollout_chaos_worker.py tests\test_control_plane_regate_driver_c0.py -q
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-19 23:26:32
+python=Python 3.13.12
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+end=2026-08-20 00:32:41
+exit=0

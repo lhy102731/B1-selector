@@ -951,6 +951,9 @@ class StableFreezeInventoryBuilderTests(unittest.TestCase):
                 "class TrustedEvaluator:\n"
                 "    def evaluate_v2(self):\n        pass\n"
             ),
+            "research_automation/control_plane/final_eval_composition.py": (
+                "def compose_final_eval_runtime(context):\n    pass\n"
+            ),
             "data/ignored.py": "raise RuntimeError('data must be excluded')\n",
             "research_state/ignored.py": (
                 "raise RuntimeError('state must be excluded')\n"
@@ -1021,9 +1024,10 @@ class StableFreezeInventoryBuilderTests(unittest.TestCase):
                 "research_automation/discovery_execution_bridge.py",
                 "research_automation/kbase_ag2_full_cycle.py",
                 "research_automation/control_plane/final_evaluator.py",
+                "research_automation/control_plane/final_eval_composition.py",
             },
         )
-        self.assertEqual(inventory["entry_count"], 11)
+        self.assertEqual(inventory["entry_count"], 12)
 
     def test_rejects_same_bytes_file_replacement_between_scan_boundaries(self) -> None:
         with TemporaryDirectory() as tmp:

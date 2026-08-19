@@ -1,0 +1,7 @@
+command=python -B -m pytest -p no:cacheprovider tests\test_control_plane_rollout_chaos.py::C0RolloutChaosTests::test_main_campaign_completes_at_least_20_cycles_with_all_invariants -q
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-20 00:32:41
+python=Python 3.13.12
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+end=2026-08-20 00:38:38
+exit=0

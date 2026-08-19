@@ -126,8 +126,10 @@ def _claim_campaign_grant(
     attempt_id: str,
     plan_sha256: str,
     instruction_sha256: str,
+    phase: Phase = Phase.P6,
+    actor_type: str = "automation",
 ) -> stores_module.AuthorityGrant:
-    actor = Actor(actor_id, "automation", invocation_id)
+    actor = Actor(actor_id, actor_type, invocation_id)
     identity = stores_module.AuthorityIdentity(
         plan_sha256,
         campaign_scope_sha256(
@@ -141,7 +143,7 @@ def _claim_campaign_grant(
         clock=lambda: NOW,
     )
     authorization = authority._provision_authorization(
-        phase=Phase.P6,
+        phase=phase,
         attempt_id=attempt_id,
         actor=actor,
         identity=identity,
@@ -153,7 +155,7 @@ def _claim_campaign_grant(
     )
     return authority.claim_authorization(
         authorization,
-        expected_phase=Phase.P6,
+        expected_phase=phase,
         expected_attempt_id=attempt_id,
         actor=actor,
         identity=identity,
@@ -161,7 +163,14 @@ def _claim_campaign_grant(
 
 
 @contextmanager
-def _authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
+def _authorized_campaign(
+    campaign_id: str,
+    *,
+    namespace: str = "formal",
+    phase: Phase = Phase.P6,
+    actor_id: str = "p6-runner",
+    attempt_id: str | None = None,
+):
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
         with patch.multiple(
@@ -174,11 +183,12 @@ def _authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
             grant = _claim_campaign_grant(
                 campaign_id=campaign_id,
                 namespace=namespace,
-                actor_id="p6-runner",
+                actor_id=actor_id,
                 invocation_id=f"{campaign_id}-test",
-                attempt_id=f"{campaign_id}-attempt",
+                attempt_id=attempt_id or f"{campaign_id}-attempt",
                 plan_sha256="a" * 64,
                 instruction_sha256="c" * 64,
+                phase=phase,
             )
             try:
                 yield root, grant, OperationalCampaignJournal(
@@ -188,6 +198,63 @@ def _authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
                     campaign_id=campaign_id,
                     clock=lambda: NOW,
                 )
+            finally:
+                stores_module._expected_schema_sha256.cache_clear()
+
+
+# Fixed P8 grant identity shared by every FinalEval test fixture
+# (CR-010 B-03): grant identity must equal the broker/request identity.
+P8_GRANT_IDENTITY = {
+    "plan_hash": "0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+    "scope_hash": "8c6b4a7547275728c7beef294cd8e5d56fdddf5da82509e09e88162e8c6243be",
+    "instruction_policy_hash": "0f9164237e8470be4c7b7ff0bcad7b16235f5d75ce45c56e20765190f3238828",
+}
+
+
+@contextmanager
+def _authorized_p8_campaign(campaign_id: str, *, namespace: str = "formal"):
+    """P8-granted campaign context for FinalEval tests (CR-010 B-03):
+    strict P8 phase + the operator actor + the p8 attempt identity.
+
+    The P6-only OperationalCampaignJournal is NOT constructed (the FinalEval
+    tests never use it); the third yielded value is None.  The grant
+    identity is the FIXED P8 identity (identical to the broker/request
+    identity), so the strict grant-identity binding holds."""
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        with patch.multiple(
+            stores_module,
+            _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
+            _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+        ):
+            stores_module._expected_schema_sha256.cache_clear()
+            stores_module._trusted_bootstrap(root_secret=ROOT_SECRET)
+            actor = Actor("operator-1", "human", "final-eval-op-cr009")
+            identity = stores_module.AuthorityIdentity(**P8_GRANT_IDENTITY)
+            authority = stores_module._AuthorityStore(
+                root_secret=ROOT_SECRET,
+                clock=lambda: NOW,
+            )
+            envelope = authority._provision_authorization(
+                phase=Phase.P8,
+                attempt_id="p8-attempt-003",
+                actor=actor,
+                identity=identity,
+                expires_at=NOW.replace(year=2027),
+                allowed_side_effects=(
+                    SideEffect.READ,
+                    SideEffect.WRITE_CONTROL_PLANE,
+                ),
+            )
+            grant = authority.claim_authorization(
+                envelope,
+                expected_phase=Phase.P8,
+                expected_attempt_id="p8-attempt-003",
+                actor=actor,
+                identity=identity,
+            )
+            try:
+                yield root, grant, None
             finally:
                 stores_module._expected_schema_sha256.cache_clear()
 

@@ -1,0 +1,7 @@
+command=python -B docs\superpowers\reviews\raw-evidence\cr010-final-closure\run003\review\review-b-probes.py
+cwd=D:\workspace\a-share-quant-selector-cr010-run003
+start=2026-08-19 23:01:49
+python=Python 3.13.12
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+end=2026-08-19 23:01:49
+exit=0

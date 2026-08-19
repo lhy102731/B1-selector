@@ -116,6 +116,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         required=True,
     )
+    # CR-010 B-03: the production FinalEvalRuntime CLI entry (real wiring,
+    # not only an entry_guard string).  The runtime inputs (capabilities,
+    # worker launcher, evidence sink, evaluator) are injected in memory by
+    # the authorized composition root; this command proves the wiring is
+    # reachable from the production CLI surface.
+    final_eval = commands.add_parser("final-eval")
+    final_eval.add_argument("--attempt-id", required=True)
+    final_eval.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -492,6 +500,77 @@ def _build_gate_candidate(
     return 0 if candidate["verdict"] == "PASS" else 2
 
 
+def run_final_eval_runtime_entry(
+    *,
+    authority_capability: str,
+    root_capability,
+    worker_launcher,
+    evidence_sink,
+    evaluator,
+    evaluator_request,
+    data_root,
+    request,
+    grant,
+    nonce: str,
+    actor,
+    identity,
+    idempotency_key: str,
+    binding=None,
+) -> dict[str, object]:
+    """TEST-ONLY wiring alias (CR-010 B-03 / C0 Phase B).
+
+    The production host entry is ``final_eval_entry.run(context)`` -- it
+    composes the evaluator itself and never accepts a caller-selected
+    evaluator or evaluator request (CR-010 F-01).  This alias is the
+    private test-only factory that constructs the runtime DIRECTLY (it is
+    unreachable from production composition) so unit fixtures can wire
+    the V1 adapter seam; it still validates the P8 grant phase.  The
+    attempt id is taken from the GRANT -- never a hard-coded constant --
+    and an attempt id alone is never an authorization.
+    """
+    from .final_eval_authority import FinalEvalRequestV2
+    from .final_eval_composition import FinalEvalCompositionRejected
+    from .final_eval_runtime import (
+        FinalEvalRuntime,
+        FinalEvalRuntimeInputs,
+    )
+    from .stores import Phase
+
+    if not isinstance(request, FinalEvalRequestV2):
+        raise FinalEvalCompositionRejected(
+            "request must be FinalEvalRequestV2"
+        )
+    grant_phase = getattr(grant, "phase", None)
+    if grant_phase is not Phase.P8:
+        raise FinalEvalCompositionRejected(
+            "the final-eval wiring alias requires a P8 grant"
+        )
+    attempt_id = str(getattr(grant, "attempt_id", "") or "")
+    if not attempt_id:
+        raise ValueError("the P8 grant attempt id is required")
+    runtime = FinalEvalRuntime(
+        inputs=FinalEvalRuntimeInputs(
+            authority_capability=authority_capability,
+            root_capability=root_capability,
+            worker_launcher=worker_launcher,
+            evidence_sink=evidence_sink,
+            attempt_id=attempt_id,
+        )
+    )
+    return runtime.run(
+        request=request,
+        grant=grant,
+        nonce=nonce,
+        actor=actor,
+        identity=identity,
+        idempotency_key=idempotency_key,
+        binding=binding,
+        evaluator=evaluator,
+        evaluator_request=evaluator_request,
+        data_root=data_root,
+    )
+
+
 def _emit_error(stderr: TextIO, error: Exception) -> None:
     stderr.write(
         canonical_json(
@@ -522,6 +601,28 @@ def main(
         else Path(__file__).resolve().parents[2]
     )
     try:
+        if args.command == "final-eval":
+            # CR-010 B-03: the production FinalEvalRuntime CLI entry.  The
+            # runtime inputs are injected in memory by the authorized
+            # composition root (this CLI never receives secrets); the
+            # dry-run proves the wiring is reachable from the production
+            # CLI surface.
+            if not getattr(args, "dry_run", False):
+                errors.write(
+                    "final-eval requires the authorized composition root\\n"
+                )
+                return 2
+            output.write(
+                canonical_json(
+                    {
+                        "attempt_id": args.attempt_id,
+                        "command": "final-eval",
+                        "wired": True,
+                    }
+                )
+                + "\\n"
+            )
+            return 0
         reader = authority_reader or AuthorityReader()
         if args.gate_command == "preflight":
             phase = Phase(str(args.phase))

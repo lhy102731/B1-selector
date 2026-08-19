@@ -156,6 +156,9 @@ class GitSourceIdentityTests(unittest.TestCase):
                 "class TrustedEvaluator:\n"
                 "    def evaluate_v2(self):\n        pass\n"
             ),
+            "research_automation/control_plane/final_eval_composition.py": (
+                "def compose_final_eval_runtime(context):\n    pass\n"
+            ),
         }
         for relative, content in seam_sources.items():
             target = root.joinpath(*relative.split("/"))

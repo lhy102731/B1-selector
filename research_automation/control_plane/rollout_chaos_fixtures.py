@@ -20,6 +20,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from .campaign_offline_provider import CampaignOfflineProvider
+from .campaign import (
+    InvalidModelResponseError,
+    ProviderResponse,
+)
+from .campaign_controller import (
+    CampaignBudgetLimits,
+    CycleReservationLimits,
+    OperationalModelCallLimits,
+)
 from . import stores as stores_module
 from .campaign_store import OperationalCampaignJournal
 from .stores import Phase
@@ -28,7 +37,6 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
 
 from research_automation.control_plane.campaign_controller import (
     operational_prompt_sha256,
@@ -645,36 +653,83 @@ def fixture_claim_campaign_grant(
 
 
 @contextmanager
-
-def fixture_authorized_campaign(campaign_id: str, *, namespace: str = "formal"):
-    with TemporaryDirectory() as temporary:
-        root = Path(temporary)
-        with patch.multiple(
-            stores_module,
-            _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
-            _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
-        ):
-            stores_module._expected_schema_sha256.cache_clear()
-            stores_module._trusted_bootstrap(root_secret=FIXTURE_ROOT_SECRET)
-            grant = fixture_claim_campaign_grant(
-                campaign_id=campaign_id,
+def _authorized_campaign_context(
+    root: Path,
+    campaign_id: str,
+    namespace: str,
+):
+    with stores_module.store_path_override(
+        authority=root / "authority.sqlite3",
+        operational=root / "operational.sqlite3",
+    ):
+        stores_module._expected_schema_sha256.cache_clear()
+        stores_module._trusted_bootstrap(root_secret=FIXTURE_ROOT_SECRET)
+        grant = fixture_claim_campaign_grant(
+            campaign_id=campaign_id,
+            namespace=namespace,
+            actor_id="p6-runner",
+            invocation_id=f"{campaign_id}-test",
+            attempt_id=f"{campaign_id}-attempt",
+            plan_sha256="a" * 64,
+            instruction_sha256="c" * 64,
+        )
+        try:
+            yield root, grant, OperationalCampaignJournal(
+                root_secret=FIXTURE_ROOT_SECRET,
+                grant=grant,
                 namespace=namespace,
-                actor_id="p6-runner",
-                invocation_id=f"{campaign_id}-test",
-                attempt_id=f"{campaign_id}-attempt",
-                plan_sha256="a" * 64,
-                instruction_sha256="c" * 64,
+                campaign_id=campaign_id,
+                clock=lambda: FIXTURE_NOW,
             )
-            try:
-                yield root, grant, OperationalCampaignJournal(
-                    root_secret=FIXTURE_ROOT_SECRET,
-                    grant=grant,
-                    namespace=namespace,
-                    campaign_id=campaign_id,
-                    clock=lambda: FIXTURE_NOW,
-                )
-            finally:
-                stores_module._expected_schema_sha256.cache_clear()
+        finally:
+            stores_module._expected_schema_sha256.cache_clear()
+
+
+@contextmanager
+
+def fixture_authorized_campaign(
+    campaign_id: str,
+    *,
+    namespace: str = "formal",
+    root: Path | None = None,
+):
+    """Fixture campaign context; ``root`` redirects the disposable fixture
+    root (CR-010 C0: negative-scenario roots are routed into their own
+    disposable roots, never system temp)."""
+    if root is not None:
+        with _authorized_campaign_context(root, campaign_id, namespace) as ctx:
+            yield ctx
+        return
+    with TemporaryDirectory() as temporary:
+        with _authorized_campaign_context(
+            Path(temporary), campaign_id, namespace
+        ) as ctx:
+            yield ctx
+
+
+class FixtureAuthorityReader:
+    """Production-owned fixture Authority reader (CR-010 F-10).
+
+    Serves the pre-computed per-cycle bindings the C0 campaign commits
+    against -- WITHOUT ``unittest.mock``.  The controller and the Learning
+    ledger resolve task reports through this reader instead of a patched
+    class method; an unknown ticket fails closed exactly like the real
+    AuthorityReader.
+    """
+
+    __slots__ = ("_bindings",)
+
+    def __init__(self, bindings_by_ticket: dict[str, object]) -> None:
+        self._bindings = bindings_by_ticket
+
+    def verify_task_report_binding(self, report: object) -> object:
+        if not isinstance(report, dict):
+            raise TypeError("task report must be a mapping")
+        ticket_id = str(report.get("ticket_id", ""))
+        binding = self._bindings.get(ticket_id)
+        if binding is None:
+            raise RuntimeError(f"no fixture binding for ticket {ticket_id}")
+        return binding
 
 def fixture_write_json(root, ref, payload):
     raw = canonical_bytes(payload)
@@ -845,3 +900,195 @@ def fixture_authority_fixture(root, *, claim=None, protocol=None):
         terminal_evidence_ref=refs["learning-decision"]["evidence_ref"],
     )
     return report, binding, artifact, evidence, refs
+
+
+# ---------------------------------------------------------------------------
+# CR-010 F-07: C0 shared step-execution components (moved from rollout_chaos
+# so the one-step WORKER subprocess can execute REAL controller transitions
+# without importing the supervisor module).
+# ---------------------------------------------------------------------------
+
+C0_CALL_LIMITS = OperationalModelCallLimits(
+    currency="USD",
+    max_input_tokens=20,
+    max_output_tokens=10,
+    max_cost="0.1",
+    max_wall_time_ms=5_000,
+    max_attempts=2,
+)
+
+C0_RESERVATION_LIMITS = CycleReservationLimits(
+    currency="USD",
+    max_input_tokens=20,
+    max_output_tokens=10,
+    max_cost="0.1",
+    max_wall_time_ms=5_000,
+    max_tool_attempts=2,
+)
+
+
+def campaign_limits(cycles: int) -> CampaignBudgetLimits:
+    return CampaignBudgetLimits(
+        max_cycles=cycles,
+        currency="USD",
+        max_input_tokens=cycles * 20 + 100,
+        max_output_tokens=cycles * 10 + 100,
+        max_cost=str(cycles + 2),
+        max_wall_time_ms=cycles * 5_000 + 60_000,
+        max_tool_attempts=cycles * 2 + 8,
+    )
+
+
+class FixtureSequentialClock:
+    """Deterministic increasing monotonic clock (ns)."""
+
+    def __init__(self, start_ns: int = 100, step_ns: int = 1_000_000) -> None:
+        self._next = start_ns
+        self._step = step_ns
+
+    def __call__(self) -> int:
+        value = self._next
+        self._next += self._step
+        return value
+
+
+def c0_claim_for_cycle(cycle_number: int) -> dict[str, object]:
+    # Byte-identical to the supervisor's per-cycle claim: the learning
+    # packet content hash must not depend on which process generated it.
+    return {
+        "kind": "NEGATIVE",
+        "summary": f"Synthetic scoped finding from C0 cycle {cycle_number}",
+        "scope": json.dumps(
+            deterministic_scope(generation="generation-1"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "parent_lineage": [],
+        "reopen_predicate": "[]",
+        "future_usage_guidance": '{"conclusion":"AVOID","directional_status":"avoid"}',
+    }
+
+
+class C0ChaosProvider:
+    """Offline fake provider matching the roster member binding.
+
+    The controller executes providers inside a spawned subprocess, so the
+    call counter is persisted in a shared temp file; the timeout-once mode
+    therefore survives subprocess pickling and retry re-spawns.
+    """
+
+    provider_name = "fake-provider"
+    profile = "offline-local"
+    model = "deterministic-reviewer"
+    config_sha256 = "2" * 64
+    capability_sha256 = "3" * 64
+
+    def __init__(
+        self,
+        artifact: dict[str, object],
+        *,
+        timeout_first: bool = False,
+        counter_path: str | None = None,
+        crash_on_call: bool = False,
+    ) -> None:
+        self._artifact = dict(artifact)
+        self._timeout_first = timeout_first
+        self._crash_on_call = crash_on_call
+        if counter_path is None:
+            handle = tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                delete=False,
+                prefix="c0-provider-counter-",
+            )
+            handle.write("0")
+            handle.close()
+            counter_path = handle.name
+        self._counter_path = str(counter_path)
+        Path(self._counter_path).write_text("0", encoding="utf-8")
+
+    @property
+    def call_count(self) -> int:
+        try:
+            raw = Path(self._counter_path).read_text(encoding="utf-8").strip()
+            return int(raw or "0")
+        except FileNotFoundError:
+            return 0
+
+    def _next_call_number(self) -> int:
+        counter_path = Path(self._counter_path)
+        counter_path.parent.mkdir(parents=True, exist_ok=True)
+        if not counter_path.exists():
+            # first invocation may create the counter file when the parent
+            # provider executor routes a caller-visible path (CR-010 A4)
+            counter_path.write_text("0", encoding="utf-8")
+        with counter_path.open("r+", encoding="utf-8") as stream:
+            raw = stream.read().strip() or "0"
+            value = int(raw) + 1
+            stream.seek(0)
+            stream.write(str(value))
+            stream.truncate()
+        return value
+
+    def invoke(self, request: object) -> ProviderResponse:
+        number = self._next_call_number()
+        if self._timeout_first and number == 1:
+            raise TimeoutError("synthetic provider timeout")
+        # CR-010 F-10: a REAL provider-level crash (raised inside the
+        # spawned provider worker, propagated as a provider error) -- no
+        # unittest.mock replacement of the invocation layer.  Every
+        # attempt crashes, so the invocation cannot silently succeed on a
+        # retry.
+        if self._crash_on_call:
+            raise RuntimeError("synthetic mid-call crash")
+        return ProviderResponse(
+            output_text=json.dumps(
+                self._artifact,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            request_model=self.model,
+            response_model=self.model,
+            raw_usage={
+                "input_tokens": 7,
+                "output_tokens": 3,
+                "total_tokens": 10,
+                "reported_cost": "0.02",
+                "currency": "USD",
+            },
+        )
+
+
+@contextmanager
+def deterministic_secrets(seed: int):
+    """Deterministic secrets token source so cross-process replays are stable.
+
+    The durable controller/journal/lease layers generate lease ids, nonces,
+    and grant ids through the stdlib ``secrets`` module. For the offline C0
+    simulation only, we substitute a seeded token generator so identical seeds
+    produce byte-identical event payloads and digests across processes.
+
+    CR-010 F-10: the substitution saves/restores the module functions
+    directly -- no ``unittest.mock`` on the production path.
+    """
+    rng = random.Random((seed * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF)
+
+    def token_hex(nbytes=None):
+        return rng.randbytes(int(nbytes or 16)).hex()
+
+    def token_urlsafe(nbytes=None):
+        raw = rng.randbytes(int(nbytes or 32))
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    original_hex = secrets.token_hex
+    original_urlsafe = secrets.token_urlsafe
+    secrets.token_hex = token_hex
+    secrets.token_urlsafe = token_urlsafe
+    try:
+        yield
+    finally:
+        secrets.token_hex = original_hex
+        secrets.token_urlsafe = original_urlsafe

@@ -1,0 +1,62 @@
+...................................................... [  1%]
+.................................................................... [  4%]
+........................................................................ [  6%]
+.......................................................................................................................... [ 11%]
+............................................................................................................................................ [ 16%]
+........................................................... [ 18%]
+................................................. [ 20%]
+................................................................ [ 22%]
+....................................................... [ 24%]
+.......................................................... [ 26%]
+.......................................................... [ 28%]
+........................................................................ [ 31%]
+........................................................ [ 33%]
+..................................................... [ 35%]
+.............................................................. [ 37%]
+........................................... [ 39%]
+......................................... [ 40%]
+.................................................... [ 42%]
+.................................................... [ 44%]
+......................................................... [ 46%]
+.................................................... [ 48%]
+..................................... [ 49%]
+........................................................................ [ 52%]
+............................................... [ 53%]
+........................................s........................ [ 56%]
+...................................................... [ 58%]
+........................................... [ 59%]
+......................................................................................................................................... [ 64%]
+........................................................................ [ 67%]
+........................................................................ [ 69%]
+................................... [ 71%]
+....................................................................................................................................................... [ 76%]
+........................................ [ 78%]
+................................................................... [ 80%]
+........................................... [ 82%]
+................................................................................................................................... [ 86%]
+........................ [ 87%]
+...................................................................... [ 90%]
+........................................................................ [ 92%]
+.................................................. [ 94%]
+................................................................. [ 96%]
+........................................................................ [ 99%]
+..............                                                     [100%]
+============================== warnings summary ===============================
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pandas_ta\__init__.py:37
+  C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\pandas_ta\__init__.py:37: Pandas4Warning: The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be disabled (it is always enabled with pandas >= 3.0), and setting the option has no impact. This option will be removed in pandas 4.0.
+    from pandas_ta.core import AnalysisIndicators
+
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\json_utils.py:10
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\json_utils.py:10
+  C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\json_utils.py:10: DeprecationWarning: jsonschema.RefResolver is deprecated as of v4.18.0, in favor of the https://github.com/python-jsonschema/referencing library, which provides more compliant referencing behavior as well as more flexible APIs for customization. A future release will remove RefResolver. Please file a feature request (on referencing) if you are missing an API for the kind of customization you need.
+    from jsonschema import Draft7Validator, RefResolver
+
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63
+C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63
+  C:\Users\Administrator\AppData\Local\Programs\Python\Python313\Lib\site-packages\autogen\import_utils.py:63: DeprecationWarning: Accessing jsonschema.__version__ is deprecated and will be removed in a future release. Use importlib.metadata directly to query for jsonschema's version.
+    sys.modules[self.name].__version__ if hasattr(sys.modules[self.name], "__version__") else None
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+2771 passed, 1 skipped, 7 warnings, 920 subtests passed in 5840.69s (1:37:20)

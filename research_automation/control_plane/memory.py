@@ -1021,8 +1021,15 @@ class LearningGate:
 class CommittedLearningLedgerReader:
     """Read Authority-verified Learning events into the closed P5 claim schema."""
 
-    def __init__(self, repository_root: str | Path) -> None:
+    def __init__(
+        self,
+        repository_root: str | Path,
+        authority_reader: object | None = None,
+    ) -> None:
         self._root = Path(repository_root).resolve()
+        # CR-010 F-10: optional production-owned authority reader injection
+        # (offline C0 fixtures bind task reports without unittest.mock).
+        self._authority_reader = authority_reader
 
     @staticmethod
     def _canonical_json_text(value: object, field_name: str) -> object:
@@ -1046,7 +1053,10 @@ class CommittedLearningLedgerReader:
     def _committed_packet_hashes(self) -> tuple[str, ...]:
         from .evidence_learning import LearningCommitService
 
-        ledger = LearningCommitService(repository_root=self._root).rebuild_ledger()
+        ledger = LearningCommitService(
+            repository_root=self._root,
+            authority_reader=self._authority_reader,
+        ).rebuild_ledger()
         if ledger.get("schema_version") != "control_plane.learning_ledger.v2":
             raise ValueError("committed Learning ledger schema is invalid")
         packet_hashes = ledger.get("packet_hashes")

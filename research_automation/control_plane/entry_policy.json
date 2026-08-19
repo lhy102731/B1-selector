@@ -52,7 +52,7 @@
       "declared_phase": null,
       "declared_side_effects": [],
       "disposition": "PRODUCTION_DAILY",
-      "entry_id": "external:scheduler:/A\u80a1\u9009\u80a1",
+      "entry_id": "external:scheduler:/A股选股",
       "external_metadata": {
         "acl_summary": "owner=BUILTIN\\Administrators;sddl=O:BAG:S-1-5-21-639824271-1593654341-2886392847-513D:AI(A;;FR;;;LA)(A;ID;0x1f019f;;;BA)(A;ID;0x1f019f;;;SY)(A;ID;FA;;;BA)",
         "action": "D:\\workspace\\a-share-quant-selector-main\\run_select.bat",
@@ -61,7 +61,7 @@
         "trigger": "MSFT_TaskDailyTrigger|start=2026-03-16T20:00:00|days_interval=1|enabled=true"
       },
       "kind": "external_scheduler",
-      "path": "/A\u80a1\u9009\u80a1",
+      "path": "/A股选股",
       "resource_roots": [],
       "source": "external_scheduler_inventory",
       "trust_state": "production_daily"
@@ -5584,6 +5584,23 @@
       "resource_roots": [],
       "source": "filesystem_inventory",
       "trust_state": "legacy_unaudited"
+    },
+    {
+      "actor_type": "legacy_runner",
+      "callable_name": "compose_final_eval_runtime",
+      "content_sha256": "7794b2b7ce8270a0bad9629ddb2e0a4febde0fadc10c4f0c3256198a2f9da37a",
+      "declared_phase": "P8",
+      "declared_side_effects": [
+        "OPEN_HOLDOUT"
+      ],
+      "disposition": "CONTROLLED_RESEARCH",
+      "entry_id": "callable:research_automation.control_plane.final_eval_composition:compose_final_eval_runtime",
+      "external_metadata": {},
+      "kind": "python_callable",
+      "path": "research_automation/control_plane/final_eval_composition.py",
+      "resource_roots": [],
+      "source": "required_import_seam",
+      "trust_state": "reviewed_controlled"
     }
   ],
   "quarantine_eligible_paths": [

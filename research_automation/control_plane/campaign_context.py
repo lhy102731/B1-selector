@@ -625,6 +625,7 @@ class OperationalCycleContextJournal:
         "_repository_root",
         "_router",
         "_policy_payload",
+        "_learning_authority_reader",
     )
 
     def __init__(
@@ -635,6 +636,8 @@ class OperationalCycleContextJournal:
         repository_root: str | Path,
         tokenizer_kind: str | None = None,
         tokenizer_name: str | None = None,
+        learning_authority_reader: object | None = None,
+        repository_root_identity: str | None = None,
     ) -> None:
         if not isinstance(journal, OperationalCampaignJournal) or not isinstance(
             lifecycle,
@@ -652,9 +655,21 @@ class OperationalCycleContextJournal:
         self._lifecycle = lifecycle
         self._repository_root = Path(repository_root).resolve()
         self._router = router
+        # CR-010 F-10: production-owned authority reader injection for the
+        # Learning projection preflight (offline C0 fixtures).
+        self._learning_authority_reader = learning_authority_reader
+        # CR-010 F-08: the repository-root identity bound into the context
+        # policy is an explicit injection seam.  Offline C0 fixtures pass a
+        # DETERMINISTIC identity so the policy payload never embeds the
+        # absolute fixture root; production callers keep the real path.
+        root_identity = (
+            repository_root_identity
+            if repository_root_identity is not None
+            else self._repository_root.as_posix().casefold()
+        )
         repository_root_sha256 = hashlib.sha256(
             b"control_plane.cycle_context_repository_root.v1\0"
-            + self._repository_root.as_posix().casefold().encode("utf-8")
+            + root_identity.encode("utf-8")
         ).hexdigest()
         self._policy_payload = {
             "campaign_id": journal._campaign_id,
@@ -706,7 +721,8 @@ class OperationalCycleContextJournal:
         self,
     ) -> tuple[dict[str, object], str]:
         projection_input = CommittedLearningLedgerReader(
-            self._repository_root
+            self._repository_root,
+            authority_reader=self._learning_authority_reader,
         ).read_projection_input()
         return _projection_input_snapshot(projection_input)
 

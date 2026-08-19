@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,8 +84,15 @@ def verify_result_evidence(
     claim_ref: str,
     claim_sha256: str,
     repository_root: str | Path,
+    expected_outcome: str | None = None,
 ) -> None:
-    """Fail closed unless every pre-staging invariant holds (CR010-R02)."""
+    """Fail closed unless every pre-staging invariant holds (CR010-R02).
+
+    ``expected_outcome`` (CR-010 F-01) is the outcome DERIVED from the real
+    worker exit code by the orchestrator; the committed claim must agree
+    with it.  A sink that publishes a different outcome (e.g. SUCCEEDED for
+    a failed worker) can never stage the result.
+    """
     if not binding_id or not isinstance(binding_id, str):
         raise FinalEvalEvidenceError("binding_id must be non-empty")
     if not ticket_id or not isinstance(ticket_id, str):
@@ -180,6 +188,72 @@ def verify_result_evidence(
     outcome = document.get("outcome")
     if outcome not in {"SUCCEEDED", "FAILED", "TIMEOUT", "CRASHED"}:
         raise FinalEvalEvidenceError("result claim outcome is not terminal")
+    if expected_outcome is not None:
+        if expected_outcome not in {"SUCCEEDED", "FAILED", "TIMEOUT", "CRASHED"}:
+            raise FinalEvalEvidenceError(
+                "expected_outcome must be a terminal outcome"
+            )
+        if outcome != expected_outcome:
+            raise FinalEvalEvidenceError(
+                "result claim outcome does not match the worker-derived "
+                f"outcome (claim={outcome} expected={expected_outcome})"
+            )
+
+    # CR-010 B-07: the RESULT OBJECT document is parsed and STRICTLY bound
+    # to the claim and the worker result -- path/hash checks alone are not
+    # enough.  Schema, binding/ticket identity, exit code and outcome must
+    # be byte-identical between object, claim and the derived worker
+    # result, so an object can never express a different conclusion than
+    # the claim or the Authority terminal.
+    try:
+        object_document = json.loads(object_blob.raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise FinalEvalEvidenceError(
+            "result object is not valid JSON"
+        ) from error
+    if not isinstance(object_document, dict):
+        raise FinalEvalEvidenceError("result object must be a JSON object")
+    if (
+        str(object_document.get("schema_version"))
+        != "control_plane.final_eval_worker_result.v1"
+    ):
+        raise FinalEvalEvidenceError("result object schema is unsupported")
+    if str(object_document.get("binding_id", "")) != binding_id:
+        raise FinalEvalEvidenceError(
+            "result object does not bind the expected binding_id"
+        )
+    if str(object_document.get("ticket_id", "")) != ticket_id:
+        raise FinalEvalEvidenceError(
+            "result object does not bind the expected ticket_id"
+        )
+    object_exit_code = object_document.get("exit_code")
+    if type(object_exit_code) is not int or not (
+        0 <= object_exit_code <= 255
+    ):
+        raise FinalEvalEvidenceError(
+            "result object exit code is invalid"
+        )
+    claim_exit_code = document.get("exit_code")
+    # CR-010 C0 (Phase B): the CLAIM's exit code is validated with the
+    # SAME exact-integer contract -- bool/float/negative/>255 can never
+    # pass, even when the object side is well-formed.
+    if type(claim_exit_code) is not int or not (
+        0 <= claim_exit_code <= 255
+    ):
+        raise FinalEvalEvidenceError("result claim exit code is invalid")
+    if claim_exit_code != object_exit_code:
+        raise FinalEvalEvidenceError(
+            "result object exit code differs from the claim"
+        )
+    object_outcome = str(object_document.get("outcome", ""))
+    if object_outcome != str(outcome):
+        raise FinalEvalEvidenceError(
+            "result object outcome differs from the claim"
+        )
+    if object_outcome != str(expected_outcome or outcome):
+        raise FinalEvalEvidenceError(
+            "result object outcome differs from the worker-derived outcome"
+        )
 
 
 class FinalEvalResultPublisher:
@@ -198,6 +272,7 @@ class FinalEvalResultPublisher:
         repository_root: str | Path,
         evidence_volume: str,
         git_identity: tuple[str, str] = _GIT_IDENTITY,
+        crash_hook: Callable[[str], None] | None = None,
     ) -> None:
         self._repository_root = Path(repository_root).resolve(strict=True)
         volume = str(evidence_volume).replace("\\", "/").strip("/")
@@ -211,6 +286,7 @@ class FinalEvalResultPublisher:
             )
         self._volume = volume
         self._git_identity = git_identity
+        self._crash_hook = crash_hook
 
     def _git(self, *args: str) -> str:
         result = subprocess.run(
@@ -226,21 +302,63 @@ class FinalEvalResultPublisher:
         return result.stdout
 
     def _write_exclusive(self, rel_ref: str, raw: bytes) -> str:
+        """CR-010 B-07: atomic create-only publication.
+
+        The bytes are staged in a UNIQUE same-volume temp file, flushed +
+        fsynced, then linked to the final path with ``os.link`` (atomic
+        create-only).  A hard crash mid-write leaves only an orphan temp --
+        never a partial file that could be mistaken for the final object;
+        the final path appears only with fully-fsynced bytes.
+        """
         path = self._repository_root / rel_ref
         path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = path.with_name(
+            f".tmp-{path.name}-{os.getpid()}-{secrets.token_hex(8)}"
+        )
+        fd = os.open(
+            temp_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o644,
+        )
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        try:
+            os.link(temp_path, path)
         except FileExistsError:
-            existing = path.read_bytes()
+            try:
+                existing = path.read_bytes()
+            except OSError as error:
+                raise FinalEvalEvidenceError(
+                    "create-only evidence is unreadable: " + rel_ref
+                ) from error
             if existing != raw:
                 raise FinalEvalEvidenceError(
                     "create-only evidence conflict: " + rel_ref
                 )
             return "IDEMPOTENT_EXISTING"
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # best-effort parent-directory durability barrier
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
         return "CREATED"
 
     def _commit_if_changed(self, refs: list[str]) -> None:
@@ -274,6 +392,7 @@ class FinalEvalResultPublisher:
             "ticket_id": ticket_id,
             "object_ref": object_ref,
             "object_sha256": object_sha256,
+            "exit_code": result_document.get("exit_code"),
             "outcome": outcome,
             # NOTE: no wall-clock field on purpose -- the claim bytes must be
             # deterministic so a crash-replay republish is byte-identical
@@ -284,7 +403,12 @@ class FinalEvalResultPublisher:
         claim_ref = f"{self._volume}/{_CLAIMS_DIR}/{ticket_id}.json"
 
         self._write_exclusive(object_ref, object_raw)
+        # CR-010 A3: the object publication finished -- a hard crash here
+        # must be reproducible by a fresh process (the object exists but
+        # the claim has not been published yet)
+        self._maybe_crash("CRASH_AFTER.OBJECT_WRITTEN")
         self._write_exclusive(claim_ref, claim_raw)
+        self._maybe_crash("CRASH_AFTER.CLAIM_WRITTEN")
         self._commit_if_changed([object_ref, claim_ref])
         return FinalEvalEvidenceRefs(
             object_ref=object_ref,
@@ -292,6 +416,10 @@ class FinalEvalResultPublisher:
             claim_ref=claim_ref,
             claim_sha256=claim_sha256,
         )
+
+    def _maybe_crash(self, boundary: str) -> None:
+        if self._crash_hook is not None:
+            self._crash_hook(boundary)
 
 
 __all__ = [

@@ -561,6 +561,8 @@ def _authority_order_key(completed_at: object, ticket_id: str) -> str:
 def _authority_projection(
     root: Path,
     task_report: Mapping[str, object],
+    *,
+    authority_reader: object | None = None,
 ):
     try:
         frozen_report = _json_object(
@@ -571,8 +573,16 @@ def _authority_projection(
         raise LearningCommitAuthorizationError(
             "terminal P4 TaskReport is not a stable canonical mapping"
         ) from error
+    # CR-010 F-10: the authority reader is an explicit dependency-injection
+    # seam (production-owned fixture readers can bind offline task reports
+    # WITHOUT unittest.mock); the default remains the real AuthorityReader.
+    reader = (
+        authority_reader
+        if authority_reader is not None
+        else AuthorityReader()
+    )
     try:
-        binding = AuthorityReader().verify_task_report_binding(frozen_report)
+        binding = reader.verify_task_report_binding(frozen_report)
     except (TaskReportAuthorityError, OSError, TypeError, ValueError) as error:
         raise LearningCommitAuthorizationError(
             "terminal P4 TaskReport authority is unavailable"
@@ -621,8 +631,25 @@ def _authority_projection(
     if hashlib.sha256(baseline_raw).hexdigest() != baseline_sha256:
         raise LearningCommitAuthorizationError("repository baseline changed")
     baseline = _json_object(baseline_raw, "repository baseline")
-    if baseline.get("repository_root") != str(root):
-        raise LearningCommitAuthorizationError("repository root binding mismatch")
+    # CR-010 F-08: the baseline root binding is verified by PATH RESOLUTION,
+    # so a ROOT-RELATIVE spelling (".") is accepted alongside the absolute
+    # form -- the C0 fixture baselines no longer embed the absolute fixture
+    # root, which made cross-root replay digests differ.
+    baseline_root = baseline.get("repository_root")
+    if not isinstance(baseline_root, str) or not baseline_root:
+        raise LearningCommitAuthorizationError(
+            "repository baseline root is invalid"
+        )
+    try:
+        baseline_resolved = (root / baseline_root).resolve()
+    except (OSError, ValueError) as error:
+        raise LearningCommitAuthorizationError(
+            "repository baseline root is unavailable"
+        ) from error
+    if baseline_resolved != root.resolve():
+        raise LearningCommitAuthorizationError(
+            "repository root binding mismatch"
+        )
 
     raw = {name: _bound_file(root, refs[name]) for name in sorted(refs)}
     claim = _require_claim(_json_object(raw["approved-claim"], "approved claim"))
@@ -681,7 +708,12 @@ def _authority_projection(
     return binding, evidence, claim, frozen_report, artifact
 
 
-def _validated_learning_packet(root: Path, raw: bytes):
+def _validated_learning_packet(
+    root: Path,
+    raw: bytes,
+    *,
+    authority_reader: object | None = None,
+):
     packet = _json_object(raw, "learning packet")
     report = packet.get("authority_task_report")
     if not isinstance(report, Mapping):
@@ -690,6 +722,7 @@ def _validated_learning_packet(root: Path, raw: bytes):
         authority, evidence, claim, frozen_report, _ = _authority_projection(
             root,
             report,
+            authority_reader=authority_reader,
         )
     except (LearningCommitAuthorizationError, ValueError) as error:
         raise ValueError("learning packet Authority anchor is invalid") from error
@@ -753,10 +786,18 @@ def _validate_legacy_learning_packet(raw: bytes) -> None:
 class LearningCommitService:
     """Project one Authority-valid terminal P4 decision into Learning."""
 
-    __slots__ = ("_root",)
+    __slots__ = ("_root", "_authority_reader")
 
-    def __init__(self, *, repository_root: str | Path):
+    def __init__(
+        self,
+        *,
+        repository_root: str | Path,
+        authority_reader: object | None = None,
+    ):
         object.__setattr__(self, "_root", Path(repository_root).resolve())
+        # CR-010 F-10: optional production-owned authority reader injection
+        # (offline C0 fixtures bind task reports without unittest.mock).
+        object.__setattr__(self, "_authority_reader", authority_reader)
 
     def __setattr__(self, _name: str, _value: object) -> None:
         raise AttributeError("LearningCommitService is immutable")
@@ -790,6 +831,7 @@ class LearningCommitService:
         binding, evidence, claim, frozen_report, artifact = _authority_projection(
             self._root,
             task_report,
+            authority_reader=self._authority_reader,
         )
         if expected_artifact is not None and dict(expected_artifact) != artifact:
             raise ValueError("runner artifact differs from Authority-bound artifact")
@@ -919,6 +961,7 @@ class LearningCommitService:
                         _validated_learning_packet(
                             self._root,
                             committed_raw,
+                            authority_reader=self._authority_reader,
                         )
                     )
                     if committed_authority.ticket_id == binding.ticket_id:
@@ -1043,6 +1086,7 @@ class LearningCommitService:
                     authority, authority_order_key = _validated_learning_packet(
                         self._root,
                         raw,
+                        authority_reader=self._authority_reader,
                     )
                     if actor_id != authority.actor_id:
                         raise ValueError("learning commit Authority anchor mismatch")

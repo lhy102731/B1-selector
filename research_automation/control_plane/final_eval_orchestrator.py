@@ -71,6 +71,16 @@ def _maybe_crash(inputs: OrchestrationInputs, state: str) -> None:
         inputs.crash_hook(state)
 
 
+# CR-010 B-01: the exit-code validation and outcome mapping are the SHARED
+# saga functions -- the orchestrator, the runtime and every consumer derive
+# the same immutable WorkerResult from the same worker execution.  bool is
+# a subclass of int, so the strict type check also rejects booleans.
+from .final_eval_saga import (
+    FinalEvalSagaOutcomeRejected,
+    derive_worker_result,
+)
+
+
 def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
     """Drive one binding to RESULT_STAGED (or CLOSED) with durable CAS steps.
 
@@ -153,14 +163,16 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
     # caller-supplied; the sink publishes the content-addressed object +
     # per-ticket fixed claim and returns the four refs).
     if snapshot.saga_state == "EVALUATING":
-        exit_code = inputs.worker_launcher()
+        try:
+            worker_result = derive_worker_result(inputs.worker_launcher())
+        except FinalEvalSagaOutcomeRejected as error:
+            raise FinalEvalOrchestrationError(str(error)) from error
         result_document = {
             "schema_version": "control_plane.final_eval_worker_result.v1",
             "binding_id": binding_id,
-            "exit_code": exit_code,
-            "outcome": (
-                "SUCCEEDED" if exit_code == 0 else "FAILED"
-            ),
+            "ticket_id": binding_id,
+            "exit_code": worker_result.exit_code,
+            "outcome": worker_result.outcome,
         }
         sink_result = inputs.evidence_sink(result_document)
         if not isinstance(sink_result, Mapping) or not all(
@@ -202,6 +214,7 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
                 claim_ref=str(sink_result["claim_ref"]),
                 claim_sha256=str(sink_result["claim_sha256"]),
                 repository_root=repository_root,
+                expected_outcome=worker_result.outcome,
             )
         except FinalEvalEvidenceError as error:
             raise FinalEvalOrchestrationError(str(error)) from error
@@ -213,6 +226,7 @@ def orchestrate(inputs: OrchestrationInputs) -> FinalEvalBindingSnapshot:
             result_claim_ref=str(sink_result["claim_ref"]),
             result_claim_sha256=str(sink_result["claim_sha256"]),
             repository_root=repository_root,
+            expected_outcome=worker_result.outcome,
         )
         _maybe_crash(inputs, "CRASH_AFTER.RESULT_STAGED")
 

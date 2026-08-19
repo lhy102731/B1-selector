@@ -276,7 +276,10 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     manifest_ref="manifest.json",
                     mode=ac.ActivationMode.V2_NORMAL,
                 )
-            self.assertEqual(_authority_user_version(root / "authority.sqlite3"), 3)
+            self.assertEqual(
+                _authority_user_version(root / "authority.sqlite3"),
+                stores_module._AUTHORITY_SCHEMA_VERSION,
+            )
             self.assertEqual(_pending_outbox(root / "authority.sqlite3"), 0)
             # malformed manifest blob in the same repo must also fail closed
             (root / "repo" / "manifest.json").write_text("{bad json")
@@ -433,7 +436,8 @@ class ActivationCoordinatorTests(unittest.TestCase):
                     mode=ac.ActivationMode.V2_NORMAL,
                 )
             self.assertEqual(
-                _authority_user_version(root / "authority.sqlite3"), 3
+                _authority_user_version(root / "authority.sqlite3"),
+                stores_module._AUTHORITY_SCHEMA_VERSION,
             )
             self.assertEqual(_pending_outbox(root / "authority.sqlite3"), 0)
             self.assertEqual(
@@ -799,7 +803,8 @@ class ActivationCoordinatorTests(unittest.TestCase):
             )
             self.assertTrue(report.succeeded)
             self.assertEqual(
-                _authority_user_version(root / "authority.sqlite3"), 3
+                _authority_user_version(root / "authority.sqlite3"),
+                stores_module._AUTHORITY_SCHEMA_VERSION,
             )
             connection = sqlite3.connect(root / "authority.sqlite3")
             try:

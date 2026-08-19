@@ -1449,6 +1449,119 @@ class SpawnedProviderExecutor:
             )
         return result
 
+    def execute_with_guard_receipt(
+        self,
+        *,
+        request: object,
+        max_output_bytes: int,
+        deadline_seconds: float,
+        counter_path: str | None = None,
+    ) -> dict[str, object]:
+        """C0 OFFLINE contract: launch the provider child through the fixed
+        Guard bootstrap (CR-010 A4).
+
+        REQUIRES the offline ``NetworkGuard`` to be installed by the
+        controller (an unguarded C0 raw multiprocessing provider child is
+        rejected).  The child installs the Guard and runs the deny probe
+        BEFORE any provider code executes, returns a guard receipt with
+        the parent-observable process identity and run-local telemetry,
+        then invokes the provider exactly once.
+        """
+        from pathlib import Path as _Path
+
+        from research_automation.control_plane.rollout_chaos_worker import (
+            NetworkGuard,
+        )
+
+        if not NetworkGuard._installed:
+            raise _ProviderExecutorConfigurationError(
+                "guarded C0 provider child requires the offline Guard "
+                "contract: NetworkGuard must be installed by the controller"
+            )
+        try:
+            import json as _json
+
+            request_bytes = _json.dumps(
+                request, ensure_ascii=True, sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise _ProviderExecutorConfigurationError(
+                "guarded provider request must be canonical JSON"
+            ) from error
+        context = multiprocessing.get_context("spawn")
+        response_receive, response_send = context.Pipe(duplex=False)
+        receipt_receive, receipt_send = context.Pipe(duplex=False)
+        from .campaign_provider_guard import guarded_provider_worker
+
+        worker = context.Process(
+            target=guarded_provider_worker,
+            args=(
+                # re-pickle NOW so caller-visible provider state (e.g. the
+                # C0 counter path) is the live current state, not the
+                # frozen construction snapshot
+                _bounded_provider_pickle(self._provider),
+                request_bytes,
+                response_send,
+                receipt_send,
+            ),
+        )
+        worker.start()
+        receipt: dict[str, object] = {}
+        try:
+            receipt = receipt_receive.recv()
+        except EOFError:
+            raise _ProviderExecutorProtocolError(  # noqa: B904
+                "guarded provider child exited before the guard receipt"
+            )
+        frame = response_receive.recv_bytes(
+            maxlength=_MAX_PROVIDER_FRAME_BYTES
+        )
+        worker.join(timeout=10.0)
+        if worker.is_alive():
+            _terminate_and_reap_worker(worker, join_timeout=1.0)
+        try:
+            decoded = json.loads(frame.decode("ascii", errors="strict"))
+        except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise _ProviderExecutorProtocolError(
+                "guarded provider worker protocol failed"
+            ) from error
+        if decoded.get("tag") != "response":
+            raise _ProviderExecutorProviderError(
+                "guarded provider invocation failed"
+            )
+        invocations = 1
+        if counter_path is not None:
+            try:
+                invocations = int(
+                    _Path(counter_path).read_text(encoding="utf-8").strip()
+                    or "0"
+                )
+            except (OSError, ValueError) as error:
+                merged_counter_error = str(error)
+                merged_counter_error = merged_counter_error
+                invocations = 0 if isinstance(error, OSError) else invocations
+        merged = dict(receipt)
+        merged["provider_invoked"] = decoded.get("tag") == "response"
+        merged["response_tag"] = str(decoded.get("tag"))
+        merged["invocations"] = invocations
+        if counter_path is not None:
+            try:
+                merged["counter_bytes"] = _Path(counter_path).read_bytes()
+            except OSError as error:
+                merged["counter_bytes"] = None
+                merged.setdefault(
+                    "counter_error", "read:" + str(error)
+                )
+        if "counter_error" in merged:
+            import sys as _sys
+
+            print(
+                "GUARD_EXEC counter read failed: " + str(merged["counter_error"]),
+                file=_sys.stderr,
+            )
+        return merged
+
 
 class ModelInvocation:
     """Invoke one provider attempt and account for it before parsing output.

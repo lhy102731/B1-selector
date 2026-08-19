@@ -11,12 +11,13 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -239,11 +240,10 @@ def stage1(cfg: dict[str, object]) -> str:
 
     capability = decrypt_capability()
     try:
-        with patch.multiple(
-            stores_module,
-            _AUTHORITY_STORE_PATH=ROOT
+        with stores_module.store_path_override(
+            authority=ROOT
             / "research_state/control_plane/authority/authority.sqlite3",
-            _OPERATIONAL_STORE_PATH=ROOT
+            operational=ROOT
             / "research_state/control_plane/operational/operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()
@@ -660,11 +660,10 @@ def stage3b(cfg: dict[str, object]) -> None:
 
     capability = decrypt_capability()
     try:
-        with patch.multiple(
-            stores_module,
-            _AUTHORITY_STORE_PATH=ROOT
+        with stores_module.store_path_override(
+            authority=ROOT
             / "research_state/control_plane/authority/authority.sqlite3",
-            _OPERATIONAL_STORE_PATH=ROOT
+            operational=ROOT
             / "research_state/control_plane/operational/operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()
@@ -949,8 +948,10 @@ def stage3c(cfg: dict[str, object]) -> None:
     baseline_sha256 = str(baseline_doc.get("baseline_payload_sha256", "1" * 64))
 
     # no-side-effect baseline: CR010-R07 full-surface snapshot (stores,
-    # trees, protected files, network counter, git status) -- every change
-    # later must be confined to the attempt evidence dir.
+    # trees, protected files, network counter, git status, environment) --
+    # every change later must be confined to the attempt evidence dir.
+    # CR-010 F-12: the deterministic fixture root's stores (the paths the
+    # C0 workers actually read/write) are part of the snapshot contract.
     from research_automation.control_plane.c0_no_side_effect import (
         snapshot_surface,
     )
@@ -958,11 +959,62 @@ def stage3c(cfg: dict[str, object]) -> None:
         NetworkGuard as _ChaosNetworkGuard,
     )
 
+    deterministic_root = rollout_chaos._deterministic_root(
+        seed, cycles
+    ).resolve()
+    # CR-010 C0: the surface covers BOTH deterministic fixture roots (the
+    # first campaign root and the second-root replay root) and their
+    # provider call counters.
+    import tempfile as _stage3c_tempfile
+
+    second_deterministic_root = (
+        Path(_stage3c_tempfile.gettempdir()).resolve()
+        / f"v342-c0-deterministic-{seed}-{cycles}-replay-2"
+    )
+    fixture_store_paths = tuple(
+        str(root / name)
+        for root in (deterministic_root, second_deterministic_root)
+        for name in (
+            "authority.sqlite3",
+            "operational.sqlite3",
+        )
+    )
+    # CR-010 C0 / F-05: the provider call-counter files live INSIDE the
+    # fixture roots (worker protocol) so the no-side-effect snapshot covers
+    # them -- for BOTH the first campaign root and the second-root replay
+    # root (a counter change in EITHER root must fail the surface check).
+    fixture_provider_counter_paths = tuple(
+        str(root / f".c0-provider-counter-c0-cycle-{n:03d}.txt")
+        for root in (deterministic_root, second_deterministic_root)
+        for n in range(1, cycles + 1)
+    )
+    provider_registry = {
+        "c0-provider": rollout_chaos._provider_registry_fingerprint(),
+    }
+    authority_db = (
+        ROOT / "research_state/control_plane/authority/authority.sqlite3"
+    )
+
+    def _authority_db_copy(label: str) -> Path:
+        """Disposable snapshot copy of the Authority DB at a window start
+        (the row-level delta verification needs the BEFORE state)."""
+        target = (
+            Path(_stage3c_tempfile.gettempdir())
+            / f"stage3c-{label}-{attempt}-{os.getpid()}.sqlite3"
+        )
+        shutil.copy2(authority_db, target)
+        return target
+
     surface_before = snapshot_surface(
         ROOT,
         network_attempts=_ChaosNetworkGuard.attempts,
+        extra_store_files=(
+            fixture_store_paths + fixture_provider_counter_paths
+        ),
+        provider_registry=provider_registry,
+        provider_call_counters=fixture_provider_counter_paths,
     )
-    before_status = git("status", "--porcelain")
+    authority_before_ticket = _authority_db_copy("authority-before-ticket")
 
     # 1) immutable official run spec (committed BEFORE the ticket is issued,
     #    so task_spec_ref/sha256 point at a committed blob, stage1 pattern).
@@ -994,11 +1046,10 @@ def stage3c(cfg: dict[str, object]) -> None:
 
     capability = decrypt_capability()
     try:
-        with patch.multiple(
-            stores_module,
-            _AUTHORITY_STORE_PATH=ROOT
+        with stores_module.store_path_override(
+            authority=ROOT
             / "research_state/control_plane/authority/authority.sqlite3",
-            _OPERATIONAL_STORE_PATH=ROOT
+            operational=ROOT
             / "research_state/control_plane/operational/operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()
@@ -1092,11 +1143,38 @@ def stage3c(cfg: dict[str, object]) -> None:
             )
             lease = authority._begin_task(ticket)
             print("ROLLOUT_TICKET_BEGUN", ticket.ticket_id[:16])
+            # CR-010 C0 window 2: after the ticket began -- the run-spec
+            # commit and the enumerated ticket/lease/outbox rows are the
+            # ONLY allowed deltas from surface_before.
+            surface_after_ticket_begin = snapshot_surface(
+                ROOT,
+                network_attempts=_ChaosNetworkGuard.attempts,
+                extra_store_files=(
+                    fixture_store_paths + fixture_provider_counter_paths
+                ),
+                provider_registry=provider_registry,
+                provider_call_counters=fixture_provider_counter_paths,
+            )
 
             # 3) official 24-cycle run (fresh deterministic root, no cache)
+            surface_before_simulation = snapshot_surface(
+                ROOT,
+                network_attempts=_ChaosNetworkGuard.attempts,
+                extra_store_files=(
+                    fixture_store_paths + fixture_provider_counter_paths
+                ),
+                provider_registry=provider_registry,
+                provider_call_counters=fixture_provider_counter_paths,
+            )
+            authority_before_simulation = _authority_db_copy(
+                "authority-before-simulation"
+            )
             started = datetime.now(timezone.utc)
             outcome = rollout_chaos.run_c0_simulation(
-                seed=seed, cycles=cycles, attempt_id=attempt
+                seed=seed,
+                cycles=cycles,
+                attempt_id=attempt,
+                fixture_ref=rollout_chaos._FIXTURE_REF,
             )
             completed = datetime.now(timezone.utc)
             payload = outcome.to_payload()
@@ -1166,38 +1244,130 @@ def stage3c(cfg: dict[str, object]) -> None:
             if not (ROOT / object_rel).exists():
                 raise RuntimeError("published report object is missing")
 
-            # 5) second-root replay: fresh re-execution, digest equality
-            main2, _root2 = rollout_chaos._run_main_campaign(seed, cycles)
-            scenario_equal = payload["scenario_log"] == list(
-                main2["scenario_log"]
+            # 5) second-root replay (CR-010 B-04): a FRESH PROCESS
+            #    re-executes the same deterministic campaign against a
+            #    DIFFERENT root and returns its OWN independently collected
+            #    digest/signature/scenario-log digest/cycles/status/root/
+            #    PID/start time/attempt/fixture ref.  The receipt compares
+            #    TWO INDEPENDENTLY COLLECTED value sets -- never a value vs
+            #    itself, never a copy of the first digest, never a
+            #    hardcoded equality.
+            worker_verify = payload.get("worker_verify") or {}
+            # CR-010 C0: every first observation must be present -- the
+            # supervisor NEVER recomputes them from the mutable payload.
+            for required_first in (
+                "first_signature",
+                "first_scenario_log_digest",
+                "first_pid",
+                "first_started_at_ns",
+            ):
+                if not worker_verify.get(required_first):
+                    raise RuntimeError(
+                        "C0 worker_verify is missing "
+                        + required_first
+                        + " -- refusing to recompute it from the "
+                        "mutable payload"
+                    )
+            first_signature = str(worker_verify["first_signature"])
+            first_digest = str(payload.get("final_state_digest", ""))
+            first_log_digest = str(
+                worker_verify["first_scenario_log_digest"]
             )
-            digest_equal = (
-                payload["final_state_digest"]
-                == str(main2["final_state_digest"])
+            first_pid = int(worker_verify["first_pid"])
+            first_started_at_ns = int(
+                worker_verify["first_started_at_ns"]
             )
-            cycles_equal = payload["cycles_completed"] == int(
-                main2["cycles_completed"]
+            # CR-010 F-05 (functional closure): the second-root replay was
+            # ALREADY executed by a FRESH PROCESS inside run_c0_simulation
+            # (its values are independently collected in worker_verify and
+            # second_root_replay is MATCHED).  The driver NEVER re-runs the
+            # replay -- an existing deterministic replay root is a
+            # controlled failure, never a silently rebuilt one.
+            for required_second in (
+                "second_root_replay",
+                "second_signature",
+                "second_scenario_log_digest",
+                "second_final_state_digest",
+                "second_pid",
+                "second_started_at_ns",
+                "second_root_identity",
+                "second_cycles_completed",
+                "second_campaign_status",
+            ):
+                if not worker_verify.get(required_second):
+                    raise RuntimeError(
+                        "C0 worker_verify is missing the second-root "
+                        + required_second
+                    )
+            if str(worker_verify["second_root_replay"]) != "MATCHED":
+                raise RuntimeError(
+                    "C0 second-root fresh-process replay did not MATCH"
+                )
+            second_digest = str(worker_verify["second_final_state_digest"])
+            second_signature = str(worker_verify["second_signature"])
+            second_log_digest = str(
+                worker_verify["second_scenario_log_digest"]
             )
-            status_equal = payload["campaign_status"] == str(
-                main2["campaign_status"]
+            second_cycles = int(worker_verify["second_cycles_completed"])
+            second_status = str(worker_verify["second_campaign_status"])
+            second_root_identity = str(worker_verify["second_root_identity"])
+            second_pid = int(worker_verify["second_pid"])
+            second_started_at_ns = int(worker_verify["second_started_at_ns"])
+            first_cycles = int(payload.get("cycles_completed", 0))
+            first_status = str(payload.get("campaign_status", ""))
+            digest_equal = first_digest == second_digest
+            signature_equal = first_signature == second_signature
+            log_digest_equal = first_log_digest == second_log_digest
+            cycles_equal = first_cycles == second_cycles
+            status_equal = first_status == second_status
+            distinct_roots = (
+                str(rollout_chaos._deterministic_root(seed, cycles).resolve())
+                != str(second_root_identity)
+            )
+            distinct_processes = (
+                (first_pid, first_started_at_ns)
+                != (second_pid, second_started_at_ns)
+                and first_pid > 0
+                and second_pid > 0
+                and first_started_at_ns > 0
+                and second_started_at_ns > 0
             )
             replay_receipt = {
                 "schema": "control_plane.c0_second_root_replay.v1",
                 "attempt_id": attempt,
+                "fixture_ref": rollout_chaos._FIXTURE_REF,
                 "seed": seed,
                 "cycles": cycles,
-                "first_final_state_digest": payload["final_state_digest"],
-                "second_final_state_digest": str(main2["final_state_digest"]),
-                "first_cycles_completed": payload["cycles_completed"],
-                "second_cycles_completed": int(main2["cycles_completed"]),
-                "first_campaign_status": payload["campaign_status"],
-                "second_campaign_status": str(main2["campaign_status"]),
-                "scenario_log_equal": scenario_equal,
+                "first_final_state_digest": first_digest,
+                "second_final_state_digest": second_digest,
+                "first_semantic_signature": first_signature,
+                "second_semantic_signature": second_signature,
+                "first_scenario_log_digest": first_log_digest,
+                "second_scenario_log_digest": second_log_digest,
+                "first_pid": first_pid,
+                "second_pid": second_pid,
+                "first_started_at_ns": first_started_at_ns,
+                "second_started_at_ns": second_started_at_ns,
+                "first_cycles_completed": first_cycles,
+                "second_cycles_completed": second_cycles,
+                "first_campaign_status": first_status,
+                "second_campaign_status": second_status,
+                "second_root_identity": second_root_identity,
+                "digest_equal": digest_equal,
+                "semantic_signature_equal": signature_equal,
+                "scenario_log_equal": log_digest_equal,
+                "cycles_equal": cycles_equal,
+                "status_equal": status_equal,
+                "distinct_roots": distinct_roots,
+                "distinct_processes": distinct_processes,
                 "pass": (
                     digest_equal
+                    and signature_equal
+                    and log_digest_equal
                     and cycles_equal
                     and status_equal
-                    and scenario_equal
+                    and distinct_roots
+                    and distinct_processes
                 ),
             }
             if not replay_receipt["pass"]:
@@ -1208,15 +1378,29 @@ def stage3c(cfg: dict[str, object]) -> None:
             (ROOT / replay_ref).write_text(
                 canonical_json(replay_receipt), encoding="utf-8", newline="\n"
             )
+            # CR-010 C0 window 3 end: after simulation AND second-root
+            # observation, before the immutable receipt -- the intended
+            # evidence deltas are derived from THIS pre-publication status.
+            surface_after_simulation = snapshot_surface(
+                ROOT,
+                network_attempts=_ChaosNetworkGuard.attempts,
+                extra_store_files=(
+                    fixture_store_paths + fixture_provider_counter_paths
+                ),
+                provider_registry=provider_registry,
+                provider_call_counters=fixture_provider_counter_paths,
+            )
+            authority_before_final = _authority_db_copy(
+                "authority-before-final"
+            )
+            pre_publication_status = git("status", "--porcelain")
 
-            # 6) CR010-R07 no-side-effect receipt: the FULL surface snapshot
-            #    (Authority/Operational stores, data/knowledge/config/
-            #    strategy/research_automation/tools trees, protected user
-            #    files, network probe counter, git status) must be
-            #    byte-identical except the intended evidence deltas.
+            # 6) CR010-R07 no-side-effect receipt: the FOUR-window surface
+            #    contract (before ticket / after ticket begin / before and
+            #    after simulation), with exact Authority ROW verification
+            #    and HEAD/tree OIDs recorded at every commit boundary.
             from research_automation.control_plane.c0_no_side_effect import (
-                build_no_side_effect_receipt,
-                snapshot_surface,
+                build_stage3c_surface_receipt,
             )
 
             import tempfile as _tempfile
@@ -1224,22 +1408,33 @@ def stage3c(cfg: dict[str, object]) -> None:
             temp_root = Path(_tempfile.gettempdir()).resolve()
             det_root = rollout_chaos._deterministic_root(seed, cycles).resolve()
             evidence_prefix = f"{cfg['dir']}/{attempt}/evidence/"
-            intended_deltas = tuple(
-                line
-                for line in after_status.splitlines()
-                if line.lstrip("?AMDRCU ").startswith(evidence_prefix)
+            final_check_ref = (
+                f"{cfg['dir']}/{attempt}/evidence/"
+                "c0_final_surface_check.json"
             )
-            no_side_effect = build_no_side_effect_receipt(
+            no_side_effect = build_stage3c_surface_receipt(
                 ROOT,
-                surface_before,
-                snapshot_surface(
-                    ROOT,
-                    network_attempts=_ChaosNetworkGuard.attempts,
+                surface_before_ticket=surface_before,
+                surface_after_ticket_begin=surface_after_ticket_begin,
+                surface_before_simulation=surface_before_simulation,
+                surface_after_simulation=surface_after_simulation,
+                authority_db=authority_db,
+                authority_db_before_ticket=authority_before_ticket,
+                authority_db_before_simulation=authority_before_simulation,
+                ticket_id=ticket.ticket_id,
+                evidence_prefix=evidence_prefix,
+                store_creation_allowed=(
+                    fixture_store_paths + fixture_provider_counter_paths
                 ),
-                allowed_git_deltas=intended_deltas,
+                final_check_ref=final_check_ref,
+                # CR-010 F-05: the run-spec evidence commit is the ONLY
+                # allowed commit in window 1 -- its diff must be confined
+                # to this path and its OIDs must match the recorded values
+                evidence_commit_paths=(run_spec_ref,),
             )
             no_side_effect["attempt_id"] = attempt
             no_side_effect["deterministic_root"] = str(det_root)
+            no_side_effect["second_root_identity"] = second_root_identity
             no_side_effect["deterministic_root_under_tempdir"] = (
                 det_root.is_relative_to(temp_root)
             )
@@ -1454,6 +1649,53 @@ def stage3c(cfg: dict[str, object]) -> None:
     git("commit", "-q", "-m",
         f"audit: {attempt} official 24-cycle evidence chain (CR-010, add-only)")
     print("CHAIN_COMMITTED", git("rev-parse", "HEAD")[:12])
+
+    # 11) CR-010 C0 final surface check: the snapshot is taken AFTER every
+    #     other artifact write (including the internal evidence commit);
+    #     c0_final_surface_check.json is the ONE self-excluded final-check
+    #     path, written exactly once and never back-filled into the
+    #     immutable receipt.
+    from research_automation.control_plane.c0_no_side_effect import (
+        build_c0_final_surface_check,
+        snapshot_surface as _final_snapshot_surface,
+    )
+
+    git_head_after = git("rev-parse", "HEAD")
+    git_tree_after = git("rev-parse", "HEAD^{tree}")
+    surface_final = _final_snapshot_surface(
+        ROOT,
+        network_attempts=_ChaosNetworkGuard.attempts,
+        extra_store_files=(
+            fixture_store_paths + fixture_provider_counter_paths
+        ),
+        provider_registry=provider_registry,
+        provider_call_counters=fixture_provider_counter_paths,
+    )
+    final_check = build_c0_final_surface_check(
+        ROOT,
+        surface_final=surface_final,
+        surface_reference=surface_after_simulation,
+        authority_db=authority_db,
+        authority_db_before_final=authority_before_final,
+        ticket_id=ticket.ticket_id,
+        evidence_prefix=evidence_prefix,
+        pre_publication_status=tuple(pre_publication_status.splitlines()),
+        final_check_ref=final_check_ref,
+        git_head_after=git_head_after,
+        git_tree_after=git_tree_after,
+        store_creation_allowed=(
+            fixture_store_paths + fixture_provider_counter_paths
+        ),
+    )
+    (ROOT / final_check_ref).write_text(
+        canonical_json(final_check), encoding="utf-8", newline="\n"
+    )
+    if not final_check["verified"]:
+        raise RuntimeError(
+            "C0 final surface check failed: "
+            + "; ".join(final_check["failures"])
+        )
+    print("FINAL_SURFACE_CHECK_VERIFIED", git_head_after[:12])
 
 
 def stage4(cfg: dict[str, object]) -> None:
@@ -2179,11 +2421,10 @@ def stage4(cfg: dict[str, object]) -> None:
     # close
     capability = decrypt_capability()
     try:
-        with patch.multiple(
-            stores_module,
-            _AUTHORITY_STORE_PATH=ROOT
+        with stores_module.store_path_override(
+            authority=ROOT
             / "research_state/control_plane/authority/authority.sqlite3",
-            _OPERATIONAL_STORE_PATH=ROOT
+            operational=ROOT
             / "research_state/control_plane/operational/operational.sqlite3",
         ):
             stores_module._expected_schema_sha256.cache_clear()

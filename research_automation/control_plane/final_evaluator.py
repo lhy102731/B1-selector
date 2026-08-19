@@ -44,6 +44,7 @@ from research_automation.control_plane.contracts import (
 from research_automation.control_plane.final_eval_saga import (
     FinalEvalSagaError,
     derive_outcome,
+    derive_worker_result,
 )
 from research_automation.foundations.protocols import ExecutionSpec
 
@@ -432,12 +433,20 @@ class HoldoutStore:
         nonce: str,
         request_sha256: str,
         outcome: str,
+        durable_ticket_id: str | None = None,
+        durable_request_sha256: str | None = None,
+        durable_nonce_fingerprint: str | None = None,
     ) -> HoldoutConsumed:
         """Atomically consume one holdout nonce.
 
         Returns a ``HoldoutConsumed`` receipt proving the nonce was spent.
         Raises ``HoldoutAlreadyConsumedError`` if the nonce was already
         consumed.
+
+        CR-010 B-03: the optional DURABLE identity binds this consume to
+        the durable P8 FinalEval ticket/request digest/nonce fingerprint --
+        the holdout consume record and the Authority binding share one
+        lineage.
         """
         raise NotImplementedError("HoldoutStore is an injectable contract")
 
@@ -455,6 +464,7 @@ class InMemoryHoldoutStore(HoldoutStore):
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._consumed: dict[str, HoldoutConsumed] = {}
+        self._consumed_durable: dict[str, dict[str, str]] = {}
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def consume(
@@ -463,6 +473,9 @@ class InMemoryHoldoutStore(HoldoutStore):
         nonce: str,
         request_sha256: str,
         outcome: str,
+        durable_ticket_id: str | None = None,
+        durable_request_sha256: str | None = None,
+        durable_nonce_fingerprint: str | None = None,
     ) -> HoldoutConsumed:
         if nonce in self._consumed:
             existing = self._consumed[nonce]
@@ -470,6 +483,23 @@ class InMemoryHoldoutStore(HoldoutStore):
                 f"Holdout nonce {nonce} was already permanently consumed "
                 f"with outcome {existing.outcome}"
             )
+        if durable_ticket_id is not None or durable_request_sha256 is not None:
+            # CR-010 B-03: the consume record carries the durable P8
+            # ticket/request identity (all-or-nothing).
+            if not (
+                durable_ticket_id
+                and durable_request_sha256
+                and durable_nonce_fingerprint
+            ):
+                raise ValueError(
+                    "durable ticket/request/fingerprint must be provided "
+                    "together"
+                )
+            self._consumed_durable[nonce] = {
+                "durable_ticket_id": durable_ticket_id,
+                "durable_request_sha256": durable_request_sha256,
+                "durable_nonce_fingerprint": durable_nonce_fingerprint,
+            }
         now = self._clock()
         if not isinstance(now, datetime) or now.tzinfo is None:
             raise FinalEvalRequestError("store clock must return a timezone-aware datetime")
@@ -505,7 +535,15 @@ class AuthorityBroker:
             raise TypeError("store must be a HoldoutStore")
         self._store = store
 
-    def consume(self, request: FinalEvalRequest, *, outcome: str) -> HoldoutConsumed:
+    def consume(
+        self,
+        request: FinalEvalRequest,
+        *,
+        outcome: str,
+        durable_ticket_id: str | None = None,
+        durable_request_sha256: str | None = None,
+        durable_nonce_fingerprint: str | None = None,
+    ) -> HoldoutConsumed:
         """Consume the holdout nonce and return a ``HoldoutConsumed`` receipt.
 
         The nonce is consumed atomically in the store *before* this method
@@ -514,6 +552,10 @@ class AuthorityBroker:
 
         Raises ``HoldoutAlreadyConsumedError`` when the nonce was already
         consumed (nonce replay or crash-after-consume).
+
+        CR-010 B-03: the durable P8 ticket/request/fingerprint identity is
+        bound into the consume record -- the OPEN_HOLDOUT consume and the
+        durable Authority binding share one lineage.
         """
         if not isinstance(request, FinalEvalRequest):
             raise TypeError("request must be a FinalEvalRequest")
@@ -525,6 +567,9 @@ class AuthorityBroker:
             nonce=request.holdout.authorization_nonce,
             request_sha256=request.request_sha256,
             outcome=outcome,
+            durable_ticket_id=durable_ticket_id,
+            durable_request_sha256=durable_request_sha256,
+            durable_nonce_fingerprint=durable_nonce_fingerprint,
         )
 
 
@@ -1208,24 +1253,200 @@ class TrustedEvaluator:
 
     def evaluate_v2(
         self,
-        request: FinalEvalRequest,
+        request: object,
         *,
         data_root: TrustedEvaluatorDataRoot,
         refs: tuple[str, ...] | None = None,
         worker_payload: Mapping[str, object] | None = None,
+        worker_launcher: Callable[[], int] | None = None,
+        consumption: object | None = None,
+        durable_ticket_id: str | None = None,
+        durable_request_sha256: str | None = None,
+        durable_nonce_fingerprint: str | None = None,
     ) -> EvaluatorResult:
         """V2 production path: outcome derived from the REAL worker result.
 
-        The caller can never specify the outcome: ``worker_payload`` must be
-        the real worker's result mapping (the runtime feeds the worker
-        subprocess output here); ``derive_outcome`` rejects caller-supplied
-        outcomes and an incomplete payload fails closed.  The Authority
-        broker then consumes the holdout nonce ATOMICALLY with the derived
-        outcome -- the one and only place the nonce is committed.
+        The caller can never specify the outcome: ``worker_payload`` must
+        be the real worker's result mapping, OR (production) the approved
+        ``worker_launcher`` is invoked AFTER the synthetic artifact handle
+        is open and the outcome is derived from its exit code;
+        ``derive_outcome`` rejects caller-supplied outcomes and an
+        incomplete payload fails closed.
+
+        PRODUCTION consume path (``consumption`` = the Authority-backed
+        ``HoldoutConsumedV2`` receipt): the nonce was already consumed by
+        the begin-time Authority transaction -- evaluate_v2 NEVER consumes
+        a second nonce and never creates fixed ``authority-bound-ticket``/
+        ``authority-bound-lease`` values.  It opens exactly one synthetic
+        staging artifact through the sealed data root, then launches the
+        approved worker, and returns the worker-derived outcome and the V2
+        request digest (the authoritative result identity) plus the
+        durable claim lineage.
+
+        TEST-ONLY path (no ``consumption``): the broker consumes the
+        in-memory holdout nonce atomically with the derived outcome (unit
+        fixtures only; production composition always passes the durable
+        receipt).
+
+        CR-010 B-03: the OPEN_HOLDOUT consume is bound to the DURABLE P8
+        ticket -- ``durable_ticket_id`` / ``durable_request_sha256`` /
+        ``durable_nonce_fingerprint`` are REQUIRED and must match the
+        durable Authority binding/consumption receipt (never fixed
+        placeholder tickets or a standalone in-memory store disconnected
+        from the binding).
         """
-        if not isinstance(request, FinalEvalRequest):
-            raise TypeError("request must be a FinalEvalRequest")
-        require_evaluator_spec_holdout_free(request.execution_spec.execution_spec)
+        from .final_eval_holdout_store import HoldoutConsumedV2
+        from .final_eval_request_projection import (
+            EvaluatorRequestProjectionV2,
+        )
+
+        if isinstance(request, EvaluatorRequestProjectionV2):
+            v1_request = request.v1_request
+            result_identity = request.v2_request_sha256
+        elif isinstance(request, FinalEvalRequest):
+            # explicitly TEST-ONLY adapter input (unit fixtures); the
+            # production composition root always passes the V2 projection
+            v1_request = request
+            result_identity = request.request_sha256
+        else:
+            raise TypeError(
+                "request must be an EvaluatorRequestProjectionV2 or a "
+                "FinalEvalRequest (test-only)"
+            )
+        if consumption is not None:
+            if not isinstance(request, EvaluatorRequestProjectionV2):
+                raise TrustedEvaluatorError(
+                    "the Authority-backed consume path requires the V2 "
+                    "projection -- a V1 request can never consume under "
+                    "the durable receipt"
+                )
+            if not isinstance(consumption, HoldoutConsumedV2):
+                raise TypeError(
+                    "consumption must be a HoldoutConsumedV2 receipt"
+                )
+            if not (
+                durable_ticket_id
+                and durable_request_sha256
+                and durable_nonce_fingerprint
+            ):
+                raise TrustedEvaluatorError(
+                    "evaluate_v2 requires the durable P8 ticket identity "
+                    "(ticket id, request digest, nonce fingerprint) -- the "
+                    "holdout consume must bind the durable Authority binding"
+                )
+            # CR-010 C0 (Phase B): the full cross-layer lineage -- the
+            # projection, the durable binding ids and the immutable
+            # consumption receipt must agree on EVERY durable identifier.
+            lineage_mismatches: list[str] = []
+            if durable_ticket_id != consumption.ticket_id:
+                lineage_mismatches.append("ticket")
+            if durable_request_sha256 != consumption.request_sha256:
+                lineage_mismatches.append("request_digest")
+            if durable_nonce_fingerprint != consumption.nonce_fingerprint:
+                lineage_mismatches.append("nonce_fingerprint")
+            if (
+                request.durable_nonce_fingerprint
+                != consumption.nonce_fingerprint
+            ):
+                lineage_mismatches.append("projection_fingerprint")
+            if v1_request.holdout.holdout_id != consumption.holdout_id:
+                lineage_mismatches.append("holdout_id")
+            if (
+                v1_request.holdout.holdout_sha256
+                != consumption.holdout_sha256
+            ):
+                lineage_mismatches.append("holdout_sha256")
+            if v1_request.actor.actor_id != consumption.actor_id:
+                lineage_mismatches.append("actor_id")
+            if v1_request.actor.actor_type != consumption.actor_type:
+                lineage_mismatches.append("actor_type")
+            if v1_request.actor.invocation_id != consumption.invocation_id:
+                lineage_mismatches.append("invocation_id")
+            if request.attempt_id != consumption.attempt_id:
+                lineage_mismatches.append("attempt")
+            if lineage_mismatches:
+                raise TrustedEvaluatorError(
+                    "evaluate_v2 consumption lineage mismatch: "
+                    + "; ".join(sorted(lineage_mismatches))
+                )
+        elif not (
+            durable_ticket_id
+            and durable_request_sha256
+            and durable_nonce_fingerprint
+        ):
+            raise TrustedEvaluatorError(
+                "evaluate_v2 requires the durable P8 ticket identity "
+                "(ticket id, request digest, nonce fingerprint) -- the "
+                "holdout consume must bind the durable Authority binding"
+            )
+        require_evaluator_spec_holdout_free(
+            v1_request.execution_spec.execution_spec
+        )
+        if consumption is not None:
+            # ---- PRODUCTION open: exactly one synthetic staging artifact
+            # ---- is opened BEFORE the approved worker launches.  The V1
+            # handle is a transient adapter artifact; its outcome slot is
+            # never read by the adapter and never authoritative -- the
+            # worker-derived outcome is produced below.
+            open_consumed = HoldoutConsumed(
+                holdout_id=consumption.holdout_id,
+                holdout_sha256=consumption.holdout_sha256,
+                authorization_nonce=consumption.nonce_fingerprint,
+                request_sha256=consumption.request_sha256,
+                consumed_at=consumption.consumed_at_utc,
+                outcome="SUCCEEDED",
+            )
+            lease = HoldoutLease(
+                lease_id=durable_ticket_id,
+                ticket_id=durable_ticket_id,
+                allowed_side_effects=(OPEN_HOLDOUT_EFFECT,),
+                code_sha256=v1_request.code.code_sha256,
+            )
+            handle = HoldoutHandle(consumed=open_consumed, lease=lease)
+            try:
+                view = self._adapter.read(
+                    handle, data_root=data_root, refs=refs
+                )
+            except OSError as error:
+                # CR-010 F-01 (functional closure): an artifact open that
+                # fails at the filesystem level (deleted/missing holdout)
+                # is a controlled fail-closed error, never a raw OSError
+                # escaping the OPEN_HOLDOUT seam.
+                raise TrustedEvaluatorError(
+                    "holdout artifact open failed (sealed artifact "
+                    "unavailable or unreadable)"
+                ) from error
+            if worker_payload is not None:
+                raise TrustedEvaluatorError(
+                    "the production consume path derives the outcome from "
+                    "the approved worker launcher -- a caller-supplied "
+                    "payload is never accepted"
+                )
+            if worker_launcher is None:
+                raise TrustedEvaluatorError(
+                    "the production consume path requires the approved "
+                    "worker launcher"
+                )
+            try:
+                code = worker_launcher()
+            except Exception as error:  # noqa: BLE001
+                raise TrustedEvaluatorError(
+                    "approved worker launcher failed"
+                ) from error
+            if type(code) is not int:
+                raise TrustedEvaluatorError(
+                    "worker launcher must return an integer exit code"
+                )
+            worker_result = derive_worker_result(code)
+            outcome = derive_outcome(
+                worker_payload={"outcome": worker_result.outcome}
+            )
+            return EvaluatorResult(
+                request_sha256=result_identity,
+                handle_sha256=handle.handle_sha256,
+                view=view,
+                outcome=outcome,
+            )
         if not isinstance(worker_payload, Mapping):
             raise TrustedEvaluatorError(
                 "evaluate_v2 requires the real worker result payload; "
@@ -1237,22 +1458,30 @@ class TrustedEvaluator:
             raise TrustedEvaluatorError(
                 "worker payload did not derive a terminal outcome"
             ) from error
-        consumed = self._broker.consume(request, outcome=outcome)
+        consumed = self._broker.consume(
+            v1_request,
+            outcome=outcome,
+            durable_ticket_id=durable_ticket_id,
+            durable_request_sha256=durable_request_sha256,
+            durable_nonce_fingerprint=durable_nonce_fingerprint,
+        )
         if consumed.outcome != outcome:
             raise TrustedEvaluatorError(
                 "Authority consumed a different outcome than the worker "
                 "result derived"
             )
+        # CR-010 B-03: the lease/ticket carry the REAL durable ticket id --
+        # never fixed placeholder identities.
         lease = HoldoutLease(
-            lease_id="authority-bound-lease",
-            ticket_id="authority-bound-ticket",
+            lease_id=durable_ticket_id,
+            ticket_id=durable_ticket_id,
             allowed_side_effects=(OPEN_HOLDOUT_EFFECT,),
-            code_sha256=request.code.code_sha256,
+            code_sha256=v1_request.code.code_sha256,
         )
         handle = HoldoutHandle(consumed=consumed, lease=lease)
         view = self._adapter.read(handle, data_root=data_root, refs=refs)
         return EvaluatorResult(
-            request_sha256=request.request_sha256,
+            request_sha256=result_identity,
             handle_sha256=handle.handle_sha256,
             view=view,
             outcome=consumed.outcome,

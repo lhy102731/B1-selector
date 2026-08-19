@@ -1,0 +1,111 @@
+﻿# CR-010 integrated file list (step 2, run005), candidate C5 = 7ecb534d
+# base B = 35f33711 (main HEAD at review time)
+# git diff --name-status B..C5 => 96 files, 22258 insertions, 1034 deletions
+
+== CODE (29 files) ==
+  M	research_automation/control_plane/artifact_semantics.py
+  M	research_automation/control_plane/c0_no_side_effect.py
+  M	research_automation/control_plane/campaign.py
+  M	research_automation/control_plane/campaign_context.py
+  M	research_automation/control_plane/campaign_controller.py
+  A	research_automation/control_plane/campaign_provider_guard.py
+  M	research_automation/control_plane/campaign_store.py
+  M	research_automation/control_plane/cli.py
+  M	research_automation/control_plane/entry_guard.py
+  M	research_automation/control_plane/entry_policy.json
+  M	research_automation/control_plane/evidence_learning.py
+  M	research_automation/control_plane/final_eval_authority.py
+  A	research_automation/control_plane/final_eval_composition.py
+  A	research_automation/control_plane/final_eval_entry.py
+  M	research_automation/control_plane/final_eval_evidence.py
+  A	research_automation/control_plane/final_eval_holdout_store.py
+  M	research_automation/control_plane/final_eval_orchestrator.py
+  A	research_automation/control_plane/final_eval_recovery_entry.py
+  A	research_automation/control_plane/final_eval_request_projection.py
+  M	research_automation/control_plane/final_eval_runtime.py
+  M	research_automation/control_plane/final_eval_saga.py
+  M	research_automation/control_plane/final_evaluator.py
+  M	research_automation/control_plane/memory.py
+  M	research_automation/control_plane/regate_driver.py
+  M	research_automation/control_plane/rollout_chaos.py
+  A	research_automation/control_plane/rollout_chaos_campaign_executor.py
+  M	research_automation/control_plane/rollout_chaos_fixtures.py
+  M	research_automation/control_plane/rollout_chaos_worker.py
+  M	research_automation/control_plane/stores.py
+
+== TESTS (27 files) ==
+  M	tests/test_control_plane_activation_coordinator.py
+  M	tests/test_control_plane_artifact_semantics.py
+  M	tests/test_control_plane_c0_no_side_effect.py
+  M	tests/test_control_plane_campaign_store.py
+  A	tests/test_control_plane_cr010_c0_acceptance.py
+  A	tests/test_control_plane_cr010_closure_gate.py
+  A	tests/test_control_plane_cr010_p8_acceptance.py
+  M	tests/test_control_plane_entry_guard.py
+  M	tests/test_control_plane_final_eval_authority.py
+  A	tests/test_control_plane_final_eval_composition.py
+  A	tests/test_control_plane_final_eval_holdout_store.py
+  M	tests/test_control_plane_final_eval_orchestrator.py
+  A	tests/test_control_plane_final_eval_request_projection.py
+  M	tests/test_control_plane_final_eval_runtime.py
+  A	tests/test_control_plane_final_eval_staging.py
+  M	tests/test_control_plane_final_evaluator.py
+  M	tests/test_control_plane_gates.py
+  M	tests/test_control_plane_git_source_identity.py
+  A	tests/test_control_plane_regate_driver_c0.py
+  M	tests/test_control_plane_rollout_chaos.py
+  M	tests/test_control_plane_rollout_chaos_publication.py
+  A	tests/test_control_plane_rollout_chaos_second_root.py
+  A	tests/test_control_plane_rollout_chaos_supervisor.py
+  M	tests/test_control_plane_rollout_chaos_worker.py
+  M	tests/test_control_plane_sqlite_uow.py
+  M	tests/test_control_plane_store_migration.py
+  M	tests/test_control_plane_stores.py
+
+== DOCS/REVIEW (40 files) ==
+  A	docs/superpowers/reviews/2026-08-19-v342-cr010-git-native-closure-report.md
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/c0/c0-acceptance.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/c0/c0-acceptance.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/c0/c0-acceptance.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/candidate-receipt.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/c0-focused.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/c0-focused.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/c0-focused.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/closure-gate-final.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/closure-gate-final.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/closure-gate-final.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite-final.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite-final.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite-final.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/full-suite.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/node-ids-final.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/official-24cycle.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/official-24cycle.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/official-24cycle.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/p8-focused.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/p8-focused.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/focused/p8-focused.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/gate-state.json
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/compileall.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/compileall.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/compileall.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/diffcheck.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/diffcheck.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/hygiene/diffcheck.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/p8/p8-acceptance.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/p8/p8-acceptance.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/p8/p8-acceptance.out
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-a.md
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-b-probes.py
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-b.err
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-b.md
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-b.meta.txt
+  A	docs/superpowers/reviews/raw-evidence/cr010-final-closure/run003/review/review-b.out
+
+== TOTALS ==
+  code_files=29 test_files=27 docs_files=40 total=96
+  note: runtime data (ag2_research/kbase, research_state/control_plane,
+  tools/ths_yuanhang_bridge/YuanhangBridge.dll) is NOT in the diff;
+  see run003/runtime-data-manifest.txt (2002 files, SHA-256 pinned).

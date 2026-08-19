@@ -1959,17 +1959,26 @@ class FinalEvalAuthorityMigrationTests(unittest.TestCase):
                         "SELECT 1 FROM sqlite_master WHERE type = 'table' "
                         "AND name = 'final_eval_authorizations_v1'"
                     ).fetchone()
+                    consumption_table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                        "AND name = 'final_eval_holdout_consumptions_v1'"
+                    ).fetchone()
                     after = connection.execute(
                         "SELECT * FROM authority_outbox WHERE event_id = ?",
                         ("legacy-outbox-event",),
                     ).fetchone()
                 finally:
                     connection.close()
-                # CR010-R03: the authority schema advanced to v3 with the
-                # durable final-eval recovery-lease table.
-                self.assertEqual(version, 3)
-                self.assertEqual(metadata_version, "3")
+                # CR010-R03 / CR-010 C0 (Phase B): the authority schema
+                # advanced to the current version with the durable
+                # final-eval recovery-lease AND holdout-consume tables.
+                self.assertEqual(version, stores_module._AUTHORITY_SCHEMA_VERSION)
+                self.assertEqual(
+                    metadata_version,
+                    str(stores_module._AUTHORITY_SCHEMA_VERSION),
+                )
                 self.assertIsNotNone(table)
+                self.assertIsNotNone(consumption_table)
                 self.assertEqual(tuple(after), tuple(before))
 
     def test_authority_migration_is_atomic_on_failure(self) -> None:
@@ -2142,9 +2151,13 @@ class FinalEvalBindingContractTests(unittest.TestCase):
         )
         self.grant = self._grant("fe-attempt-001")
 
-    def _grant(self, attempt_id: str) -> stores_module.AuthorityGrant:
+    def _grant(
+        self,
+        attempt_id: str,
+        phase: Phase = Phase.P8,
+    ) -> stores_module.AuthorityGrant:
         envelope = self.authority._provision_authorization(
-            phase=Phase.P0,
+            phase=phase,
             attempt_id=attempt_id,
             actor=self.actor,
             identity=self.identity,
@@ -2156,7 +2169,7 @@ class FinalEvalBindingContractTests(unittest.TestCase):
         )
         return self.authority.claim_authorization(
             envelope,
-            expected_phase=Phase.P0,
+            expected_phase=phase,
             expected_attempt_id=attempt_id,
             actor=self.actor,
             identity=self.identity,
@@ -2227,7 +2240,13 @@ class FinalEvalBindingContractTests(unittest.TestCase):
         refs = publisher.publish(
             binding_id,
             binding_id,
-            {"binding_id": binding_id, "outcome": "SUCCEEDED"},
+            {
+                "schema_version": "control_plane.final_eval_worker_result.v1",
+                "binding_id": binding_id,
+                "ticket_id": binding_id,
+                "exit_code": 0,
+                "outcome": "SUCCEEDED",
+            },
             outcome="SUCCEEDED",
         )
         return self.authority._stage_final_eval_result(
@@ -2471,7 +2490,9 @@ class FinalEvalBindingContractTests(unittest.TestCase):
     def _recovery_lease_for(self, binding_id, authority=None):
         """Issue a durable recovery lease for a staged binding."""
         authority = authority or self.authority
-        maintenance_grant = self._grant("fe-maintenance-attempt-r03")
+        maintenance_grant = self._grant(
+            "fe-maintenance-attempt-r03", phase=Phase.P0
+        )
         task_spec = {
             "task_id": "P8-MAINTENANCE-RECOVERY-R03",
             "objective": "recover a staged final-eval binding",
@@ -2681,7 +2702,9 @@ class FinalEvalBindingContractTests(unittest.TestCase):
             expected_version=2,
         )
         self._stage_verified(binding_id)
-        maintenance_grant = self._grant("fe-maintenance-attempt")
+        maintenance_grant = self._grant(
+            "fe-maintenance-attempt", phase=Phase.P0
+        )
         task_spec = {
             "task_id": "P8-MAINTENANCE-RECOVERY",
             "objective": "recover a staged final-eval binding",
@@ -2777,7 +2800,9 @@ class FinalEvalBindingContractTests(unittest.TestCase):
         fresh_authority = stores_module._AuthorityStore(
             root_secret=ROOT_SECRET, clock=lambda: self.now
         )
-        maintenance_grant = self._grant("fe-maintenance-attempt-2")
+        maintenance_grant = self._grant(
+            "fe-maintenance-attempt-2", phase=Phase.P0
+        )
         task_spec = {
             "task_id": "P8-MAINTENANCE-RECOVERY-2",
             "objective": "recover without the original lease secret",

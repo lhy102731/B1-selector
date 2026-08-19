@@ -326,11 +326,13 @@ _REQUIRED_IMPORT_SEAM_BINDINGS = {
             "GIT_MUTATION",
         ],
     },
-    # P8 CR-009 (GPT F-03): the TrustedEvaluator is the only seam that
-    # declares OPEN_HOLDOUT; the reviewed entry policy must bind it exactly.
-    "callable:research_automation.control_plane.final_evaluator:TrustedEvaluator.evaluate_v2": {
-        "path": "research_automation/control_plane/final_evaluator.py",
-        "callable_name": "TrustedEvaluator.evaluate_v2",
+    # P8 CR-009 (GPT F-03) / CR-010 F-02 / C0 Phase B: the authorized
+    # COMPOSITION ROOT is the only seam that declares OPEN_HOLDOUT (the
+    # only production assembly point); the reviewed entry policy must bind
+    # it exactly.  The ordinary runtime path declares no OPEN_HOLDOUT.
+    "callable:research_automation.control_plane.final_eval_composition:compose_final_eval_runtime": {
+        "path": "research_automation/control_plane/final_eval_composition.py",
+        "callable_name": "compose_final_eval_runtime",
         "declared_side_effects": ["OPEN_HOLDOUT"],
     },
 }

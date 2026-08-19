@@ -261,7 +261,7 @@ class OperationalCampaignJournal:
     Runtime cycle invalidation is handled separately by P6 fencing leases.
     """
 
-    __slots__ = ("_clock", "_grant", "_namespace", "_campaign_id")
+    __slots__ = ("_clock", "_grant", "_namespace", "_campaign_id", "_campaign_attempt_id")
 
     def __init__(
         self,
@@ -271,9 +271,13 @@ class OperationalCampaignJournal:
         namespace: str,
         campaign_id: str,
         clock: Callable[[], datetime] | None = None,
+        campaign_attempt_id: str | None = None,
     ) -> None:
         self._namespace = _identifier(namespace, "namespace")
         self._campaign_id = _identifier(campaign_id, "campaign_id")
+        if campaign_attempt_id is not None:
+            campaign_attempt_id = _identifier(campaign_attempt_id, "campaign_attempt_id")
+        self._campaign_attempt_id = campaign_attempt_id
         self._grant = _require_p6_grant(
             grant,
             namespace=self._namespace,
@@ -357,6 +361,14 @@ class OperationalCampaignJournal:
             raise ValueError("payload cannot override the AuthorityGrant binding")
         bound_payload = dict(payload)
         bound_payload["_authority_grant_id"] = self._grant.grant_id
+        # F-02 (git-native run003): only usage events carry the campaign
+        # attempt tag; lifecycle events (CREATED etc.) must stay canonical.
+        if self._campaign_attempt_id is not None and event_type == "MODEL_USAGE_RECORDED":
+            if "_campaign_attempt_id" in bound_payload:
+                raise ValueError(
+                    "payload cannot override the campaign-attempt binding"
+                )
+            bound_payload["_campaign_attempt_id"] = self._campaign_attempt_id
         payload_json, _ = _payload(bound_payload)
         occurred_at = self._clock()
         occurred_text = _utc(occurred_at)
@@ -602,6 +614,11 @@ def _event_domain_payload(event: CampaignEvent) -> dict[str, object]:
         raise CampaignJournalError(
             "campaign event is missing its AuthorityGrant binding"
         ) from error
+    # F-02 (git-native run003): the campaign-attempt tag is an internal
+    # binding stored on the durable event (used by the counter verifier);
+    # like the grant binding it is NOT part of the canonical envelope domain
+    # and is stripped for envelope validation/replay.
+    payload.pop("_campaign_attempt_id", None)
     return payload
 
 

@@ -50,6 +50,64 @@ class FinalEvalSagaOutcomeRejected(FinalEvalSagaError):
     """The outcome was caller-supplied or invalid."""
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerResult:
+    """THE immutable worker result shared by every consumer (CR-010 B-01).
+
+    One exit-code validation + outcome derivation happens exactly once per
+    worker execution; the same object (exit code + outcome) is consumed by
+    the runtime, the evaluator, the orchestrator, the evidence publisher,
+    the Authority CAS and the reconciler -- a single final evaluation can
+    never produce two different outcomes in different authoritative
+    records.
+    """
+
+    exit_code: int
+    outcome: str
+
+
+def validate_worker_exit_code(code: object) -> int:
+    """Return the exit code iff it is a real int in the allowed range.
+
+    ``bool`` is a subclass of ``int``, so the strict type check rejects it
+    too.  Anything else (None/str/float/negative/>255) fails closed BEFORE
+    the holdout is opened or consumed.
+    """
+    if type(code) is not int:
+        raise FinalEvalSagaOutcomeRejected(
+            "worker exit code must be an integer, got "
+            + type(code).__name__
+        )
+    if code < 0 or code > 255:
+        raise FinalEvalSagaOutcomeRejected(
+            f"worker exit code is out of range: {code}"
+        )
+    return code
+
+
+def derive_worker_outcome(exit_code: int) -> str:
+    """Map a validated worker exit code to the terminal outcome.
+
+    The mapping is FIXED and shared by every consumer: 0 -> SUCCEEDED,
+    124 -> TIMEOUT, any other non-zero -> FAILED.  The caller can never
+    choose the outcome.
+    """
+    if exit_code == 0:
+        return "SUCCEEDED"
+    if exit_code == 124:
+        return "TIMEOUT"
+    return "FAILED"
+
+
+def derive_worker_result(code: object) -> WorkerResult:
+    """Validate the exit code and derive the immutable worker result once."""
+    exit_code = validate_worker_exit_code(code)
+    return WorkerResult(
+        exit_code=exit_code,
+        outcome=derive_worker_outcome(exit_code),
+    )
+
+
 def require_saga_transition(
     current: str,
     next_state: str,
@@ -113,6 +171,10 @@ __all__ = [
     "SAGA_STATES",
     "SAGA_TRANSITIONS",
     "TERMINAL_OUTCOMES",
+    "WorkerResult",
     "derive_outcome",
+    "derive_worker_outcome",
+    "derive_worker_result",
     "require_saga_transition",
+    "validate_worker_exit_code",
 ]

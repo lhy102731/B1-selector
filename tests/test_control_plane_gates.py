@@ -438,10 +438,10 @@ class PhaseGateBuilderTests(unittest.TestCase):
                     ],
                 ),
                 (
-                    "research_automation/control_plane/final_evaluator.py",
-                    "callable:research_automation.final_evaluator:"
-                    "TrustedEvaluator.evaluate_v2",
-                    "TrustedEvaluator.evaluate_v2",
+                    "research_automation/control_plane/final_eval_composition.py",
+                    "callable:research_automation.control_plane."
+                    "final_eval_composition:compose_final_eval_runtime",
+                    "compose_final_eval_runtime",
                     ["OPEN_HOLDOUT"],
                 ),
             )

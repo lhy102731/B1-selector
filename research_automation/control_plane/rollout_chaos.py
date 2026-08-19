@@ -15,8 +15,10 @@ import json
 import os
 import random
 import base64
+import secrets
 import shutil
 import sqlite3
+import subprocess
 import msvcrt
 import tempfile
 import functools
@@ -24,7 +26,6 @@ from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
 
 from research_automation.control_plane.budget import BudgetExceededError
 from research_automation.control_plane.campaign import (
@@ -106,6 +107,10 @@ _DEFAULT_CYCLES = 24
 # legacy default is kept only for unit/read-only contexts and the production
 # driver never writes evidence under it.
 _ATTEMPT_ID = "c0-attempt-003"
+# The immutable fixture ref for the C0 synthetic campaign lineage
+# (CR-010 F-03): the worker output must echo this exact value; it is never
+# derived from the business owner_pid or the attempt id.
+_FIXTURE_REF = "c0-fixture-v342-cr010"
 _PLAN_VERSION = "V3.4.2-P0R2"
 _SCHEMA_VERSION = "C0_CHAOS_SIMULATION_REPORT_V1"
 _CAMPAIGN_ID = "c0-main-campaign"
@@ -133,13 +138,16 @@ _CYCLE_STEPS = (
     "decide",
 )
 
-_CALL_LIMITS = OperationalModelCallLimits(
-    currency="USD",
-    max_input_tokens=20,
-    max_output_tokens=10,
-    max_cost="0.1",
-    max_wall_time_ms=5_000,
-    max_attempts=2,
+# CR-010 F-07: shared step-execution components live in the production
+# fixture module so the one-step WORKER subprocess can execute REAL
+# controller transitions without importing the supervisor.
+from .rollout_chaos_fixtures import (
+    C0ChaosProvider as ChaosProvider,
+    C0_CALL_LIMITS as _CALL_LIMITS,
+    C0_RESERVATION_LIMITS as _RESERVATION_LIMITS,
+    FixtureSequentialClock as _SequentialMonotonicClock,
+    campaign_limits,
+    c0_claim_for_cycle as _claim_for_cycle,
 )
 
 _INVALID_JSON_CALL_LIMITS = OperationalModelCallLimits(
@@ -150,119 +158,6 @@ _INVALID_JSON_CALL_LIMITS = OperationalModelCallLimits(
     max_wall_time_ms=5_000,
     max_attempts=1,
 )
-
-_RESERVATION_LIMITS = CycleReservationLimits(
-    currency="USD",
-    max_input_tokens=20,
-    max_output_tokens=10,
-    max_cost="0.1",
-    max_wall_time_ms=5_000,
-    max_tool_attempts=2,
-)
-
-
-def campaign_limits(cycles: int) -> CampaignBudgetLimits:
-    return CampaignBudgetLimits(
-        max_cycles=cycles,
-        currency="USD",
-        max_input_tokens=cycles * 20 + 100,
-        max_output_tokens=cycles * 10 + 100,
-        max_cost=str(cycles + 2),
-        max_wall_time_ms=cycles * 5_000 + 60_000,
-        max_tool_attempts=cycles * 2 + 8,
-    )
-
-
-class _SequentialMonotonicClock:
-    """Deterministic increasing monotonic clock (ns)."""
-
-    def __init__(self, start_ns: int = 100, step_ns: int = 1_000_000) -> None:
-        self._next = start_ns
-        self._step = step_ns
-
-    def __call__(self) -> int:
-        value = self._next
-        self._next += self._step
-        return value
-
-
-class ChaosProvider:
-    """Offline fake provider matching the roster member binding.
-
-    The controller executes providers inside a spawned subprocess, so the
-    call counter is persisted in a shared temp file; the timeout-once mode
-    therefore survives subprocess pickling and retry re-spawns.
-    """
-
-    provider_name = "fake-provider"
-    profile = "offline-local"
-    model = "deterministic-reviewer"
-    config_sha256 = "2" * 64
-    capability_sha256 = "3" * 64
-
-    def __init__(
-        self,
-        artifact: dict[str, object],
-        *,
-        timeout_first: bool = False,
-        counter_path: str | None = None,
-    ) -> None:
-        self._artifact = dict(artifact)
-        self._timeout_first = timeout_first
-        if counter_path is None:
-            handle = tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                delete=False,
-                prefix="c0-provider-counter-",
-            )
-            handle.write("0")
-            handle.close()
-            counter_path = handle.name
-        self._counter_path = str(counter_path)
-        Path(self._counter_path).write_text("0", encoding="utf-8")
-
-    @property
-    def call_count(self) -> int:
-        try:
-            raw = Path(self._counter_path).read_text(encoding="utf-8").strip()
-            return int(raw or "0")
-        except FileNotFoundError:
-            return 0
-
-    def _next_call_number(self) -> int:
-        counter_path = Path(self._counter_path)
-        with counter_path.open("r+", encoding="utf-8") as stream:
-            raw = stream.read().strip() or "0"
-            value = int(raw) + 1
-            stream.seek(0)
-            stream.write(str(value))
-            stream.truncate()
-        return value
-
-    def invoke(self, request: object) -> ProviderResponse:
-        number = self._next_call_number()
-        if self._timeout_first and number == 1:
-            raise TimeoutError("synthetic provider timeout")
-        return ProviderResponse(
-            output_text=json.dumps(
-                self._artifact,
-                ensure_ascii=True,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            request_model=self.model,
-            response_model=self.model,
-            raw_usage={
-                "input_tokens": 7,
-                "output_tokens": 3,
-                "total_tokens": 10,
-                "reported_cost": "0.02",
-                "currency": "USD",
-            },
-        )
-
 
 class _InvalidJsonChaosProvider(ChaosProvider):
     def invoke(self, request: object) -> ProviderResponse:
@@ -279,22 +174,6 @@ class _InvalidJsonChaosProvider(ChaosProvider):
                 "currency": "USD",
             },
         )
-
-
-def _claim_for_cycle(cycle_number: int) -> dict[str, object]:
-    return {
-        "kind": "NEGATIVE",
-        "summary": f"Synthetic scoped finding from C0 cycle {cycle_number}",
-        "scope": json.dumps(
-            _test_fixtures()["scope"](generation="generation-1"),
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        "parent_lineage": [],
-        "reopen_predicate": "[]",
-        "future_usage_guidance": '{"conclusion":"AVOID","directional_status":"avoid"}',
-    }
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -394,10 +273,14 @@ def _authority_fixture_cycle(
         root, f"{base}/decision.json", decision
     )
     baseline_ref = "research_state/control_plane/p3/baseline.json"
+    # CR-010 F-08: the fixture baseline binds the repository root in
+    # ROOT-RELATIVE form ("." resolves to the fixture root), so the
+    # learning packet content hash never embeds the absolute fixture root
+    # path -- cross-root replay digests are root-independent.
     baseline_raw = _canonical_bytes(
         {
             "phase": "P3",
-            "repository_root": str(root.resolve()),
+            "repository_root": ".",
             "status": "PASS",
         }
     )
@@ -465,13 +348,15 @@ def _authorized_campaign_deterministic_root(
     root: Path,
     *,
     namespace: str = "formal",
+    campaign_attempt_id: str | None = None,
 ):
     """Deterministic-root twin of the repository's test fixture context."""
     root.mkdir(parents=True, exist_ok=True)
-    with patch.multiple(
-        stores_module,
-        _AUTHORITY_STORE_PATH=root / "authority.sqlite3",
-        _OPERATIONAL_STORE_PATH=root / "operational.sqlite3",
+    # CR-010 F-10: production-owned store redirection seam -- never
+    # unittest.mock on the official path.
+    with stores_module.store_path_override(
+        authority=root / "authority.sqlite3",
+        operational=root / "operational.sqlite3",
     ):
         stores_module._expected_schema_sha256.cache_clear()
         stores_module._trusted_bootstrap(root_secret=_test_fixtures()["root_secret"])
@@ -491,6 +376,7 @@ def _authorized_campaign_deterministic_root(
                 namespace=namespace,
                 campaign_id=campaign_id,
                 clock=lambda: _test_fixtures()["now"],
+                campaign_attempt_id=campaign_attempt_id,
             )
         finally:
             stores_module._expected_schema_sha256.cache_clear()
@@ -529,29 +415,9 @@ def _deterministic_root_lock(seed: int, cycles: int):
             msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-@contextmanager
-def _deterministic_secrets(seed: int):
-    """Deterministic secrets token source so cross-process replays are stable.
-
-    The durable controller/journal/lease layers generate lease ids, nonces,
-    and grant ids through the stdlib ``secrets`` module. For the offline C0
-    simulation only, we substitute a seeded token generator so identical seeds
-    produce byte-identical event payloads and digests across processes.
-    """
-    rng = random.Random((seed * 0x9E3779B97F4A7C15) & 0xFFFFFFFFFFFFFFFF)
-
-    def token_hex(nbytes=None):
-        return rng.randbytes(int(nbytes or 16)).hex()
-
-    def token_urlsafe(nbytes=None):
-        raw = rng.randbytes(int(nbytes or 32))
-        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-
-    with patch("secrets.token_hex", side_effect=token_hex), patch(
-        "secrets.token_urlsafe",
-        side_effect=token_urlsafe,
-    ):
-        yield
+# CR-010 F-07: deterministic secrets moved to the production fixture
+# module so the one-step WORKER subprocesses share the same source.
+from .rollout_chaos_fixtures import deterministic_secrets as _deterministic_secrets
 
 
 def _new_controller(
@@ -561,6 +427,7 @@ def _new_controller(
     cycles: int,
     owner_pid: int,
     start_ns: int,
+    learning_authority_reader: object | None = None,
 ) -> OperationalCampaignController:
     return OperationalCampaignController(
         journal=journal,
@@ -570,6 +437,10 @@ def _new_controller(
             ProcessIdentity("host-c0", owner_pid, start_ns)
         ),
         monotonic_ns=_SequentialMonotonicClock(start_ns=start_ns, step_ns=1_000_000),
+        learning_authority_reader=learning_authority_reader,
+        # CR-010 F-08: the offline campaign binds a DETERMINISTIC root
+        # identity so cross-root semantic replays are byte-equal.
+        repository_root_identity="c0-fixture-root",
     )
 
 
@@ -609,6 +480,46 @@ def _build_schedule(seed: int, cycles: int) -> dict[int, dict[str, object]]:
     return schedule
 
 
+def _scenario_entries(
+    schedule: Mapping[int, Mapping[str, object]],
+    cycles: int,
+) -> list[str]:
+    """The DETERMINISTIC scenario markers for a schedule (CR-010 F-03).
+
+    The supervisor recomputes the expected scenario digest from this exact
+    list -- the worker echoes it and any mismatch fails closed.
+    """
+    entries: list[str] = []
+    for n in range(1, cycles + 1):
+        slot = schedule[n]
+        crash_after = slot["crash_after"]
+        timeout_first = bool(slot["timeout_first"])
+        pause_after = bool(slot["pause_after"])
+        if crash_after is not None:
+            entries.append(
+                f"cycle {n}: crash_between_steps after {crash_after}"
+            )
+        if timeout_first:
+            entries.append(
+                f"cycle {n}: provider_timeout_recovery (first attempt times out, retry succeeds)"
+            )
+        if pause_after:
+            entries.append(
+                f"cycle {n}: safe_boundary_pause after cycle decision"
+            )
+    return entries
+
+
+def _expected_scenario_log(seed: int, cycles: int) -> list[str]:
+    return _scenario_entries(_build_schedule(seed, cycles), cycles)
+
+
+def _scenario_digest(seed: int, cycles: int) -> str:
+    """The scenario digest the supervisor recomputes and compares against
+    the worker's echoed value (CR-010 F-03)."""
+    return _scenario_log_digest(_expected_scenario_log(seed, cycles))
+
+
 def _cycle_event_rows(root: Path, campaign_id: str, cycle_id: str):
     connection = sqlite3.connect(root / "operational.sqlite3")
     try:
@@ -627,41 +538,482 @@ def _count_event(rows, event_type: str) -> int:
     return sum(1 for row in rows if row[0] == event_type)
 
 
+
+
+# ---------------------------------------------------------------------------
+# CR-010 F-07: supervisor -> one-step worker subprocess protocol.
+#
+# Every campaign step is executed by a FRESH worker subprocess
+# (``rollout_chaos_worker``), which rebuilds the durable controller from
+# the fixture root and performs the REAL controller transition.  The
+# supervisor writes the step input JSON, launches the worker, and treats a
+# hard exit (rc=9) after a crash_after boundary exactly like the legacy
+# in-process crash recovery: the next step runs in a fresh worker with the
+# recovery identity.
+# ---------------------------------------------------------------------------
+
+_STEP_INPUT_SCHEMA = "control_plane.c0_worker_step_input.v1"
+
+# _CYCLE_STEPS name -> worker step name (the worker protocol uses the
+# controller-domain names).
+_CYCLE_STEP_TO_WORKER_STEP = {
+    "prepare": "prepare",
+    "start": "start",
+    "invoke": "model_call",
+    "complete": "complete",
+    "evidence": "evidence",
+    "commit": "learning",
+    "settle": "settlement",
+    "info_gain": "information_gain",
+    "decide": "next_cycle_decision",
+}
+
+
+def _serialize_grant(grant: object) -> dict[str, object]:
+    """Serialize the P6 AuthorityGrant for the worker subprocess (the
+    fixture root secret is a PUBLIC constant -- never a real secret)."""
+    return {
+        "grant_id": grant.grant_id,
+        "authorization_ref": grant.authorization_ref,
+        "phase": grant.phase.value,
+        "attempt_id": grant.attempt_id,
+        "actor": {
+            "actor_id": grant.actor.actor_id,
+            "actor_type": grant.actor.actor_type,
+            "invocation_id": grant.actor.invocation_id,
+        },
+        "identity": {
+            "plan_hash": grant.identity.plan_hash,
+            "scope_hash": grant.identity.scope_hash,
+            "instruction_policy_hash": grant.identity.instruction_policy_hash,
+        },
+        "allowed_side_effects": [
+            effect.value for effect in grant.allowed_side_effects
+        ],
+        "bearer_secret": grant._bearer_secret._reveal_for_authority_check(),
+    }
+
+
+def _validate_worker_step_output(
+    *,
+    payload: dict[str, object],
+    root: Path,
+    requested_step: str,
+    expect_decision: str | None,
+    seen_identities: set[tuple[int, int]],
+    expected_fixture_ref: str,
+    expected_host_id: str,
+    expected_scenario_digest: str,
+    parent_network_attempts: int,
+    observed_identity: ObservedWorkerIdentity,
+    returncode: int,
+) -> dict[str, object]:
+    """STRICT validation of one worker step's output (CR-010 B-05/F-03).
+
+    Both the normal-exit path and the rc=9 crash path must satisfy:
+
+    - the EXACT worker schema (unknown and missing fields are rejected
+      BEFORE any digest or identity comparison);
+    - the returned ``step`` equals the REQUESTED step;
+    - the returned ``completed_step`` equals the requested step;
+    - ``root_identity`` equals THIS fixture root;
+    - ``state_digest`` matches the durable store recomputed digest;
+    - ``scenario_digest`` matches the supervisor-recomputed scenario digest;
+    - ``completed_cycles`` matches the durable store recomputed count;
+    - ``pause_events`` match the durable store recomputed events;
+    - ``evidence`` refs match the durable store recomputed evidence;
+    - ``worker_identity.fixture_ref`` equals the requested fixture ref;
+    - ``worker_identity.host_id`` equals the parent host identity;
+    - ``worker_identity`` EQUALS the parent-observed (pid, start time)
+      pair -- a forged identity never passes, and the pair has not been
+      seen before in this campaign;
+    - ``network_attempts`` is consistent with the parent-owned NetworkGuard
+      telemetry, never trusted from worker self-report alone;
+    - the parent-recorded return code is a documented exit (0 or 9).
+
+    A forged/partial payload that omits any required field fails closed.
+    """
+    from .rollout_chaos_worker import (
+        RolloutChaosWorkerOutputRejected,
+        _completed_cycles,
+        _durable_state_digest,
+        _evidence_refs,
+        _pause_events,
+        validate_worker_output,
+    )
+
+    if not isinstance(payload, dict) or not payload:
+        raise RuntimeError(
+            "worker step output is empty or not an object"
+        )
+    try:
+        payload = validate_worker_output(payload)
+    except RolloutChaosWorkerOutputRejected as error:
+        raise RuntimeError(
+            "worker step output failed validation: " + str(error)
+        ) from error
+    observed_step = str(payload["step"])
+    if observed_step != requested_step:
+        raise RuntimeError(
+            f"worker step mismatch: requested={requested_step} "
+            f"observed={observed_step}"
+        )
+    if str(payload["outcome"]) != "SUCCEEDED":
+        raise RuntimeError(
+            f"worker step outcome is not SUCCEEDED: {payload['outcome']}"
+        )
+    observed_completed = str(payload["completed_step"])
+    if observed_completed != requested_step:
+        raise RuntimeError(
+            f"worker completed_step mismatch: requested={requested_step} "
+            f"observed={observed_completed}"
+        )
+    expected_root = str(Path(root).resolve())
+    if str(payload["root_identity"]) != expected_root:
+        raise RuntimeError(
+            "worker root identity mismatch: "
+            f"expected={expected_root} observed={payload['root_identity']}"
+        )
+    # state digest + completed cycles + pauses + evidence must match the
+    # durable store -- every value is recomputed, never worker-supplied.
+    durable_digest = _durable_state_digest(root)
+    if str(payload["state_digest"]) != durable_digest:
+        raise RuntimeError(
+            "worker state digest does not match the durable store: "
+            f"worker={payload['state_digest']} durable={durable_digest}"
+        )
+    if str(payload["scenario_digest"]) != expected_scenario_digest:
+        raise RuntimeError(
+            "worker scenario digest mismatch: "
+            f"expected={expected_scenario_digest} "
+            f"observed={payload['scenario_digest']}"
+        )
+    durable_cycles = _completed_cycles(root)
+    if int(payload["completed_cycles"]) != durable_cycles:
+        raise RuntimeError(
+            "worker completed_cycles does not match the durable store: "
+            f"worker={payload['completed_cycles']} durable={durable_cycles}"
+        )
+    durable_pauses = _pause_events(root)
+    if list(payload["pause_events"]) != durable_pauses:
+        raise RuntimeError(
+            "worker pause events do not match the durable store"
+        )
+    durable_evidence = _evidence_refs(root)
+    if list(payload["evidence"]) != durable_evidence:
+        raise RuntimeError(
+            "worker evidence refs do not match the durable store"
+        )
+    identity = payload["worker_identity"]
+    if str(identity["fixture_ref"]) != expected_fixture_ref:
+        raise RuntimeError(
+            "worker fixture_ref mismatch: "
+            f"expected={expected_fixture_ref} "
+            f"observed={identity['fixture_ref']}"
+        )
+    if str(identity["host_id"]) != expected_host_id:
+        raise RuntimeError(
+            "worker host_id mismatch: "
+            f"expected={expected_host_id} observed={identity['host_id']}"
+        )
+    payload_identity = (
+        int(identity["pid"]),
+        int(identity["started_at_ns"]),
+    )
+    observed_identity_pair = (
+        observed_identity.pid,
+        observed_identity.started_at_ns,
+    )
+    # CR-010 B-05: the payload identity must EQUAL the parent-observed
+    # (pid, start time) pair -- a forged PID/start pair, a reused PID with
+    # a different start, or the right PID with a forged start all fail
+    # closed here, before the pair is added to the seen set.
+    if payload_identity != observed_identity_pair:
+        raise RuntimeError(
+            "worker OS identity does not match the parent-observed "
+            f"process: payload={payload_identity} "
+            f"observed={observed_identity_pair}"
+        )
+    if observed_identity_pair in seen_identities:
+        raise RuntimeError(
+            f"worker OS process identity {observed_identity_pair} was "
+            "reused across steps -- the step did not run in a fresh OS "
+            "process"
+        )
+    seen_identities.add(observed_identity_pair)
+    # network_attempts is compared against the PARENT-OWNED NetworkGuard
+    # telemetry: the parent must have observed its own guarded launch, and
+    # the worker's self-report must be consistent with that observation.
+    if type(parent_network_attempts) is not int or parent_network_attempts < 1:
+        raise RuntimeError(
+            "parent NetworkGuard telemetry is missing for the step"
+        )
+    worker_attempts = int(payload["network_attempts"])
+    if worker_attempts < 1 or worker_attempts > parent_network_attempts + 1000:
+        raise RuntimeError(
+            "worker network_attempts is inconsistent with the parent-owned "
+            f"guard telemetry: worker={worker_attempts} "
+            f"parent={parent_network_attempts}"
+        )
+    if returncode not in (0, 9):
+        raise RuntimeError(
+            f"worker return code is not a documented exit: {returncode}"
+        )
+    if (
+        expect_decision is not None
+        and str(payload.get("decision", "")) != str(expect_decision)
+    ):
+        raise RuntimeError(
+            f"worker step {requested_step} decision mismatch: "
+            f"expected={expect_decision} observed={payload.get('decision')}"
+        )
+    return payload
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedWorkerIdentity:
+    """The parent-observed OS identity of a just-spawned child (CR-010 B-05).
+
+    Created immediately after ``Popen`` returns -- BEFORE the short-lived
+    child can exit -- from the parent-owned ``Popen.pid`` and an OS-observed
+    process start time normalized exactly like the child's self-report.
+    Never falls back to 0, a merely positive integer, or the worker's
+    self-reported pair; the child's self-report is never the root of trust.
+    """
+
+    pid: int
+    started_at_ns: int
+
+
+def _observe_process_started_at_ns(pid: int) -> int:
+    """Immediately observe a just-spawned child's OS start time (ns).
+
+    Uses the same psutil normalization as the worker's self-report
+    (``create_time() * 1_000_000_000``) so the parent-observed pair is
+    directly comparable.  A failed or non-positive observation fails
+    closed -- no sleep, no retry-until-value, no 0 fallback.
+    """
+    if type(pid) is not int or pid <= 0:
+        raise RuntimeError("observed child pid is not a positive integer")
+    import psutil as _psutil
+
+    try:
+        started_at_ns = int(
+            _psutil.Process(pid).create_time() * 1_000_000_000
+        )
+    except Exception as error:  # noqa: BLE001 -- NoSuchProcess/AccessDenied
+        raise RuntimeError(
+            "failed to observe the child process start time"
+        ) from error
+    if started_at_ns <= 0:
+        raise RuntimeError("observed child start time is not positive")
+    return started_at_ns
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStepResult:
+    """One strictly validated worker step run.
+
+    ``returncode`` is recorded SEPARATELY by the parent: rc=9 is the
+    documented process-crash boundary and never rewrites the durable step
+    outcome (which stays ``SUCCEEDED`` because the transition committed).
+    """
+
+    payload: dict[str, object]
+    returncode: int
+
+
+def _parse_worker_stdout(stdout_text: str) -> dict[str, object]:
+    """Require EXACTLY one non-empty JSON object line on stdout.
+
+    Empty stdout, leading/trailing log text, multiple JSON lines and
+    non-JSON text are all rejected -- evidence is never discarded via
+    ``splitlines()[-1]``.
+    """
+    if not isinstance(stdout_text, str):
+        raise RuntimeError("worker stdout must be text")
+    text = stdout_text.strip()
+    if not text:
+        raise RuntimeError("worker step output is empty")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise RuntimeError(
+            "worker step output must be exactly one JSON line, got "
+            + str(len(lines))
+        )
+    try:
+        parsed = json.loads(lines[0])
+    except (ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            "worker step output is not strict JSON: " + str(error)
+        ) from error
+    if not isinstance(parsed, dict):
+        raise RuntimeError("worker step output must be an object")
+    return parsed
+
+
+def _run_worker_step(
+    root: Path,
+    step: str,
+    input_data: dict[str, object],
+    attempt_id: str,
+    *,
+    fixture_ref: str,
+    expected_scenario_digest: str,
+    expect_decision: str | None = None,
+    seen_pids: set[tuple[int, int]] | None = None,
+) -> WorkerStepResult:
+    """Launch one FRESH worker subprocess for exactly one campaign step.
+
+    Returns the worker's strictly validated JSON output.  A hard exit
+    (rc=9) is the crash_after boundary: the step's durable transition
+    committed and the worker died; the partial output is STILL strictly
+    validated (empty/non-JSON/missing fields fail closed) and the durable
+    store is re-read to confirm the transition committed -- never trusted
+    on the return code alone.  The rc is recorded separately by the parent.
+    """
+    import sys as _sys
+
+    from .rollout_chaos_worker import HOST_ID as _HOST_ID
+    from .rollout_chaos_worker import NetworkGuard as _NetworkGuard
+
+    seen = set() if seen_pids is None else seen_pids
+    if seen and all(not isinstance(item, tuple) for item in seen):
+        # legacy set of ints -> convert to (pid, 0) tuples
+        seen = {(int(item), 0) for item in seen}
+    # F-02 (git-native run003): every worker step carries the campaign
+    # attempt so the worker journal binds each usage event to the attempt.
+    step_data = dict(input_data)
+    step_data.setdefault("campaign_attempt_id", attempt_id)
+    input_path = root / ".c0-step-input.json"
+    input_path.write_text(
+        json.dumps(step_data, ensure_ascii=True, sort_keys=True),
+        encoding="utf-8",
+    )
+    parent_attempts_before = _NetworkGuard.attempts
+    # CR-010 F-05/A4: the worker child is spawned ONLY through the fixed
+    # step launcher -- a plain subprocess.Popen or python -c is denied.
+    child = _NetworkGuard.spawn_step_worker(
+        [
+            _sys.executable,
+            "-m",
+            "research_automation.control_plane.rollout_chaos_worker",
+            step,
+            fixture_ref,
+            str(root),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    # CR-010 B-05: the parent observes (pid, start time) IMMEDIATELY after
+    # spawn, BEFORE the short-lived child can exit -- no sleep, no retry,
+    # no 0 fallback; the child's self-report is never the root of trust.
+    observed_identity = ObservedWorkerIdentity(
+        pid=child.pid,
+        started_at_ns=_observe_process_started_at_ns(child.pid),
+    )
+    try:
+        stdout_text, stderr_text = child.communicate(timeout=900)
+    except subprocess.TimeoutExpired as error:
+        child.kill()
+        child.communicate()
+        raise RuntimeError(f"worker step {step} timed out") from error
+    parent_attempts_after = _NetworkGuard.attempts
+    parent_network_attempts = parent_attempts_after - parent_attempts_before
+    returncode = child.returncode
+    if returncode not in (0, 9):
+        raise RuntimeError(
+            f"worker step {step} failed rc={returncode}: "
+            + stderr_text[-500:]
+        )
+    payload = _parse_worker_stdout(stdout_text)
+    validated = _validate_worker_step_output(
+        payload=payload,
+        root=root,
+        requested_step=step,
+        expect_decision=expect_decision,
+        seen_identities=seen,
+        expected_fixture_ref=fixture_ref,
+        expected_host_id=_HOST_ID,
+        expected_scenario_digest=expected_scenario_digest,
+        parent_network_attempts=parent_network_attempts,
+        observed_identity=observed_identity,
+        returncode=returncode,
+    )
+    return WorkerStepResult(payload=validated, returncode=returncode)
+
+
 def _run_main_campaign(
     seed: int,
     cycles: int,
     *,
     root_override: Path | None = None,
+    attempt_id: str = _ATTEMPT_ID,
+    fixture_ref: str = _FIXTURE_REF,
 ) -> tuple[dict[str, object], Path]:
     # CR-010 F-03: no process-level cache on the official path.  Every run
     # re-executes the full deterministic simulation (fresh root, fresh
     # stores) so an official report always reflects a real execution.
     root_path = root_override or _deterministic_root(seed, cycles)
     with _deterministic_root_lock(seed, cycles):
+        # CR-010 F-05 (functional closure): an EXISTING deterministic root
+        # is a controlled failure -- it is NEVER deleted automatically
+        # (a stale root could be silently replayed as evidence).  The
+        # caller must provide a genuinely fresh root.
         if root_path.exists():
-            shutil.rmtree(root_path)
-        return _run_main_campaign_locked(seed, cycles, root_path)
+            raise RuntimeError(
+                "deterministic C0 fixture root already exists; refusing to "
+                "delete it automatically -- provide a fresh root: "
+                + str(root_path)
+            )
+        return _run_main_campaign_locked(
+            seed,
+            cycles,
+            root_path,
+            attempt_id=attempt_id,
+            fixture_ref=fixture_ref,
+        )
 
 
 def _run_main_campaign_locked(
     seed: int,
     cycles: int,
     root_path: Path,
+    *,
+    attempt_id: str = _ATTEMPT_ID,
+    fixture_ref: str = _FIXTURE_REF,
 ) -> tuple[dict[str, object], Path]:
+    # CR-010 F-10: production-owned fixture reader for the offline path.
+    from . import rollout_chaos_fixtures as fixtures
+
+    # CR-010 B-05: every step must run in a FRESH OS subprocess -- the
+    # supervisor records every real worker PID and rejects any reuse.
+    seen_worker_identities: set[tuple[int, int]] = set()
+    worker_calls_by_cycle: dict[int, int] = {}
+    worker_crashes: list[dict[str, object]] = []
     schedule = _build_schedule(seed, cycles)
-    scenario_log: list[str] = []
+    scenario_log: list[str] = _scenario_entries(schedule, cycles)
+    expected_scenario_digest = _scenario_log_digest(scenario_log)
     with _deterministic_secrets(seed), _authorized_campaign_deterministic_root(
         _CAMPAIGN_ID,
         root_path,
-    ) as (root, _, journal):
+        campaign_attempt_id=attempt_id,
+    ) as (root, grant, journal):
         from .campaign_lifecycle import OperationalCampaignLifecycle
 
         campaign_lifecycle = OperationalCampaignLifecycle(journal=journal)
         scheduled_pauses: list[str] = []
         pause_failures: list[str] = []
         recovery_identities: dict[int, dict[str, object]] = {}
-        service = LearningCommitService(repository_root=root)
         bindings_by_ticket: dict[str, object] = {}
+        service = LearningCommitService(
+            repository_root=root,
+            authority_reader=fixtures.FixtureAuthorityReader(
+                bindings_by_ticket
+            ),
+        )
         previous_decision = None
         controller = None
         for n in range(1, cycles + 1):
@@ -724,252 +1076,159 @@ def _run_main_campaign_locked(
                 cycles=cycles,
                 owner_pid=1000 + n,
                 start_ns=100 + n * 10_000_000,
+                learning_authority_reader=fixtures.FixtureAuthorityReader(
+                    bindings_by_ticket
+                ),
             )
+            worker_base = {
+                "schema_version": _STEP_INPUT_SCHEMA,
+                "attempt_id": attempt_id,
+                "fixture_ref": fixture_ref,
+                "scenario_digest": expected_scenario_digest,
+                "root": str(root),
+                "seed": seed,
+                "cycles": cycles,
+                "cycle_number": n,
+                "cycle_id": cycle_id,
+                "acquisition_id": acquisition_id,
+                "grant": _serialize_grant(grant),
+                "prompt": prompt,
+                "artifact": artifact,
+                "report": report,
+                "bindings": {
+                    ticket_id: dict(binding.__dict__)
+                    for ticket_id, binding in bindings_by_ticket.items()
+                },
+                "timeout_first": timeout_first,
+            }
+            # CR-010 F-07: every step runs in a FRESH worker subprocess
+            # against the durable fixture root; the previous-cycle decision
+            # replay is also a worker step.
+            cycle_worker_calls = 0
             if previous_decision is not None:
-                with patch(
-                    "research_automation.control_plane.evidence_learning."
-                    "AuthorityReader.verify_task_report_binding",
-                    side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                ):
-                    replayed = controller.replay_next_cycle_decision(
-                        cycle_id=f"c0-cycle-{n - 1:03d}"
-                    )
-                if replayed.decision != previous_decision:
-                    raise RuntimeError(
-                        f"cycle {n - 1} decision replay mismatch"
-                    )
-            prepared = None
-            execution = None
-            provider = None
-            usage = None
-            evidence = None
-            learning = None
-            settlement = None
-            info_gain = None
-            decision = None
+                replay_input = dict(worker_base)
+                replay_input.update({
+                    "step": "replay_decision",
+                    "owner_pid": 1000 + n,
+                    "start_ns": 100 + n * 10_000_000,
+                    "replay_cycle_id": f"c0-cycle-{n - 1:03d}",
+                })
+                _run_worker_step(
+                    root,
+                    "replay_decision",
+                    replay_input,
+                    attempt_id,
+                    fixture_ref=fixture_ref,
+                    expected_scenario_digest=expected_scenario_digest,
+                    expect_decision=previous_decision,
+                    seen_pids=seen_worker_identities,
+                )
+                cycle_worker_calls += 1
+            decision_value = None
+            current_pid = 1000 + n
+            current_start_ns = 100 + n * 10_000_000
             step_index = 0
             while step_index < len(_CYCLE_STEPS):
                 step = _CYCLE_STEPS[step_index]
-                if prepared is None and step != "prepare":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        prepared = controller.prepare_cycle(
-                            task=task,
-                            cycle_number=n,
-                            execution_spec=execution_spec,
-                            roster_members=(member,),
-                            reservation_limits=_RESERVATION_LIMITS,
-                        )
-                if execution is None and step in (
-                    "start",
-                    "invoke",
-                    "complete",
-                    "evidence",
-                    "commit",
-                    "settle",
-                    "info_gain",
-                    "decide",
-                ):
-                    execution = controller.start_execution(
-                        cycle_id=cycle_id,
-                        acquisition_id=acquisition_id,
-                    )
-                if step == "prepare":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        prepared = controller.prepare_cycle(
-                            task=task,
-                            cycle_number=n,
-                            execution_spec=execution_spec,
-                            roster_members=(member,),
-                            reservation_limits=_RESERVATION_LIMITS,
-                        )
-                elif step == "start":
-                    if execution is None:
-                        execution = controller.start_execution(
-                            cycle_id=cycle_id,
-                            acquisition_id=acquisition_id,
-                        )
-                elif step == "invoke":
-                    if provider is None:
-                        provider = ChaosProvider(
-                            artifact,
-                            timeout_first=timeout_first,
-                        )
-                    controller.invoke_member_json(
-                        execution=execution,
-                        member_id=member.member_id,
-                        provider=provider,
-                        prompt=prompt,
-                        limits=_CALL_LIMITS,
-                    )
-                elif step == "complete":
-                    usage = controller.complete_model_execution(
-                        execution=execution
-                    )
-                elif step == "evidence":
-                    evidence = controller.record_model_evidence(
-                        execution=execution,
-                        member_id=member.member_id,
-                        evidence_adapter=EvidenceAdapter(
-                            known_runners={"fixture-runner": "1.0.0"},
-                            approved_protocol=artifact["executed_protocol"],
-                            approved_claim=artifact["claim"],
-                        ),
-                    )
-                elif step == "commit":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        learning = controller.commit_learning(
-                            execution=execution,
-                            evidence_receipt=evidence,
-                            authority_task_report=report,
-                            learning_commit_sink=CampaignLearningCommitSink(
-                                journal=journal,
-                                service=service,
-                            ),
-                        )
-                elif step == "settle":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        settlement = controller.settle_cycle(
-                            execution=execution,
-                            execution_usage=usage,
-                            learning_commit_receipt=learning,
-                        )
-                elif step == "info_gain":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        info_gain = controller.record_information_gain(
-                            execution=execution,
-                            settlement_receipt=settlement,
-                        )
-                elif step == "decide":
-                    with patch(
-                        "research_automation.control_plane.evidence_learning."
-                        "AuthorityReader.verify_task_report_binding",
-                        side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                    ):
-                        decision = controller.decide_next_cycle(
-                            execution=execution,
-                            information_gain_receipt=info_gain,
-                        )
+                worker_step = _CYCLE_STEP_TO_WORKER_STEP[step]
+                worker_input = dict(worker_base)
+                worker_input.update({
+                    "step": worker_step,
+                    "owner_pid": current_pid,
+                    "start_ns": current_start_ns,
+                    "crash_after": (
+                        _CYCLE_STEP_TO_WORKER_STEP[crash_after]
+                        if crash_after is not None
+                        else None
+                    ),
+                })
+                worker_result = _run_worker_step(
+                    root,
+                    worker_step,
+                    worker_input,
+                    attempt_id,
+                    fixture_ref=fixture_ref,
+                    expected_scenario_digest=expected_scenario_digest,
+                    seen_pids=seen_worker_identities,
+                )
+                worker_out = worker_result.payload
+                cycle_worker_calls += 1
                 step_index += 1
+                if worker_result.returncode == 9:
+                    # CR-010 F-03: the rc=9 crash is recorded SEPARATELY by
+                    # the parent; the durable step outcome stays SUCCEEDED
+                    # because the transition committed before the hard exit.
+                    worker_crashes.append({
+                        "cycle": n,
+                        "step": worker_step,
+                        "returncode": 9,
+                    })
                 if crash_after == step:
+                    # the worker hard-exited AFTER the durable transition
+                    # committed (crash injection); record the recovery
+                    # identity and continue from the next step in a FRESH
+                    # worker with the same recovery semantics as the
+                    # legacy in-process harness.
                     if step == "decide":
-                        controller = _new_controller(
-                            journal,
+                        replay_input = dict(worker_base)
+                        replay_input.update({
+                            "step": "replay_decision",
+                            "owner_pid": 1000 + n,
+                            "start_ns": 100 + n * 10_000_000,
+                            "replay_cycle_id": cycle_id,
+                        })
+                        _run_worker_step(
                             root,
-                            cycles=cycles,
-                            owner_pid=1000 + n,
-                            start_ns=100 + n * 10_000_000,
+                            "replay_decision",
+                            replay_input,
+                            attempt_id,
+                            fixture_ref=fixture_ref,
+                            expected_scenario_digest=expected_scenario_digest,
+                            expect_decision=worker_out.get("decision"),
+                            seen_pids=seen_worker_identities,
                         )
+                        cycle_worker_calls += 1
                         recovery_identities.setdefault(n, {})["replay"] = {
                             "owner_pid": 1000 + n,
                             "host_id": "host-c0",
                             "started_at_ns": 100 + n * 10_000_000,
                         }
-                        prepared = None
-                        execution = None
-                        provider = None
-                        with patch(
-                            "research_automation.control_plane.evidence_learning."
-                            "AuthorityReader.verify_task_report_binding",
-                            side_effect=_verify_binding_side_effect(bindings_by_ticket),
-                        ):
-                            replayed = controller.replay_next_cycle_decision(
-                                cycle_id=cycle_id
-                            )
-                        if replayed.decision != decision.decision:
-                            raise RuntimeError(
-                                f"cycle {n} replay after decide mismatch"
-                            )
                     elif step in ("prepare", "start", "invoke"):
-                        controller = _new_controller(
-                            journal,
-                            root,
-                            cycles=cycles,
-                            owner_pid=1000 + n,
-                            start_ns=100 + n * 10_000_000,
-                        )
+                        current_pid = 1000 + n
+                        current_start_ns = 100 + n * 10_000_000
                         recovery_identities.setdefault(n, {})["replay"] = {
                             "owner_pid": 1000 + n,
                             "host_id": "host-c0",
                             "started_at_ns": 100 + n * 10_000_000,
                         }
-                        prepared = None
-                        execution = None
-                        provider = None
                     else:
-                        recovery_start_ns = 100 + n * 10_000_000 + 5_000_000_000
-                        controller = _new_controller(
-                            journal,
-                            root,
-                            cycles=cycles,
-                            owner_pid=2000 + n,
-                            start_ns=recovery_start_ns,
+                        current_pid = 2000 + n
+                        current_start_ns = (
+                            100 + n * 10_000_000 + 5_000_000_000
                         )
-                        provider = None
-                        recovery_identity = _test_fixtures()["fake_process_identity_provider"](
-                            ProcessIdentity("host-c0", 2000 + n, recovery_start_ns)
+                        worker_base["acquisition_id"] = (
+                            f"recover-c0-cycle-{n:03d}"
                         )
-                        lease_journal = OperationalCycleLeaseJournal(
-                            journal=journal,
-                            lifecycle=OperationalCampaignLifecycle(journal=journal),
-                            identity_provider=recovery_identity,
-                            monotonic_ns=_SequentialMonotonicClock(
-                                start_ns=recovery_start_ns
-                            ),
-                        )
-                        replacement = lease_journal.recover(
-                            cycle_id=cycle_id,
-                            acquisition_id=f"recover-c0-cycle-{n:03d}",
-                            stale_after_ns=1,
-                        )
-                        recovery_identities.setdefault(n, {})[
-                            "recovery"
-                        ] = {
+                        recovery_identities.setdefault(n, {})["recovery"] = {
                             "owner_pid": 2000 + n,
                             "host_id": "host-c0",
-                            "started_at_ns": recovery_start_ns,
-                            "recovered_decision": str(
-                                replacement.lease_id if replacement else ""
-                            ),
+                            "started_at_ns": current_start_ns,
+                            "recovered_decision": "",
                         }
-                        execution = ExecutingOperationalCycle(
-                            cycle=controller.cycle_snapshot(cycle_id),
-                            lease=replacement,
-                        )
-            if decision is None:
+                if step == "decide":
+                    decision_value = worker_out.get("decision")
+            if decision_value is None:
                 raise RuntimeError(f"cycle {n} decision missing")
-            if n < cycles and decision.decision != "CONTINUE":
+            if n < cycles and decision_value != "CONTINUE":
                 raise RuntimeError(
-                    f"cycle {n} stopped early with {decision.decision}"
+                    f"cycle {n} stopped early with {decision_value}"
                 )
-            previous_decision = decision.decision
+            previous_decision = decision_value
+            worker_calls_by_cycle[n] = cycle_worker_calls
+        total_worker_calls = sum(worker_calls_by_cycle.values())
         if controller is None:
             raise RuntimeError("no controller created")
-        with patch(
-            "research_automation.control_plane.evidence_learning."
-            "AuthorityReader.verify_task_report_binding",
-            side_effect=_verify_binding_side_effect(bindings_by_ticket),
-        ):
-            completed = controller.complete_campaign()
+        completed = controller.complete_campaign()
         if completed.status != CampaignStatus.COMPLETED:
             raise RuntimeError("campaign did not complete")
         invariants: list[dict[str, object]] = []
@@ -1088,15 +1347,15 @@ def _run_main_campaign_locked(
                 ),
             }
         )
-        with patch(
-            "research_automation.control_plane.evidence_learning."
-            "AuthorityReader.verify_task_report_binding",
-            side_effect=_verify_binding_side_effect(bindings_by_ticket),
-        ):
-            claim_ids = sorted(
-                claim["claim_id"]
-                for claim in CommittedLearningLedgerReader(root).read_claims()
-            )
+        claim_ids = sorted(
+            claim["claim_id"]
+            for claim in CommittedLearningLedgerReader(
+                root,
+                authority_reader=fixtures.FixtureAuthorityReader(
+                    bindings_by_ticket
+                ),
+            ).read_claims()
+        )
         if len(claim_ids) != cycles:
             invariants.append(
                 {
@@ -1147,10 +1406,11 @@ def _run_main_campaign_locked(
                 ),
             }
         )
-        # CR010-R06: fresh_process_identity -- every crash-recovery cycle
-        # must have been recovered under a FRESH process identity (distinct
-        # owner pid) with a recovered decision, never under the original
-        # lease.
+        # CR010-R06 / CR-010 B-05: fresh_process_identity -- EVERY step
+        # ran in a FRESH OS subprocess (the strict worker-output validator
+        # records every real worker PID and rejects any reuse), and every
+        # crash-recovery cycle was recovered under a distinct owner pid
+        # with a recovered decision, never under the original lease.
         identity_ok = True
         identity_detail: list[str] = []
         for n in range(1, cycles + 1):
@@ -1178,6 +1438,17 @@ def _run_main_campaign_locked(
                         f"cycle {n}: replay pid="
                         f"{entry['replay']['owner_pid']}"
                     )
+        identity_detail.append(
+            f"distinct worker OS identities={len(seen_worker_identities)}"
+        )
+        identity_detail.append(
+            f"total worker calls={total_worker_calls}"
+        )
+        if len(seen_worker_identities) != total_worker_calls:
+            identity_ok = False
+            identity_detail.append(
+                "a worker OS pid was reused across steps"
+            )
         invariants.append(
             {
                 "name": "fresh_process_identity",
@@ -1227,13 +1498,18 @@ def _run_main_campaign_locked(
                         == CycleStatus.COMPLETED
                     ]
                 ),
+                "worker_crashes": worker_crashes,
+                "attempt_id": attempt_id,
+                "fixture_ref": fixture_ref,
             },
             root,
         )
 
 
-def _negative_pid_reuse() -> dict[str, object]:
-    with _test_fixtures()["authorized_campaign"]("c0-neg-pid-reuse") as (root, _, journal):
+def _negative_pid_reuse(base_root: Path) -> dict[str, object]:
+    with _test_fixtures()["authorized_campaign"](
+        "c0-neg-pid-reuse", root=base_root / "neg-pid-reuse"
+    ) as (root, _, journal):
         claim = _claim_for_cycle(1)
         report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
@@ -1297,8 +1573,10 @@ def _negative_pid_reuse() -> dict[str, object]:
         }
 
 
-def _negative_lease_fencing() -> dict[str, object]:
-    with _test_fixtures()["authorized_campaign"]("c0-neg-lease-fencing") as (root, _, journal):
+def _negative_lease_fencing(base_root: Path) -> dict[str, object]:
+    with _test_fixtures()["authorized_campaign"](
+        "c0-neg-lease-fencing", root=base_root / "neg-lease-fencing"
+    ) as (root, _, journal):
         claim = _claim_for_cycle(1)
         report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
@@ -1355,8 +1633,10 @@ def _negative_lease_fencing() -> dict[str, object]:
         }
 
 
-def _negative_budget_exhaustion() -> dict[str, object]:
-    with _test_fixtures()["authorized_campaign"]("c0-neg-budget") as (root, _, journal):
+def _negative_budget_exhaustion(base_root: Path) -> dict[str, object]:
+    with _test_fixtures()["authorized_campaign"](
+        "c0-neg-budget", root=base_root / "neg-budget"
+    ) as (root, _, journal):
         claim = _claim_for_cycle(1)
         report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
@@ -1414,8 +1694,10 @@ def _negative_budget_exhaustion() -> dict[str, object]:
         }
 
 
-def _negative_mid_call_doubt() -> dict[str, object]:
-    with _test_fixtures()["authorized_campaign"]("c0-neg-mid-call") as (root, _, journal):
+def _negative_mid_call_doubt(base_root: Path) -> dict[str, object]:
+    with _test_fixtures()["authorized_campaign"](
+        "c0-neg-mid-call", root=base_root / "neg-mid-call"
+    ) as (root, _, journal):
         claim = _claim_for_cycle(1)
         report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
@@ -1448,23 +1730,24 @@ def _negative_mid_call_doubt() -> dict[str, object]:
             cycle_id=task.task_id,
             acquisition_id="execute-mid-call",
         )
-        provider = ChaosProvider(artifact)
+        provider = ChaosProvider(
+            artifact,
+            crash_on_call=True,
+            counter_path=str(
+                root / ".c0-provider-counter-mid-call-crash.txt"
+            ),
+        )
         try:
-            with patch(
-                "research_automation.control_plane.campaign_controller."
-                "RetryingModelInvocation.invoke_json_with_receipt",
-                side_effect=RuntimeError("synthetic mid-call crash"),
-            ):
-                controller.invoke_member_json(
-                    execution=controller.start_execution(
-                        cycle_id=task.task_id,
-                        acquisition_id="execute-mid-call",
-                    ),
-                    member_id=member.member_id,
-                    provider=provider,
-                    prompt=prompt,
-                    limits=_CALL_LIMITS,
-                )
+            controller.invoke_member_json(
+                execution=controller.start_execution(
+                    cycle_id=task.task_id,
+                    acquisition_id="execute-mid-call",
+                ),
+                member_id=member.member_id,
+                provider=provider,
+                prompt=prompt,
+                limits=_CALL_LIMITS,
+            )
         except RuntimeError:
             pass
         else:
@@ -1483,7 +1766,12 @@ def _negative_mid_call_doubt() -> dict[str, object]:
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=2_000_000),
         )
-        replay_provider = ChaosProvider(artifact)
+        replay_provider = ChaosProvider(
+            artifact,
+            counter_path=str(
+                root / ".c0-provider-counter-mid-call-replay.txt"
+            ),
+        )
         try:
             reopened.invoke_member_json(
                 execution=reopened.start_execution(
@@ -1519,8 +1807,10 @@ def _negative_mid_call_doubt() -> dict[str, object]:
         }
 
 
-def _negative_invalid_json() -> dict[str, object]:
-    with _test_fixtures()["authorized_campaign"]("c0-neg-invalid-json") as (root, _, journal):
+def _negative_invalid_json(base_root: Path) -> dict[str, object]:
+    with _test_fixtures()["authorized_campaign"](
+        "c0-neg-invalid-json", root=base_root / "neg-invalid-json"
+    ) as (root, _, journal):
         claim = _claim_for_cycle(1)
         report, binding, artifact, _, _ = _test_fixtures()["evidence_vertical_slice"](
             root, claim=claim, protocol=_test_fixtures()["protocol"]().model_dump(mode="json")
@@ -1553,7 +1843,12 @@ def _negative_invalid_json() -> dict[str, object]:
             cycle_id=task.task_id,
             acquisition_id="execute-invalid-json",
         )
-        provider = _InvalidJsonChaosProvider(artifact)
+        provider = _InvalidJsonChaosProvider(
+            artifact,
+            counter_path=str(
+                root / ".c0-provider-counter-invalid-json-crash.txt"
+            ),
+        )
         try:
             controller.invoke_member_json(
                 execution=controller.start_execution(
@@ -1590,7 +1885,12 @@ def _negative_invalid_json() -> dict[str, object]:
             ),
             monotonic_ns=_SequentialMonotonicClock(start_ns=2_000_000),
         )
-        replay_provider = _InvalidJsonChaosProvider(artifact)
+        replay_provider = _InvalidJsonChaosProvider(
+            artifact,
+            counter_path=str(
+                root / ".c0-provider-counter-invalid-json-replay.txt"
+            ),
+        )
         try:
             reopened.invoke_member_json(
                 execution=reopened.start_execution(
@@ -1631,25 +1931,50 @@ def _negative_invalid_json() -> dict[str, object]:
         }
 
 
-def _verify_binding_side_effect(bindings_by_ticket: dict[str, object]):
-    def verify(report):
-        ticket_id = report.get("ticket_id")
-        if ticket_id not in bindings_by_ticket:
-            raise RuntimeError(f"no fixture binding for ticket {ticket_id}")
-        return bindings_by_ticket[ticket_id]
+def _run_negative_scenarios(
+    base_root: Path | None = None,
+) -> list[dict[str, object]]:
+    """CR-010 C0: the negative-scenario fixture roots and provider
+    counters are routed into their OWN disposable roots (never system
+    temp), so the official no-side-effect surface covers them."""
+    if base_root is None:
+        with tempfile.TemporaryDirectory() as temporary:
+            return _run_negative_scenarios_locked(Path(temporary))
+    return _run_negative_scenarios_locked(base_root)
 
-    return verify
 
-def _run_negative_scenarios() -> list[dict[str, object]]:
+def _run_negative_scenarios_locked(
+    base_root: Path,
+) -> list[dict[str, object]]:
     # CR-010 F-03: no cache; every official run re-executes the negative
     # scenarios against fresh fixture stores.
     return [
-        _negative_pid_reuse(),
-        _negative_lease_fencing(),
-        _negative_budget_exhaustion(),
-        _negative_mid_call_doubt(),
-        _negative_invalid_json(),
+        _negative_pid_reuse(base_root),
+        _negative_lease_fencing(base_root),
+        _negative_budget_exhaustion(base_root),
+        _negative_mid_call_doubt(base_root),
+        _negative_invalid_json(base_root),
     ]
+
+
+def _provider_registry_fingerprint() -> str:
+    """Fingerprint of the offline provider registry (CR-010 C0).
+
+    The C0 campaign's provider registry is the single deterministic
+    offline provider; its identity fields are part of the no-side-effect
+    surface so a changed provider registration fails closed.
+    """
+    provider = ChaosProvider({})
+    material = {
+        "provider_name": str(provider.provider_name),
+        "profile": str(provider.profile),
+        "model": str(provider.model),
+        "config_sha256": str(provider.config_sha256),
+        "capability_sha256": str(provider.capability_sha256),
+    }
+    return hashlib.sha256(
+        canonical_json(material).encode("utf-8")
+    ).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1664,12 +1989,23 @@ class ChaosOutcome:
     campaign_status: str
     attempt_id: str = _ATTEMPT_ID
     worker_verify: dict[str, object] | None = None
+    counter_verification: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
-        passed = all(
-            bool(item["passed"]) for item in self.invariants
-        ) and all(
-            bool(item["passed"]) for item in self.negative_scenarios
+        # CR-010 F-08: the official payload can never be pass=true while
+        # the second-root fresh-process replay is unproven -- the recorded
+        # NOT_WIRED gap was a fail-open hole.
+        second_root_replay = str(
+            (self.worker_verify or {}).get("second_root_replay", "")
+        )
+        passed = (
+            all(
+                bool(item["passed"]) for item in self.invariants
+            )
+            and all(
+                bool(item["passed"]) for item in self.negative_scenarios
+            )
+            and second_root_replay == "MATCHED"
         )
         return {
             "schema_version": _SCHEMA_VERSION,
@@ -1685,69 +2021,188 @@ class ChaosOutcome:
             "negative_scenarios": list(self.negative_scenarios),
             "final_state_digest": self.final_state_digest,
             "worker_verify": self.worker_verify,
+            "counter_verification": self.counter_verification,
             "pass": passed,
         }
 
 
-def _fresh_process_worker_verify(root: Path, attempt_id: str) -> dict[str, object]:
+def _fresh_process_worker_verify(
+    root: Path,
+    attempt_id: str,
+    fixture_ref: str,
+) -> dict[str, object]:
     """Run the REAL worker ``verify`` step in a FRESH subprocess and parse
-    its strict JSON output (real PID identity, real state digest)."""
+    its strict JSON output (real PID identity, real state digest).
+
+    CR-010 F-09: the supervisor validates the worker output strictly AND
+    binds the reported ``root_identity`` to the fixture root the campaign
+    actually ran against -- a worker that verified a different root can
+    never pass.  The reported ``fixture_ref`` must equal the official
+    fixture ref (CR-010 F-03).
+    """
     import subprocess as _subprocess
     import sys as _sys
 
-    result = _subprocess.run(
+    from .rollout_chaos_worker import (
+        NetworkGuard as _NetworkGuard,
+        RolloutChaosWorkerOutputRejected,
+        validate_worker_output,
+    )
+
+    child = _NetworkGuard.spawn_verify_worker(
         [
             _sys.executable,
             "-m",
             "research_automation.control_plane.rollout_chaos_worker",
             "verify",
-            attempt_id,
+            fixture_ref,
             str(root),
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=300,
     )
-    if result.returncode != 0:
+    # CR-010 B-05: the verify worker's identity is parent-observed too.
+    observed_identity = ObservedWorkerIdentity(
+        pid=child.pid,
+        started_at_ns=_observe_process_started_at_ns(child.pid),
+    )
+    try:
+        stdout_text, stderr_text = child.communicate(timeout=300)
+    except subprocess.TimeoutExpired as error:
+        child.kill()
+        child.communicate()
+        raise RuntimeError("fresh-process worker verify timed out") from error
+    if child.returncode != 0:
         raise RuntimeError(
             "fresh-process worker verify failed: "
-            + result.stdout[-500:] + result.stderr[-500:]
+            + stdout_text[-500:] + stderr_text[-500:]
         )
-    import json as _json
-
+    payload = _parse_worker_stdout(stdout_text)
     try:
-        payload = _json.loads(result.stdout.strip().splitlines()[-1])
-    except (ValueError, _json.JSONDecodeError) as error:
-        raise RuntimeError("worker output is not strict JSON") from error
-    if not isinstance(payload, dict):
-        raise RuntimeError("worker output must be an object")
+        payload = validate_worker_output(payload)
+    except RolloutChaosWorkerOutputRejected as error:
+        raise RuntimeError("worker output failed validation: " + str(error))
+    # CR-010 F-09: the worker must have verified THE campaign's fixture
+    # root -- never a global store path or a different root.
+    expected_root = str(Path(root).resolve())
+    if str(payload.get("root_identity", "")) != expected_root:
+        raise RuntimeError(
+            "worker verify root identity mismatch: "
+            f"expected={expected_root} observed={payload.get('root_identity')}"
+        )
+    observed_ref = str(payload.get("worker_identity", {}).get("fixture_ref", ""))
+    if observed_ref != fixture_ref:
+        raise RuntimeError(
+            "worker verify fixture_ref mismatch: "
+            f"expected={fixture_ref} observed={observed_ref}"
+        )
+    identity = payload.get("worker_identity", {})
+    payload_pair = (int(identity["pid"]), int(identity["started_at_ns"]))
+    observed_pair = (observed_identity.pid, observed_identity.started_at_ns)
+    if payload_pair != observed_pair:
+        raise RuntimeError(
+            "worker verify identity does not match the parent-observed "
+            f"process: payload={payload_pair} observed={observed_pair}"
+        )
     return payload
+
+
+def _scenario_log_digest(scenario_log: list[str]) -> str:
+    """Deterministic digest of a scenario log (CR-010 B-04)."""
+    return hashlib.sha256(
+        json.dumps(
+            list(scenario_log),
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+# CR-010 F-05: ONLY these payload fields are KNOWN root-identity fields.
+# A fixture-root string in any other (unknown) payload field must remain
+# significant -- it is never normalized away.
+_KNOWN_ROOT_IDENTITY_FIELDS = (
+    "repository_root",
+    "repository_root_identity",
+    "root_identity",
+    "root_path",
+)
+
+
+def _normalize_root_identity_fields(payload_text: str, root_text: str) -> str:
+    """Replace the fixture root ONLY inside the KNOWN root-identity payload
+    fields; a root string in an unknown field stays significant so a hidden
+    root-bearing payload drift changes the semantic signature (CR-010
+    F-05)."""
+    try:
+        document = json.loads(payload_text)
+    except (TypeError, ValueError):
+        return payload_text
+    if not isinstance(document, dict):
+        return payload_text
+    changed = False
+    normalized = dict(document)
+    for key in _KNOWN_ROOT_IDENTITY_FIELDS:
+        value = normalized.get(key)
+        if isinstance(value, str) and root_text in value:
+            normalized[key] = value.replace(root_text, "<ROOT>")
+            changed = True
+    if not changed:
+        return payload_text
+    return json.dumps(
+        normalized,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _semantic_state_signature(main: dict[str, object], root: Path) -> str:
     """Root-INDEPENDENT semantic state signature: scenario log + the
-    per-cycle campaign event rows (cycle_id, event_type, payload_sha256).
+    campaign event rows with NORMALIZED payload hashes.
 
-    The full final_state_digest embeds the fixture root path (ledger claim
-    lineage), so cross-root equality is proven on the SEMANTIC signature;
-    the same-root byte digest equality is proven separately by the
+    CR-010 F-08: the event payload hash is recomputed over the payload
+    with the absolute fixture root replaced by a sentinel, so an event
+    whose payload legitimately binds the repository-root identity
+    (CYCLE_CONTEXT_POLICY_CONFIGURED) is still FULLY represented in the
+    signature -- no event is dropped -- while the signature proves the
+    campaign semantics are root-independent.
+
+    The full final_state_digest equality is proven separately by the
+    double-root replay probe; the same-root byte digest equality by the
     deterministic_replay_same_seed invariant.
     """
     import sqlite3 as _sqlite3
 
+    root_text = str(root)
     material: list[tuple[str, object]] = [
         ("scenario_log", tuple(main.get("scenario_log", ())))
     ]
     connection = _sqlite3.connect(str(root / "operational.sqlite3"))
     try:
         rows = connection.execute(
-            "SELECT cycle_id, event_type, payload_sha256 "
+            "SELECT cycle_id, event_type, payload_json "
             "FROM campaign_events ORDER BY sequence"
         ).fetchall()
     finally:
         connection.close()
-    material.append(("events", tuple(tuple(row) for row in rows)))
+    normalized_events: list[tuple[object, object, str]] = []
+    for cycle_id, event_type, payload_json in rows:
+        payload_text = str(payload_json)
+        normalized_text = _normalize_root_identity_fields(
+            payload_text, root_text
+        )
+        normalized_events.append(
+            (
+                cycle_id,
+                event_type,
+                hashlib.sha256(normalized_text.encode("utf-8")).hexdigest(),
+            )
+        )
+    material.append(("events", tuple(normalized_events)))
     return hashlib.sha256(
         json.dumps(
             material,
@@ -1758,41 +2213,357 @@ def _semantic_state_signature(main: dict[str, object], root: Path) -> str:
     ).hexdigest()
 
 
-def _fresh_process_replay_signature(seed: int, cycles: int) -> tuple[str, int]:
+def _fresh_process_replay_signature(
+    seed: int,
+    cycles: int,
+    *,
+    attempt_id: str = _ATTEMPT_ID,
+    fixture_ref: str = _FIXTURE_REF,
+) -> dict[str, object]:
     """Run the deterministic campaign AGAIN in a FRESH subprocess against a
-    DIFFERENT deterministic root; return the semantic state signature + the
-    fresh worker PID (real process identity)."""
+    DIFFERENT deterministic root and return the second run's INDEPENDENTLY
+    COLLECTED observations (CR-010 B-04):
+
+    - final state digest
+    - semantic state signature
+    - scenario-log digest
+    - cycles completed
+    - campaign status
+    - root identity (the second root)
+    - the real OS worker PID/start identity
+    - the official attempt id and fixture ref
+
+    Every value is computed inside the second subprocess from ITS OWN
+    durable root -- nothing is copied from the first run.  The second-root
+    process installs the SAME NetworkGuard so its worker launches are
+    parent-observed and its network_denied invariant is real.  It is
+    launched through the fixed campaign-executor launcher (A4: no ``-c``,
+    no raw argv).
+    """
     import subprocess as _subprocess
     import sys as _sys
     import tempfile as _tempfile
 
+    from .rollout_chaos_worker import NetworkGuard as _NetworkGuard
+
     base = Path(_tempfile.gettempdir()).resolve()
     second_root = base / f"v342-c0-deterministic-{seed}-{cycles}-replay-2"
-    script = (
-        "import sys; sys.path.insert(0, '.'); "
-        "from pathlib import Path; "
-        "from research_automation.control_plane import rollout_chaos; "
-        "main, root = rollout_chaos._run_main_campaign("
-        f"{seed}, {cycles}, root_override=Path(sys.argv[1])); "
-        "print(rollout_chaos._semantic_state_signature(main, root)); "
-        "print('PID', __import__('os').getpid())"
-    )
-    result = _subprocess.run(
-        [_sys.executable, "-c", script, str(second_root)],
-        capture_output=True,
+    child = _NetworkGuard.spawn_second_root_campaign(
+        [
+            _sys.executable,
+            "-m",
+            "research_automation.control_plane."
+            "rollout_chaos_campaign_executor",
+            str(seed),
+            str(cycles),
+            str(second_root),
+            attempt_id,
+            fixture_ref,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=900,
     )
-    if result.returncode != 0:
+    # CR-010 B-05: the second-root process identity is parent-observed too
+    # -- second-root evidence never relies on the child-reported PID alone.
+    observed_identity = ObservedWorkerIdentity(
+        pid=child.pid,
+        started_at_ns=_observe_process_started_at_ns(child.pid),
+    )
+    try:
+        stdout_text, stderr_text = child.communicate(timeout=900)
+    except subprocess.TimeoutExpired as error:
+        child.kill()
+        child.communicate()
+        raise RuntimeError("second-root replay timed out") from error
+    if child.returncode != 0:
         raise RuntimeError(
             "second-root replay failed: "
-            + result.stdout[-500:] + result.stderr[-500:]
+            + stdout_text[-500:] + stderr_text[-500:]
         )
-    lines = result.stdout.strip().splitlines()
-    signature = lines[-2].strip()
-    pid = int(lines[-1].split()[-1])
-    return signature, pid
+    executor_document = _parse_worker_stdout(stdout_text)
+    main = executor_document.get("main")
+    if not isinstance(main, dict):
+        raise RuntimeError("second-root executor did not return a campaign")
+    root_text = str(executor_document.get("root", ""))
+    root = Path(root_text).resolve()
+    identity = executor_document.get("executor_identity") or {}
+    root2 = root
+    payload = {
+        "final_state_digest": str(main.get("final_state_digest", "")),
+        "semantic_signature": _semantic_state_signature(main, root2),
+        "scenario_log_digest": _scenario_log_digest(
+            list(main.get("scenario_log", ()))
+        ),
+        "cycles_completed": int(main.get("cycles_completed", 0)),
+        "campaign_status": str(main.get("campaign_status", "")),
+        "root_identity": root_text,
+        "pid": int(identity.get("pid", 0) or 0),
+        "started_at_ns": int(identity.get("started_at_ns", 0) or 0),
+        "attempt_id": attempt_id,
+        "fixture_ref": fixture_ref,
+    }
+    required = {
+        "final_state_digest",
+        "semantic_signature",
+        "scenario_log_digest",
+        "cycles_completed",
+        "campaign_status",
+        "root_identity",
+        "pid",
+        "started_at_ns",
+        "attempt_id",
+        "fixture_ref",
+    }
+    if set(payload) != required:
+        raise RuntimeError(
+            "second-root replay output schema mismatch: missing="
+            + ",".join(sorted(required - set(payload)))
+            + " extra="
+            + ",".join(sorted(set(payload) - required))
+        )
+    if type(payload["pid"]) is not int or int(payload["pid"]) <= 0:
+        raise RuntimeError("second-root replay pid is not a positive integer")
+    if (
+        type(payload["started_at_ns"]) is not int
+        or int(payload["started_at_ns"]) <= 0
+    ):
+        raise RuntimeError(
+            "second-root replay started_at_ns is not a positive integer"
+        )
+    if str(payload["attempt_id"]) != attempt_id:
+        raise RuntimeError("second-root replay attempt_id mismatch")
+    if str(payload["fixture_ref"]) != fixture_ref:
+        raise RuntimeError("second-root replay fixture_ref mismatch")
+    observed_pair = (observed_identity.pid, observed_identity.started_at_ns)
+    payload_pair = (int(payload["pid"]), int(payload["started_at_ns"]))
+    if payload_pair != observed_pair:
+        raise RuntimeError(
+            "second-root replay identity does not match the "
+            f"parent-observed process: payload={payload_pair} "
+            f"observed={observed_pair}"
+        )
+    return payload
+
+
+def _seal_root_counters(
+    repository_root: str | os.PathLike[str],
+    *,
+    campaign_id: str,
+    attempt_id: str,
+    root_secret: str,
+) -> None:
+    """F-02 (run004): seal every provider counter of one root into an
+    identity-bound ``control_plane.c0_provider_counter.v1`` record."""
+    from .c0_no_side_effect import seal_provider_counter
+
+    root = Path(repository_root).resolve()
+    operational_db = root / "operational.sqlite3"
+    for counter in root.glob(".c0-provider-counter-*.txt"):
+        cycle_id = _provider_counter_cycle_id(counter)
+        seal_provider_counter(
+            counter,
+            operational_db,
+            repository_root=root,
+            campaign_id=campaign_id,
+            cycle_id=cycle_id,
+            attempt_id=attempt_id,
+            root_secret=root_secret,
+        )
+
+
+def _verify_official_counters_after_run(
+    repository_root: str | os.PathLike[str],
+    *,
+    campaign_id: str,
+    attempt_id: str,
+    root_secret: str,
+) -> list[dict[str, object]]:
+    """F-02: verify EVERY provider counter of one official root against
+    the durable MODEL_USAGE_RECORDED journal count (never the counter file
+    or the writing helper).
+
+    run004: each counter is an identity-bound record
+    (control_plane.c0_provider_counter.v1) sealed with the root secret --
+    root/grant/attempt/cycle bound and signature-verified, so a bare
+    integer, a cross-root-exchanged counter or a tampered one is rejected.
+    The whole verification is ROOT-RUN-ISOLATED (unique grant) and
+    ATTEMPT-ISOLATED and PERIOD-COMPLETE (journal is the cycle authority).
+    """
+    root = Path(repository_root).resolve()
+    operational_db = root / "operational.sqlite3"
+    from .c0_no_side_effect import (
+        _counter_root_identity,
+        durable_model_usage_count,
+        durable_usage_cycles,
+        read_sealed_counter,
+        unique_root_grant_id,
+        verify_counter_matches_durable_usage,
+    )
+
+    # F-02 (run002/003): the verification is ROOT-RUN-ISOLATED,
+    # ATTEMPT-ISOLATED and PERIOD-COMPLETE.  Every event is bound to the
+    # root's authoritative grant AND the TARGET campaign attempt; a journal
+    # mixing events from more than one grant is invalid (fail closed);
+    # events of another run / another attempt (same grant) never count.
+    grant_id = unique_root_grant_id(
+        operational_db,
+        campaign_id=campaign_id,
+    )
+    required_cycles = durable_usage_cycles(
+        operational_db,
+        campaign_id=campaign_id,
+        grant_id=grant_id,
+        campaign_attempt_id=attempt_id,
+    )
+    if not required_cycles:
+        raise RuntimeError(
+            "official C0 run found no durable MODEL_USAGE_RECORDED "
+            "events for campaign/attempt " + campaign_id + "/" + attempt_id
+        )
+    counters = {
+        _provider_counter_cycle_id(counter): counter
+        for counter in root.glob(".c0-provider-counter-*.txt")
+    }
+    if set(counters) != required_cycles:
+        missing = sorted(required_cycles - set(counters))
+        extra = sorted(set(counters) - required_cycles)
+        raise RuntimeError(
+            "official C0 run counter files do not match the durable "
+            f"cycle set: missing={missing} extra={extra} "
+            f"under {root}"
+        )
+    verified: list[dict[str, object]] = []
+    for cycle_id in sorted(required_cycles):
+        counter = counters[cycle_id]
+        verify_counter_matches_durable_usage(
+            counter_path=counter,
+            operational_db=operational_db,
+            campaign_id=campaign_id,
+            cycle_id=cycle_id,
+            attempt_id=attempt_id,
+            grant_id=grant_id,
+            campaign_attempt_id=attempt_id,
+            repository_root=root,
+            root_secret=root_secret,
+        )
+        observed = read_sealed_counter(
+            counter,
+            root_identity=_counter_root_identity(root),
+            expect_grant=grant_id,
+            expect_attempt=attempt_id,
+            expect_cycle=cycle_id,
+            root_secret=root_secret,
+        )
+        expected = durable_model_usage_count(
+            operational_db,
+            campaign_id=campaign_id,
+            cycle_id=cycle_id,
+            attempt_id=attempt_id,
+            grant_id=grant_id,
+            campaign_attempt_id=attempt_id,
+        )
+        if observed != expected:
+            raise RuntimeError(
+                f"provider counter {observed} != durable usage count "
+                f"{expected} for {cycle_id}"
+            )
+        verified.append(
+            {
+                "cycle_id": cycle_id,
+                "observed": observed,
+                "expected": expected,
+                "verified": True,
+            }
+        )
+    return verified
+
+
+def _provider_counter_cycle_id(counter: Path) -> str:
+    name = str(counter.name)
+    if name.startswith(".c0-provider-counter-") and name.endswith(".txt"):
+        return name[len(".c0-provider-counter-") : -len(".txt")]
+    return name
+
+
+def _run_campaign_executor_child(
+    seed: int,
+    cycles: int,
+    *,
+    attempt_id: str,
+    fixture_ref: str,
+) -> tuple[dict[str, object], Path, ObservedWorkerIdentity]:
+    """Run the COMPLETE 24-cycle offline campaign in a genuinely fresh OS
+    child (CR-010 A4) through the fixed campaign-executor launcher.
+
+    The parent observes the child's real (pid, started_at_ns) immediately
+    after spawn; the child installs the Guard before any campaign code and
+    returns a single-line JSON document containing the campaign payload,
+    the root and its own identity.  The child's self-reported identity
+    must equal the parent-observed pair -- the campaign identity is never
+    the supervisor, never the later verify worker.
+    """
+    import subprocess as _subprocess
+    import sys as _sys
+
+    from .rollout_chaos_worker import NetworkGuard as _NetworkGuard
+
+    root_path = _deterministic_root(seed, cycles)
+    child = _NetworkGuard.spawn_campaign_executor(
+        [
+            _sys.executable,
+            "-m",
+            "research_automation.control_plane."
+            "rollout_chaos_campaign_executor",
+            str(seed),
+            str(cycles),
+            str(root_path),
+            attempt_id,
+            fixture_ref,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    observed_identity = ObservedWorkerIdentity(
+        pid=child.pid,
+        started_at_ns=_observe_process_started_at_ns(child.pid),
+    )
+    try:
+        stdout_text, stderr_text = child.communicate(timeout=1800)
+    except subprocess.TimeoutExpired as error:
+        child.kill()
+        child.communicate()
+        raise RuntimeError("campaign executor timed out") from error
+    if child.returncode != 0:
+        raise RuntimeError(
+            "campaign executor failed: "
+            + stdout_text[-800:] + stderr_text[-800:]
+        )
+    document = _parse_worker_stdout(stdout_text)
+    main = document.get("main")
+    if not isinstance(main, dict):
+        raise RuntimeError("campaign executor did not return a campaign")
+    root_text = str(document.get("root", ""))
+    root = Path(root_text).resolve()
+    identity = document.get("executor_identity") or {}
+    self_pid = int(identity.get("pid", 0) or 0)
+    self_started = int(identity.get("started_at_ns", 0) or 0)
+    if (self_pid, self_started) != (
+        observed_identity.pid,
+        observed_identity.started_at_ns,
+    ):
+        raise RuntimeError(
+            "campaign executor identity does not match the "
+            f"parent-observed process: payload={(self_pid, self_started)} "
+            f"observed={(observed_identity.pid, observed_identity.started_at_ns)}"
+        )
+    # F-03: the child's SELF-REPORTED identity is cross-checked but never
+    # used as the source of truth; it is returned separately so the parent
+    # can record child-payload / parent-observation separately.
+    return main, root, observed_identity, (self_pid, self_started)
 
 
 def run_c0_simulation(
@@ -1800,11 +2571,14 @@ def run_c0_simulation(
     seed: int = 20260811,
     cycles: int = _DEFAULT_CYCLES,
     attempt_id: str = _ATTEMPT_ID,
+    fixture_ref: str = _FIXTURE_REF,
 ) -> ChaosOutcome:
     if type(cycles) is not int or cycles < _MIN_CYCLES:
         raise ValueError(f"cycles must be an integer >= {_MIN_CYCLES}")
     if not attempt_id or not isinstance(attempt_id, str):
         raise ValueError("attempt_id must be a non-empty string")
+    if not fixture_ref or not isinstance(fixture_ref, str):
+        raise ValueError("fixture_ref must be a non-empty string")
     # CR010-R06: the OFFICIAL simulation path installs the real NetworkGuard
     # (socket/Popen interception + deny probe) so the network_denied
     # invariant reflects a REAL interception, and restores the stdlib
@@ -1814,7 +2588,23 @@ def run_c0_simulation(
     NetworkGuard.install()
     NetworkGuard.deny_probe()
     try:
-        main, root = _run_main_campaign(seed, cycles)
+        # CR-010 A4: the complete campaign runs in a genuinely fresh OS
+        # child (fixed executor launcher); the parent observes its real
+        # pid/start-time identity -- that identity is the campaign
+        # EXECUTOR, never the supervisor and never the later verify worker.
+        (
+            main,
+            root,
+            first_observed,
+            first_self_report,
+        ) = _run_campaign_executor_child(
+            seed,
+            cycles,
+            attempt_id=attempt_id,
+            fixture_ref=fixture_ref,
+        )
+        first_pid = first_observed.pid
+        first_started_at_ns = first_observed.started_at_ns
         negatives = _run_negative_scenarios()
         # CR010-R06/C0-3: the official report FAILS CLOSED unless the
         # produced invariant set is EXACTLY the mandated set (missing
@@ -1827,29 +2617,144 @@ def run_c0_simulation(
         # a REAL fresh worker subprocess (its own PID identity, its own
         # state digest) -- an in-process simulation result is never
         # mistaken for worker evidence.
-        worker = _fresh_process_worker_verify(root, attempt_id)
+        worker = _fresh_process_worker_verify(root, attempt_id, fixture_ref)
         main["worker_verify"] = {
+            # CR-010 A4/F-03: the verify worker is recorded SEPARATELY and
+            # is never named as the campaign identity (first_pid is the
+            # campaign executor).  Four distinct identities are recorded:
+            # child payload self-report, parent observation, campaign
+            # writer (first_*), verify worker (verify_*).
             "pid": worker["worker_identity"]["pid"],
+            "started_at_ns": worker["worker_identity"]["started_at_ns"],
+            "verify_pid": worker["worker_identity"]["pid"],
+            "verify_started_at_ns": worker["worker_identity"]["started_at_ns"],
             "state_digest": worker["state_digest"],
             "outcome": worker["outcome"],
             "network_attempts": worker["network_attempts"],
+            "root_identity": worker["root_identity"],
+            "first_executor_self_report": {
+                "pid": first_self_report[0],
+                "started_at_ns": first_self_report[1],
+            },
         }
         if str(worker["outcome"]) != "SUCCEEDED":
-            raise RuntimeError("fresh-process worker verify failed")
-        # CR010-R06 gap (recorded): second-root replay in a FRESH process
-        # against a DIFFERENT deterministic root is NOT yet wired because
-        # the campaign event payloads embed the fixture root path, making
-        # cross-root digest/semantic equality impossible without deeper
-        # determinism work.  The gap is documented in the C0 driver and the
-        # review report; the same-root deterministic_replay_same_seed
-        # invariant and the fresh-process worker verify remain enforced.
+            raise RuntimeError(
+                "fresh-process worker verify failed: "
+                + json.dumps(worker, sort_keys=True)[-800:]
+            )
+        completed_before_replay = int(main.get("cycles_completed", cycles))
+        # CR-010 B-04: REAL second-root fresh-process replay -- a fresh
+        # process executes the same deterministic campaign against a
+        # DIFFERENT root and returns its OWN independently collected
+        # observations (digest, semantic signature, scenario-log digest,
+        # cycles, status, root identity, real PID/start).  The FIRST run's
+        # values are collected BEFORE any log mutation, and every
+        # comparison is between two independently collected values -- never
+        # a value vs itself, never a copy, never a hardcoded equality.
+        first_signature = _semantic_state_signature(main, root)
+        first_log_digest = _scenario_log_digest(list(main["scenario_log"]))
+        first_digest = str(main["final_state_digest"])
+        # CR-010 F-05/A4 (functional closure): the FIRST campaign identity
+        # is the parent-observed campaign EXECUTOR child -- never the
+        # supervisor observing itself, never the verify worker.  The
+        # verify worker is recorded separately as worker_verify.pid.
+        if first_pid <= 0 or first_started_at_ns <= 0:
+            raise RuntimeError(
+                "first-root campaign executor identity is not "
+                "parent-observed (pid/start time must be positive)"
+            )
+        second = _fresh_process_replay_signature(
+            seed,
+            cycles,
+            attempt_id=attempt_id,
+            fixture_ref=fixture_ref,
+        )
+        second_digest = str(second["final_state_digest"])
+        second_signature = str(second["semantic_signature"])
+        second_log_digest = str(second["scenario_log_digest"])
+        second_pid = int(second["pid"])
+        second_started_at_ns = int(second["started_at_ns"])
+        replay_ok = (
+            second_signature == first_signature
+            and second_digest == first_digest
+            and second_log_digest == first_log_digest
+            and int(second["cycles_completed"]) == completed_before_replay
+            and str(second["campaign_status"]) == str(main["campaign_status"])
+            and str(second["root_identity"]) != str(root)
+            and second_pid != first_pid
+            and second_started_at_ns > 0
+            and second_started_at_ns != first_started_at_ns
+        )
+        # CR-010 F-08: the scenario log stays DETERMINISTIC -- the replay
+        # PIDs are recorded in worker_verify (runtime identities), never
+        # in the semantic log that feeds the state digest.
         main["scenario_log"].append(
-            "second-root fresh-process replay: NOT WIRED "
-            "(root-path leakage in event payloads; recorded gap)"
+            "second-root fresh-process replay: wired"
         )
         main["worker_verify"]["second_root_replay"] = (
-            "NOT_WIRED_ROOT_PATH_LEAK"
+            "MATCHED" if replay_ok else "MISMATCH"
         )
+        main["worker_verify"]["first_signature"] = first_signature
+        main["worker_verify"]["second_signature"] = second_signature
+        main["worker_verify"]["first_final_state_digest"] = first_digest
+        main["worker_verify"]["second_final_state_digest"] = second_digest
+        main["worker_verify"]["first_scenario_log_digest"] = first_log_digest
+        main["worker_verify"]["second_scenario_log_digest"] = second_log_digest
+        main["worker_verify"]["first_pid"] = first_pid
+        main["worker_verify"]["first_started_at_ns"] = first_started_at_ns
+        # CR-010 A4: the parent observed the campaign EXECUTOR child's OS
+        # start time while it was ALIVE (a terminated process cannot be
+        # queried afterwards on all platforms); this marker records that
+        # the parent-observation actually happened.
+        main["worker_verify"]["first_identity_verified"] = True
+        main["worker_verify"]["second_pid"] = second_pid
+        main["worker_verify"]["second_started_at_ns"] = second_started_at_ns
+        main["worker_verify"]["second_cycles_completed"] = int(
+            second["cycles_completed"]
+        )
+        main["worker_verify"]["second_campaign_status"] = str(
+            second["campaign_status"]
+        )
+        main["worker_verify"]["second_root_identity"] = str(
+            second["root_identity"]
+        )
+        if not replay_ok:
+            raise RuntimeError("second-root fresh-process replay mismatch")
+        # F-02 (run004): the OFFICIAL run seals EVERY provider counter into
+        # an identity-bound record (root/grant/attempt/cycle + root-secret
+        # signature) and then verifies each against the journal's durable
+        # MODEL_USAGE_RECORDED count for the TARGET attempt -- a bare or
+        # cross-root-exchanged counter can never pass.
+        root_secret = _test_fixtures()["root_secret"]
+        _seal_root_counters(
+            root,
+            campaign_id=_CAMPAIGN_ID,
+            attempt_id=attempt_id,
+            root_secret=root_secret,
+        )
+        first_counters = _verify_official_counters_after_run(
+            root,
+            campaign_id=_CAMPAIGN_ID,
+            attempt_id=attempt_id,
+            root_secret=root_secret,
+        )
+        second_root = Path(second["root_identity"])
+        _seal_root_counters(
+            second_root,
+            campaign_id=_CAMPAIGN_ID,
+            attempt_id=attempt_id,
+            root_secret=root_secret,
+        )
+        second_counters = _verify_official_counters_after_run(
+            second_root,
+            campaign_id=_CAMPAIGN_ID,
+            attempt_id=attempt_id,
+            root_secret=root_secret,
+        )
+        main["counter_verification"] = {
+            "first_root": {"verified": first_counters},
+            "second_root": {"verified": second_counters},
+        }
     finally:
         NetworkGuard.uninstall()
     # CR-010 F-03: cycles_completed must reflect the actual campaign run.
@@ -1869,6 +2774,7 @@ def run_c0_simulation(
         campaign_status=str(main["campaign_status"]),
         attempt_id=attempt_id,
         worker_verify=main.get("worker_verify"),
+        counter_verification=main.get("counter_verification"),
     )
 
 
@@ -1912,29 +2818,46 @@ class AtomicPublisher:
         self._attempt_id = attempt_id
 
     @staticmethod
-    def _write_temp_then_link(temp_path: Path, final_path: Path, raw: bytes) -> str:
+    def _temp_path_for(final_path: Path) -> Path:
+        """CR-010 F-11: a UNIQUE same-volume temp path per writer (pid +
+        random suffix).  Two concurrent writers can never collide on the
+        temp name, so neither can unlink the other's in-flight temp."""
+        unique = f"{os.getpid()}-{secrets.token_hex(8)}"
+        return final_path.with_name(f".tmp-{final_path.name}-{unique}")
+
+    @staticmethod
+    def _write_temp_then_link(
+        temp_path: Path,
+        final_path: Path,
+        raw: bytes,
+        crash_before_link: bool = False,
+    ) -> str:
         """Stage raw bytes in a same-volume temp file, fsync, then link
         create-only to the final path.  Returns CREATED / IDEMPOTENT /
-        CONFLICT."""
+        CONFLICT.
+
+        ``crash_before_link`` is the PRODUCTION crash-injection point used
+        by the child-crash tests: the fully-fsynced temp is written and the
+        worker hard-exits BEFORE the link, so the final path never appears.
+        """
         temp_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(
-                temp_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
-        except FileExistsError:
-            # orphan temp from a crashed writer: a temp is never the final
-            # object, so clearing it and retrying is safe
+        fd = None
+        # CR-010 F-11: the caller supplies a UNIQUE temp name; an
+        # (essentially impossible) collision retries with a fresh suffix
+        # instead of unlinking a temp another writer may be writing.
+        for attempt in range(8):
             try:
-                temp_path.unlink()
-            except OSError:
-                pass
-            fd = os.open(
-                temp_path,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o644,
-            )
+                fd = os.open(
+                    temp_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+                break
+            except FileExistsError:
+                temp_path = temp_path.with_name(
+                    temp_path.name + f"-r{attempt}"
+                )
+        assert fd is not None
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(raw)
@@ -1946,17 +2869,31 @@ class AtomicPublisher:
             except OSError:
                 pass
             raise
+        if crash_before_link:
+            # CR-010 C0: production crash injection AFTER the fully-fsynced
+            # temp write, BEFORE the atomic link.
+            import sys as _sys
+            _sys.stdout.flush()
+            os._exit(9)
         try:
             os.link(temp_path, final_path)
         except FileExistsError:
-            temp_path.unlink(missing_ok=True)
+            # CR-010 B-07/C0: the temp is NOT deleted here -- the final
+            # path may vanish between the failed link and the read (an
+            # unusual race), and the retry needs the temp to still exist.
             try:
                 existing = final_path.read_bytes()
             except OSError:
                 # the final path vanished between the failed link and the
-                # read (an unusual race); retry the link once
-                os.link(temp_path, final_path)
-                return "CREATED"
+                # read; retry the link once while the temp still exists
+                try:
+                    os.link(temp_path, final_path)
+                    return "CREATED"
+                except FileExistsError:
+                    existing = final_path.read_bytes()
+                    if existing == raw:
+                        return "IDEMPOTENT_EXISTING"
+                    return "CLAIM_CONFLICT"
             if existing == raw:
                 return "IDEMPOTENT_EXISTING"
             return "CLAIM_CONFLICT"
@@ -1987,7 +2924,7 @@ class AtomicPublisher:
         raw = canonical_json(payload).encode("utf-8")
         sha256 = hashlib.sha256(raw).hexdigest()
         object_path = self._objects / f"{sha256}.json"
-        temp_object = self._objects / f".tmp-{sha256}"
+        temp_object = self._temp_path_for(object_path)
         object_status = self._write_temp_then_link(temp_object, object_path, raw)
         if object_status == "CLAIM_CONFLICT":
             return {"status": "CLAIM_CONFLICT", "ref": object_path.name}
@@ -2000,7 +2937,7 @@ class AtomicPublisher:
             "report_blob_sha256": sha256,
         }
         claim_raw = canonical_json(claim).encode("utf-8")
-        temp_claim = self._claim.with_name(f".tmp-{self._claim.name}")
+        temp_claim = self._temp_path_for(self._claim)
         claim_status = self._write_temp_then_link(
             temp_claim, self._claim, claim_raw
         )

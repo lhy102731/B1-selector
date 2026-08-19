@@ -694,6 +694,7 @@ class OperationalCampaignController:
         "_freeze",
         "_leases",
         "_monotonic_ns",
+        "_learning_authority_reader",
     )
 
     def __init__(
@@ -706,6 +707,8 @@ class OperationalCampaignController:
         monotonic_ns: Callable[[], int],
         tokenizer_kind: str | None = None,
         tokenizer_name: str | None = None,
+        learning_authority_reader: object | None = None,
+        repository_root_identity: str | None = None,
     ) -> None:
         if not isinstance(journal, OperationalCampaignJournal):
             raise TypeError("journal must be an OperationalCampaignJournal")
@@ -746,6 +749,8 @@ class OperationalCampaignController:
             repository_root=repository_root,
             tokenizer_kind=tokenizer_kind,
             tokenizer_name=tokenizer_name,
+            learning_authority_reader=learning_authority_reader,
+            repository_root_identity=repository_root_identity,
         )
         roster = OperationalRosterJournal(
             journal=journal,
@@ -772,6 +777,10 @@ class OperationalCampaignController:
         self._freeze = freeze
         self._leases = leases
         self._monotonic_ns = monotonic_ns
+        # CR-010 F-10: production-owned authority reader injection for the
+        # Learning projection history checks (offline C0 fixtures bind task
+        # reports without unittest.mock); None keeps the real reader.
+        self._learning_authority_reader = learning_authority_reader
 
     @property
     def execution_mode(self) -> CampaignExecutionMode:
@@ -1791,6 +1800,9 @@ class OperationalCampaignController:
             ) = self._evidence_preparation_in_transaction(
                 connection,
                 cycle_id=cycle_id,
+                # CR-010 F-07: a replay of an already-recorded evidence
+                # (later campaign steps) may observe a settled reservation.
+                allow_settled_reservation=True,
             )
             member = next(
                 (
@@ -1910,7 +1922,12 @@ class OperationalCampaignController:
                         "expected operational model evidence",
                     )
                     or events[0].sequence <= usage_event.sequence
-                    or current_cycle.status is not CycleStatus.EVIDENCE_READY
+                    or current_cycle.status
+                    not in {
+                        CycleStatus.EVIDENCE_READY,
+                        CycleStatus.LEARNING_COMMITTED,
+                        CycleStatus.SETTLED,
+                    }
                     or current_cycle.sequence <= events[0].sequence
                 ):
                     raise CampaignJournalError(
@@ -3113,7 +3130,8 @@ class OperationalCampaignController:
                 baseline_projection,
                 packet_projection,
             ) = CommittedLearningLedgerReader(
-                self._context._repository_root
+                self._context._repository_root,
+                authority_reader=self._learning_authority_reader,
             ).read_projection_checkpoints(
                 baseline_prefix_length=baseline_prefix_length,
                 packet_hash=packet_hash,
@@ -4259,7 +4277,7 @@ class OperationalCampaignController:
         cycle_id: str,
         receipt: OperationalEvidenceReceipt,
         current_cycle: CycleSnapshot,
-        allow_settled_reservation: bool = False,
+        allow_settled_reservation: bool = True,
     ) -> object:
         (
             preparation_manifest_sha256,
@@ -4610,7 +4628,7 @@ class OperationalCampaignController:
         connection,
         *,
         cycle_id: str,
-        receipt: OperationalExecutionUsage,
+        receipt: OperationalExecutionUsage | None = None,
         allow_settled_reservation: bool = False,
     ):
         (
@@ -4671,11 +4689,70 @@ class OperationalCampaignController:
             manifest_sha256=payload["manifest_sha256"],
             event_id=usage_event.event_id,
         )
-        if receipt != replayed:
+        if receipt is not None and receipt != replayed:
             raise CampaignJournalError(
                 "operational execution usage receipt conflicts"
             )
         return usage_event, replayed
+
+    def replay_cycle_execution_usage(
+        self,
+        *,
+        cycle_id: str,
+        allow_settled_reservation: bool = True,
+    ) -> OperationalExecutionUsage:
+        """CR-010 F-07: replay the committed execution-usage receipt from
+        the journal (a later step's input), without comparing a caller
+        receipt.  A pure replay may legitimately observe an already
+        SETTLED reservation."""
+        def read(connection):
+            _, replayed = self._replay_execution_usage_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                receipt=None,
+                allow_settled_reservation=allow_settled_reservation,
+            )
+            return replayed
+
+        return _SqliteUnitOfWork(stores._operational_spec())._read(read)
+
+    def replay_cycle_learning_commit(
+        self,
+        *,
+        cycle_id: str,
+    ) -> OperationalLearningCommitReceipt:
+        """CR-010 F-07: replay the committed Learning Commit receipt from
+        the journal (a later step's input), without re-committing."""
+        def read(connection):
+            self._replay_learning_commit_receipt_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+                receipt=None,
+            )
+            stored_events = self._learning_commit_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if len(stored_events) != 1:
+                raise CampaignJournalError(
+                    "operational Learning Commit is missing"
+                )
+            stored_payload = _event_domain_payload(stored_events[0])
+            return OperationalLearningCommitReceipt(
+                cycle_id=cycle_id,
+                member_id=str(stored_payload["member_id"]),
+                evidence_manifest_sha256=str(
+                    stored_payload["evidence_manifest_sha256"]
+                ),
+                authority_task_report_sha256=str(
+                    stored_payload["authority_task_report_sha256"]
+                ),
+                packet_hash=str(stored_payload["packet_hash"]),
+                manifest_sha256=str(stored_payload["manifest_sha256"]),
+                event_id=stored_events[0].event_id,
+            )
+
+        return _SqliteUnitOfWork(stores._operational_spec())._read(read)
 
     def _model_evidence_event_id(self, cycle_id: str) -> str:
         return _stable_id(
@@ -4835,8 +4912,35 @@ class OperationalCampaignController:
         connection,
         *,
         cycle_id: str,
-        receipt: OperationalLearningCommitReceipt,
+        receipt: OperationalLearningCommitReceipt | None = None,
     ):
+        # CR-010 F-07: a pure replay (receipt=None) reconstructs the
+        # committed receipt from the journal instead of comparing a caller
+        # receipt -- later campaign steps replay the receipt, they never
+        # re-commit.
+        if receipt is None:
+            stored_events = self._learning_commit_events_in_transaction(
+                connection,
+                cycle_id=cycle_id,
+            )
+            if len(stored_events) != 1:
+                raise CampaignJournalError(
+                    "operational Learning Commit is missing"
+                )
+            stored_payload = _event_domain_payload(stored_events[0])
+            receipt = OperationalLearningCommitReceipt(
+                cycle_id=cycle_id,
+                member_id=str(stored_payload["member_id"]),
+                evidence_manifest_sha256=str(
+                    stored_payload["evidence_manifest_sha256"]
+                ),
+                authority_task_report_sha256=str(
+                    stored_payload["authority_task_report_sha256"]
+                ),
+                packet_hash=str(stored_payload["packet_hash"]),
+                manifest_sha256=str(stored_payload["manifest_sha256"]),
+                event_id=stored_events[0].event_id,
+            )
         for value, name in (
             (receipt.evidence_manifest_sha256, "evidence manifest"),
             (receipt.authority_task_report_sha256, "Authority TaskReport"),

@@ -1,0 +1,7 @@
+python=3.13.12
+base=35f33711d554012ab9293b59e202054ece019a28
+candidate_commit=7ecb534d0602c53cc9e708a86892e44a644048ee
+candidate_tree=25814dcdd465959466f2d9dcd3887de0006a847f
+workdir=D:\workspace\a-share-quant-selector-cr010-run003
+branch=cr010/git-native-run003
+round=run005 candidate C (seal resolver factory inline; no casting API)
